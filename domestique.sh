@@ -18,7 +18,7 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 ## Roles
 - **You (main session, planning model):** decompose work, hold the plan, delegate implementation and review, adjudicate the results, decide what's next. Write code yourself only for trivial one-line edits.
 - **`implementer` subagent (Sonnet):** executes one bounded task at a time in its own context and reports back a summary.
-- **`reviewer` subagent (Sonnet):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. Does not fix anything; reviewing is its only job.
+- **`reviewer` subagent (Opus):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. A stronger, non-peer check than the implementer. Does not fix anything; reviewing is its only job.
 
 ## Work tracking: beads
 - The plan of record lives in beads (`bd`), not in markdown TODO lists.
@@ -76,7 +76,7 @@ emit_reviewer() { cat <<'DOM_EOF'
 name: reviewer
 description: Independently verifies one completed task against its bead's done-criteria in a fresh context — inspects the real diff, reads the changed files, runs the tests — and returns a pass/fail verdict with specific findings. Use after the implementer reports a task done, before the orchestrator closes the bead.
 tools: Read, Bash, Glob, Grep
-model: sonnet
+model: opus
 ---
 
 You are a reviewer. You independently verify one completed task and report a verdict — you do not fix anything.

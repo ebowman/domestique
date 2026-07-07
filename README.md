@@ -1,20 +1,26 @@
 # domestique
 
-A Claude Code config for a **two-model orchestration workflow**. You run your
+A Claude Code config for a **multi-model orchestration workflow**. You run your
 main Claude Code session on **Fable** — the **orchestrator** that designs the
 work, tracks it in [beads](https://github.com/steveyegge/beads), and delegates.
 Each bounded task goes to a **Sonnet** implementer subagent that executes it;
-then a separate, fresh-context **Sonnet** reviewer subagent independently
-verifies the result. Fable adjudicates the verdict, closes the bead, and moves
-to the next one.
+then a separate, fresh-context **Opus** reviewer subagent independently verifies
+the result. Fable adjudicates the verdict, closes the bead, and moves to the
+next one.
 
-The point of the split: Fable is the most capable model, so it does the
-judgment-heavy work where mistakes are expensive — planning and the final
-accept/reject call. Sonnet is cheaper and fast, so it does the two well-scoped
-jobs: executing a pinned-down task, and independently verifying it. Delegating
-both implementation *and* verification keeps Fable's context lean, which keeps
-it a good adjudicator — and the reviewer's independence means the implementer's
-"done, tests pass" is checked, not trusted.
+The point of the split is to spend model capability where it pays off:
+
+- **Fable** (most capable) plans and makes the final accept/reject call — the
+  judgment-heavy work where mistakes are expensive.
+- **Sonnet** (fast, cheap) implements — well-scoped execution of a task that's
+  already pinned down.
+- **Opus** (strong, independent) verifies — a *non-peer* check, so a Sonnet
+  implementer's mistakes are caught by a more capable model rather than
+  peer-reviewed at the same tier.
+
+Delegating both implementation *and* verification keeps Fable's context lean,
+which keeps it a good adjudicator — and the reviewer's independence means the
+implementer's "done, tests pass" is checked, not trusted.
 
 ## The loop
 
@@ -27,14 +33,16 @@ Roles:
 - **Sonnet implementer** — the `implementer` subagent. Receives one bounded
   task, does exactly that, runs the tests/linter, closes its bead, and returns a
   terse summary.
-- **Sonnet reviewer** — the `reviewer` subagent. In a *fresh context* (no
+- **Opus reviewer** — the `reviewer` subagent. In a *fresh context* (no
   anchoring on the implementer's story), it inspects the real `git diff`, reads
   the changed files, runs the tests itself, and returns a PASS / FAIL / NEEDS-WORK
-  verdict judged against the bead's done-criteria. It reviews only — it never
-  edits code or touches bead state.
+  verdict judged against the bead's done-criteria. A stronger, non-peer check
+  than the implementer. It reviews only — it never edits code or touches bead
+  state.
 
-Both subagents are pinned to Sonnet via `model: sonnet` in their frontmatter, so
-they always run on Sonnet no matter what the orchestrator session is set to.
+Each subagent's model is pinned in its frontmatter (`model: sonnet` for the
+implementer, `model: opus` for the reviewer), so they always run on their own
+model no matter what the orchestrator session is set to.
 
 One turn of the flywheel:
 
@@ -64,7 +72,7 @@ One turn of the flywheel:
               one task     │              │ summary       │ PASS / FAIL
              (bead id)     ▼              │               │ verdict
                         ┌──────────────────┴──┐   ┌────────┴─────────────┐
-                        │ SONNET implementer   │   │ SONNET reviewer      │
+                        │ SONNET implementer   │   │ OPUS reviewer        │
                         │ do task · test ·     │   │ fresh context ·      │
                         │ close bead           │   │ diff · tests · judge │
                         └──────────────────────┘   └──────────────────────┘
@@ -101,8 +109,8 @@ dom --with-beads
 ```
 
 This installs `CLAUDE.md` (the orchestration policy, in a managed block that
-coexists with your own content), `.claude/agents/implementer.md` and
-`.claude/agents/reviewer.md` (the two Sonnet subagents), and
+coexists with your own content), `.claude/agents/implementer.md` (the Sonnet
+implementer) and `.claude/agents/reviewer.md` (the Opus reviewer), and
 `.claude/commands/decompose.md` (the `/decompose` command).
 
 ### 2. Run the orchestrator session on Fable
@@ -113,11 +121,12 @@ Open Claude Code in the repo and set the session model to Fable:
 /model claude-fable-5
 ```
 
-That's the whole model configuration. Both subagents are already pinned to
-Sonnet in their frontmatter (`model: sonnet`), so every task you delegate — and
-every review — runs on Sonnet **automatically**; you never switch models by hand
-mid-flow. (Want a tougher reviewer for high-stakes work? Change `model: sonnet`
-to `model: opus` or `model: claude-fable-5` in `.claude/agents/reviewer.md`.)
+That's the whole model configuration. Each subagent's model is already pinned in
+its frontmatter — Sonnet for the implementer, Opus for the reviewer — so
+delegation and review each run on the right model **automatically**; you never
+switch models by hand mid-flow. To retune, edit `model:` in the agent files:
+drop the reviewer to `sonnet` for cheaper/faster peer review, or raise it to
+`claude-fable-5` for maximum rigor on high-stakes work.
 
 ### 3. Make sure beads is initialized
 
@@ -144,7 +153,7 @@ review. When you're happy with the plan:
 
 Fable delegates it to the `implementer` subagent (on Sonnet), which implements
 the task, runs the tests, closes the bead, and reports back. Fable then sends
-the same bead to the `reviewer` subagent — a fresh Sonnet that inspects the diff
+the same bead to the `reviewer` subagent — a fresh Opus that inspects the diff
 and re-runs the tests independently — and adjudicates its verdict before
 accepting. Then it stops to check in. You say "next" (or "keep going") and the
 loop continues until `bd ready` is empty.
