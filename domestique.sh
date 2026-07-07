@@ -16,8 +16,9 @@ emit_policy() { cat <<'DOM_EOF'
 This session is the **orchestrator**. Your job is planning, delegation, and review — not implementation.
 
 ## Roles
-- **You (main session, planning model):** decompose work, hold the plan, delegate, review results, decide what's next. Write code yourself only for trivial one-line edits.
+- **You (main session, planning model):** decompose work, hold the plan, delegate implementation and review, adjudicate the results, decide what's next. Write code yourself only for trivial one-line edits.
 - **`implementer` subagent (Sonnet):** executes one bounded task at a time in its own context and reports back a summary.
+- **`reviewer` subagent (Sonnet):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. Does not fix anything; reviewing is its only job.
 
 ## Work tracking: beads
 - The plan of record lives in beads (`bd`), not in markdown TODO lists.
@@ -28,8 +29,9 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 ## Delegation loop
 1. `bd ready` → pick the highest-priority unblocked task.
 2. Delegate it to the `implementer` subagent with a precise brief and the bead id.
-3. When it returns, review on two levels: (a) the summary it reports, and (b) the actual work itself — independently inspect the real diff (`git diff`) and read the changed files yourself rather than trusting the report. Confirm the tests actually pass. Only then close or annotate the bead; if the work doesn't match the summary or the bead's done-criteria, reopen it or file a follow-up.
-4. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
+3. When the implementer returns, delegate verification to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer inspects the real diff, reads the changed files, and runs the tests in a fresh context — judging the work against the done-criteria, not against the implementer's summary — and returns a pass/fail verdict.
+4. Adjudicate. Weigh the reviewer's verdict against the implementer's summary: if they agree the work is done, close the bead; if the reviewer reports gaps, reopen the bead or file a follow-up and route the fix back to the implementer. Read the diff yourself only when the two reports conflict or the verdict is ambiguous — delegating the review is the point.
+5. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
 
 ## Discipline
 - One task in flight at a time. Bounded WIP.
@@ -69,6 +71,35 @@ Keep the return small. The orchestrator's context is the scheduling constraint; 
 DOM_EOF
 }
 
+emit_reviewer() { cat <<'DOM_EOF'
+---
+name: reviewer
+description: Independently verifies one completed task against its bead's done-criteria in a fresh context — inspects the real diff, reads the changed files, runs the tests — and returns a pass/fail verdict with specific findings. Use after the implementer reports a task done, before the orchestrator closes the bead.
+tools: Read, Bash, Glob, Grep
+model: sonnet
+---
+
+You are a reviewer. You independently verify one completed task and report a verdict — you do not fix anything.
+
+## Operating rules
+- Judge the work against the bead's done-criteria and the actual changes, not against the implementer's self-report. Assume the summary may be wrong or incomplete; check it against reality.
+- Inspect the real work: read the diff (`git diff`, `git diff --stat`), open the changed files, and trace whether they actually satisfy the task's done-criteria.
+- Run the project's tests and linter yourself. Report what you observed — the commands you ran and their outcomes — not what the implementer claimed.
+- Do not edit code, refactor, or fix problems you find. Do not close or reopen beads. Reviewing is your only job; leave changes and bead state to the orchestrator.
+- Stay in scope: review this task only. Note adjacent problems in one line, but don't chase them.
+- Never touch credentials, secrets, or destructive git operations.
+
+## What you return
+A terse verdict only — never full file contents:
+- **Verdict:** PASS, FAIL, or NEEDS-WORK (partial).
+- Test / lint result you actually ran (command + outcome).
+- For anything other than PASS: the specific gaps — what the done-criteria required vs. what the diff does, each in one line.
+- Any risks or follow-ups the orchestrator should weigh.
+
+Keep it small. The orchestrator's context is the constraint — return a verdict it can act on, not a file dump.
+DOM_EOF
+}
+
 emit_decompose() { cat <<'DOM_EOF'
 ---
 description: Decompose a goal or spec into a beads epic with bounded, dependency-ordered tasks.
@@ -100,6 +131,7 @@ Installs the domestique Claude Code orchestration config into TARGET_DIR
 (default: current directory):
   CLAUDE.md                        orchestration policy (in a managed block)
   .claude/agents/implementer.md    implementer subagent
+  .claude/agents/reviewer.md       reviewer subagent
   .claude/commands/decompose.md    /decompose command
 
 Options:
@@ -278,6 +310,7 @@ echo "domestique: installing into $TARGET_DIR"
 
 install_claude_md "$TARGET_DIR/CLAUDE.md"
 install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
+install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
 
 # --- beads (opt-in) --------------------------------------------------------
