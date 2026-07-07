@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# domestique.sh — install the Claude Code orchestration config into a repo.
+# Embeds CLAUDE.md orchestration policy + .claude/agents/implementer.md +
+# .claude/commands/decompose.md, and installs them idempotently.
+set -euo pipefail
+
+MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
+MARKER_END='<!-- END domestique -->'
+
+# ---------------------------------------------------------------------------
+# Embedded source of truth (verbatim; edit here, nowhere else).
+# ---------------------------------------------------------------------------
+emit_policy() { cat <<'DOM_EOF'
+# Orchestration policy
+
+This session is the **orchestrator**. Your job is planning, delegation, and review — not implementation.
+
+## Roles
+- **You (main session, planning model):** decompose work, hold the plan, delegate, review results, decide what's next. Write code yourself only for trivial one-line edits.
+- **`implementer` subagent (Sonnet):** executes one bounded task at a time in its own context and reports back a summary.
+
+## Work tracking: beads
+- The plan of record lives in beads (`bd`), not in markdown TODO lists.
+- Decompose a goal into an epic + bounded tasks with dependencies using `/decompose`.
+- Select the next unit of work with `bd ready` — it returns only unblocked, actionable tasks.
+- Record durable insight with `bd remember "<insight>"`. Do not create MEMORY.md files.
+
+## Delegation loop
+1. `bd ready` → pick the highest-priority unblocked task.
+2. Delegate it to the `implementer` subagent with a precise brief and the bead id.
+3. When it returns, review the summary/diff, confirm tests pass, and close or annotate the bead.
+4. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
+
+## Discipline
+- One task in flight at a time. Bounded WIP.
+- Subagents return summaries, never full file dumps. Your context is the constraint — keep it lean, don't re-read large outputs.
+- Do not spawn agent teams for this sequential pipeline. Subagents only.
+- At session end ("land the plane"): file any loose discovered work as beads, then sync (`bd sync --flush-only` and commit `.beads/`).
+DOM_EOF
+}
+
+emit_implementer() { cat <<'DOM_EOF'
+---
+name: implementer
+description: Executes a single well-scoped, bounded coding task and reports back a terse summary. Use proactively for any discrete implementation step handed down by the orchestrator — one bead / one task at a time.
+tools: Read, Write, Edit, Bash, Glob, Grep
+model: sonnet
+---
+
+You are an implementer. You receive one bounded task and complete exactly that task — nothing more.
+
+## Operating rules
+- Do the assigned task only. Do not expand scope, refactor adjacent code, or start the next task.
+- If you were given a bead id, claim it before starting and close it when done:
+  - `bd update <id> --claim`   (or `bd update <id> --status in_progress`)
+  - `bd close <id>`            on success
+- Run the project's tests and linter after meaningful changes. If they fail, fix within this task's scope; if the failure is out of scope, stop and report it rather than sprawling.
+- Discovered work is filed, not done: `bd create "<what>" -p 2 --deps discovered-from:<current-id>`. Do not chase it yourself.
+- Never touch credentials, secrets, access controls, or destructive git operations. Surface these to the orchestrator instead.
+
+## What you return
+A terse summary only — never full file contents:
+- What changed (files touched, one line each)
+- Test / lint result
+- Any beads you filed as discovered work
+- Blockers or decisions the orchestrator should know about
+
+Keep the return small. The orchestrator's context is the scheduling constraint; do not flood it.
+DOM_EOF
+}
+
+emit_decompose() { cat <<'DOM_EOF'
+---
+description: Decompose a goal or spec into a beads epic with bounded, dependency-ordered tasks.
+argument-hint: <goal, or path to a spec file>
+---
+
+Decompose the following into a beads work graph: $ARGUMENTS
+
+Rules for a good decomposition:
+- Create one epic for the goal:
+  `bd create "<goal>" -t epic -p 1 --description "<why + high-level design>"`
+- Break it into **bounded tasks** — each completable by a fresh Sonnet session in a single pass. A task has one clear deliverable and a testable done-criterion. If it needs more than that, split it.
+  `bd create "<task>" -t task -p <2-3> --parent <epic-id> --description "<input, output, done-criteria>"`
+- Wire real dependencies so `bd ready` only ever surfaces work that can actually start:
+  `bd dep add <blocked-id> <blocker-id>`   # blocked depends on blocker
+- Keep `bd ready` crisp. No vague someday-items, no research-maybe tasks, nothing not immediately actionable. If it isn't ready to be worked, it doesn't belong in the graph yet.
+- Do not implement anything. Planning only.
+
+When done, print the resulting graph (`bd ready` plus the epic tree) for my review before any execution.
+DOM_EOF
+}
+
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<'EOF'
+Usage: domestique.sh [TARGET_DIR] [options]
+
+Installs the domestique Claude Code orchestration config into TARGET_DIR
+(default: current directory):
+  CLAUDE.md                        orchestration policy (in a managed block)
+  .claude/agents/implementer.md    implementer subagent
+  .claude/commands/decompose.md    /decompose command
+
+Options:
+  --dry-run      Print planned changes; touch nothing.
+  --with-beads   If `bd` is on PATH: `bd init` (only when no .beads/) then
+                 `bd setup claude`. If `bd` is absent, note it and skip.
+  --force        Overwrite differing .claude/ files without a .bak backup.
+                 (CLAUDE.md is ALWAYS backed up before modification.)
+  --help, -h     Show this help.
+
+Behavior:
+  * Existing .claude/ files that differ are backed up to <file>.bak.<timestamp>
+    before overwriting (unless --force). Identical files are left untouched.
+  * CLAUDE.md: created if absent; if it has the managed markers only the
+    content between them is replaced; otherwise the block is appended and all
+    existing content is preserved verbatim. Always backed up before change.
+  * Running twice in a row makes no changes on the second run.
+EOF
+}
+
+TARGET_DIR=""
+DRY_RUN=0
+WITH_BEADS=0
+FORCE=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)    DRY_RUN=1 ;;
+    --with-beads) WITH_BEADS=1 ;;
+    --force)      FORCE=1 ;;
+    -h|--help)    usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *)
+      if [ -z "$TARGET_DIR" ]; then TARGET_DIR="$1"
+      else echo "Unexpected argument: $1" >&2; exit 2; fi
+      ;;
+  esac
+  shift
+done
+TARGET_DIR="${TARGET_DIR:-.}"
+
+if [ ! -d "$TARGET_DIR" ]; then
+  echo "Target directory does not exist: $TARGET_DIR" >&2
+  exit 1
+fi
+
+TS="$(date +%Y%m%d%H%M%S)"
+TMPDIR_WORK="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_WORK"' EXIT
+
+# Summary accumulators.
+SUM_CREATED=()
+SUM_UPDATED=()
+SUM_BACKEDUP=()
+SUM_SKIPPED=()
+
+note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
+
+# install_plain <dest> <emitter-fn>
+# Missing -> write. Differs -> (backup unless --force) then overwrite.
+# Identical -> skip.
+install_plain() {
+  local dest="$1" emitter="$2" staged
+  staged="$TMPDIR_WORK/staged"
+  "$emitter" > "$staged"
+
+  if [ ! -e "$dest" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "create $dest"
+    else
+      mkdir -p "$(dirname "$dest")"
+      cp "$staged" "$dest"
+    fi
+    SUM_CREATED+=("$dest")
+    return 0
+  fi
+
+  if cmp -s "$staged" "$dest"; then
+    SUM_SKIPPED+=("$dest (identical)")
+    return 0
+  fi
+
+  # Differs.
+  if [ "$FORCE" -eq 1 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "overwrite $dest (--force, no backup)"
+    else
+      cp "$staged" "$dest"
+    fi
+    SUM_UPDATED+=("$dest (forced)")
+  else
+    local backup="$dest.bak.$TS"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "backup $dest -> $backup, then overwrite"
+    else
+      cp "$dest" "$backup"
+      cp "$staged" "$dest"
+    fi
+    SUM_BACKEDUP+=("$backup")
+    SUM_UPDATED+=("$dest")
+  fi
+}
+
+# install_claude_md <dest>
+install_claude_md() {
+  local dest="$1"
+  local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
+
+  # Build the managed block: BEGIN marker + verbatim policy + END marker.
+  {
+    printf '%s\n' "$MARKER_BEGIN"
+    emit_policy
+    printf '%s\n' "$MARKER_END"
+  } > "$blk"
+
+  # Case A: no CLAUDE.md -> create it as just the managed block.
+  if [ ! -e "$dest" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "create $dest (managed block only)"
+    else
+      cp "$blk" "$dest"
+    fi
+    SUM_CREATED+=("$dest")
+    return 0
+  fi
+
+  # Refuse to guess on a half-marked file (BEGIN but no END): swallowing
+  # everything after BEGIN would be data loss. Leave it untouched and bail.
+  if grep -qF "$MARKER_BEGIN" "$dest" && ! grep -qF "$MARKER_END" "$dest"; then
+    echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
+    echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+    exit 1
+  fi
+
+  # Case B: has both markers -> replace only the region between them, verbatim rest.
+  if grep -qF "$MARKER_BEGIN" "$dest"; then
+    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$blk" '
+      BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
+      $0 == beginm && !seen { seen=1; inblock=1; printf "%s", block; next }
+      inblock && $0 == endm { inblock=0; next }
+      inblock { next }
+      { print }
+    ' "$dest" > "$result"
+  else
+    # Case C: no markers -> append the block, preserving existing bytes verbatim.
+    # Add a single newline first only if the file does not already end in one,
+    # so the BEGIN marker starts on its own line.
+    cp "$dest" "$result"
+    if [ -s "$result" ] && [ "$(tail -c 1 "$result" | wc -l)" -eq 0 ]; then
+      printf '\n' >> "$result"
+    fi
+    cat "$blk" >> "$result"
+  fi
+
+  # Idempotency guard: if nothing would change, skip (no backup, no write).
+  if cmp -s "$result" "$dest"; then
+    SUM_SKIPPED+=("$dest (managed block already current)")
+    return 0
+  fi
+
+  local backup="$dest.bak.$TS"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "backup $dest -> $backup, then update managed block"
+  else
+    cp "$dest" "$backup"        # CLAUDE.md is ALWAYS backed up before change.
+    cp "$result" "$dest"
+  fi
+  SUM_BACKEDUP+=("$backup")
+  SUM_UPDATED+=("$dest (managed block)")
+}
+
+# ---------------------------------------------------------------------------
+echo "domestique: installing into $TARGET_DIR"
+[ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
+
+install_claude_md "$TARGET_DIR/CLAUDE.md"
+install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
+install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
+
+# --- beads (opt-in) --------------------------------------------------------
+if [ "$WITH_BEADS" -eq 1 ]; then
+  if command -v bd >/dev/null 2>&1; then
+    if [ -d "$TARGET_DIR/.beads" ]; then
+      SUM_SKIPPED+=("bd init (.beads/ already present)")
+    else
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "run: bd init (in $TARGET_DIR)"
+      else
+        ( cd "$TARGET_DIR" && bd init )
+      fi
+      SUM_CREATED+=(".beads/ (bd init)")
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "run: bd setup claude (in $TARGET_DIR)"
+    else
+      ( cd "$TARGET_DIR" && bd setup claude )
+    fi
+    SUM_UPDATED+=("bd setup claude")
+  else
+    SUM_SKIPPED+=("beads: 'bd' not found on PATH — skipped (install not required)")
+  fi
+fi
+
+# --- summary ---------------------------------------------------------------
+echo
+if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned):"; else echo "Summary:"; fi
+print_group() {
+  local label="$1"; shift
+  [ "$#" -eq 0 ] && return 0
+  echo "  $label:"
+  local item
+  for item in "$@"; do echo "    - $item"; done
+}
+[ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"   "${SUM_CREATED[@]}"
+[ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"   "${SUM_UPDATED[@]}"
+[ "${#SUM_BACKEDUP[@]}" -gt 0 ] && print_group "Backed up" "${SUM_BACKEDUP[@]}"
+[ "${#SUM_SKIPPED[@]}"  -gt 0 ] && print_group "Skipped"   "${SUM_SKIPPED[@]}"
+[ "$DRY_RUN" -eq 1 ] && echo "  (dry run: nothing was actually changed)"
+echo "Done."
