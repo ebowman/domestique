@@ -1,7 +1,7 @@
 # domestique
 
 A Claude Code config for a **two-model orchestration workflow**. You run your
-main Claude Code session on **Fable** — the "master" that designs the work,
+main Claude Code session on **Fable** — the **orchestrator** that designs the work,
 tracks it in [beads](https://github.com/steveyegge/beads), delegates, and
 reviews. It hands each bounded task to a **Sonnet** implementer subagent that
 executes exactly that task and reports back. Fable reviews the result, closes
@@ -17,13 +17,14 @@ its context lean, which keeps it a good reviewer.
 
 Roles:
 
-- **Fable master** — your main Claude Code session. Decomposes goals into beads,
-  delegates one task at a time, reviews returned diffs, decides what's next.
-  Writes code itself only for trivial one-liners.
+- **Fable orchestrator** — your main Claude Code session. Decomposes goals into beads,
+  delegates one task at a time, then reviews both the implementer's report and
+  the actual diff before accepting, and decides what's next. Writes code itself
+  only for trivial one-liners.
 - **Sonnet implementer** — the `implementer` subagent. Receives one bounded
   task, does exactly that, runs the tests/linter, closes its bead, and returns a
   terse summary. Pinned to Sonnet via `model: sonnet` in its frontmatter, so it
-  always runs on Sonnet no matter what the master session is set to.
+  always runs on Sonnet no matter what the orchestrator session is set to.
 
 One turn of the flywheel:
 
@@ -34,14 +35,17 @@ One turn of the flywheel:
    `implementer` subagent → the task runs on Sonnet.
 4. **Implement** — Sonnet claims the bead, does the one task, runs tests/lint,
    closes the bead, and returns a summary (never a full file dump).
-5. **Review** — Fable reviews the summary/diff, confirms tests pass, and closes
-   or annotates the bead. If it's wrong, it reopens or files a follow-up.
+5. **Review** — Fable reviews on two levels: the summary Sonnet reports, **and
+   the work itself** — it independently inspects the real `git diff`, reads the
+   changed files, and confirms the tests actually pass rather than taking the
+   summary at its word. Only then does it close the bead; if the work doesn't
+   match, it reopens or files a follow-up.
 6. **Repeat** — back to `bd ready`. Fable **stops and checks in with you between
    tasks** — it won't drain the queue unattended unless you tell it to.
 
 ```
    you ──▶ /decompose ──▶ ┌─────────────────────────────────────────┐
-                          │  FABLE master (main session)            │
+                          │  FABLE orchestrator (main session)      │
                           │  plan · bd ready · delegate · review     │
                           └───────────────┬─────────────────▲───────┘
                                  one task │                 │ summary + diff
@@ -86,7 +90,7 @@ This installs `CLAUDE.md` (the orchestration policy, in a managed block that
 coexists with your own content), `.claude/agents/implementer.md` (the Sonnet
 implementer), and `.claude/commands/decompose.md` (the `/decompose` command).
 
-### 2. Run the master session on Fable
+### 2. Run the orchestrator session on Fable
 
 Open Claude Code in the repo and set the session model to Fable:
 

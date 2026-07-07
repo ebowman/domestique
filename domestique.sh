@@ -28,7 +28,7 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 ## Delegation loop
 1. `bd ready` → pick the highest-priority unblocked task.
 2. Delegate it to the `implementer` subagent with a precise brief and the bead id.
-3. When it returns, review the summary/diff, confirm tests pass, and close or annotate the bead.
+3. When it returns, review on two levels: (a) the summary it reports, and (b) the actual work itself — independently inspect the real diff (`git diff`) and read the changed files yourself rather than trusting the report. Confirm the tests actually pass. Only then close or annotate the bead; if the work doesn't match the summary or the bead's done-criteria, reopen it or file a follow-up.
 4. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
 
 ## Discipline
