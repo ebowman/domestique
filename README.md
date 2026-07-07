@@ -118,7 +118,7 @@ implementer) and `.claude/agents/reviewer.md` (the Opus reviewer), and
 Open Claude Code in the repo and set the session model to Fable:
 
 ```
-/model claude-fable-5
+/model fable
 ```
 
 That's the whole model configuration. Each subagent's model is already pinned in
@@ -142,7 +142,7 @@ bd init && bd setup claude
 A typical session, start to finish:
 
 ```
-/model claude-fable-5
+/model fable
 /decompose Add rate limiting to the public API, 100 req/min per key, with tests
 ```
 
