@@ -190,6 +190,12 @@ SUM_CREATED=()
 SUM_UPDATED=()
 SUM_BACKEDUP=()
 SUM_SKIPPED=()
+SUM_MERGED=()
+SUM_CONFLICT=()
+
+# Set to 1 if any file ended in a merge conflict or hard merge error this run;
+# drives the final non-zero exit (see docs/install-upgrade-design.md §4).
+CONFLICT_OCCURRED=0
 
 note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
 
@@ -265,8 +271,14 @@ write_manifest() {
 }
 
 # install_plain <dest> <emitter-fn>
-# Missing -> write. Differs -> (backup unless --force) then overwrite.
-# Identical -> skip.
+# Missing -> write. Identical -> skip. --force -> overwrite verbatim, no merge.
+# Differs (no --force):
+#   - base snapshot exists -> 3-way merge (git merge-file); clean merge
+#     overwrites dest and advances the snapshot; conflict/error leaves dest
+#     untouched, writes dest.new + a .bak, and does not advance the snapshot.
+#   - no base snapshot (legacy/pre-snapshot install) -> today's
+#     backup+overwrite, then write a fresh snapshot for future runs.
+# See docs/install-upgrade-design.md §2.
 install_plain() {
   local dest="$1" emitter="$2" staged
   staged="$TMPDIR_WORK/staged"
@@ -297,18 +309,66 @@ install_plain() {
       cp "$staged" "$dest"
     fi
     SUM_UPDATED+=("$dest (forced)")
-  else
+    snapshot_plain "$dest" "$staged"
+    return 0
+  fi
+
+  local basepath
+  basepath="$(rel_to_base "$dest")"
+
+  if [ ! -e "$basepath" ]; then
+    # Legacy fallback: no prior snapshot to merge against — today's behavior,
+    # then start snapshotting so future runs can merge.
     local backup="$dest.bak.$TS"
     if [ "$DRY_RUN" -eq 1 ]; then
-      note_dry "backup $dest -> $backup, then overwrite"
+      note_dry "backup $dest -> $backup, then overwrite (no base snapshot; legacy fallback)"
     else
       cp "$dest" "$backup"
       cp "$staged" "$dest"
     fi
     SUM_BACKEDUP+=("$backup")
-    SUM_UPDATED+=("$dest")
+    SUM_UPDATED+=("$dest (no base; overwritten)")
+    snapshot_plain "$dest" "$staged"
+    return 0
   fi
-  snapshot_plain "$dest" "$staged"
+
+  # 3-way merge: ours=$dest, base=$basepath, theirs=$staged.
+  local merged rc=0
+  merged="$TMPDIR_WORK/merged"
+  git merge-file -p --diff3 \
+    -L "yours (local edits)" -L "base (last installed)" -L "upstream (new domestique)" \
+    "$dest" "$basepath" "$staged" > "$merged" || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "merge $dest (clean)"
+    else
+      cp "$merged" "$dest"
+    fi
+    SUM_MERGED+=("$dest")
+    snapshot_plain "$dest" "$staged"
+    return 0
+  fi
+
+  # Conflict (rc = number of conflicted hunks, 1..127) or hard error (rc>=128).
+  # Either way: leave the live file untouched, do not advance the snapshot,
+  # and force a non-zero exit for the whole run.
+  CONFLICT_OCCURRED=1
+  local newfile="$dest.new" backup="$dest.bak.$TS" kind="conflict"
+  if [ "$rc" -ge 128 ]; then
+    kind="error"
+    echo "Error: git merge-file failed unexpectedly for $dest (exit $rc)." >&2
+  else
+    echo "Warning: merge conflict in $dest ($rc hunk(s)) — see $newfile" >&2
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "merge $dest ($kind) — would write $newfile, back up $dest -> $backup, leave $dest untouched"
+  else
+    cp "$merged" "$newfile"
+    cp "$dest" "$backup"
+    SUM_BACKEDUP+=("$backup")
+  fi
+  SUM_CONFLICT+=("$dest ($kind; see $newfile)")
 }
 
 # install_claude_md <dest>
@@ -441,9 +501,17 @@ print_group() {
   local item
   for item in "$@"; do echo "    - $item"; done
 }
-[ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"   "${SUM_CREATED[@]}"
-[ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"   "${SUM_UPDATED[@]}"
-[ "${#SUM_BACKEDUP[@]}" -gt 0 ] && print_group "Backed up" "${SUM_BACKEDUP[@]}"
-[ "${#SUM_SKIPPED[@]}"  -gt 0 ] && print_group "Skipped"   "${SUM_SKIPPED[@]}"
+[ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"    "${SUM_CREATED[@]}"
+[ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"    "${SUM_UPDATED[@]}"
+[ "${#SUM_MERGED[@]}"   -gt 0 ] && print_group "Merged"     "${SUM_MERGED[@]}"
+[ "${#SUM_BACKEDUP[@]}" -gt 0 ] && print_group "Backed up"  "${SUM_BACKEDUP[@]}"
+[ "${#SUM_SKIPPED[@]}"  -gt 0 ] && print_group "Skipped"    "${SUM_SKIPPED[@]}"
+[ "${#SUM_CONFLICT[@]}" -gt 0 ] && print_group "Conflicted" "${SUM_CONFLICT[@]}"
 [ "$DRY_RUN" -eq 1 ] && echo "  (dry run: nothing was actually changed)"
+
+if [ "$CONFLICT_OCCURRED" -eq 1 ]; then
+  echo
+  echo "One or more files ended in conflict/error — see 'Conflicted' above and the .new/.bak files for each." >&2
+  exit 3
+fi
 echo "Done."
