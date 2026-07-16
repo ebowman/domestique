@@ -4,6 +4,8 @@
 # .claude/commands/decompose.md, and installs them idempotently.
 set -euo pipefail
 
+DOMESTIQUE_VERSION="0.1.0"
+
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
 
@@ -191,6 +193,77 @@ SUM_SKIPPED=()
 
 note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
 
+# ---------------------------------------------------------------------------
+# Base snapshot / manifest (foundation for a future 3-way merge on upgrade;
+# this run only records the snapshot of what was just emitted — it does not
+# read or merge against a prior snapshot). See docs/install-upgrade-design.md.
+# ---------------------------------------------------------------------------
+SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
+SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
+MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,CLAUDE.md"
+SNAPSHOT_TOUCHED=0
+
+# rel_to_base <dest> -> absolute path under SNAPSHOT_BASE mirroring <dest>'s
+# path relative to TARGET_DIR, 1:1 (including the .claude/ prefix — no
+# managed file lives under .claude/.domestique/, so this never recurses).
+rel_to_base() {
+  local dest="$1"
+  printf '%s' "$SNAPSHOT_BASE/${dest#"$TARGET_DIR"/}"
+}
+
+# snapshot_plain <dest> <content-file>
+# Record the pristine emitted content as the future merge base. Call only
+# after <dest> was actually created/overwritten with <content-file>'s bytes
+# (never on an identical-skip — the snapshot is already correct there).
+snapshot_plain() {
+  local dest="$1" content="$2" basepath
+  basepath="$(rel_to_base "$dest")"
+  SNAPSHOT_TOUCHED=1
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "snapshot base -> $basepath"
+    return 0
+  fi
+  mkdir -p "$(dirname "$basepath")"
+  cp "$content" "$basepath"
+}
+
+# snapshot_claude_block <content-file>
+# Record the managed block BODY (no marker lines) as the future merge base
+# for CLAUDE.md. Call only after CLAUDE.md was actually created/updated.
+snapshot_claude_block() {
+  local content="$1" basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+  SNAPSHOT_TOUCHED=1
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "snapshot base -> $basepath"
+    return 0
+  fi
+  mkdir -p "$(dirname "$basepath")"
+  cp "$content" "$basepath"
+}
+
+# write_manifest — flat key=value manifest describing the snapshot.
+write_manifest() {
+  local manifest="$SNAPSHOT_DIR/manifest" ref sha
+  ref="$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null)" || ref="unknown"
+  [ -z "$ref" ] && ref="unknown"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha="$(sha256sum "$0" 2>/dev/null | awk '{print $1}')" || sha=""
+  elif command -v shasum >/dev/null 2>&1; then
+    sha="$(shasum -a 256 "$0" 2>/dev/null | awk '{print $1}')" || sha=""
+  else
+    sha=""
+  fi
+  [ -z "$sha" ] && sha="unavailable"
+  {
+    printf 'snapshot_format=1\n'
+    printf 'domestique_version=%s\n' "$DOMESTIQUE_VERSION"
+    printf 'installed_ref=%s\n' "$ref"
+    printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'script_sha256=%s\n' "$sha"
+    printf 'files=%s\n' "$MANAGED_FILES"
+  } > "$manifest"
+}
+
 # install_plain <dest> <emitter-fn>
 # Missing -> write. Differs -> (backup unless --force) then overwrite.
 # Identical -> skip.
@@ -207,6 +280,7 @@ install_plain() {
       cp "$staged" "$dest"
     fi
     SUM_CREATED+=("$dest")
+    snapshot_plain "$dest" "$staged"
     return 0
   fi
 
@@ -234,17 +308,21 @@ install_plain() {
     SUM_BACKEDUP+=("$backup")
     SUM_UPDATED+=("$dest")
   fi
+  snapshot_plain "$dest" "$staged"
 }
 
 # install_claude_md <dest>
 install_claude_md() {
   local dest="$1"
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
+  local policybody="$TMPDIR_WORK/policybody"
+
+  emit_policy > "$policybody"
 
   # Build the managed block: BEGIN marker + verbatim policy + END marker.
   {
     printf '%s\n' "$MARKER_BEGIN"
-    emit_policy
+    cat "$policybody"
     printf '%s\n' "$MARKER_END"
   } > "$blk"
 
@@ -256,6 +334,7 @@ install_claude_md() {
       cp "$blk" "$dest"
     fi
     SUM_CREATED+=("$dest")
+    snapshot_claude_block "$policybody"
     return 0
   fi
 
@@ -302,6 +381,7 @@ install_claude_md() {
   fi
   SUM_BACKEDUP+=("$backup")
   SUM_UPDATED+=("$dest (managed block)")
+  snapshot_claude_block "$policybody"
 }
 
 # ---------------------------------------------------------------------------
@@ -312,6 +392,20 @@ install_claude_md "$TARGET_DIR/CLAUDE.md"
 install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
 install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
+
+# --- snapshot manifest ------------------------------------------------------
+# Only (re)write the manifest if at least one managed file was actually
+# created/updated/backed-up this run. On a fully clean no-op run (everything
+# skipped as identical) the manifest is left untouched so re-running the
+# installer twice in a row produces byte-identical .claude/.domestique/ state.
+if [ "$SNAPSHOT_TOUCHED" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
+  else
+    mkdir -p "$SNAPSHOT_DIR"
+    write_manifest
+  fi
+fi
 
 # --- beads (opt-in) --------------------------------------------------------
 if [ "$WITH_BEADS" -eq 1 ]; then
