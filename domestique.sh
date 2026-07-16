@@ -151,6 +151,11 @@ Behavior:
     content between them is replaced; otherwise the block is appended and all
     existing content is preserved verbatim. Always backed up before change.
   * Running twice in a row makes no changes on the second run.
+
+Periodic updates:
+  Use update.sh to fetch the latest domestique.sh from GitHub and re-run it
+  against a target directory via this same merge path (see
+  docs/install-upgrade-design.md §5). Run `./update.sh --help` for details.
 EOF
 }
 
