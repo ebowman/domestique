@@ -372,6 +372,18 @@ install_plain() {
 }
 
 # install_claude_md <dest>
+# Missing/no-markers/half-marker -> unchanged from before (create, append,
+# refuse). Has both markers, block differs:
+#   - --force -> replace block wholesale, no merge, advance snapshot.
+#   - base block snapshot exists -> 3-way merge the BLOCK BODY (git
+#     merge-file); clean merge splices the merged body back between fresh
+#     markers, preserving everything outside the markers byte-for-byte, and
+#     advances the snapshot; conflict/error leaves dest untouched, writes
+#     dest.new (full file, conflict-marked block spliced in) + a .bak, and
+#     does not advance the snapshot.
+#   - no base snapshot (legacy/pre-snapshot install) -> today's wholesale
+#     block replace + backup, then write a fresh block snapshot.
+# See docs/install-upgrade-design.md §3.
 install_claude_md() {
   local dest="$1"
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
@@ -408,6 +420,16 @@ install_claude_md() {
 
   # Case B: has both markers -> replace only the region between them, verbatim rest.
   if grep -qF "$MARKER_BEGIN" "$dest"; then
+    # Extract the current on-disk block body (ours-block) for a potential
+    # 3-way merge, and build the wholesale-replace result (today's behavior)
+    # for the no-merge-needed / legacy / --force paths.
+    local oursblock="$TMPDIR_WORK/oursblock"
+    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
+      $0 == beginm && !seen { seen=1; inblock=1; next }
+      inblock && $0 == endm { inblock=0; next }
+      inblock { print }
+    ' "$dest" > "$oursblock"
+
     awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$blk" '
       BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
       $0 == beginm && !seen { seen=1; inblock=1; printf "%s", block; next }
@@ -415,6 +437,90 @@ install_claude_md() {
       inblock { next }
       { print }
     ' "$dest" > "$result"
+
+    # If the block body is already current (no user edit, or already up to
+    # date), the wholesale-replace result is byte-identical to $dest already
+    # — no merge needed. Fall through to the idempotency guard below.
+    if ! cmp -s "$oursblock" "$policybody"; then
+      if [ "$FORCE" -eq 1 ]; then
+        : # wholesale replace (already computed in $result above), no merge.
+      else
+        local basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+        if [ -e "$basepath" ]; then
+          # 3-way merge the block body: ours=$oursblock, base=$basepath,
+          # theirs=$policybody.
+          local mergedblock rc=0
+          mergedblock="$TMPDIR_WORK/mergedblock"
+          git merge-file -p --diff3 \
+            -L "yours (local edits)" -L "base (last installed)" -L "upstream (new domestique)" \
+            "$oursblock" "$basepath" "$policybody" > "$mergedblock" || rc=$?
+
+          if [ "$rc" -eq 0 ]; then
+            # Clean merge: splice the merged block body back between fresh
+            # markers, preserving everything outside the markers verbatim.
+            awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$mergedblock" '
+              BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
+              $0 == beginm && !seen { seen=1; inblock=1; print beginm; printf "%s", block; next }
+              inblock && $0 == endm { inblock=0; print endm; next }
+              inblock { next }
+              { print }
+            ' "$dest" > "$result"
+
+            if cmp -s "$result" "$dest"; then
+              SUM_SKIPPED+=("$dest (managed block already current)")
+              return 0
+            fi
+
+            local backup="$dest.bak.$TS"
+            if [ "$DRY_RUN" -eq 1 ]; then
+              note_dry "backup $dest -> $backup, then merge managed block (clean)"
+            else
+              cp "$dest" "$backup"
+              cp "$result" "$dest"
+            fi
+            SUM_BACKEDUP+=("$backup")
+            SUM_MERGED+=("$dest (CLAUDE.md block)")
+            snapshot_claude_block "$policybody"
+            return 0
+          fi
+
+          # Conflict (rc = number of conflicted hunks, 1..127) or hard error
+          # (rc>=128): leave the live file untouched, do not advance the
+          # snapshot, write the conflict-marked full file to dest.new, back
+          # up the current live file, force a non-zero exit for the run.
+          CONFLICT_OCCURRED=1
+          local newfile="$dest.new" backup2="$dest.bak.$TS" kind="conflict"
+          if [ "$rc" -ge 128 ]; then
+            kind="error"
+            echo "Error: git merge-file failed unexpectedly for $dest block (exit $rc)." >&2
+          else
+            echo "Warning: merge conflict in $dest managed block ($rc hunk(s)) — see $newfile" >&2
+          fi
+
+          local conflictresult="$TMPDIR_WORK/conflict_result"
+          awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$mergedblock" '
+            BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
+            $0 == beginm && !seen { seen=1; inblock=1; print beginm; printf "%s", block; next }
+            inblock && $0 == endm { inblock=0; print endm; next }
+            inblock { next }
+            { print }
+          ' "$dest" > "$conflictresult"
+
+          if [ "$DRY_RUN" -eq 1 ]; then
+            note_dry "merge $dest block ($kind) — would write $newfile, back up $dest -> $backup2, leave $dest untouched"
+          else
+            cp "$conflictresult" "$newfile"
+            cp "$dest" "$backup2"
+            SUM_BACKEDUP+=("$backup2")
+          fi
+          SUM_CONFLICT+=("$dest ($kind; see $newfile)")
+          return 0
+        fi
+        # else: no base snapshot -> legacy fallback, fall through to the
+        # wholesale-replace $result computed above; snapshot gets written
+        # fresh at the bottom of this function.
+      fi
+    fi
   else
     # Case C: no markers -> append the block, preserving existing bytes verbatim.
     # Add a single newline first only if the file does not already end in one,
