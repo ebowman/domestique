@@ -195,6 +195,81 @@ Options:
 The installer is a single self-contained bash script with the four config files
 embedded — no network access needed beyond fetching the script itself.
 
+## Upgrading
+
+Re-running the installer against a repo you've already installed into is how
+you pick up a newer domestique — and it's designed so **your local edits
+survive**. Say you hand-added an MCP tool to `implementer.md`'s frontmatter;
+upgrading won't clobber it.
+
+**How it works.** Every install/upgrade records a base snapshot in
+`.claude/.domestique/` — a pristine copy of what was last installed, plus the
+`CLAUDE.md` managed-block body and a manifest. The next time you run the
+installer, it does a **3-way merge** (`git merge-file`) between your current
+file (yours), that snapshot (base), and the newly emitted content (upstream).
+If your edits and upstream's changes don't overlap, the merge is clean: your
+edits and the new upstream content are both applied, and the snapshot
+advances so the next upgrade merges from here.
+
+**On conflict.** If the same lines changed on both sides, the merge can't
+reconcile them automatically. In that case domestique:
+- leaves your live file (e.g. `implementer.md`, or `CLAUDE.md`) **untouched**,
+- writes the merge result, conflict markers and all, to `<file>.new` (for
+  `CLAUDE.md` this is `CLAUDE.md.new`),
+- backs up your current file to `<file>.bak.<timestamp>`,
+- and exits **3** so scripts/CI notice.
+
+To resolve: open `<file>.new`, reconcile the conflict blocks by hand, copy
+the result over the live file, then delete the `.new`. Re-run the installer
+once you're done to refresh the snapshot. The conflicts use `diff3` style,
+so each block has four parts — `<<<<<<<` your version, `|||||||` the
+original base, `=======`, and `>>>>>>>` the incoming upstream version;
+delete the markers and the sections you don't want.
+
+**CLAUDE.md specifics.** Only the managed block (between the
+`<!-- BEGIN domestique (managed) -->` / `<!-- END domestique -->` markers) is
+ever merged or replaced. Everything you've written outside the markers is
+preserved byte-for-byte, merge or no merge, conflict or no conflict.
+
+**`--force` and `--dry-run`.** `--force` skips the merge entirely and takes
+upstream verbatim, discarding local edits to that file (`CLAUDE.md` is still
+always backed up first). `--dry-run` computes and prints the full plan —
+including what a merge or conflict would do — without writing anything.
+
+**First upgrade after adopting this feature.** The 3-way merge needs a base
+snapshot to diff against. If a managed file predates the snapshot feature (no
+`.claude/.domestique/base/...` entry for it yet), that first upgrade falls
+back to the older backup-and-overwrite behavior: your current file is saved
+to `<file>.bak.<timestamp>` and replaced with upstream, not merged. A fresh
+snapshot is written at that point, so every upgrade after this one merges
+normally.
+
+`.claude/.domestique/` is domestique's own bookkeeping (snapshots + manifest)
+— it's safe to add to `.gitignore` if you'd rather not track it.
+
+## Updating from GitHub
+
+`update.sh` is a thin wrapper that fetches the latest `domestique.sh` and
+runs it through the same merge path above:
+
+```sh
+./update.sh                       # update current directory
+./update.sh path/to/repo          # update a specific target
+./update.sh --dry-run             # preview only, applies nothing
+./update.sh --force               # discard local edits, take upstream verbatim
+./update.sh --source ./domestique.sh   # use a local file instead of GitHub
+```
+
+The source defaults to the `main` branch on GitHub and can be overridden with
+`--source <path|url>` or the `DOMESTIQUE_UPDATE_SOURCE` env var. It's safe to
+run on a schedule (e.g. cron or a periodic CI job) — it always previews with
+`--dry-run` first, then applies, and exits:
+- `0` — applied cleanly, or already up to date.
+- `3` — one or more files hit a merge conflict; check the `.new`/`.bak`
+  files and resolve by hand as described above.
+- `4` — couldn't fetch or validate the source `domestique.sh`; nothing was
+  touched.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
