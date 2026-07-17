@@ -21,7 +21,7 @@ The topology has three steps, at three different frequencies — that's the
 whole loop:
 
 > After setting your session's model once per session — Fable and Opus both
-> work well as the orchestrator — you simply
+> work well as the orchestrator — run:
 >
 > `/decompose <significant task or milestone>`
 > * determines an overall architecture
@@ -177,11 +177,10 @@ both work well as the orchestrator:
 ```
 
 (`/model opus` works too.) Each subagent's model is already pinned in its
-frontmatter — Sonnet for the implementer, Opus for the reviewer — so
-delegation and review each run on the right model **automatically** no matter
-what you set here (see [The loop](#the-loop), above). To retune, edit
-`model:` in the agent files: drop the reviewer to `sonnet` for cheaper/faster
-peer review, or raise it for maximum rigor on high-stakes work.
+frontmatter, independent of this setting (see [The loop](#the-loop), above).
+To retune, edit `model:` in the agent files: drop the reviewer to `sonnet`
+for cheaper/faster peer review, or raise it for maximum rigor on high-stakes
+work.
 
 ### 3. Make sure beads is initialized in this repo
 
@@ -202,9 +201,9 @@ the orchestrator editing or verifying files itself.
 
 `/decompose` plans; `/goal <epic-id>` executes. It drains one beads epic to
 completion by repeatedly running the implementer → reviewer loop **without
-stopping between beads**. The default orchestrator rule is to stop and check
-in with you between beads (see [The loop](#the-loop), above) — `/goal` is the
-only thing that lifts that rule, and only within strict bounds.
+stopping between beads**. `/goal` is the only thing that lifts the default
+check-in-between-beads rule (see [The loop](#the-loop), above), and only
+within strict bounds.
 
 **Authorization is scoped and temporary.** A `/goal <epic-id>` invocation is
 the sole thing that authorizes continuous, unattended dispatch — and only
@@ -215,8 +214,8 @@ session.
 **Safety comes from branch isolation and the same invariants, held harder.**
 Before touching anything, the orchestrator creates or switches to a dedicated epic
 branch (e.g. `epic/<epic-id>`) and never commits to the default branch for
-the rest of the run — it never merges or pushes that branch either; you
-review and merge it by hand. Within the run, the core invariants still hold:
+the rest of the run — it never merges or pushes that branch either; that's
+yours to do (see below). Within the run, the core invariants still hold:
 one bead in flight at a time, one commit per bead (never batched), and never
 close a bead the reviewer didn't pass. A hard ceiling stops the run after 15
 beads closed in one go, even if the epic isn't finished, as a runaway-loop
