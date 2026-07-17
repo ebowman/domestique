@@ -43,14 +43,15 @@ bearing. Introducing a real version constant is out of scope for this design
   manifest                              # small key:value file, shell-parseable
   base/
     CLAUDE.md.block                     # last-installed managed-block BODY (no markers)
-    claude/agents/implementer.md
-    claude/agents/reviewer.md
-    claude/commands/decompose.md
+    .claude/agents/implementer.md
+    .claude/agents/reviewer.md
+    .claude/commands/decompose.md
 ```
 
-The `base/` tree mirrors the installed file layout 1:1 (with `.claude/`
-stripped from the prefix to avoid `.claude/.domestique/claude/.domestique/...`
-recursion), one pristine copy per managed file, **except** for `CLAUDE.md`,
+The `base/` tree mirrors each managed file's path under the target repo
+verbatim (e.g. `.claude/agents/implementer.md` is snapshotted at
+`base/.claude/agents/implementer.md`), one pristine copy per managed file,
+**except** for `CLAUDE.md`,
 where we snapshot only the managed block's *body* (the content between the
 markers, not the markers themselves and not the surrounding user content) —
 see §3.
@@ -59,8 +60,11 @@ see §3.
 a `jq`/`yq` dependency in a `bash + git + coreutils` script.
 
 ```
+snapshot_format=1
+domestique_version=<DOMESTIQUE_VERSION, e.g. 0.1.0>
 installed_ref=<git describe/short-sha of domestique.sh's own repo, or "unknown">
 installed_at=<ISO8601 timestamp>
+script_sha256=<sha256 of domestique.sh, or "unavailable">
 files=.claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,CLAUDE.md
 ```
 
