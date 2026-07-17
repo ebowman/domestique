@@ -83,13 +83,16 @@ One turn of the flywheel:
 
 ## Setup
 
-Three things make this work. The first is a one-time install; the other two are
-how you start each session.
+Three things make this work. The first installs — or upgrades — the config with
+one idempotent command; the other two are how you start each session.
 
-### 1. Install the config into your repo
+### 1. Install (or upgrade) the config in your repo
 
-One-liner into the current directory (add `--with-beads` to initialize beads in
-the same step):
+**One idempotent command does both.** Run it in a repo to install; run it again
+anytime to upgrade — it installs what's missing and safely 3-way-merges any
+files you've edited locally instead of overwriting them (see
+[Upgrading](#upgrading)). One-liner into the current directory (add
+`--with-beads` to initialize beads in the same step):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --with-beads
@@ -99,6 +102,15 @@ Preview first without touching anything:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run
+```
+
+Alias it so one command installs-or-upgrades any repo (fetches latest each run):
+
+```sh
+alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
+# then, in any repo:
+dom             # install, or safely upgrade in place if already set up
+dom --dry-run   # preview without touching anything
 ```
 
 Or clone once and reuse across machines (recommended):
