@@ -131,6 +131,16 @@ won't drain the queue unattended unless you tell it to (see
 
 ## Setup
 
+**About beads.** [beads](https://github.com/steveyegge/beads) is the
+dependency-aware issue tracker that holds domestique's plan of record —
+epics, tasks, and the dependencies between them. Its `bd` binary needs to be
+installed on your machine *before* you set anything up here: see the
+[beads README](https://github.com/steveyegge/beads) for full install
+instructions, or if you're on macOS or Linux with Homebrew, `brew install
+beads` works well. The steps below (and the installer's `--with-beads` flag)
+only *initialize* beads inside a given repo — they assume `bd` is already
+installed.
+
 Three things make this work. The first installs — or upgrades — the config with
 one idempotent command; the other two are how you start each session.
 
@@ -197,10 +207,11 @@ switch models by hand mid-flow. To retune, edit `model:` in the agent files:
 drop the reviewer to `sonnet` for cheaper/faster peer review, or raise it to
 `claude-fable-5` for maximum rigor on high-stakes work.
 
-### 3. Make sure beads is initialized
+### 3. Make sure beads is initialized in this repo
 
-If you installed with `--with-beads` and `bd` is on your PATH, this is already
-done. Otherwise, once per repo:
+This assumes `bd` is already installed (see "About beads", above). If you
+installed with `--with-beads` and `bd` was on your PATH, this repo-level
+initialization is already done. Otherwise, once per repo:
 
 ```sh
 bd init && bd setup claude
