@@ -275,7 +275,7 @@ note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
 # ---------------------------------------------------------------------------
 SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
 SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
-MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,CLAUDE.md"
+MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md"
 SNAPSHOT_TOUCHED=0
 
 # rel_to_base <dest> -> absolute path under SNAPSHOT_BASE mirroring <dest>'s

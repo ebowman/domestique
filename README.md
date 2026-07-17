@@ -5,8 +5,8 @@ main Claude Code session on **Fable** — the **orchestrator** that designs the
 work, tracks it in [beads](https://github.com/steveyegge/beads), and delegates.
 Each bounded task goes to a **Sonnet** implementer subagent that executes it;
 then a separate, fresh-context **Opus** reviewer subagent independently verifies
-the result. Fable adjudicates the verdict, closes the bead, and moves to the
-next one.
+the result. Fable adjudicates the verdict, closes the bead and commits the
+change, and moves to the next one.
 
 The point of the split is to spend model capability where it pays off:
 
@@ -31,8 +31,9 @@ Roles:
   the implementer's report, and decides what's next. Writes code itself only for
   trivial one-liners.
 - **Sonnet implementer** — the `implementer` subagent. Receives one bounded
-  task, does exactly that, runs the tests/linter, closes its bead, and returns a
-  terse summary.
+  task, claims it and marks it in progress, does exactly that, runs the
+  tests/linter, and returns a terse summary. It does **not** close its own bead
+  — the orchestrator closes beads after the reviewer passes them.
 - **Opus reviewer** — the `reviewer` subagent. In a *fresh context* (no
   anchoring on the implementer's story), it inspects the real `git diff`, reads
   the changed files, runs the tests itself, and returns a PASS / FAIL / NEEDS-WORK
@@ -51,15 +52,17 @@ One turn of the flywheel:
 2. **Pick** — `bd ready` surfaces the next unblocked, actionable task.
 3. **Hand off** — Fable delegates that task (with its bead id) to the
    `implementer` subagent → the task runs on Sonnet.
-4. **Implement** — Sonnet claims the bead, does the one task, runs tests/lint,
-   closes the bead, and returns a summary (never a full file dump).
+4. **Implement** — Sonnet claims the bead and marks it in progress, does the one
+   task, runs tests/lint, and returns a summary (never a full file dump). It
+   leaves the bead open — closing it is the orchestrator's call after review.
 5. **Verify** — Fable hands the same bead to the `reviewer` subagent. A fresh
    Sonnet independently inspects the real `git diff`, reads the changed files,
    runs the tests itself, and returns a verdict against the done-criteria — it
    judges the work, not the implementer's summary.
 6. **Adjudicate** — Fable weighs the reviewer's verdict against the implementer's
-   report. Agree it's done → close the bead. Reviewer flags gaps → reopen or file
-   a follow-up and route the fix back to the implementer. Fable reads the diff
+   report. Agree it's done → Fable closes the bead and commits the change (one
+   commit, bead id in the message). Reviewer flags gaps → reopen or file a
+   follow-up and route the fix back to the implementer. Fable reads the diff
    itself only when the two reports conflict.
 7. **Repeat** — back to `bd ready`. Fable **stops and checks in with you between
    tasks** — it won't drain the queue unattended unless you tell it to.
@@ -74,7 +77,7 @@ One turn of the flywheel:
                         ┌──────────────────┴──┐   ┌────────┴─────────────┐
                         │ SONNET implementer   │   │ OPUS reviewer        │
                         │ do task · test ·     │   │ fresh context ·      │
-                        │ close bead           │   │ diff · tests · judge │
+                        │ report back          │   │ diff · tests · judge │
                         └──────────────────────┘   └──────────────────────┘
 ```
 
@@ -153,10 +156,11 @@ review. When you're happy with the plan:
 > "Take the top ready task and hand it to the implementer."
 
 Fable delegates it to the `implementer` subagent (on Sonnet), which implements
-the task, runs the tests, closes the bead, and reports back. Fable then sends
-the same bead to the `reviewer` subagent — a fresh Opus that inspects the diff
-and re-runs the tests independently — and adjudicates its verdict before
-accepting. Then it stops to check in. You say "next" (or "keep going") and the
+the task, runs the tests, and reports back (leaving the bead open). Fable then
+sends the same bead to the `reviewer` subagent — a fresh Opus that inspects the
+diff and re-runs the tests independently — and adjudicates its verdict, then
+closes the bead and commits the change before accepting. Then it stops to check
+in. You say "next" (or "keep going") and the
 loop continues until `bd ready` is empty.
 
 At the end of a session ("land the plane"), Fable files any loose discovered
@@ -235,7 +239,7 @@ Options:
   --help, -h     Show this help.
 ```
 
-The installer is a single self-contained bash script with the four config files
+The installer is a single self-contained bash script with the five config files
 embedded — no network access needed beyond fetching the script itself.
 
 ## Upgrading
