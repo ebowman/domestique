@@ -94,6 +94,21 @@ sed -i.orig \
 rm -f "$V2.orig"
 chmod +x "$V2"
 
+# ---------------------------------------------------------------------------
+# v0.sh — a modified copy of domestique.sh simulating an OLDER upstream
+# version than the one under test, used only to construct a "predates the
+# emitter change" legacy install: a file whose pristine content differs from
+# the CURRENT script's pristine emit at the same spot v2.sh changes further
+# still. Same sed-one-line technique as v2.sh.
+# ---------------------------------------------------------------------------
+V0="$WORKROOT/v0.sh"
+cp "$DOM" "$V0"
+sed -i.orig \
+  's/Blockers or decisions the orchestrator should know about/Old-style blockers wording (predates-emitter-change)/' \
+  "$V0"
+rm -f "$V0.orig"
+chmod +x "$V0"
+
 IMPL_REL=".claude/agents/implementer.md"
 CLAUDE_REL="CLAUDE.md"
 BASE_IMPL_REL=".claude/.domestique/base/.claude/agents/implementer.md"
@@ -298,6 +313,130 @@ scenario_dry_run_no_writes() {
 }
 
 # ---------------------------------------------------------------------------
+# Scenario 10: adopt then upgrade merges (plain file) — a legacy install with
+# a local edit gets adopted (no clobber), and the NEXT run 3-way-merges in
+# the upstream change while keeping the local edit.
+# ---------------------------------------------------------------------------
+scenario_adopt_then_upgrade_merges_plain() {
+  local t="$WORKROOT/s10"; mkdir -p "$t"
+  "$DOM" "$t" >/dev/null 2>&1
+  rm -rf "$t/.claude/.domestique"
+
+  # Local edit: append an mcp__ tool to the tools: line.
+  sed -i.orig \
+    's/^tools: Read, Write, Edit, Bash, Glob, Grep$/tools: Read, Write, Edit, Bash, Glob, Grep, mcp__filesystem/' \
+    "$t/$IMPL_REL"
+  rm -f "$t/$IMPL_REL.orig"
+  local before; before="$(cat "$t/$IMPL_REL")"
+
+  local out1 rc1
+  out1="$("$DOM" "$t" 2>&1)"; rc1=$?
+
+  check "adopt: exit 0" test "$rc1" -eq 0
+  check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
+  check "adopt: live file byte-unchanged" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$IMPL_REL"
+  check "adopt: no .bak written" bash -c '! find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
+  check "adopt: base snapshot seeded (pristine, no local edit)" bash -c '! grep -q "mcp__filesystem" "$1"' _ "$t/$BASE_IMPL_REL"
+
+  local out2 rc2
+  out2="$("$V2" "$t" 2>&1)"; rc2=$?
+
+  check "upgrade: exit 0" test "$rc2" -eq 0
+  check "upgrade: local mcp__ edit preserved" grep -q "mcp__filesystem" "$t/$IMPL_REL"
+  check "upgrade: upstream (v2) change merged in" grep -q "(v2)" "$t/$IMPL_REL"
+  check "upgrade: no .new written" test ! -e "$t/$IMPL_REL.new"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 11: CLAUDE.md managed-block adopt then merge — a legacy install
+# with a local in-block edit gets adopted, and the NEXT run 3-way-merges the
+# upstream policy change while keeping the local edit and everything outside
+# the markers.
+# ---------------------------------------------------------------------------
+scenario_adopt_then_upgrade_merges_claude_md() {
+  local t="$WORKROOT/s11"; mkdir -p "$t"
+  "$DOM" "$t" >/dev/null 2>&1
+  rm -rf "$t/.claude/.domestique"
+
+  # Local edit inside the block, on a DIFFERENT line than v2's emit_policy change.
+  sed -i.orig \
+    's/- The plan of record lives in beads (`bd`), not in markdown TODO lists\./- The plan of record lives in beads (`bd`), not in markdown TODO lists. (user-edit-block2)/' \
+    "$t/$CLAUDE_REL"
+  rm -f "$t/$CLAUDE_REL.orig"
+  # Content outside the managed markers.
+  printf '\n## My own notes (s11)\nSome other text outside the managed block.\n' >> "$t/$CLAUDE_REL"
+  local before; before="$(cat "$t/$CLAUDE_REL")"
+
+  local out1 rc1
+  out1="$("$DOM" "$t" 2>&1)"; rc1=$?
+
+  check "adopt: exit 0" test "$rc1" -eq 0
+  check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
+  check "adopt: CLAUDE.md byte-unchanged" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$CLAUDE_REL"
+  check "adopt: no .bak written" bash -c '! find "$1" -maxdepth 1 -name "CLAUDE.md.bak.*" | grep -q .' _ "$t"
+  check "adopt: base block snapshot seeded (pristine, no local edit)" bash -c '! grep -q "user-edit-block2" "$1"' _ "$t/$BASE_CLAUDE_BLOCK_REL"
+
+  local out2 rc2
+  out2="$("$V2" "$t" 2>&1)"; rc2=$?
+
+  check "upgrade: exit 0" test "$rc2" -eq 0
+  check "upgrade: local in-block edit preserved" grep -q "user-edit-block2" "$t/$CLAUDE_REL"
+  check "upgrade: upstream policy edit merged in" grep -q "(v2-policy)" "$t/$CLAUDE_REL"
+  check "upgrade: outside-marker heading unchanged" grep -q "## My own notes (s11)" "$t/$CLAUDE_REL"
+  check "upgrade: outside-marker text unchanged" grep -q "Some other text outside the managed block." "$t/$CLAUDE_REL"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 12: predates-emitter-change — a legacy file whose pristine content
+# is OLDER than the current script's pristine emit (differs at the same spot
+# v2 changes further), plus an unrelated local edit. Adopting with the
+# CURRENT script seeds base from current-pristine (which already differs
+# from ours at that spot); upgrading to v2 then touches that same region
+# again. Assert the local edit is never silently dropped: it must survive in
+# the live file (clean merge or untouched-on-conflict) and/or be visible in a
+# surfaced .new conflict, with a non-zero-but-known (3) exit on conflict.
+# ---------------------------------------------------------------------------
+scenario_predates_emitter_change_conflict() {
+  local t="$WORKROOT/s12"; mkdir -p "$t"
+  "$V0" "$t" >/dev/null 2>&1
+  rm -rf "$t/.claude/.domestique"
+
+  # Unrelated local edit (legacy user edit), on a different line than the
+  # Blockers region v0/v2 touch.
+  sed -i.orig \
+    's/^tools: Read, Write, Edit, Bash, Glob, Grep$/tools: EDITED-legacy/' \
+    "$t/$IMPL_REL"
+  rm -f "$t/$IMPL_REL.orig"
+  local before1; before1="$(cat "$t/$IMPL_REL")"
+
+  # Adopt with the CURRENT script: seeds base from current-pristine, which
+  # differs from ours at the Blockers line (ours still has v0's old wording).
+  local out1 rc1
+  out1="$("$DOM" "$t" 2>&1)"; rc1=$?
+
+  check "adopt: exit 0" test "$rc1" -eq 0
+  check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
+  check "adopt: live file unchanged" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before1" "$t/$IMPL_REL"
+
+  # Upgrade to v2, which changes the SAME region (Blockers line) that already
+  # diverges between ours (old wording) and base (current wording).
+  local before2; before2="$(cat "$t/$IMPL_REL")"
+  local out2 rc2
+  out2="$("$V2" "$t" 2>&1)"; rc2=$?
+
+  if [ "$rc2" -eq 0 ]; then
+    check "clean-merge exit 0 implies local edit preserved" grep -q "EDITED-legacy" "$t/$IMPL_REL"
+  elif [ "$rc2" -eq 3 ]; then
+    check "conflict: exit 3" test "$rc2" -eq 3
+    check "conflict: .new written with conflict markers" bash -c 'grep -q "<<<<<<<" "$1"' _ "$t/$IMPL_REL.new"
+    check "conflict: live file left untouched" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before2" "$t/$IMPL_REL"
+    check "conflict: local edit present in (untouched) live file" grep -q "EDITED-legacy" "$t/$IMPL_REL"
+  else
+    check "upgrade exit code is either 0 (merged) or 3 (conflict) — no silent loss" false
+  fi
+}
+
+# ---------------------------------------------------------------------------
 echo "domestique upgrade test harness"
 echo "repo: $REPO_DIR"
 echo
@@ -311,6 +450,9 @@ run_scenario "CLAUDE.md in-block edit preserved"                scenario_claude_
 run_scenario "CLAUDE.md conflict"                               scenario_claude_md_conflict
 run_scenario "legacy fallback (no snapshot)"                    scenario_legacy_fallback
 run_scenario "--dry-run makes no writes"                        scenario_dry_run_no_writes
+run_scenario "adopt then upgrade merges (plain)"                scenario_adopt_then_upgrade_merges_plain
+run_scenario "adopt then upgrade merges (CLAUDE.md block)"      scenario_adopt_then_upgrade_merges_claude_md
+run_scenario "predates-emitter-change conflict"                 scenario_predates_emitter_change_conflict
 
 echo
 TOTAL=$((PASS_COUNT + FAIL_COUNT))
