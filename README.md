@@ -1,37 +1,27 @@
 # domestique
 
-A Claude Code config for a **multi-model orchestration workflow**. You run your
-main Claude Code session on **Fable** — the **orchestrator** that determines
-the architecture and implementation design, tracks it in
-[beads](https://github.com/steveyegge/beads), and delegates.
-Each bounded task goes to a **Sonnet** implementer subagent that executes it;
-then a separate, fresh-context **Opus** reviewer subagent independently verifies
-the result. Fable adjudicates the verdict, closes the bead and commits the
-change, and moves to the next one.
+A Claude Code config for a **multi-model orchestration workflow**: an
+**orchestrator** session that designs the work and adjudicates, an
+**implementer** subagent that executes, and a **reviewer** subagent that
+independently verifies — with the plan of record tracked in
+[beads](https://github.com/steveyegge/beads). The orchestrator runs on a
+strong planning model (**Fable and Opus both work well**); the implementer
+and reviewer are pinned to Sonnet and Opus respectively. See the three agent
+subsections below for what each one does and why.
 
-The point of the split is to spend model capability where it pays off:
-
-- **Fable** (most capable) determines the architecture and detailed
-  implementation design, and makes the final accept/reject call — the
-  judgment-heavy work where mistakes are expensive.
-- **Sonnet** (fast, cheap) implements — well-scoped execution of a task that's
-  already pinned down.
-- **Opus** (strong, independent) verifies — a *non-peer* check, so a Sonnet
-  implementer's mistakes are caught by a more capable model rather than
-  peer-reviewed at the same tier.
-
-Delegating both implementation *and* verification keeps Fable's context lean,
-which keeps it a good adjudicator — and the reviewer's independence means the
-implementer's "done, tests pass" is checked, not trusted.
+The point of the split is to spend model capability where it pays off.
+Delegating both implementation *and* verification keeps the orchestrator's
+context lean, which keeps it a good adjudicator — and the reviewer's
+independence means the implementer's "done, tests pass" is checked, not
+trusted.
 
 ## The loop
 
-The topology has three steps, at three different frequencies: set the model
-**once per session**, decompose **once per epic**, then repeat a short dispatch
-prompt **once per bead** until the epic's done — at which point you land the
-plane **once**. That's the whole loop:
+The topology has three steps, at three different frequencies — that's the
+whole loop:
 
-> After setting your session's model to Fable, you simply
+> After setting your session's model once per session — Fable and Opus both
+> work well as the orchestrator — you simply
 >
 > `/decompose <significant task or milestone>`
 > * determines an overall architecture
@@ -53,16 +43,12 @@ plane **once**. That's the whole loop:
 > * sync your beads to the remote
 > * update your milestone definition file per your policy in CLAUDE.md
 
-Note what's *not* repeated: `/model fable` runs once, at the start of the
-session — not once per `/decompose`. And `/decompose` runs once per epic, not
-once per bead; "dispatch next ready bead" is the only prompt you repeat.
-
 The three agents behind that topology — each pinned to the model tier that
 matches what it's for:
 
-### Orchestrator (Fable)
+### Orchestrator (Fable or Opus)
 
-Your main Claude Code session, on the most capable model. Decomposes goals
+Your main Claude Code session, on a strong planning model. Decomposes goals
 into beads, claims and dispatches one bead at a time, adjudicates the
 reviewer's verdict against the implementer's report, and decides what's next.
 Writes code itself only for trivial one-liners — it's reserved for the
@@ -87,9 +73,11 @@ edits code or touches bead state.
 
 Each subagent's model is pinned in its frontmatter (`model: sonnet` for the
 implementer, `model: opus` for the reviewer), so they always run on their own
-model no matter what the orchestrator session is set to. The agents are the
-first-class objects here — the model tier is just the capability each one
-runs on.
+model no matter what the orchestrator session is set to — running the
+orchestrator on Opus doesn't undermine the Opus reviewer, either: the
+reviewer's value is its fresh context and independence, not being a
+different model tier from the orchestrator. The agents are the first-class
+objects here — the model tier is just the capability each one runs on.
 
 By default, the orchestrator stops and checks in with you between beads — it
 won't drain the queue unattended unless you tell it to (see
@@ -99,7 +87,7 @@ won't drain the queue unattended unless you tell it to (see
 
 ```
    you ─▶ /decompose ─▶ ┌──────────────────────────────────────────────┐
-                        │  FABLE orchestrator (main session)           │
+                        │  ORCHESTRATOR (main session)                 │
                         │  architecture · design · deps · beads        │
                         └──────────────────────────────────────────────┘
 ```
@@ -108,7 +96,7 @@ won't drain the queue unattended unless you tell it to (see
 
 ```
    you ─▶ "dispatch" ─▶ ┌──────────────────────────────────────────────┐
-                        │  FABLE orchestrator (main session)           │
+                        │  ORCHESTRATOR (main session)                 │
                         │  bd ready · delegate · adjudicate            │
                         └──┬──────────────▲───────────────▲────────────┘
               one task     │              │ summary       │ PASS / FAIL
