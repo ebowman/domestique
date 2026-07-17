@@ -39,6 +39,13 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 4. Adjudicate. Weigh the reviewer's verdict against the implementer's summary: if they agree the work is done, close the bead and commit its changes (one commit, bead id in the message); if the reviewer reports gaps, reopen the bead or file a follow-up and route the fix back to the implementer. Read the diff yourself only when the two reports conflict or the verdict is ambiguous — delegating the review is the point.
 5. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
 
+## Unattended epic mode (/goal)
+- The default remains **stop-and-report between beads** (rule 5 of the Delegation loop above). Nothing changes that by itself.
+- A `/goal <epic-id>` invocation is the **only** thing that authorizes continuous, unattended dispatch across an epic's beads. That authorization is scoped to the named epic, expires the instant the epic completes or any stop condition fires, and never carries over to another epic or a later session.
+- Unattended runs happen on a **dedicated epic branch** and never commit to the default branch — the human reviews and merges that branch by hand; the loop never merges or pushes.
+- The core invariants still hold even while unattended: **one bead in flight at a time, one commit per bead, and never close a bead the reviewer didn't pass.**
+- For the full loop mechanics and the complete list of stop conditions, see `.claude/commands/goal.md` — they are not restated here.
+
 ## Discipline
 - One task in flight at a time. Bounded WIP.
 - Subagents return summaries, never full file dumps. Your context is the constraint — keep it lean, don't re-read large outputs.
@@ -129,6 +136,49 @@ When done, print the resulting graph (`bd ready` plus the epic tree) for my revi
 DOM_EOF
 }
 
+emit_goal() { cat <<'DOM_EOF'
+---
+description: Drain a beads epic to completion unattended — dedicated branch, one bead per commit, reviewer-gated, bounded loop.
+argument-hint: <epic-id>
+---
+
+Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
+
+## Branch isolation (load-bearing)
+Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it.
+
+## Per-cycle loop
+For each cycle:
+1. `bd ready` scoped to epic $ARGUMENTS — pick the highest-priority unblocked task. If none, the epic is done; go to Completion below.
+2. Assert a clean working tree before starting the bead. If it's dirty, stop and report — do not paper over it.
+3. Claim it and mark in_progress (`bd update <id> --claim`).
+4. Dispatch to the `implementer` subagent with a precise brief built from the bead's description, input/output, and done-criteria.
+5. Dispatch to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer must run the full test suite and inspect the real diff every time — never trust the implementer's summary in place of that.
+6. Adjudicate:
+   - Reviewer PASS → `git add -A` and commit, message including the bead id, one bead per commit (never batch). Then `bd close <id>`.
+   - Reviewer reports gaps → route at most one fix pass back to the implementer, then re-review. A second failed review on the same bead is a stop condition (see below) — do not loop further on it.
+
+## Hard ceiling
+Stop and report after 15 beads closed in this run (or sooner if you judge the budget exhausted), even if the epic isn't finished. This is a runaway-loop backstop, not a target.
+
+## Stop conditions — halt immediately, do not dispatch further work, and report to the human
+- A bead fails review twice: leave it `in_progress` with notes on what's wrong; do not force a third pass.
+- Any full-suite regression: stop immediately, do not attempt to attribute the cause yourself.
+- A decision needs operator input: spec ambiguity, scope change, or UX/semantics not already settled by the bead's description.
+- Anything requires a push, a config change, or touching files outside the project.
+- Two consecutive infrastructure/API errors: before concluding it's an API outage, check `bd memories` for machine-sleep or known-flake notes.
+
+## On epic completion (or hitting the ceiling)
+Run the full test suite once more. Summarize: beads closed, commits made (with ids), any follow-ups filed as beads, and residual risks that need human hands-on attention. Land the plane per the session-close protocol — file loose discovered work as beads, `bd sync --flush-only`, commit `.beads/`. Anything requiring push or merge authority is reported as a PROPOSED command for the human to run, never executed by you.
+
+## Invariants — restate these to yourself at the end of the report
+- One bead in flight at a time.
+- One commit per bead, never batched.
+- Never close a bead the reviewer didn't pass.
+- Never touch the default branch.
+DOM_EOF
+}
+
 # ---------------------------------------------------------------------------
 usage() {
   cat <<'EOF'
@@ -140,6 +190,7 @@ Installs the domestique Claude Code orchestration config into TARGET_DIR
   .claude/agents/implementer.md    implementer subagent
   .claude/agents/reviewer.md       reviewer subagent
   .claude/commands/decompose.md    /decompose command
+  .claude/commands/goal.md         /goal command
 
 Options:
   --dry-run      Print planned changes; touch nothing.
@@ -319,6 +370,7 @@ install_claude_md "$TARGET_DIR/CLAUDE.md"
 install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
 install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
+install_plain     "$TARGET_DIR/.claude/commands/goal.md"        emit_goal
 
 # --- beads (opt-in) --------------------------------------------------------
 if [ "$WITH_BEADS" -eq 1 ]; then

@@ -111,7 +111,8 @@ dom --with-beads
 This installs `CLAUDE.md` (the orchestration policy, in a managed block that
 coexists with your own content), `.claude/agents/implementer.md` (the Sonnet
 implementer) and `.claude/agents/reviewer.md` (the Opus reviewer), and
-`.claude/commands/decompose.md` (the `/decompose` command).
+`.claude/commands/decompose.md` (the `/decompose` command) and
+`.claude/commands/goal.md` (the `/goal` command).
 
 ### 2. Run the orchestrator session on Fable
 
@@ -165,6 +166,48 @@ work as beads and syncs them (`bd sync --flush-only`, then commit `.beads/`).
 Fable to delegate spawns the `implementer` subagent to do the work and the
 `reviewer` subagent to check it — rather than Fable editing or verifying files
 itself.
+
+## `/goal` — unattended epic mode
+
+`/decompose` plans; `/goal <epic-id>` executes. It drains one beads epic to
+completion by repeatedly running the implementer → reviewer loop **without
+stopping between beads**. The default orchestrator rule is "stop and report
+before dispatching the next task" (the loop's step 7, above) — `/goal` is the
+only thing that lifts that rule, and only within strict bounds.
+
+**Authorization is scoped and temporary.** A `/goal <epic-id>` invocation is
+the sole thing that authorizes continuous, unattended dispatch — and only
+across that epic's beads. It expires the instant the epic completes or any
+stop condition fires, and it never carries over to another epic or a later
+session.
+
+**Safety comes from branch isolation and the same invariants, held harder.**
+Before touching anything, Fable creates or switches to a dedicated epic
+branch (e.g. `epic/<epic-id>`) and never commits to the default branch for
+the rest of the run — it never merges or pushes that branch either; you
+review and merge it by hand. Within the run, the core invariants still hold:
+one bead in flight at a time, one commit per bead (never batched), and never
+close a bead the reviewer didn't pass. A hard ceiling stops the run after 15
+beads closed in one go, even if the epic isn't finished, as a runaway-loop
+backstop rather than a target.
+
+**Stop conditions halt the loop immediately** and hand control back to you:
+a bead failing review twice, any full-suite regression, a decision needing
+operator input (spec ambiguity, scope change, unsettled UX/semantics), anything
+requiring a push, a config change, or touching files outside the project, or
+two consecutive infrastructure/API errors. On completion, on hitting the
+ceiling, or on any stop condition, Fable runs the full test suite once more,
+summarizes beads closed and commits made, land-the-planes as usual, and
+reports anything needing push/merge authority as a proposed command for you
+to run — never executing it itself.
+
+```
+/decompose Add rate limiting to the public API   # plan: epic + bounded tasks
+/goal <epic-id>                                   # execute: drain the epic, unattended, on its own branch
+```
+
+When `/goal` stops — completion, ceiling, or a stop condition — review the
+epic branch's diffs and commit history, then merge by hand.
 
 ## Safety & idempotency
 
