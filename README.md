@@ -26,49 +26,74 @@ implementer's "done, tests pass" is checked, not trusted.
 
 ## The loop
 
-Roles:
+The topology has three steps, at three different frequencies: set the model
+**once per session**, decompose **once per epic**, then repeat a short dispatch
+prompt **once per bead** until the epic's done — at which point you land the
+plane **once**. That's the whole loop:
 
-- **Fable orchestrator** — your main Claude Code session. Decomposes goals into
-  beads, delegates one task at a time, adjudicates the reviewer's verdict against
-  the implementer's report, and decides what's next. Writes code itself only for
-  trivial one-liners.
-- **Sonnet implementer** — the `implementer` subagent. Receives one bounded
-  task, claims it and marks it in progress, does exactly that, runs the
-  tests/linter, and returns a terse summary. It does **not** close its own bead
-  — the orchestrator closes beads after the reviewer passes them.
-- **Opus reviewer** — the `reviewer` subagent. In a *fresh context* (no
-  anchoring on the implementer's story), it inspects the real `git diff`, reads
-  the changed files, runs the tests itself, and returns a PASS / FAIL / NEEDS-WORK
-  verdict judged against the bead's done-criteria. A stronger, non-peer check
-  than the implementer. It reviews only — it never edits code or touches bead
-  state.
+> After setting your session's model to Fable, you simply
+>
+> `/decompose <significant task or milestone>`
+> * determines an overall architecture
+> * breaks work into Task beads, under an Epic, including detailed design
+>   instructions and inter-task dependencies
+>
+> repeat this prompt: **"dispatch next ready bead"**, at which point the
+> orchestrator:
+> * claims the bead for implementation
+> * dispatches the bead to the implementer agent and waits for its return
+>   notes, and inspects any new side-task beads it nominates
+> * if satisfied, dispatches the bead to the reviewer, in a fresh context
+> * when the reviewer returns, assesses its feedback and declares PASS
+>   (closing the bead) or FAIL/NEEDS-WORK (sending it back to the implementer)
+>
+> When all tasks in an epic are complete, tell the orchestrator to
+> **"land the plane"** and it will:
+> * close the Epic bead
+> * sync your beads to the remote
+> * update your milestone definition file per your policy in CLAUDE.md
+
+Note what's *not* repeated: `/model fable` runs once, at the start of the
+session — not once per `/decompose`. And `/decompose` runs once per epic, not
+once per bead; "dispatch next ready bead" is the only prompt you repeat.
+
+The three agents behind that topology — each pinned to the model tier that
+matches what it's for:
+
+### Orchestrator (Fable)
+
+Your main Claude Code session, on the most capable model. Decomposes goals
+into beads, claims and dispatches one bead at a time, adjudicates the
+reviewer's verdict against the implementer's report, and decides what's next.
+Writes code itself only for trivial one-liners — it's reserved for the
+judgment-heavy work, where mistakes are expensive.
+
+### Implementer (Sonnet)
+
+The `implementer` subagent, on a fast, cheap model. Receives one bounded task,
+claims it and marks it in progress, does exactly that, runs the tests/linter,
+and returns a terse summary. It does **not** close its own bead — the
+orchestrator closes beads after the reviewer passes them.
+
+### Reviewer (Opus)
+
+The `reviewer` subagent, on a strong, independent model. In a *fresh context*
+(no anchoring on the implementer's story), it inspects the real `git diff`,
+reads the changed files, runs the tests itself, and returns a PASS / FAIL /
+NEEDS-WORK verdict judged against the bead's done-criteria — a stronger,
+non-peer check than the implementer, since a peer at the same tier as Sonnet
+would be more likely to miss what Sonnet missed. It reviews only — it never
+edits code or touches bead state.
 
 Each subagent's model is pinned in its frontmatter (`model: sonnet` for the
 implementer, `model: opus` for the reviewer), so they always run on their own
-model no matter what the orchestrator session is set to.
+model no matter what the orchestrator session is set to. The agents are the
+first-class objects here — the model tier is just the capability each one
+runs on.
 
-One turn of the flywheel:
-
-1. **Design** — `/decompose <goal>` → Fable determines an overall architecture
-   and breaks the work into Task beads, under an Epic, including detailed
-   design instructions and inter-task dependencies. Nothing is implemented yet.
-2. **Pick** — `bd ready` surfaces the next unblocked, actionable task.
-3. **Hand off** — Fable delegates that task (with its bead id) to the
-   `implementer` subagent → the task runs on Sonnet.
-4. **Implement** — Sonnet claims the bead and marks it in progress, does the one
-   task, runs tests/lint, and returns a summary (never a full file dump). It
-   leaves the bead open — closing it is the orchestrator's call after review.
-5. **Verify** — Fable hands the same bead to the `reviewer` subagent. A fresh
-   Sonnet independently inspects the real `git diff`, reads the changed files,
-   runs the tests itself, and returns a verdict against the done-criteria — it
-   judges the work, not the implementer's summary.
-6. **Adjudicate** — Fable weighs the reviewer's verdict against the implementer's
-   report. Agree it's done → Fable closes the bead and commits the change (one
-   commit, bead id in the message). Reviewer flags gaps → reopen or file a
-   follow-up and route the fix back to the implementer. Fable reads the diff
-   itself only when the two reports conflict.
-7. **Repeat** — back to `bd ready`. Fable **stops and checks in with you between
-   tasks** — it won't drain the queue unattended unless you tell it to.
+By default, the orchestrator stops and checks in with you between beads — it
+won't drain the queue unattended unless you tell it to (see
+[`/goal`](#goal--unattended-epic-mode), below).
 
 ```
    you ─▶ /decompose ─▶ ┌──────────────────────────────────────────────┐
@@ -161,43 +186,17 @@ done. Otherwise, once per repo:
 bd init && bd setup claude
 ```
 
-## Running it
-
-A typical session, start to finish:
-
-```
-/model fable
-/decompose Add rate limiting to the public API, 100 req/min per key, with tests
-```
-
-Fable determines the architecture, then creates the epic and tasks — each with
-detailed design instructions and inter-task dependencies — then prints `bd
-ready` and the tree for your review. When you're happy with the plan:
-
-> "Take the top ready task and hand it to the implementer."
-
-Fable delegates it to the `implementer` subagent (on Sonnet), which implements
-the task, runs the tests, and reports back (leaving the bead open). Fable then
-sends the same bead to the `reviewer` subagent — a fresh Opus that inspects the
-diff and re-runs the tests independently — and adjudicates its verdict, then
-closes the bead and commits the change before accepting. Then it stops to check
-in. You say "next" (or "keep going") and the
-loop continues until `bd ready` is empty.
-
-At the end of a session ("land the plane"), Fable files any loose discovered
-work as beads and syncs them (`bd sync --flush-only`, then commit `.beads/`).
-
 **Verify it's wired up:** `bd ready` returns tasks (beads is live), and asking
-Fable to delegate spawns the `implementer` subagent to do the work and the
-`reviewer` subagent to check it — rather than Fable editing or verifying files
-itself.
+Fable to "dispatch next ready bead" spawns the `implementer` subagent to do the
+work and the `reviewer` subagent to check it — rather than Fable editing or
+verifying files itself.
 
 ## `/goal` — unattended epic mode
 
 `/decompose` plans; `/goal <epic-id>` executes. It drains one beads epic to
 completion by repeatedly running the implementer → reviewer loop **without
-stopping between beads**. The default orchestrator rule is "stop and report
-before dispatching the next task" (the loop's step 7, above) — `/goal` is the
+stopping between beads**. The default orchestrator rule is to stop and check
+in with you between beads (see [The loop](#the-loop), above) — `/goal` is the
 only thing that lifts that rule, and only within strict bounds.
 
 **Authorization is scoped and temporary.** A `/goal <epic-id>` invocation is
