@@ -95,10 +95,21 @@ By default, the orchestrator stops and checks in with you between beads — it
 won't drain the queue unattended unless you tell it to (see
 [`/goal`](#goal--unattended-epic-mode), below).
 
+**Per Epic:**
+
 ```
    you ─▶ /decompose ─▶ ┌──────────────────────────────────────────────┐
                         │  FABLE orchestrator (main session)           │
-                        │  plan · bd ready · delegate · adjudicate      │
+                        │  architecture · design · deps · beads        │
+                        └──────────────────────────────────────────────┘
+```
+
+**Per Task:**
+
+```
+   you ─▶ "dispatch" ─▶ ┌──────────────────────────────────────────────┐
+                        │  FABLE orchestrator (main session)           │
+                        │  bd ready · delegate · adjudicate            │
                         └──┬──────────────▲───────────────▲────────────┘
               one task     │              │ summary       │ PASS / FAIL
              (bead id)     ▼              │               │ verdict
@@ -107,6 +118,15 @@ won't drain the queue unattended unless you tell it to (see
                         │ do task · test ·     │   │ fresh context ·      │
                         │ report back          │   │ diff · tests · judge │
                         └──────────────────────┘   └──────────────────────┘
+```
+
+**On Epic Completion:**
+
+```
+   you ─▶ "land the plane" ─▶ ┌───────────────────────────────────────┐
+                              │  close epic · sync beads ·            │
+                              │  update milestone file                │
+                              └───────────────────────────────────────┘
 ```
 
 ## Setup
