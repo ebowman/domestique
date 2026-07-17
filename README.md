@@ -236,13 +236,27 @@ upstream verbatim, discarding local edits to that file (`CLAUDE.md` is still
 always backed up first). `--dry-run` computes and prints the full plan —
 including what a merge or conflict would do — without writing anything.
 
-**First upgrade after adopting this feature.** The 3-way merge needs a base
-snapshot to diff against. If a managed file predates the snapshot feature (no
-`.claude/.domestique/base/...` entry for it yet), that first upgrade falls
-back to the older backup-and-overwrite behavior: your current file is saved
-to `<file>.bak.<timestamp>` and replaced with upstream, not merged. A fresh
-snapshot is written at that point, so every upgrade after this one merges
-normally.
+**First upgrade of a legacy install.** The 3-way merge needs a base snapshot
+to diff against. If a managed file (or the `CLAUDE.md` managed block)
+predates the snapshot feature (no `.claude/.domestique/base/...` entry for it
+yet) and differs from what domestique would emit, that first upgrade
+**adopts** it instead of overwriting it: domestique seeds the base snapshot
+from the pristine emitted content and leaves your live file **untouched** —
+no `.bak` is written, because nothing was changed. It reports the file under
+an "Adopted" heading as *"local edits preserved; re-run to merge upstream"*.
+This is default behavior, not a flag — there's nothing to opt into.
+
+That means an existing, customized install (say, an `implementer.md` with a
+hand-added `mcp__…` tool) is brought under management on the very next
+`domestique.sh` run without losing anything: nothing merges and nothing is
+overwritten on the adoption run itself. Run the installer again afterward
+and upstream changes merge normally against the newly-seeded base — your
+edits are kept, upstream's changes are applied, and if the same lines
+changed on both sides you get an ordinary conflict: `<file>.new` written,
+`.bak` taken, the live file left untouched, and exit `3`, exactly as
+described above. Adoption never silently loses local edits, and it never
+silently drops upstream changes either — a conflict is always surfaced,
+never swallowed.
 
 `.claude/.domestique/` is domestique's own bookkeeping (snapshots + manifest)
 — it's safe to add to `.gitignore` if you'd rather not track it.
