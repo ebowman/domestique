@@ -213,7 +213,7 @@ stop condition fires, and it never carries over to another epic or a later
 session.
 
 **Safety comes from branch isolation and the same invariants, held harder.**
-Before touching anything, Fable creates or switches to a dedicated epic
+Before touching anything, the orchestrator creates or switches to a dedicated epic
 branch (e.g. `epic/<epic-id>`) and never commits to the default branch for
 the rest of the run — it never merges or pushes that branch either; you
 review and merge it by hand. Within the run, the core invariants still hold:
@@ -227,7 +227,7 @@ a bead failing review twice, any full-suite regression, a decision needing
 operator input (spec ambiguity, scope change, unsettled UX/semantics), anything
 requiring a push, a config change, or touching files outside the project, or
 two consecutive infrastructure/API errors. On completion, on hitting the
-ceiling, or on any stop condition, Fable runs the full test suite once more,
+ceiling, or on any stop condition, the orchestrator runs the full test suite once more,
 summarizes beads closed and commits made, land-the-planes as usual, and
 reports anything needing push/merge authority as a proposed command for you
 to run — never executing it itself.
@@ -243,12 +243,11 @@ by hand, or prompt Claude to do it for you.
 
 ## Safety & idempotency
 
-- **Your `CLAUDE.md` survives.** If it exists without markers, the managed block
-  is appended and every existing byte is preserved verbatim. If it already has
-  the markers, only the content between them is replaced.
-- **Backups.** Any existing file that would change is copied to
-  `<file>.bak.<timestamp>` first. `CLAUDE.md` is *always* backed up before
-  modification, even under `--force`.
+- **Your `CLAUDE.md` survives.** Everything outside the managed block is
+  preserved byte-for-byte, whether or not the block existed before (see
+  [Upgrading](#upgrading) for merge specifics).
+- **Backups.** Any file that would change is backed up first — `CLAUDE.md`
+  *always*, even under `--force`.
 - **Run it twice** and the second run makes no changes (and creates no new
   backup).
 - **`--dry-run`** computes and prints the full plan while touching nothing.
@@ -272,10 +271,8 @@ embedded — no network access needed beyond fetching the script itself.
 
 ## Upgrading
 
-Re-running the installer against a repo you've already installed into is how
-you pick up a newer domestique — and it's designed so **your local edits
-survive**. Say you hand-added an MCP tool to `implementer.md`'s frontmatter;
-upgrading won't clobber it.
+Re-running the installer 3-way-merges your local edits against upstream
+changes instead of overwriting them.
 
 **How it works.** Every install/upgrade records a base snapshot in
 `.claude/.domestique/` — a pristine copy of what was last installed, plus the
