@@ -117,6 +117,11 @@ implementer) and `.claude/agents/reviewer.md` (the Opus reviewer), and
 `.claude/commands/decompose.md` (the `/decompose` command) and
 `.claude/commands/goal.md` (the `/goal` command).
 
+**Re-running is safe.** Running the installer again in a repo you've already set
+up is the supported way to pick up a newer domestique — it's idempotent, and it
+preserves your local edits (e.g. MCP tools you added to an agent) via a 3-way
+merge instead of overwriting them. See [Upgrading](#upgrading).
+
 ### 2. Run the orchestrator session on Fable
 
 Open Claude Code in the repo and set the session model to Fable:
