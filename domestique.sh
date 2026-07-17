@@ -4,6 +4,8 @@
 # .claude/commands/decompose.md, and installs them idempotently.
 set -euo pipefail
 
+DOMESTIQUE_VERSION="0.1.0"
+
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
 
@@ -26,12 +28,25 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 - Select the next unit of work with `bd ready` — it returns only unblocked, actionable tasks.
 - Record durable insight with `bd remember "<insight>"`. Do not create MEMORY.md files.
 
+## Writing briefs
+Plans, bead descriptions, and delegation briefs are executed by a separate model with no access to your reasoning. When you write them:
+- Write numbered steps; each step names an action, a target file/symbol, and an acceptance criterion.
+- Spell out edge cases and error handling — do not leave them implicit.
+- Flag ambiguities explicitly rather than resolving them silently.
+
 ## Delegation loop
 1. `bd ready` → pick the highest-priority unblocked task.
 2. Delegate it to the `implementer` subagent with a precise brief and the bead id.
 3. When the implementer returns, delegate verification to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer inspects the real diff, reads the changed files, and runs the tests in a fresh context — judging the work against the done-criteria, not against the implementer's summary — and returns a pass/fail verdict.
-4. Adjudicate. Weigh the reviewer's verdict against the implementer's summary: if they agree the work is done, close the bead; if the reviewer reports gaps, reopen the bead or file a follow-up and route the fix back to the implementer. Read the diff yourself only when the two reports conflict or the verdict is ambiguous — delegating the review is the point.
+4. Adjudicate. Weigh the reviewer's verdict against the implementer's summary: if they agree the work is done, close the bead and commit its changes (one commit, bead id in the message); if the reviewer reports gaps, reopen the bead or file a follow-up and route the fix back to the implementer. Read the diff yourself only when the two reports conflict or the verdict is ambiguous — delegating the review is the point.
 5. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
+
+## Unattended epic mode (/goal)
+- The default remains **stop-and-report between beads** (rule 5 of the Delegation loop above). Nothing changes that by itself.
+- A `/goal <epic-id>` invocation is the **only** thing that authorizes continuous, unattended dispatch across an epic's beads. That authorization is scoped to the named epic, expires the instant the epic completes or any stop condition fires, and never carries over to another epic or a later session.
+- Unattended runs happen on a **dedicated epic branch** and never commit to the default branch — the human reviews and merges that branch by hand; the loop never merges or pushes.
+- The core invariants still hold even while unattended: **one bead in flight at a time, one commit per bead, and never close a bead the reviewer didn't pass.**
+- For the full loop mechanics and the complete list of stop conditions, see `.claude/commands/goal.md` — they are not restated here.
 
 ## Discipline
 - One task in flight at a time. Bounded WIP.
@@ -53,12 +68,13 @@ You are an implementer. You receive one bounded task and complete exactly that t
 
 ## Operating rules
 - Do the assigned task only. Do not expand scope, refactor adjacent code, or start the next task.
-- If you were given a bead id, claim it before starting and close it when done:
+- If you were given a bead id, claim it and mark it in progress before starting; do NOT close it — the orchestrator closes beads after independent review:
   - `bd update <id> --claim`   (or `bd update <id> --status in_progress`)
-  - `bd close <id>`            on success
 - Run the project's tests and linter after meaningful changes. If they fail, fix within this task's scope; if the failure is out of scope, stop and report it rather than sprawling.
 - Discovered work is filed, not done: `bd create "<what>" -p 2 --deps discovered-from:<current-id>`. Do not chase it yourself.
 - Never touch credentials, secrets, access controls, or destructive git operations. Surface these to the orchestrator instead.
+- Implement the brief exactly as written; do not substitute your own interpretation.
+- If anything is ambiguous or not covered by the brief, stop and report the question in your summary — do not improvise.
 
 ## What you return
 A terse summary only — never full file contents:
@@ -122,6 +138,49 @@ When done, print the resulting graph (`bd ready` plus the epic tree) for my revi
 DOM_EOF
 }
 
+emit_goal() { cat <<'DOM_EOF'
+---
+description: Drain a beads epic to completion unattended — dedicated branch, one bead per commit, reviewer-gated, bounded loop.
+argument-hint: <epic-id>
+---
+
+Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
+
+## Branch isolation (load-bearing)
+Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it.
+
+## Per-cycle loop
+For each cycle:
+1. `bd ready` scoped to epic $ARGUMENTS — pick the highest-priority unblocked task. If none, the epic is done; go to Completion below.
+2. Assert a clean working tree before starting the bead. If it's dirty, stop and report — do not paper over it.
+3. Claim it and mark in_progress (`bd update <id> --claim`).
+4. Dispatch to the `implementer` subagent with a precise brief built from the bead's description, input/output, and done-criteria.
+5. Dispatch to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer must run the full test suite and inspect the real diff every time — never trust the implementer's summary in place of that.
+6. Adjudicate:
+   - Reviewer PASS → `git add -A` and commit, message including the bead id, one bead per commit (never batch). Then `bd close <id>`.
+   - Reviewer reports gaps → route at most one fix pass back to the implementer, then re-review. A second failed review on the same bead is a stop condition (see below) — do not loop further on it.
+
+## Hard ceiling
+Stop and report after 15 beads closed in this run (or sooner if you judge the budget exhausted), even if the epic isn't finished. This is a runaway-loop backstop, not a target.
+
+## Stop conditions — halt immediately, do not dispatch further work, and report to the human
+- A bead fails review twice: leave it `in_progress` with notes on what's wrong; do not force a third pass.
+- Any full-suite regression: stop immediately, do not attempt to attribute the cause yourself.
+- A decision needs operator input: spec ambiguity, scope change, or UX/semantics not already settled by the bead's description.
+- Anything requires a push, a config change, or touching files outside the project.
+- Two consecutive infrastructure/API errors: before concluding it's an API outage, check `bd memories` for machine-sleep or known-flake notes.
+
+## On epic completion (or hitting the ceiling)
+Run the full test suite once more. Summarize: beads closed, commits made (with ids), any follow-ups filed as beads, and residual risks that need human hands-on attention. Land the plane per the session-close protocol — file loose discovered work as beads, `bd sync --flush-only`, commit `.beads/`. Anything requiring push or merge authority is reported as a PROPOSED command for the human to run, never executed by you.
+
+## Invariants — restate these to yourself at the end of the report
+- One bead in flight at a time.
+- One commit per bead, never batched.
+- Never close a bead the reviewer didn't pass.
+- Never touch the default branch.
+DOM_EOF
+}
+
 # ---------------------------------------------------------------------------
 usage() {
   cat <<'EOF'
@@ -133,6 +192,7 @@ Installs the domestique Claude Code orchestration config into TARGET_DIR
   .claude/agents/implementer.md    implementer subagent
   .claude/agents/reviewer.md       reviewer subagent
   .claude/commands/decompose.md    /decompose command
+  .claude/commands/goal.md         /goal command
 
 Options:
   --dry-run      Print planned changes; touch nothing.
@@ -149,6 +209,16 @@ Behavior:
     content between them is replaced; otherwise the block is appended and all
     existing content is preserved verbatim. Always backed up before change.
   * Running twice in a row makes no changes on the second run.
+  * Pre-existing install with no snapshot yet (.claude/.domestique/ absent)
+    and a differing file: ADOPTED, not overwritten — local edits are left in
+    place and the base snapshot is seeded from the pristine emitted content
+    (not the edited file) so the next run 3-way-merges in upstream changes
+    while keeping the edits. Use --force to overwrite verbatim instead.
+
+Periodic updates:
+  Use update.sh to fetch the latest domestique.sh from GitHub and re-run it
+  against a target directory via this same merge path (see
+  docs/install-upgrade-design.md §5). Run `./update.sh --help` for details.
 EOF
 }
 
@@ -188,12 +258,102 @@ SUM_CREATED=()
 SUM_UPDATED=()
 SUM_BACKEDUP=()
 SUM_SKIPPED=()
+SUM_MERGED=()
+SUM_CONFLICT=()
+SUM_ADOPTED=()
+
+# Set to 1 if any file ended in a merge conflict or hard merge error this run;
+# drives the final non-zero exit (see docs/install-upgrade-design.md §4).
+CONFLICT_OCCURRED=0
 
 note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
 
+# ---------------------------------------------------------------------------
+# Base snapshot / manifest (foundation for a future 3-way merge on upgrade;
+# this run only records the snapshot of what was just emitted — it does not
+# read or merge against a prior snapshot). See docs/install-upgrade-design.md.
+# ---------------------------------------------------------------------------
+SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
+SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
+MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md"
+SNAPSHOT_TOUCHED=0
+
+# rel_to_base <dest> -> absolute path under SNAPSHOT_BASE mirroring <dest>'s
+# path relative to TARGET_DIR, 1:1 (including the .claude/ prefix — no
+# managed file lives under .claude/.domestique/, so this never recurses).
+rel_to_base() {
+  local dest="$1"
+  printf '%s' "$SNAPSHOT_BASE/${dest#"$TARGET_DIR"/}"
+}
+
+# snapshot_plain <dest> <content-file>
+# Record the pristine emitted content as the future merge base. Call only
+# after <dest> was actually created/overwritten with <content-file>'s bytes
+# (never on an identical-skip — the snapshot is already correct there).
+snapshot_plain() {
+  local dest="$1" content="$2" basepath
+  basepath="$(rel_to_base "$dest")"
+  SNAPSHOT_TOUCHED=1
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "snapshot base -> $basepath"
+    return 0
+  fi
+  mkdir -p "$(dirname "$basepath")"
+  cp "$content" "$basepath"
+}
+
+# snapshot_claude_block <content-file>
+# Record the managed block BODY (no marker lines) as the future merge base
+# for CLAUDE.md. Call only after CLAUDE.md was actually created/updated.
+snapshot_claude_block() {
+  local content="$1" basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+  SNAPSHOT_TOUCHED=1
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "snapshot base -> $basepath"
+    return 0
+  fi
+  mkdir -p "$(dirname "$basepath")"
+  cp "$content" "$basepath"
+}
+
+# write_manifest — flat key=value manifest describing the snapshot.
+write_manifest() {
+  local manifest="$SNAPSHOT_DIR/manifest" ref sha
+  ref="$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null)" || ref="unknown"
+  [ -z "$ref" ] && ref="unknown"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha="$(sha256sum "$0" 2>/dev/null | awk '{print $1}')" || sha=""
+  elif command -v shasum >/dev/null 2>&1; then
+    sha="$(shasum -a 256 "$0" 2>/dev/null | awk '{print $1}')" || sha=""
+  else
+    sha=""
+  fi
+  [ -z "$sha" ] && sha="unavailable"
+  {
+    printf 'snapshot_format=1\n'
+    printf 'domestique_version=%s\n' "$DOMESTIQUE_VERSION"
+    printf 'installed_ref=%s\n' "$ref"
+    printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'script_sha256=%s\n' "$sha"
+    printf 'files=%s\n' "$MANAGED_FILES"
+  } > "$manifest"
+}
+
 # install_plain <dest> <emitter-fn>
-# Missing -> write. Differs -> (backup unless --force) then overwrite.
-# Identical -> skip.
+# Missing -> write. Identical -> skip. --force -> overwrite verbatim, no merge.
+# Differs (no --force):
+#   - base snapshot exists -> 3-way merge (git merge-file); clean merge
+#     overwrites dest and advances the snapshot; conflict/error leaves dest
+#     untouched, writes dest.new + a .bak, and does not advance the snapshot.
+#   - no base snapshot (legacy/pre-snapshot install) -> ADOPT: seed the base
+#     snapshot from the PRISTINE freshly-emitted content (not the edited
+#     on-disk file), leave the live file unchanged (no .bak, no overwrite).
+#     This preserves any local edits now, and sets up the NEXT run to
+#     3-way-merge against a vanilla base, so upstream gets applied and
+#     local edits are preserved from then on. (Seeding base from the
+#     current/edited content instead would make ours == base whenever no
+#     further edit is made, causing the next merge to silently drop it.)
+# See docs/install-upgrade-design.md §2.
 install_plain() {
   local dest="$1" emitter="$2" staged
   staged="$TMPDIR_WORK/staged"
@@ -207,10 +367,19 @@ install_plain() {
       cp "$staged" "$dest"
     fi
     SUM_CREATED+=("$dest")
+    snapshot_plain "$dest" "$staged"
     return 0
   fi
 
   if cmp -s "$staged" "$dest"; then
+    # Identical to the fresh emit — no change needed, but if there's no base
+    # snapshot yet (legacy install), seed it now so future runs have a base
+    # to merge against.
+    local ident_basepath
+    ident_basepath="$(rel_to_base "$dest")"
+    if [ ! -e "$ident_basepath" ]; then
+      snapshot_plain "$dest" "$staged"
+    fi
     SUM_SKIPPED+=("$dest (identical)")
     return 0
   fi
@@ -223,28 +392,96 @@ install_plain() {
       cp "$staged" "$dest"
     fi
     SUM_UPDATED+=("$dest (forced)")
-  else
-    local backup="$dest.bak.$TS"
-    if [ "$DRY_RUN" -eq 1 ]; then
-      note_dry "backup $dest -> $backup, then overwrite"
-    else
-      cp "$dest" "$backup"
-      cp "$staged" "$dest"
-    fi
-    SUM_BACKEDUP+=("$backup")
-    SUM_UPDATED+=("$dest")
+    snapshot_plain "$dest" "$staged"
+    return 0
   fi
+
+  local basepath
+  basepath="$(rel_to_base "$dest")"
+
+  if [ ! -e "$basepath" ]; then
+    # Legacy fallback: no prior snapshot to merge against. ADOPT rather than
+    # clobber — leave the live file untouched (no overwrite, no .bak) and
+    # seed the base snapshot from the freshly emitted (pristine, un-edited)
+    # content, NOT the current on-disk content. This matters: base must
+    # represent the *vanilla* baseline so that on the next run,
+    # diff(base, ours) reveals the user's local edits (preserved) and
+    # diff(base, theirs) reveals the real upstream change (applied). Seeding
+    # base from the edited on-disk content instead would make ours == base
+    # whenever no further edit has been made, causing git merge-file to
+    # take theirs wholesale and silently drop the very edit we're trying
+    # to save.
+    note_dry "adopt $dest (no base snapshot; seed base from pristine emit, leave file unchanged; re-run to merge upstream)"
+    snapshot_plain "$dest" "$staged"
+    SUM_ADOPTED+=("$dest (local edits preserved; re-run to merge upstream)")
+    return 0
+  fi
+
+  # 3-way merge: ours=$dest, base=$basepath, theirs=$staged.
+  local merged rc=0
+  merged="$TMPDIR_WORK/merged"
+  git merge-file -p --diff3 \
+    -L "yours (local edits)" -L "base (last installed)" -L "upstream (new domestique)" \
+    "$dest" "$basepath" "$staged" > "$merged" || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "merge $dest (clean)"
+    else
+      cp "$merged" "$dest"
+    fi
+    SUM_MERGED+=("$dest")
+    snapshot_plain "$dest" "$staged"
+    return 0
+  fi
+
+  # Conflict (rc = number of conflicted hunks, 1..127) or hard error (rc>=128).
+  # Either way: leave the live file untouched, do not advance the snapshot,
+  # and force a non-zero exit for the whole run.
+  CONFLICT_OCCURRED=1
+  local newfile="$dest.new" backup="$dest.bak.$TS" kind="conflict"
+  if [ "$rc" -ge 128 ]; then
+    kind="error"
+    echo "Error: git merge-file failed unexpectedly for $dest (exit $rc)." >&2
+  else
+    echo "Warning: merge conflict in $dest ($rc hunk(s)) — see $newfile" >&2
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "merge $dest ($kind) — would write $newfile, back up $dest -> $backup, leave $dest untouched"
+  else
+    cp "$merged" "$newfile"
+    cp "$dest" "$backup"
+    SUM_BACKEDUP+=("$backup")
+  fi
+  SUM_CONFLICT+=("$dest ($kind; see $newfile)")
 }
 
 # install_claude_md <dest>
+# Missing/no-markers/half-marker -> unchanged from before (create, append,
+# refuse). Has both markers, block differs:
+#   - --force -> replace block wholesale, no merge, advance snapshot.
+#   - base block snapshot exists -> 3-way merge the BLOCK BODY (git
+#     merge-file); clean merge splices the merged body back between fresh
+#     markers, preserving everything outside the markers byte-for-byte, and
+#     advances the snapshot; conflict/error leaves dest untouched, writes
+#     dest.new (full file, conflict-marked block spliced in) + a .bak, and
+#     does not advance the snapshot.
+#   - no base snapshot (legacy/pre-snapshot install) -> ADOPT: seed the
+#     block snapshot from the PRISTINE emitted policy body (not the
+#     current/edited on-disk block), leave the file unchanged (no
+#     overwrite, no .bak); re-run to merge upstream.
+# See docs/install-upgrade-design.md §3.
 install_claude_md() {
   local dest="$1"
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
+  local policybody="$TMPDIR_WORK/policybody"
+
+  emit_policy > "$policybody"
 
   # Build the managed block: BEGIN marker + verbatim policy + END marker.
   {
     printf '%s\n' "$MARKER_BEGIN"
-    emit_policy
+    cat "$policybody"
     printf '%s\n' "$MARKER_END"
   } > "$blk"
 
@@ -256,6 +493,7 @@ install_claude_md() {
       cp "$blk" "$dest"
     fi
     SUM_CREATED+=("$dest")
+    snapshot_claude_block "$policybody"
     return 0
   fi
 
@@ -269,6 +507,16 @@ install_claude_md() {
 
   # Case B: has both markers -> replace only the region between them, verbatim rest.
   if grep -qF "$MARKER_BEGIN" "$dest"; then
+    # Extract the current on-disk block body (ours-block) for a potential
+    # 3-way merge, and build the wholesale-replace result (today's behavior)
+    # for the no-merge-needed / legacy / --force paths.
+    local oursblock="$TMPDIR_WORK/oursblock"
+    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
+      $0 == beginm && !seen { seen=1; inblock=1; next }
+      inblock && $0 == endm { inblock=0; next }
+      inblock { print }
+    ' "$dest" > "$oursblock"
+
     awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$blk" '
       BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
       $0 == beginm && !seen { seen=1; inblock=1; printf "%s", block; next }
@@ -276,6 +524,100 @@ install_claude_md() {
       inblock { next }
       { print }
     ' "$dest" > "$result"
+
+    # If the block body is already current (no user edit, or already up to
+    # date), the wholesale-replace result is byte-identical to $dest already
+    # — no merge needed. Fall through to the idempotency guard below.
+    if ! cmp -s "$oursblock" "$policybody"; then
+      if [ "$FORCE" -eq 1 ]; then
+        : # wholesale replace (already computed in $result above), no merge.
+      else
+        local basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+        if [ -e "$basepath" ]; then
+          # 3-way merge the block body: ours=$oursblock, base=$basepath,
+          # theirs=$policybody.
+          local mergedblock rc=0
+          mergedblock="$TMPDIR_WORK/mergedblock"
+          git merge-file -p --diff3 \
+            -L "yours (local edits)" -L "base (last installed)" -L "upstream (new domestique)" \
+            "$oursblock" "$basepath" "$policybody" > "$mergedblock" || rc=$?
+
+          if [ "$rc" -eq 0 ]; then
+            # Clean merge: splice the merged block body back between fresh
+            # markers, preserving everything outside the markers verbatim.
+            awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$mergedblock" '
+              BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
+              $0 == beginm && !seen { seen=1; inblock=1; print beginm; printf "%s", block; next }
+              inblock && $0 == endm { inblock=0; print endm; next }
+              inblock { next }
+              { print }
+            ' "$dest" > "$result"
+
+            if cmp -s "$result" "$dest"; then
+              SUM_SKIPPED+=("$dest (managed block already current)")
+              return 0
+            fi
+
+            local backup="$dest.bak.$TS"
+            if [ "$DRY_RUN" -eq 1 ]; then
+              note_dry "backup $dest -> $backup, then merge managed block (clean)"
+            else
+              cp "$dest" "$backup"
+              cp "$result" "$dest"
+            fi
+            SUM_BACKEDUP+=("$backup")
+            SUM_MERGED+=("$dest (CLAUDE.md block)")
+            snapshot_claude_block "$policybody"
+            return 0
+          fi
+
+          # Conflict (rc = number of conflicted hunks, 1..127) or hard error
+          # (rc>=128): leave the live file untouched, do not advance the
+          # snapshot, write the conflict-marked full file to dest.new, back
+          # up the current live file, force a non-zero exit for the run.
+          CONFLICT_OCCURRED=1
+          local newfile="$dest.new" backup2="$dest.bak.$TS" kind="conflict"
+          if [ "$rc" -ge 128 ]; then
+            kind="error"
+            echo "Error: git merge-file failed unexpectedly for $dest block (exit $rc)." >&2
+          else
+            echo "Warning: merge conflict in $dest managed block ($rc hunk(s)) — see $newfile" >&2
+          fi
+
+          local conflictresult="$TMPDIR_WORK/conflict_result"
+          awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$mergedblock" '
+            BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
+            $0 == beginm && !seen { seen=1; inblock=1; print beginm; printf "%s", block; next }
+            inblock && $0 == endm { inblock=0; print endm; next }
+            inblock { next }
+            { print }
+          ' "$dest" > "$conflictresult"
+
+          if [ "$DRY_RUN" -eq 1 ]; then
+            note_dry "merge $dest block ($kind) — would write $newfile, back up $dest -> $backup2, leave $dest untouched"
+          else
+            cp "$conflictresult" "$newfile"
+            cp "$dest" "$backup2"
+            SUM_BACKEDUP+=("$backup2")
+          fi
+          SUM_CONFLICT+=("$dest ($kind; see $newfile)")
+          return 0
+        fi
+        # else: no base snapshot -> ADOPT (same rationale as install_plain):
+        # seed CLAUDE.md.block from the PRISTINE emitted policy body (not
+        # the current on-disk block, which carries the user's edit), and
+        # leave the live file unchanged (no overwrite, no .bak). Base must
+        # be the vanilla baseline so the next run's merge sees the local
+        # edit as ours-vs-base (preserved) and any real upstream change as
+        # theirs-vs-base (applied) — seeding from the edited block instead
+        # would make ours == base and cause the next merge to silently
+        # discard the edit.
+        note_dry "adopt $dest (no base snapshot for managed block; seed base from pristine emit, leave file unchanged; re-run to merge upstream)"
+        snapshot_claude_block "$policybody"
+        SUM_ADOPTED+=("$dest (local edits preserved; re-run to merge upstream)")
+        return 0
+      fi
+    fi
   else
     # Case C: no markers -> append the block, preserving existing bytes verbatim.
     # Add a single newline first only if the file does not already end in one,
@@ -289,6 +631,11 @@ install_claude_md() {
 
   # Idempotency guard: if nothing would change, skip (no backup, no write).
   if cmp -s "$result" "$dest"; then
+    # Already current — but if there's no block base snapshot yet (legacy
+    # install), seed it now so future runs have a base to merge against.
+    if [ ! -e "$SNAPSHOT_BASE/CLAUDE.md.block" ]; then
+      snapshot_claude_block "$policybody"
+    fi
     SUM_SKIPPED+=("$dest (managed block already current)")
     return 0
   fi
@@ -302,6 +649,7 @@ install_claude_md() {
   fi
   SUM_BACKEDUP+=("$backup")
   SUM_UPDATED+=("$dest (managed block)")
+  snapshot_claude_block "$policybody"
 }
 
 # ---------------------------------------------------------------------------
@@ -312,6 +660,21 @@ install_claude_md "$TARGET_DIR/CLAUDE.md"
 install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
 install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
+install_plain     "$TARGET_DIR/.claude/commands/goal.md"        emit_goal
+
+# --- snapshot manifest ------------------------------------------------------
+# Only (re)write the manifest if at least one managed file was actually
+# created/updated/backed-up this run. On a fully clean no-op run (everything
+# skipped as identical) the manifest is left untouched so re-running the
+# installer twice in a row produces byte-identical .claude/.domestique/ state.
+if [ "$SNAPSHOT_TOUCHED" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
+  else
+    mkdir -p "$SNAPSHOT_DIR"
+    write_manifest
+  fi
+fi
 
 # --- beads (opt-in) --------------------------------------------------------
 if [ "$WITH_BEADS" -eq 1 ]; then
@@ -347,9 +710,18 @@ print_group() {
   local item
   for item in "$@"; do echo "    - $item"; done
 }
-[ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"   "${SUM_CREATED[@]}"
-[ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"   "${SUM_UPDATED[@]}"
-[ "${#SUM_BACKEDUP[@]}" -gt 0 ] && print_group "Backed up" "${SUM_BACKEDUP[@]}"
-[ "${#SUM_SKIPPED[@]}"  -gt 0 ] && print_group "Skipped"   "${SUM_SKIPPED[@]}"
+[ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"    "${SUM_CREATED[@]}"
+[ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"    "${SUM_UPDATED[@]}"
+[ "${#SUM_MERGED[@]}"   -gt 0 ] && print_group "Merged"     "${SUM_MERGED[@]}"
+[ "${#SUM_ADOPTED[@]}"  -gt 0 ] && print_group "Adopted"    "${SUM_ADOPTED[@]}"
+[ "${#SUM_BACKEDUP[@]}" -gt 0 ] && print_group "Backed up"  "${SUM_BACKEDUP[@]}"
+[ "${#SUM_SKIPPED[@]}"  -gt 0 ] && print_group "Skipped"    "${SUM_SKIPPED[@]}"
+[ "${#SUM_CONFLICT[@]}" -gt 0 ] && print_group "Conflicted" "${SUM_CONFLICT[@]}"
 [ "$DRY_RUN" -eq 1 ] && echo "  (dry run: nothing was actually changed)"
+
+if [ "$CONFLICT_OCCURRED" -eq 1 ]; then
+  echo
+  echo "One or more files ended in conflict/error — see 'Conflicted' above and the .new/.bak files for each." >&2
+  exit 3
+fi
 echo "Done."
