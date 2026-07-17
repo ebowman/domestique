@@ -1,8 +1,9 @@
 # domestique
 
 A Claude Code config for a **multi-model orchestration workflow**. You run your
-main Claude Code session on **Fable** — the **orchestrator** that designs the
-work, tracks it in [beads](https://github.com/steveyegge/beads), and delegates.
+main Claude Code session on **Fable** — the **orchestrator** that determines
+the architecture and implementation design, tracks it in
+[beads](https://github.com/steveyegge/beads), and delegates.
 Each bounded task goes to a **Sonnet** implementer subagent that executes it;
 then a separate, fresh-context **Opus** reviewer subagent independently verifies
 the result. Fable adjudicates the verdict, closes the bead and commits the
@@ -10,7 +11,8 @@ change, and moves to the next one.
 
 The point of the split is to spend model capability where it pays off:
 
-- **Fable** (most capable) plans and makes the final accept/reject call — the
+- **Fable** (most capable) determines the architecture and detailed
+  implementation design, and makes the final accept/reject call — the
   judgment-heavy work where mistakes are expensive.
 - **Sonnet** (fast, cheap) implements — well-scoped execution of a task that's
   already pinned down.
@@ -47,8 +49,9 @@ model no matter what the orchestrator session is set to.
 
 One turn of the flywheel:
 
-1. **Design** — `/decompose <goal>` → Fable turns the goal into a beads epic
-   with bounded, dependency-ordered tasks. Nothing is implemented yet.
+1. **Design** — `/decompose <goal>` → Fable determines an overall architecture
+   and breaks the work into Task beads, under an Epic, including detailed
+   design instructions and inter-task dependencies. Nothing is implemented yet.
 2. **Pick** — `bd ready` surfaces the next unblocked, actionable task.
 3. **Hand off** — Fable delegates that task (with its bead id) to the
    `implementer` subagent → the task runs on Sonnet.
@@ -167,8 +170,9 @@ A typical session, start to finish:
 /decompose Add rate limiting to the public API, 100 req/min per key, with tests
 ```
 
-Fable creates the epic and tasks, then prints `bd ready` and the tree for your
-review. When you're happy with the plan:
+Fable determines the architecture, then creates the epic and tasks — each with
+detailed design instructions and inter-task dependencies — then prints `bd
+ready` and the tree for your review. When you're happy with the plan:
 
 > "Take the top ready task and hand it to the implementer."
 
