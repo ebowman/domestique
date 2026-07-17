@@ -122,41 +122,26 @@ won't drain the queue unattended unless you tell it to (see
 **About beads.** [beads](https://github.com/steveyegge/beads) is the
 dependency-aware issue tracker that holds domestique's plan of record —
 epics, tasks, and the dependencies between them. Its `bd` binary needs to be
-installed on your machine *before* you set anything up here: see the
-[beads README](https://github.com/steveyegge/beads) for full install
-instructions, or if you're on macOS or Linux with Homebrew, `brew install
-beads` works well. The steps below (and the installer's `--with-beads` flag)
-only *initialize* beads inside a given repo — they assume `bd` is already
-installed.
+installed on your machine *before* you set anything up here: see the beads
+README for full install instructions, or if you're on macOS or Linux with
+Homebrew, `brew install beads` works well. The steps below (and the
+installer's `--with-beads` flag) only *initialize* beads inside a given
+repo — they assume `bd` is already installed.
 
 Three things make this work. The first installs — or upgrades — the config with
 one idempotent command; the other two are how you start each session.
 
 ### 1. Install (or upgrade) the config in your repo
 
-**One idempotent command does both.** Run it in a repo to install; run it again
-anytime to upgrade — it installs what's missing and safely 3-way-merges any
-files you've edited locally instead of overwriting them (see
-[Upgrading](#upgrading)). One-liner into the current directory (add
-`--with-beads` to initialize beads in the same step):
+**One idempotent command does both.** Run it in a repo to install; run it
+again anytime to upgrade — it installs what's missing and safely
+3-way-merges any files you've edited locally instead of overwriting them
+(see [Upgrading](#upgrading)). One-liner into the current directory (add
+`--with-beads` to initialize beads in the same step, or `--dry-run` to
+preview without touching anything):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --with-beads
-```
-
-Preview first without touching anything:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run
-```
-
-Alias it so one command installs-or-upgrades any repo (fetches latest each run):
-
-```sh
-alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
-# then, in any repo:
-dom             # install, or safely upgrade in place if already set up
-dom --dry-run   # preview without touching anything
 ```
 
 Or clone once and reuse across machines (recommended):
@@ -175,25 +160,28 @@ implementer) and `.claude/agents/reviewer.md` (the Opus reviewer), and
 `.claude/commands/decompose.md` (the `/decompose` command) and
 `.claude/commands/goal.md` (the `/goal` command).
 
-**Re-running is safe.** Running the installer again in a repo you've already set
-up is the supported way to pick up a newer domestique — it's idempotent, and it
-preserves your local edits (e.g. MCP tools you added to an agent) via a 3-way
-merge instead of overwriting them. See [Upgrading](#upgrading).
+**Installing locally, per project, makes the agents yours to extend.** Since
+the config lands in your own repo rather than some shared global location,
+you're free to customize it: add MCP tools to an agent's frontmatter, adjust
+its prompt, or retune its `model:` pin. Re-running the installer to pick up
+upstream changes preserves those local edits via the 3-way merge described
+above — see [Upgrading](#upgrading) for the mechanics.
 
-### 2. Run the orchestrator session on Fable
+### 2. Set the orchestrator session's model
 
-Open Claude Code in the repo and set the session model to Fable:
+Open Claude Code in the repo and set the session model once — Fable and Opus
+both work well as the orchestrator:
 
 ```
 /model fable
 ```
 
-That's the whole model configuration. Each subagent's model is already pinned in
-its frontmatter — Sonnet for the implementer, Opus for the reviewer — so
-delegation and review each run on the right model **automatically**; you never
-switch models by hand mid-flow. To retune, edit `model:` in the agent files:
-drop the reviewer to `sonnet` for cheaper/faster peer review, or raise it to
-`claude-fable-5` for maximum rigor on high-stakes work.
+(`/model opus` works too.) Each subagent's model is already pinned in its
+frontmatter — Sonnet for the implementer, Opus for the reviewer — so
+delegation and review each run on the right model **automatically** no matter
+what you set here (see [The loop](#the-loop), above). To retune, edit
+`model:` in the agent files: drop the reviewer to `sonnet` for cheaper/faster
+peer review, or raise it for maximum rigor on high-stakes work.
 
 ### 3. Make sure beads is initialized in this repo
 
@@ -206,9 +194,9 @@ bd init && bd setup claude
 ```
 
 **Verify it's wired up:** `bd ready` returns tasks (beads is live), and asking
-Fable to "dispatch next ready bead" spawns the `implementer` subagent to do the
-work and the `reviewer` subagent to check it — rather than Fable editing or
-verifying files itself.
+the orchestrator to "dispatch next ready bead" spawns the `implementer`
+subagent to do the work and the `reviewer` subagent to check it — rather than
+the orchestrator editing or verifying files itself.
 
 ## `/goal` — unattended epic mode
 
