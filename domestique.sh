@@ -151,6 +151,11 @@ Behavior:
     content between them is replaced; otherwise the block is appended and all
     existing content is preserved verbatim. Always backed up before change.
   * Running twice in a row makes no changes on the second run.
+  * Pre-existing install with no snapshot yet (.claude/.domestique/ absent)
+    and a differing file: ADOPTED, not overwritten — local edits are left in
+    place and the base snapshot is seeded from the pristine emitted content
+    (not the edited file) so the next run 3-way-merges in upstream changes
+    while keeping the edits. Use --force to overwrite verbatim instead.
 
 Periodic updates:
   Use update.sh to fetch the latest domestique.sh from GitHub and re-run it
@@ -197,6 +202,7 @@ SUM_BACKEDUP=()
 SUM_SKIPPED=()
 SUM_MERGED=()
 SUM_CONFLICT=()
+SUM_ADOPTED=()
 
 # Set to 1 if any file ended in a merge conflict or hard merge error this run;
 # drives the final non-zero exit (see docs/install-upgrade-design.md §4).
@@ -281,8 +287,14 @@ write_manifest() {
 #   - base snapshot exists -> 3-way merge (git merge-file); clean merge
 #     overwrites dest and advances the snapshot; conflict/error leaves dest
 #     untouched, writes dest.new + a .bak, and does not advance the snapshot.
-#   - no base snapshot (legacy/pre-snapshot install) -> today's
-#     backup+overwrite, then write a fresh snapshot for future runs.
+#   - no base snapshot (legacy/pre-snapshot install) -> ADOPT: seed the base
+#     snapshot from the PRISTINE freshly-emitted content (not the edited
+#     on-disk file), leave the live file unchanged (no .bak, no overwrite).
+#     This preserves any local edits now, and sets up the NEXT run to
+#     3-way-merge against a vanilla base, so upstream gets applied and
+#     local edits are preserved from then on. (Seeding base from the
+#     current/edited content instead would make ours == base whenever no
+#     further edit is made, causing the next merge to silently drop it.)
 # See docs/install-upgrade-design.md §2.
 install_plain() {
   local dest="$1" emitter="$2" staged
@@ -302,6 +314,14 @@ install_plain() {
   fi
 
   if cmp -s "$staged" "$dest"; then
+    # Identical to the fresh emit — no change needed, but if there's no base
+    # snapshot yet (legacy install), seed it now so future runs have a base
+    # to merge against.
+    local ident_basepath
+    ident_basepath="$(rel_to_base "$dest")"
+    if [ ! -e "$ident_basepath" ]; then
+      snapshot_plain "$dest" "$staged"
+    fi
     SUM_SKIPPED+=("$dest (identical)")
     return 0
   fi
@@ -322,18 +342,20 @@ install_plain() {
   basepath="$(rel_to_base "$dest")"
 
   if [ ! -e "$basepath" ]; then
-    # Legacy fallback: no prior snapshot to merge against — today's behavior,
-    # then start snapshotting so future runs can merge.
-    local backup="$dest.bak.$TS"
-    if [ "$DRY_RUN" -eq 1 ]; then
-      note_dry "backup $dest -> $backup, then overwrite (no base snapshot; legacy fallback)"
-    else
-      cp "$dest" "$backup"
-      cp "$staged" "$dest"
-    fi
-    SUM_BACKEDUP+=("$backup")
-    SUM_UPDATED+=("$dest (no base; overwritten)")
+    # Legacy fallback: no prior snapshot to merge against. ADOPT rather than
+    # clobber — leave the live file untouched (no overwrite, no .bak) and
+    # seed the base snapshot from the freshly emitted (pristine, un-edited)
+    # content, NOT the current on-disk content. This matters: base must
+    # represent the *vanilla* baseline so that on the next run,
+    # diff(base, ours) reveals the user's local edits (preserved) and
+    # diff(base, theirs) reveals the real upstream change (applied). Seeding
+    # base from the edited on-disk content instead would make ours == base
+    # whenever no further edit has been made, causing git merge-file to
+    # take theirs wholesale and silently drop the very edit we're trying
+    # to save.
+    note_dry "adopt $dest (no base snapshot; seed base from pristine emit, leave file unchanged; re-run to merge upstream)"
     snapshot_plain "$dest" "$staged"
+    SUM_ADOPTED+=("$dest (local edits preserved; re-run to merge upstream)")
     return 0
   fi
 
@@ -386,8 +408,10 @@ install_plain() {
 #     advances the snapshot; conflict/error leaves dest untouched, writes
 #     dest.new (full file, conflict-marked block spliced in) + a .bak, and
 #     does not advance the snapshot.
-#   - no base snapshot (legacy/pre-snapshot install) -> today's wholesale
-#     block replace + backup, then write a fresh block snapshot.
+#   - no base snapshot (legacy/pre-snapshot install) -> ADOPT: seed the
+#     block snapshot from the PRISTINE emitted policy body (not the
+#     current/edited on-disk block), leave the file unchanged (no
+#     overwrite, no .bak); re-run to merge upstream.
 # See docs/install-upgrade-design.md §3.
 install_claude_md() {
   local dest="$1"
@@ -521,9 +545,19 @@ install_claude_md() {
           SUM_CONFLICT+=("$dest ($kind; see $newfile)")
           return 0
         fi
-        # else: no base snapshot -> legacy fallback, fall through to the
-        # wholesale-replace $result computed above; snapshot gets written
-        # fresh at the bottom of this function.
+        # else: no base snapshot -> ADOPT (same rationale as install_plain):
+        # seed CLAUDE.md.block from the PRISTINE emitted policy body (not
+        # the current on-disk block, which carries the user's edit), and
+        # leave the live file unchanged (no overwrite, no .bak). Base must
+        # be the vanilla baseline so the next run's merge sees the local
+        # edit as ours-vs-base (preserved) and any real upstream change as
+        # theirs-vs-base (applied) — seeding from the edited block instead
+        # would make ours == base and cause the next merge to silently
+        # discard the edit.
+        note_dry "adopt $dest (no base snapshot for managed block; seed base from pristine emit, leave file unchanged; re-run to merge upstream)"
+        snapshot_claude_block "$policybody"
+        SUM_ADOPTED+=("$dest (local edits preserved; re-run to merge upstream)")
+        return 0
       fi
     fi
   else
@@ -539,6 +573,11 @@ install_claude_md() {
 
   # Idempotency guard: if nothing would change, skip (no backup, no write).
   if cmp -s "$result" "$dest"; then
+    # Already current — but if there's no block base snapshot yet (legacy
+    # install), seed it now so future runs have a base to merge against.
+    if [ ! -e "$SNAPSHOT_BASE/CLAUDE.md.block" ]; then
+      snapshot_claude_block "$policybody"
+    fi
     SUM_SKIPPED+=("$dest (managed block already current)")
     return 0
   fi
@@ -615,6 +654,7 @@ print_group() {
 [ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"    "${SUM_CREATED[@]}"
 [ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"    "${SUM_UPDATED[@]}"
 [ "${#SUM_MERGED[@]}"   -gt 0 ] && print_group "Merged"     "${SUM_MERGED[@]}"
+[ "${#SUM_ADOPTED[@]}"  -gt 0 ] && print_group "Adopted"    "${SUM_ADOPTED[@]}"
 [ "${#SUM_BACKEDUP[@]}" -gt 0 ] && print_group "Backed up"  "${SUM_BACKEDUP[@]}"
 [ "${#SUM_SKIPPED[@]}"  -gt 0 ] && print_group "Skipped"    "${SUM_SKIPPED[@]}"
 [ "${#SUM_CONFLICT[@]}" -gt 0 ] && print_group "Conflicted" "${SUM_CONFLICT[@]}"

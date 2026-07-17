@@ -254,7 +254,8 @@ scenario_claude_md_conflict() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 8: legacy fallback — no snapshot present
+# Scenario 8: legacy adopt — no snapshot present, differing file is adopted
+# (local edit preserved, no clobber) rather than backed up + overwritten.
 # ---------------------------------------------------------------------------
 scenario_legacy_fallback() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
@@ -263,15 +264,18 @@ scenario_legacy_fallback() {
 
   sed -i.orig 's/^tools:/tools: EDITED/' "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
+  local before; before="$(cat "$t/$IMPL_REL")"
 
   local out rc
   out="$("$DOM" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
-  check "backup written" bash -c 'find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
-  check "file overwritten (edit gone)" bash -c '! grep -q "tools: EDITED" "$1"' _ "$t/$IMPL_REL"
-  check "fresh snapshot recreated" test -f "$t/$BASE_IMPL_REL"
+  check "no backup written" bash -c '! find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
+  check "live file unchanged (local edit preserved)" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$IMPL_REL"
+  check "edit still present" grep -q "tools: EDITED" "$t/$IMPL_REL"
+  check "base snapshot seeded from pristine emit (no edit)" bash -c '! grep -q "tools: EDITED" "$1"' _ "$t/$BASE_IMPL_REL"
   check "fresh manifest recreated" test -f "$t/$MANIFEST_REL"
+  check "reported as adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out"
 }
 
 # ---------------------------------------------------------------------------

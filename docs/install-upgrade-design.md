@@ -79,10 +79,11 @@ note it in the summary if none exists / user should add it). Rationale: it is
 per-working-copy merge state, not a shareable artifact, and different clones
 of the same repo could each have their own locally-edited files with
 independently-advancing bases. Tension: a fresh clone (or a clone that never
-ran domestique with this feature) has no `.claude/.domestique/` at all, so it
-falls back to legacy backup+overwrite behavior on that first run (see below),
-then starts snapshotting from there. This is an accepted, explicitly-noted
-tradeoff, not a defect.
+ran domestique with this feature) has no `.claude/.domestique/` at all, so on
+that first run it ADOPTS — seeds the base from the pristine freshly-emitted
+content (not the current/edited file) and leaves the live file unchanged
+(see §2/§3) — rather than overwriting, then merges upstream in on the
+*next* run.
 
 ---
 
@@ -131,12 +132,29 @@ rc=$?
   problem worth surfacing differently.
 
 **No snapshot present for this file (legacy install, or file predates this
-feature):** fall back to today's behavior — backup `.bak.<ts>` + overwrite
-(unless `--force`), identical-file skip unchanged — and *then* write a fresh
-base snapshot for the file so future runs can merge. This one upgrade still
-loses local edits (there is no base to merge against), which is an accepted,
-explicitly-called-out limitation of adopting this feature on a pre-existing
-install; every run after that is protected.
+feature) — ADOPT, don't clobber:**
+- **Identical file:** no change needed; seed the base snapshot from the
+  current (== freshly emitted) content so future runs have a base. Same as
+  today.
+- **Differs:** do **not** back up or overwrite. Seed the base snapshot from
+  the **pristine, freshly-emitted content** (the same bytes `install_plain`
+  would write if the file were missing) — **not** the current on-disk
+  content — and leave the live file byte-unchanged. Report it as **adopted**
+  (`Adopted <dest> (local edits preserved; re-run to merge upstream)`).
+  Rationale: base must be the *vanilla* baseline. With base = pristine emit,
+  the *next* run's 3-way merge — `ours` = current file (with the local
+  edit, plus any further edits made since), `base` = the pristine snapshot
+  just seeded, `theirs` = the (possibly newer) emit — sees the edit as
+  `ours != base` (preserved) and any real upstream change as
+  `theirs != base` (applied), with no data loss on the very first upgrade
+  after adopting this feature. **Seeding base from the current/edited
+  content instead is a bug, not a variant**: it makes `ours == base`
+  whenever no *further* edit is made since adoption, so `git merge-file`
+  takes `theirs` wholesale on the next run and silently drops the very edit
+  this design exists to protect — confirmed empirically while implementing
+  this. `--force` still bypasses adopt and overwrites verbatim, as usual.
+- **Missing file:** unchanged from the general missing-file case — create +
+  snapshot.
 
 **File deleted by the user:** treated as "missing" exactly as today —
 `install_plain`'s missing-file branch fires (write theirs fresh), and the
@@ -186,8 +204,15 @@ block, adapted to *capture* it instead). `base-block` is
   today, then write the initial `CLAUDE.md.block` snapshot.
 - **Half-marker file:** unchanged — still refuse and exit 1 before any
   merge logic runs.
-- **No snapshot present (legacy):** same fallback as §2 — do today's
-  replace-in-place, then write a fresh `CLAUDE.md.block` snapshot.
+- **No snapshot present (legacy):** same ADOPT behavior as §2 — if the block
+  body is identical to the fresh emit, just seed `CLAUDE.md.block` (no
+  change). If it differs, do **not** back up or overwrite; seed
+  `CLAUDE.md.block` from the **pristine `emit_policy` output** (not the
+  current/edited on-disk block body), leave `CLAUDE.md` byte-unchanged, and
+  report **adopted**. The next run 3-way merges the block body against that
+  pristine base, applying upstream while preserving the local edit — seeding
+  from the edited block body instead would make `ours == base` and cause the
+  next merge to drop the edit.
 
 ---
 
@@ -211,6 +236,9 @@ block, adapted to *capture* it instead). `base-block` is
   - `Merged` — clean 3-way merges (local edits preserved + upstream applied).
   - `Conflicted` — files where a `.new` artifact was written; live file left
     untouched. Each line names both the live file and its `.new` sibling.
+  - `Adopted` — legacy (no-snapshot) install where the on-disk file differed
+    from the fresh emit: base snapshot seeded from the pristine emit, live
+    file left unchanged, local edits preserved; re-run to merge upstream.
   - (`Error` cases fold into `Conflicted` in the printed summary but are
     logged distinctly to stderr with the underlying reason.)
 - **Exit codes** (matching the script's *existing* mapping, not inventing a
@@ -275,7 +303,20 @@ as script/invocation bugs worth escalating differently.
   target directory simultaneously could race on `.claude/.domestique/` writes.
   No locking is proposed; out of scope unless this becomes a real usage
   pattern.
-- **First-adoption backfill:** existing installs (already on disk before this
-  feature ships) get zero merge protection on their very first upgrade after
-  adopting this design (per §2/§3's legacy fallback) — worth flagging loudly
-  in release notes/CHANGELOG when this ships, not just in this doc.
+- **First-adoption backfill (resolved):** existing installs (already on disk
+  before this feature ships) are safe by default on their very first upgrade
+  after adopting this design — the legacy (no-snapshot) fallback in §2/§3
+  ADOPTS a differing file (seeds the base snapshot from the **pristine
+  freshly-emitted content**, leaves the live file/CLAUDE.md block unchanged,
+  no `.bak` clobber) rather than overwriting it. Local edits are never lost
+  on that first run; the upstream change is applied on the *next* run via a
+  normal 3-way merge against the pristine seeded base. (Previously this doc
+  specified backup+overwrite on first adoption, which would have silently
+  discarded local edits — e.g. hand-added MCP tools in an agent's
+  frontmatter — on every pre-existing install's first upgrade. That
+  behavior was replaced with the adopt logic above before this shipped. An
+  earlier draft of the adopt logic itself seeded the base from the
+  *current/edited* content instead of the pristine emit — that variant was
+  caught during verification: it makes `ours == base` whenever no further
+  edit is made, so the very next merge run silently drops the adopted edit.
+  Seeding from the pristine emit is the only correct choice.)
