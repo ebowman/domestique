@@ -262,7 +262,8 @@ to run — never executing it itself.
 ```
 
 When `/goal` stops — completion, ceiling, or a stop condition — review the
-epic branch's diffs and commit history, then merge by hand.
+epic branch's diffs and commit history, then merge the epic branch into main
+by hand, or prompt Claude to do it for you.
 
 ## Safety & idempotency
 
