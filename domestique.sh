@@ -52,7 +52,7 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 - One task in flight at a time. Bounded WIP.
 - Subagents return summaries, never full file dumps. Your context is the constraint — keep it lean, don't re-read large outputs.
 - Do not spawn agent teams for this sequential pipeline. Subagents only.
-- At session end ("land the plane"): file any loose discovered work as beads, then sync (`bd sync --flush-only` and commit `.beads/`).
+- At session end ("land the plane"): file any loose discovered work as beads, then export and commit (`bd export`, then commit `.beads/`). `bd export` writes the git-tracked `.beads/*.jsonl` — that JSONL is the versioned snapshot. There is no `bd sync`; bd is Dolt-backed now, and `bd dolt commit` records local Dolt history only (`.beads/dolt/` is gitignored, so it never affects a clean tree).
 DOM_EOF
 }
 
@@ -171,7 +171,7 @@ Stop and report after 15 beads closed in this run (or sooner if you judge the bu
 - Two consecutive infrastructure/API errors: before concluding it's an API outage, check `bd memories` for machine-sleep or known-flake notes.
 
 ## On epic completion (or hitting the ceiling)
-Run the full test suite once more. Summarize: beads closed, commits made (with ids), any follow-ups filed as beads, and residual risks that need human hands-on attention. Land the plane per the session-close protocol — file loose discovered work as beads, `bd sync --flush-only`, commit `.beads/`. Anything requiring push or merge authority is reported as a PROPOSED command for the human to run, never executed by you.
+Run the full test suite once more. Summarize: beads closed, commits made (with ids), any follow-ups filed as beads, and residual risks that need human hands-on attention. Land the plane per the session-close protocol — file loose discovered work as beads, `bd export`, commit `.beads/`. Anything requiring push or merge authority is reported as a PROPOSED command for the human to run, never executed by you.
 
 ## Invariants — restate these to yourself at the end of the report
 - One bead in flight at a time.
