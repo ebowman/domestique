@@ -200,6 +200,8 @@ Options:
                  `bd setup claude`. If `bd` is absent, note it and skip.
   --force        Overwrite differing .claude/ files without a .bak backup.
                  (CLAUDE.md is ALWAYS backed up before modification.)
+  --guest        Route the managed orchestration-policy block to
+                 CLAUDE.local.md instead of CLAUDE.md.
   --help, -h     Show this help.
 
 Behavior:
@@ -208,6 +210,11 @@ Behavior:
   * CLAUDE.md: created if absent; if it has the managed markers only the
     content between them is replaced; otherwise the block is appended and all
     existing content is preserved verbatim. Always backed up before change.
+  * --guest: for installing into a repo you don't own, for personal use only.
+    The managed policy block is written to CLAUDE.local.md instead of
+    CLAUDE.md. A tracked CLAUDE.md is never read, modified, or backed up in
+    this mode. If CLAUDE.md already carries a non-guest domestique install,
+    a warning is printed and CLAUDE.md is left untouched.
   * Running twice in a row makes no changes on the second run.
   * Pre-existing install with no snapshot yet (.claude/.domestique/ absent)
     and a differing file: ADOPTED, not overwritten — local edits are left in
@@ -226,12 +233,14 @@ TARGET_DIR=""
 DRY_RUN=0
 WITH_BEADS=0
 FORCE=0
+GUEST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)    DRY_RUN=1 ;;
     --with-beads) WITH_BEADS=1 ;;
     --force)      FORCE=1 ;;
+    --guest)      GUEST=1 ;;
     -h|--help)    usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -247,6 +256,14 @@ TARGET_DIR="${TARGET_DIR:-.}"
 if [ ! -d "$TARGET_DIR" ]; then
   echo "Target directory does not exist: $TARGET_DIR" >&2
   exit 1
+fi
+
+POLICY_DEST="CLAUDE.md"
+if [ "$GUEST" -eq 1 ]; then
+  POLICY_DEST="CLAUDE.local.md"
+  if [ -e "$TARGET_DIR/CLAUDE.md" ] && grep -qF "$MARKER_BEGIN" "$TARGET_DIR/CLAUDE.md"; then
+    echo "Warning: a non-guest domestique install exists in $TARGET_DIR/CLAUDE.md — left untouched. Installing policy into $TARGET_DIR/$POLICY_DEST instead." >&2
+  fi
 fi
 
 TS="$(date +%Y%m%d%H%M%S)"
@@ -275,7 +292,7 @@ note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
 # ---------------------------------------------------------------------------
 SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
 SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
-MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md"
+MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,$POLICY_DEST"
 SNAPSHOT_TOUCHED=0
 
 # rel_to_base <dest> -> absolute path under SNAPSHOT_BASE mirroring <dest>'s
@@ -656,7 +673,7 @@ install_claude_md() {
 echo "domestique: installing into $TARGET_DIR"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
 
-install_claude_md "$TARGET_DIR/CLAUDE.md"
+install_claude_md "$TARGET_DIR/$POLICY_DEST"
 install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
 install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
