@@ -292,6 +292,10 @@ note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
 # ---------------------------------------------------------------------------
 SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
 SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
+# Policy managed-block snapshot is keyed by destination filename (CLAUDE.md
+# vs CLAUDE.local.md under --guest) so a --guest run never reads or rewrites
+# the plain run's merge base, and vice versa. See docs/install-upgrade-design.md.
+POLICY_SNAPSHOT="$SNAPSHOT_BASE/$POLICY_DEST.block"
 MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,$POLICY_DEST"
 SNAPSHOT_TOUCHED=0
 
@@ -321,9 +325,10 @@ snapshot_plain() {
 
 # snapshot_claude_block <content-file>
 # Record the managed block BODY (no marker lines) as the future merge base
-# for CLAUDE.md. Call only after CLAUDE.md was actually created/updated.
+# for the policy file at $POLICY_DEST (CLAUDE.md, or CLAUDE.local.md under
+# --guest). Call only after $POLICY_DEST was actually created/updated.
 snapshot_claude_block() {
-  local content="$1" basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+  local content="$1" basepath="$POLICY_SNAPSHOT"
   SNAPSHOT_TOUCHED=1
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
@@ -549,7 +554,7 @@ install_claude_md() {
       if [ "$FORCE" -eq 1 ]; then
         : # wholesale replace (already computed in $result above), no merge.
       else
-        local basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+        local basepath="$POLICY_SNAPSHOT"
         if [ -e "$basepath" ]; then
           # 3-way merge the block body: ours=$oursblock, base=$basepath,
           # theirs=$policybody.
@@ -650,7 +655,7 @@ install_claude_md() {
   if cmp -s "$result" "$dest"; then
     # Already current — but if there's no block base snapshot yet (legacy
     # install), seed it now so future runs have a base to merge against.
-    if [ ! -e "$SNAPSHOT_BASE/CLAUDE.md.block" ]; then
+    if [ ! -e "$POLICY_SNAPSHOT" ]; then
       snapshot_claude_block "$policybody"
     fi
     SUM_SKIPPED+=("$dest (managed block already current)")
