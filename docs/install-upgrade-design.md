@@ -12,8 +12,7 @@ We want a 3-way merge (base = what we last installed, ours = on-disk with the
 user's edits, theirs = what the current `domestique.sh` would emit now) so
 local edits survive while upstream changes still apply.
 
-Because the emitters (`emit_implementer`, `emit_reviewer`, `emit_decompose`,
-`emit_policy`) live inside the script itself, an upgraded `domestique.sh`
+Because the Claude and Codex emitters live inside the script itself, an upgraded `domestique.sh`
 cannot reconstruct what an *older* version of itself emitted. The merge base
 must therefore be snapshotted to disk at install time, not recomputed.
 
@@ -25,22 +24,27 @@ its old value. Advancing the snapshot on a conflicted file would make the
 conflict un-re-mergeable on the next run (the next run's "base" would no
 longer reflect what the user actually last saw).
 
-Also note: `domestique.sh` has no `VERSION` constant today. Correctness of
-the merge comes entirely from the byte-for-byte content of the snapshotted
-base files, not from any version number. The manifest's version/ref field
-below is diagnostic only (useful for `--help`/debugging/telemetry), not load
-bearing. Introducing a real version constant is out of scope for this design
-(file as follow-up if wanted).
+Correctness of the merge comes entirely from the byte-for-byte content of the
+snapshotted base files, not from `DOMESTIQUE_VERSION`. The manifest's
+version/ref fields are diagnostic only; they are never a merge base or an
+ownership decision.
 
 ---
 
-## 1. Base snapshot / manifest
+## 1. Provider snapshots, manifests, and selection
 
-**Location:** `.claude/.domestique/` in the target repo.
+State is provider-specific: `.claude/.domestique/` for Claude and
+`.codex/.domestique/` for Codex. A Codex-only install therefore creates no
+`.claude/` bookkeeping. Each installed provider records the selected
+platform set so a later selector-less run can recover it without inspecting
+installed binaries or arbitrary project files. A provider state tree without
+a platform record implies that provider.
 
 ```
 .claude/.domestique/
   mode                                   # sticky guest-mode marker (see §6); absent on normal installs
+  platforms                              # persisted provider union
+  beads-owned                            # optional shared-workspace ownership marker
   manifest                              # small key:value file, shell-parseable
   base/
     CLAUDE.md.block                     # last-installed managed-block BODY (no markers) — normal-mode installs
@@ -49,6 +53,22 @@ bearing. Introducing a real version constant is out of scope for this design
     .claude/agents/reviewer.md
     .claude/commands/decompose.md
     .claude/commands/goal.md
+
+.codex/.domestique/
+  mode                                   # guest marker; absent in normal mode
+  platforms                              # persisted union: claude, codex, or both
+  guest-excludes                         # exact Codex leaves that guest mode may hide
+  beads-owned                            # optional shared-workspace ownership marker
+  manifest
+  base/
+    AGENTS.md.block                      # normal mode, when AGENTS.md is active
+    AGENTS.override.md.block             # normal mode, when the override is active
+    .codex/agents/implementer.toml
+    .codex/agents/reviewer.toml
+    .agents/skills/domestique/SKILL.md
+    .agents/skills/domestique-decompose/SKILL.md
+    .agents/skills/domestique-goal/SKILL.md
+    .agents/skills/domestique-goal/agents/openai.yaml
 ```
 
 The `base/` tree mirrors each managed file's path under the target repo
@@ -63,6 +83,11 @@ keyed by destination filename, because a target directory can see both a
 plain install and a `--guest` install over its lifetime (see §6) — each
 mode's merge base is independent of the other's.
 
+The same path-mirroring rule applies to both providers. Policy destinations
+are snapshotted as block bodies; plain agent, command, skill, and skill
+metadata files are snapshotted verbatim. Codex guest mode has no root policy
+snapshot because it never reads or writes either AGENTS file.
+
 **Manifest format:** flat `key=value` lines, one per line, no nesting — avoids
 a `jq`/`yq` dependency in a `bash + git + coreutils` script.
 
@@ -72,11 +97,17 @@ domestique_version=<DOMESTIQUE_VERSION, e.g. 0.1.0>
 installed_ref=<git describe/short-sha of domestique.sh's own repo, or "unknown">
 installed_at=<ISO8601 timestamp>
 script_sha256=<sha256 of domestique.sh, or "unavailable">
+platform=claude
 files=.claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md
 ```
 
-`files=` is **not** simply "this run's policy destination plus the four fixed
-`.claude/` files" — it's computed from actual on-disk state at manifest-write
+A Codex manifest uses `platform=codex` and lists the actual TOML, skill,
+metadata, and active policy destinations. Manifests are inventories, not
+assumptions: mixed policy history can leave managed blocks in more than one
+possible policy destination, and uninstall must inspect them all.
+
+For Claude, `files=` is **not** simply "this run's policy destination plus
+the four fixed `.claude/` files" — it is computed from actual on-disk state at manifest-write
 time (`managed_files_list`), because a target directory can be in a mixed
 state: a prior plain install left a managed block in `CLAUDE.md`, and a later
 `--guest` run (or vice versa) writes into `CLAUDE.local.md` without touching
@@ -85,10 +116,12 @@ directory, so `files=` lists whichever of `CLAUDE.md` / `CLAUDE.local.md`
 actually carry the managed-block markers on disk — this run's destination is
 always included (it was just written), plus the *other* policy file if it
 independently carries the markers too. In a mixed-mode directory, `files=`
-can therefore list **both** `CLAUDE.md,CLAUDE.local.md`, not just one.
+can therefore list **both** `CLAUDE.md,CLAUDE.local.md`, not just one. Codex
+uses the same inventory rule across its two possible normal policy
+destinations and fixed TOML/skill leaves.
 
 **When it's written:**
-- **At install** (first time, no `.claude/.domestique/` present): after each
+- **At install** (first time, no provider state present): after each
   file is successfully written (create or clean overwrite), write/refresh its
   base snapshot and update the manifest.
 - **After each successful apply on upgrade**: same rule — a file's base
@@ -97,7 +130,7 @@ can therefore list **both** `CLAUDE.md,CLAUDE.local.md`, not just one.
   `--force` overwrite). A conflicted file's base snapshot is left untouched.
 
 **Gitignore:** design intent, not implemented behavior — a case could be made
-for the installer to append `.claude/.domestique/` to the target repo's
+for the installer to append provider state to the target repo's
 `.gitignore` if one exists (or note it in the summary if none exists). As
 shipped, the installer does not print any such recommendation or touch
 `.gitignore` at all (see the Open Questions entry below); users who want it
@@ -105,7 +138,7 @@ ignored add it by hand. Rationale for wanting this: it is
 per-working-copy merge state, not a shareable artifact, and different clones
 of the same repo could each have their own locally-edited files with
 independently-advancing bases. Tension: a fresh clone (or a clone that never
-ran domestique with this feature) has no `.claude/.domestique/` at all, so on
+ran domestique with this feature) has no provider state at all, so on
 that first run it ADOPTS — seeds the base from the pristine freshly-emitted
 content (not the current/edited file) and leaves the live file unchanged
 (see §2/§3) — rather than overwriting, then merges upstream in on the
@@ -134,7 +167,7 @@ rc=$?
 ```
 
 - `ours`   = current on-disk file.
-- `base`   = `.claude/.domestique/base/<relpath>` (the pristine snapshot).
+- `base`   = `<provider-state>/base/<relpath>` (the pristine snapshot).
 - `theirs` = freshly emitted content from the current script's `emit_*` function.
 
 **Exit code handling — conflict and error are distinct buckets, not one:**
@@ -194,11 +227,18 @@ though it's already correct.
 
 ---
 
-## 3. CLAUDE.md managed-block merge (`install_claude_md`)
+## 3. Managed policy-block merge
 
 The 3-way merge applies **only to the block body** (the content strictly
 between `MARKER_BEGIN` and `MARKER_END`), never to the surrounding user
 content, which is preserved byte-for-byte exactly as today.
+
+Claude normal and guest policy destinations remain `CLAUDE.md` and
+`CLAUDE.local.md`. Codex normal mode manages the active root instruction
+file: an existing `AGENTS.override.md`, otherwise `AGENTS.md`. Codex guest
+mode bypasses this function entirely and leaves both files byte-untouched.
+The algorithm below uses `CLAUDE.md` as the original concrete example; the
+destination and provider snapshot root are parameters.
 
 **Extraction:** given the on-disk `CLAUDE.md`, extract the current block body
 as `ours-block` (using the same awk logic already used to *replace* the
@@ -244,6 +284,31 @@ block, adapted to *capture* it instead). `base-block` is
 
 ## 4. CLI / UX
 
+- **`--platform claude|codex|both`:** an explicit install adds the selected
+  projection(s) to the persisted set. A new selector-less install defaults
+  to Claude; later selector-less runs use persisted state. Never infer the
+  user's desired client from executables or files. Print selected platforms,
+  guest status, and the policy destination (or `skills-only`) before writes.
+- **Codex invocation:** normal and guest installs expose namespaced
+  `$domestique`, `$domestique-decompose`, and `$domestique-goal` repo skills.
+  Goal metadata disables implicit invocation; only an explicit goal skill is
+  unattended authorization. Codex custom agents are project TOML, not
+  deprecated user-global custom prompts.
+- **Codex models and review isolation:** the implementer TOML pins
+  `gpt-5.6-terra` at medium effort; the reviewer pins `gpt-5.6` at high
+  effort. An unavailable pin is reported with the role and model; recovery is
+  to edit the TOML or remove both model keys to inherit the parent, never a
+  silent substitution. The reviewer inherits workspace-write so generic test
+  suites may create caches/build output, but its instructions forbid edits.
+  The orchestrator fingerprints tracked diff, staged diff, and bead state
+  immediately before and after review. Any delta is FAIL/stop; ignored test
+  artifacts are allowed and new visible untracked artifacts are reported.
+- **Normal `--with-beads`:** if needed, initialize with
+  `bd init --skip-agents --skip-hooks --non-interactive`, then run `bd setup claude`,
+  `bd setup codex`, or both recipes according to the selected platforms.
+  Missing `bd`, or a version without both safe skip flags, warns and skips.
+  Guest behavior is stricter in §6.
+
 - **`--dry-run`:** performs the merge computation (runs `git merge-file`) but
   writes nothing — no live file changes, no `.new`/`.bak` artifacts, no
   snapshot writes. Reports what *would* happen: `[dry-run] merge <dest>
@@ -273,7 +338,7 @@ block, adapted to *capture* it instead). `base-block` is
   exit `1`):
   - `0`: everything applied cleanly (creates, updates, clean merges, skips).
   - `1`: unchanged from today — operational refusals: missing target dir,
-    half-marker `CLAUDE.md`.
+    half-marker policy file.
   - `2`: unchanged from today — CLI misuse: unknown option, unexpected
     argument.
   - `3` (new): one or more files ended in **conflict** or **error** during
@@ -288,11 +353,11 @@ block, adapted to *capture* it instead). `base-block` is
 
 ## 5. Periodic updater interaction
 
-A future "fetch latest `domestique.sh` from GitHub and re-run" updater is a
-thin wrapper around this same mechanism and needs no new merge logic: it
+The "fetch latest `domestique.sh` from GitHub and re-run" updater is a thin
+wrapper around this same mechanism and needs no separate merge logic: it
 downloads the new script, runs it against the target directory exactly as a
-manual upgrade would, and the existing snapshot in `.claude/.domestique/`
-(written by whichever run last succeeded — manual or automated) is the base
+manual upgrade would, and the existing provider snapshot (written by
+whichever run last succeeded — manual or automated) is the base
 for the 3-way merge regardless of how the new script arrived. The only thing
 the updater adds on top is deciding *when* to trigger a run (e.g. on a
 schedule, or on detecting a newer upstream ref) and where to surface
@@ -301,15 +366,19 @@ it should treat exit code `3` (conflicts) as "applied partially, needs a
 human," not as a hard failure of the updater itself, and exit codes `1`/`2`
 as script/invocation bugs worth escalating differently.
 
+`update.sh` forwards an explicit `--platform`. Without one, it lets the
+installer resolve the persisted platform set. It also forwards guest
+conversion flags; platform and guest state are orthogonal, and neither is
+re-detected heuristically.
+
 ---
 
 ## 6. Guest mode (`--guest`)
 
-**Purpose.** Install into a repo you don't own (e.g. a client project) for
-personal use, without touching the tracked `CLAUDE.md` or leaving any trace
-in `git status`.
+**Purpose.** Install into a repo you don't own for personal use without
+changing tracked host files or adding domestique noise to `git status`.
 
-**Policy destination.** Under `--guest`, `POLICY_DEST` is `CLAUDE.local.md`
+**Claude policy destination.** Under Claude `--guest`, `POLICY_DEST` is `CLAUDE.local.md`
 instead of `CLAUDE.md`; every place in §1–§3 that reads/writes "the policy
 file" or "`CLAUDE.md`" targets whatever `POLICY_DEST` resolves to for this
 run. This is why `base/` can hold both `CLAUDE.md.block` and
@@ -333,64 +402,73 @@ Because the merge/snapshot machinery in §2/§3 operates on whatever
 against the guest variant's snapshot, not the normal variant's — the two
 never cross-contaminate.
 
-**Exclude-block management (`install_git_exclude`).** Guest mode adds a
-managed block (`GITEXCLUDE_MARKER_BEGIN`/`GITEXCLUDE_MARKER_END`, using `#`
-comments — the exclude file's syntax, not `CLAUDE.md`'s HTML-comment
-markers) to `<git-common-dir>/info/exclude`, listing `CLAUDE.local.md`,
-`.claude/`, `.beads/`, `*.bak.[0-9]*`, and `*.new`. The common dir is
-resolved via `git -C <target> rev-parse --git-common-dir`, so this correctly
-targets the shared `.git` even when `<target>` is a worktree (falling back to
-`<target>/.git/info/exclude` if `git` isn't on `PATH` but `.git` is a real
-directory). If the target isn't a git repository at all, the step is skipped
-with a warning — nothing else about the guest install is blocked by this.
-Before writing, `install_git_exclude` also warns (never fails) if any of
-`CLAUDE.local.md`, `.claude`, or `.beads` is already tracked in the target
-repo, since an exclude entry can't retroactively hide a tracked path. The
-exclude block itself follows the same idempotent create/update/skip-if-
-identical logic as the plain-file path in §2, but with no merge: it's always
-a wholesale block replace (there's no user content to preserve *inside* the
-block, only outside it, which is handled the same way `install_claude_md`
-preserves content outside its markers).
+**Codex policy is skills-only.** Codex has no additive equivalent of
+`CLAUDE.local.md`; at one directory level `AGENTS.override.md` shadows rather
+than layers over `AGENTS.md`. A Codex guest install therefore never creates,
+reads, merges, backs up, or modifies either root AGENTS file. It installs
+project custom-agent TOML and the three namespaced skills only. The user runs
+`$domestique` once in each new session. Every operational skill repeats the
+invariants it needs, the base skill can implicitly match ordinary dispatch
+and landing prompts, and the goal skill remains explicit-only. This provides
+the workflow without claiming automatic startup-policy parity.
 
-**Sticky mode marker.** A guest install writes `.claude/.domestique/mode`
-(content: `guest`) after the policy file and the four `.claude/` files are
-installed (the manifest write and the opt-in `--with-beads` step, if any,
-happen after the marker, not before it). A later run against the
-same target with neither `--guest` nor `--no-guest` reads that marker and
-forces guest mode back on (with a printed note) rather than silently
-reverting to normal — this is what makes flag-less re-runs, and `update.sh`
-upgrades (which don't pass `--guest` themselves unless told to), stay in
-guest mode. `--no-guest` converts on purpose: it removes the marker and
-prints by-hand conversion instructions (nothing is auto-migrated — the user
-decides whether to fold `CLAUDE.local.md` into `CLAUDE.md` or drop it, and
-whether to clean the exclude block by hand), and that same run installs
-`CLAUDE.md` normally. Passing both `--guest` and `--no-guest` is a usage
-error (exit 2) resolved before any file I/O happens. A marker with any
-content other than exactly `guest` is treated as corrupt/foreign: a warning
-is printed and the run proceeds as a normal install (it does not error out,
-unlike the markers_sane refusals in §3/§7 — an unrecognized *mode* marker is
-not the same failure mode as unsound *managed-block* markers in a policy
-file).
+**Exclude-block management (`install_git_exclude`).** Guest mode replaces one
+managed `#`-comment block in `<git-common-dir>/info/exclude`. Claude retains
+the legacy `CLAUDE.local.md` and broad `.claude/` entries, which may hide
+pre-existing untracked content below `.claude/`.
+Codex entries name the two agent TOMLs, three skill leaves and goal metadata,
+and `.codex/.domestique`. No broad conflict/backup suffix patterns are added,
+so unrelated host artifacts remain visible. Shared `.beads/` is included
+when domestique created it; that shared ownership marker is propagated to
+guest providers added later so scoped uninstall cannot expose it. Never
+exclude whole `.agents/` or `.codex/`
+trees. Codex never newly hides an exact managed path that was already visibly
+untracked before installation. A tracked owned-path collision is reported because excludes
+cannot hide it. The common directory is resolved with `git rev-parse` so the
+block works in worktrees. Non-Git targets warn and skip exclusion. Content
+outside the managed block is always preserved.
+
+**Sticky mode marker.** Each guest provider writes `mode=guest` in its own
+state tree. Selector-less reruns take the union of persisted providers and
+retain their guest mode, including through `update.sh`. `--no-guest`
+converts deliberately: Claude prints manual guidance for local-policy
+customizations; Codex begins managing the active AGENTS destination. Passing
+`--guest` and `--no-guest` is rejected before file I/O. Conflicting provider
+state is resolved conservatively by union so a managed projection is never
+silently dropped.
+
+**Beads in guest mode.** If requested and `.beads/` is absent, run
+`bd init --stealth --skip-agents --skip-hooks --non-interactive`. Never run a provider `bd
+setup` recipe in guest mode: those recipes may write host instructions,
+hooks, or tracked configuration. If the installed `bd` lacks the safe flags,
+skip initialization with a warning. This keeps the worktree clean after a
+guest `--with-beads` install; uninstall still preserves
+`.beads/` unless `--purge-beads` is explicit.
 
 ---
 
 ## 7. Uninstall (`--uninstall`, `--purge-beads`)
 
-**Scope.** Removes exactly what domestique installed and nothing else: the
-four plain `.claude/` files, the managed block in `CLAUDE.md` and/or
-`CLAUDE.local.md` (whichever currently carry it — both, if the target saw
-mixed plain/guest use), the managed block in `<git-common-dir>/info/exclude`,
-and the `.claude/.domestique/` snapshot dir (including the mode marker).
-`.claude/agents`, `.claude/commands`, and `.claude` itself are pruned only if
-left empty afterward. `.beads/` is left in place by default (with a printed
-note) since it may hold work unrelated to domestique's own install; pass
-`--purge-beads` to remove it too. Combinable only with `--dry-run`,
-`--force`, `--purge-beads`, and `TARGET_DIR` — combining with `--guest`,
-`--no-guest`, or `--with-beads` is a usage error (exit 2), since those flags
-only make sense for an install run.
+**Scope.** Bare `--uninstall` scans and removes all domestique-managed
+provider projections. `--uninstall --platform claude|codex|both` is scoped to the
+selected projection, removes it from persisted platform state, and rebuilds
+the shared guest-exclude union for providers that remain. Claude inventory is
+the existing four `.claude` projection files and policy destinations. Codex
+inventory is the two agent TOMLs, three skill leaves plus goal metadata, and
+managed blocks in either possible normal AGENTS destination. Each provider's
+state tree is owned separately. `.beads/` remains unless `--purge-beads` is
+explicit.
 
-**Snapshot-compare safety (mirrors §2's ADOPT reasoning in reverse).** Each of
-the four plain `.claude/` files is compared against its recorded base
+Only known leaves are removed. `.claude/agents`, `.claude/commands`,
+`.codex/agents`, `.agents/skills`, and their parents are pruned only when
+empty; an entire user-owned `.codex/` or `.agents/` tree is never a deletion
+target. Install-only flags remain invalid with uninstall, while `--platform`
+is valid for scoped removal.
+
+**Snapshot-compare safety (mirrors §2's ADOPT reasoning in reverse).** Each
+provider must first have ownership evidence: its state tree or a managed
+policy marker. Fixed inventory paths alone are never treated as proof, so a
+never-installed matching host file is untouched. Each managed plain file is compared against its provider's recorded base
 snapshot (falling back to the pristine freshly-emitted content if no
 snapshot exists — e.g. a legacy install that predates the snapshot feature).
 An exact match means the file was never modified after install, so it's
@@ -399,7 +477,7 @@ kept, renamed to `<file>.uninstalled.<timestamp>`, unless `--force` is
 passed, in which case it's removed anyway (noted as "modified, --force" in
 the summary). The same compare-then-decide logic governs the policy files'
 managed blocks: the on-disk block body is diffed against
-`CLAUDE.md.block`/`CLAUDE.local.md.block` (or the pristine `emit_policy`
+the matching policy-block snapshot (or the pristine provider policy
 output for the matching mode, if no snapshot exists); an unmodified block is
 stripped with no backup, and the file is deleted entirely if stripping
 leaves nothing but whitespace behind, while a modified block is backed up to
@@ -429,59 +507,31 @@ structure (`Removed` / `Kept (modified)` / `Backed up` / `Skipped` /
 **Round-trip guarantee.** For the common case — a `--guest` install into an
 otherwise-clean host repo, immediately followed by `--uninstall` — every
 installed file is deleted outright (nothing was ever modified), the exclude
-block is fully stripped back out, `.claude/.domestique/` is removed, and the
-now-empty `.claude/agents`, `.claude/commands`, and `.claude` directories are
-pruned, leaving the host repo at byte-for-byte clean `git status`. This is
-the practical safety property guest mode exists to provide, and it's
-verified by `test/uninstall.sh`. It does not extend to `--with-beads`
-installs: `bd setup claude` writes `.agents/`, `.codex/`, `.gitignore`,
-`AGENTS.md`, and `CLAUDE.md`, none of which guest mode's exclude block
-covers, so those remain as tracked-file edits or untracked paths after
-`--uninstall`.
+block is fully stripped or reduced to the remaining provider union, provider
+state is removed, and empty owned parents are pruned, leaving byte-for-byte
+clean `git status`. This applies to Claude, Codex, both, and safe guest
+installs without Beads. For `--with-beads`, pass `--purge-beads` on uninstall
+to remove the deliberately preserved `.beads/` workspace too. Guest never
+runs `bd setup`. A scoped uninstall preserves the other projection and only
+its exact exclude entries.
 
 ---
 
-## Open questions / risks
+## Residual risks and resolved decisions
 
-- **Is "`--force` = discard-and-take-theirs" the right redefinition, or does
-  anyone want a separate `--force-merge` flag that forces a merge attempt
-  even when e.g. a snapshot is missing (by treating "no base" as
-  "base = ours", so it merges against a no-op diff)?** Current design keeps
-  `--force` as the simple, well-understood escape hatch and does not add a
-  second flag. This needs an operator decision only if the discard-everything
-  behavior turns out to be too blunt in practice.
-- **`.gitignore` mutation:** should the installer actually *edit* the target
-  repo's `.gitignore` to add `.claude/.domestique/`, or print a
-  recommendation, or do neither? Editing another project's `.gitignore`
-  automatically is a bigger claim on the target repo than the current script
-  makes anywhere else (it only ever writes inside `.claude/` and
-  `CLAUDE.md`/`CLAUDE.local.md`, plus the git-exclude file under `--guest`).
-  As shipped, the installer does **neither** — it doesn't edit `.gitignore`
-  and doesn't print a recommendation about it either; this remains an open,
-  unimplemented product-behavior fork, not a confirmed default.
-- **Snapshot corruption/tampering:** if a file inside `.claude/.domestique/base/`
-  is hand-edited or deleted between runs, `git merge-file` will happily merge
-  against garbage or the "no snapshot" fallback fires. This design does not
-  add integrity checking (e.g. a checksum in the manifest) — flagging as a
-  known gap, not solved here.
-- **Multiple concurrent installs / CI matrix runs** writing to the same
-  target directory simultaneously could race on `.claude/.domestique/` writes.
-  No locking is proposed; out of scope unless this becomes a real usage
-  pattern.
-- **First-adoption backfill (resolved):** existing installs (already on disk
-  before this feature ships) are safe by default on their very first upgrade
-  after adopting this design — the legacy (no-snapshot) fallback in §2/§3
-  ADOPTS a differing file (seeds the base snapshot from the **pristine
-  freshly-emitted content**, leaves the live file/CLAUDE.md block unchanged,
-  no `.bak` clobber) rather than overwriting it. Local edits are never lost
-  on that first run; the upstream change is applied on the *next* run via a
-  normal 3-way merge against the pristine seeded base. (Previously this doc
-  specified backup+overwrite on first adoption, which would have silently
-  discarded local edits — e.g. hand-added MCP tools in an agent's
-  frontmatter — on every pre-existing install's first upgrade. That
-  behavior was replaced with the adopt logic above before this shipped. An
-  earlier draft of the adopt logic itself seeded the base from the
-  *current/edited* content instead of the pristine emit — that variant was
-  caught during verification: it makes `ours == base` whenever no further
-  edit is made, so the very next merge run silently drops the adopted edit.
-  Seeding from the pristine emit is the only correct choice.)
+- `--force` remains discard-local-and-take-upstream; there is no separate
+  force-merge mode.
+- Domestique never edits `.gitignore`. Codex guest uses precise local leaves;
+  Claude guest retains its legacy `.claude/` compatibility entry. Normal-mode
+  provider state follows the project's normal tracking policy.
+- Snapshot corruption is not authenticated. A missing base falls back to
+  ADOPT; a corrupt base may produce a merge conflict or bad merge and remains
+  a known limitation.
+- Concurrent installers can race on provider state. No locking is included.
+- First adoption seeds a missing base from the pristine emitter and leaves a
+  differing live file untouched. Seeding from the edited live file is
+  forbidden because it makes `ours == base` and can drop the local edit on
+  the next merge.
+- Codex agent schemas and model availability can evolve. Locally edited TOML
+  is merge-preserved, and unavailable-model recovery is explicit rather than
+  silently substituting a role or model.

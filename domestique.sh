@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# domestique.sh — install the Claude Code orchestration config into a repo.
-# Embeds CLAUDE.md orchestration policy + .claude/agents/implementer.md +
-# .claude/commands/decompose.md, and installs them idempotently.
+# domestique.sh — install the domestique orchestration config into a repo.
+# Claude Code remains the default projection; --platform also supports Codex
+# and a simultaneous Claude+Codex install. All runtime assets remain embedded
+# so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
 DOMESTIQUE_VERSION="0.1.0"
@@ -199,44 +200,223 @@ Run the full test suite once more. Summarize: beads closed, commits made (with i
 DOM_EOF
 }
 
+# Codex project-scoped custom agents. Unlike Claude agent frontmatter, Codex
+# uses TOML config layers. Keep the role model explicit: implementation uses a
+# balanced model, while review uses a stronger, higher-effort independent
+# context. Users can locally edit these files; the normal snapshot/3-way merge
+# path preserves those edits on upgrade.
+emit_codex_implementer() { cat <<'DOM_EOF'
+name = "implementer"
+description = "Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+You are the domestique implementer. Complete exactly one bounded task handed
+to you by the orchestrator, then stop.
+
+- If given a bead id, claim it with `bd update <id> --claim` (or set it
+  in_progress). Never close it; the orchestrator closes only after review.
+- Stay inside the brief. Do not refactor adjacent code or start another bead.
+- Run the relevant tests and linter. Fix failures within scope; report
+  unrelated failures instead of sprawling.
+- File discovered work as a dependent bead rather than implementing it.
+- Never touch credentials, access controls, or use destructive git commands.
+- Stop and report any ambiguity instead of silently choosing new semantics.
+
+Return only: files changed, validation actually run and its result, discovered
+beads, and blockers or decisions the orchestrator needs.
+"""
+DOM_EOF
+}
+
+emit_codex_reviewer() { cat <<'DOM_EOF'
+name = "reviewer"
+description = "Independently verifies one completed bead against its done criteria, real diff, and tests; never fixes or changes bead state."
+model = "gpt-5.6"
+model_reasoning_effort = "high"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+You are the domestique reviewer. Independently verify one completed task and
+return a verdict; do not fix anything.
+
+- Judge the bead's done criteria against the real files and diff, not the
+  implementer's summary.
+- Inspect `git diff` and `git diff --cached`, read the affected code, and run
+  the relevant full test/lint suite yourself.
+- Do not edit source, configuration, task state, or commits. Test-created
+  ignored caches are acceptable; tracked, staged, or bead-state changes are
+  forbidden and will fail the orchestrator's before/after fingerprint guard.
+- Do not close, reopen, or update beads. Stay strictly inside review scope.
+- Never touch credentials, access controls, or use destructive git commands.
+
+Return a terse PASS, FAIL, or NEEDS-WORK verdict; commands and outcomes you
+actually observed; concrete gaps for non-PASS; and material risks/follow-ups.
+"""
+DOM_EOF
+}
+
+# The base skill is both the explicit guest-mode bootstrap (`$domestique`) and
+# the implicit match for the ordinary dispatch/landing prompts. It deliberately
+# does not authorize unattended epic draining; only domestique-goal does that.
+emit_codex_skill() { cat <<'DOM_EOF'
+---
+name: domestique
+description: Orchestrate a beads-backed implementer then independent reviewer workflow. Use when the user says "dispatch next ready bead", asks to dispatch or review a bead, says "land the plane", or explicitly invokes $domestique to bootstrap a guest session. Never use this skill alone to drain an epic unattended.
+---
+
+# Domestique orchestration
+
+Act as the orchestrator: plan, delegate, wait, independently review, and
+adjudicate. Do not implement except for genuinely trivial one-line edits.
+
+For each requested bead:
+
+1. Use `bd ready`, choose one highest-priority unblocked task, and claim it.
+2. Spawn exactly one `implementer` agent with the bead id, numbered brief,
+   affected files, edge cases, and done criteria. Wait for it to finish.
+3. Fingerprint `git diff`, `git diff --cached`, and relevant bead state.
+4. Spawn exactly one fresh `reviewer` agent with the same bead and criteria.
+   Wait for it to finish. Do not run implementer and reviewer concurrently.
+5. Fingerprint tracked/staged diffs and bead state again. Any reviewer-caused
+   delta is FAIL and an immediate stop. Report new visible untracked files;
+   ignored test artifacts are allowed.
+6. PASS with unchanged fingerprints: close the bead and perform only git
+   actions currently authorized. Otherwise route at most the requested fix
+   work back to the implementer or stop for the operator.
+7. Stop and report before dispatching another bead. Only an explicit
+   `$domestique-goal <epic-id>` invocation lifts this rule.
+
+In guest installs, never commit domestique state or push host-repository work.
+When asked to "land the plane", file loose follow-up beads, run the final
+quality gates, report status and proposed handoff commands, and obey the active
+repository/user authority for commit, Dolt sync, and push.
+DOM_EOF
+}
+
+emit_codex_decompose_skill() { cat <<'DOM_EOF'
+---
+name: domestique-decompose
+description: Decompose a goal or specification into a dependency-ordered beads epic with bounded tasks. Use when explicitly invoked as $domestique-decompose or when the user asks for domestique/beads decomposition; planning only, never implementation.
+---
+
+# Decompose into beads
+
+Use the goal or specification in the invoking prompt.
+
+1. Create one epic describing why the work exists and its high-level design.
+2. Create bounded child tasks, each completable by a fresh implementer context
+   in one pass and carrying explicit inputs, outputs, edge cases, and testable
+   done criteria.
+3. Add real dependencies so `bd ready` exposes only actionable tasks.
+4. Do not implement anything.
+5. Print `bd ready` plus the epic tree for human review.
+DOM_EOF
+}
+
+emit_codex_goal_skill() { cat <<'DOM_EOF'
+---
+name: domestique-goal
+description: Explicitly drain one named beads epic using domestique's bounded implementer-reviewer loop on an isolated branch. Use only when the user explicitly invokes $domestique-goal with an epic id; never infer this unattended authorization.
+---
+
+# Unattended epic execution
+
+The explicit `$domestique-goal <epic-id>` invocation is the sole authorization
+to continue between beads. It applies only to that epic and expires on
+completion, a stop condition, or after 15 closed beads.
+
+Before work, require an epic id and create/switch to a dedicated epic branch.
+Never work on the default branch, merge, or push. Then repeat the sequential
+`$domestique` loop: one implementer, wait, fingerprint, one fresh reviewer,
+wait, fingerprint, adjudicate. One passing bead per commit; never close a bead
+the reviewer did not pass.
+
+Stop immediately for: two failed reviews of one bead, any full-suite
+regression, an operator decision, a required push/config/out-of-project write,
+two consecutive infrastructure failures, a reviewer-caused tracked/staged or
+bead-state delta, a dirty tree before a bead, or the 15-bead ceiling.
+
+On stop or completion, run the full suite, summarize beads and commits, file
+loose follow-ups, and report proposed merge/push commands without executing
+them. In guest mode, local epic branches are never pushed.
+DOM_EOF
+}
+
+emit_codex_goal_metadata() { cat <<'DOM_EOF'
+interface:
+  display_name: "Domestique Goal"
+  short_description: "Drain one beads epic with gated review"
+  default_prompt: "Use $domestique-goal with an explicit epic id."
+policy:
+  allow_implicit_invocation: false
+DOM_EOF
+}
+
+# Normal Codex sessions receive this as a managed root AGENTS policy block.
+# Guest Codex deliberately installs no root policy and instead bootstraps via
+# the self-contained $domestique skill, leaving host AGENTS files untouched.
+emit_codex_policy() { cat <<'DOM_EOF'
+# Domestique orchestration policy (Codex)
+
+This session is the orchestrator. Use `$domestique-decompose` for planning,
+then follow the `$domestique` sequential implementer → wait → reviewer → wait
+loop for each bead. Stop and report between beads.
+
+Only an explicit `$domestique-goal <epic-id>` invocation authorizes unattended
+epic execution. Codex's built-in `/goal` is a different product feature and
+does not grant domestique's branch/commit authority by itself.
+
+Use beads as the durable plan of record (`bd ready`, `bd remember`), write
+precise numbered briefs, keep one bead in flight, and keep subagent returns
+terse. Before and after review, fingerprint tracked/staged diffs and bead state;
+reviewer-caused changes fail the review and stop the loop.
+DOM_EOF
+}
+
 # ---------------------------------------------------------------------------
 usage() {
   cat <<'EOF'
 Usage: domestique.sh [TARGET_DIR] [options]
 
-Installs the domestique Claude Code orchestration config into TARGET_DIR
-(default: current directory):
+Installs domestique orchestration config into TARGET_DIR (default: current
+directory). Claude is the compatibility default; Codex uses native surfaces:
   CLAUDE.md                        orchestration policy (in a managed block)
   .claude/agents/implementer.md    implementer subagent
   .claude/agents/reviewer.md       reviewer subagent
   .claude/commands/decompose.md    /decompose command
   .claude/commands/goal.md         /goal command
+  AGENTS.md or AGENTS.override.md  Codex policy (normal mode, managed block)
+  .codex/agents/*.toml             Codex implementer and reviewer
+  .agents/skills/domestique*/      Codex workflow skills
 
 Options:
+  --platform <p> Select claude, codex, or both. A fresh selector-less install
+                 remains Claude-only. Explicit installs add to the persisted
+                 provider set; later selector-less runs update that set.
   --dry-run      Print planned changes; touch nothing.
-  --with-beads   If `bd` is on PATH: `bd init` (only when no .beads/) then
-                 `bd setup claude`. If `bd` is absent, note it and skip.
-  --force        Overwrite differing .claude/ files without a .bak backup.
-                 (CLAUDE.md is ALWAYS backed up before modification.)
-  --guest        Route the managed orchestration-policy block to
-                 CLAUDE.local.md instead of CLAUDE.md.
+  --with-beads   If `bd` is on PATH, initialize with safe skip flags when
+                 needed. Normal mode runs setup only for selected providers;
+                 guest mode uses --stealth and never runs provider setup.
+  --force        Overwrite differing provider files without a .bak backup.
+                 Managed policy files are always backed up before change.
+  --guest        Use personal/guest mode. Claude routes policy to
+                 CLAUDE.local.md; Codex leaves both root AGENTS files
+                 untouched and bootstraps through `$domestique` skills.
   --no-guest     Convert an existing guest install back to normal: removes
                  the sticky guest-mode marker and prints by-hand conversion
-                 instructions (nothing is auto-migrated), then this run
-                 installs CLAUDE.md normally. A no-op note if the target
-                 isn't a guest install. Mutually exclusive with --guest
-                 (passing both is a usage error).
+                 guidance where needed, removes stale guest excludes, and
+                 installs the normal policy destination. A no-op note if the
+                 target isn't a guest install. Mutually exclusive with
+                 --guest (passing both is a usage error).
   --uninstall    Remove everything domestique installed from TARGET_DIR, and
-                 only that: the four .claude/ files (safety-compared against
-                 their base snapshot or pristine content — modified files are
-                 kept and renamed to <file>.uninstalled.<timestamp> instead of
-                 deleted, unless --force), the managed block in CLAUDE.md
-                 and/or CLAUDE.local.md (whichever contain it), the managed
-                 block in <git-common-dir>/info/exclude, and the
-                 .claude/.domestique/ snapshot dir and mode marker. Prunes
-                 .claude/agents, .claude/commands, and .claude only if left
-                 empty. Never touches .beads/ (see --purge-beads). Combinable
-                 only with --dry-run, --force, --purge-beads, and TARGET_DIR;
+                 only that. With --platform it removes only the selected
+                 projection; without it, it scans both. Modified owned files
+                 are kept as <file>.uninstalled.<timestamp> unless --force.
+                 Managed policy/exclude blocks and provider state are removed,
+                 and only empty owned directories are pruned. Never touches
+                 .beads/ (see --purge-beads). Combinable only with
+                 --platform, --dry-run, --force, --purge-beads, and TARGET_DIR;
                  combining with --guest, --no-guest, or --with-beads is a
                  usage error.
   --purge-beads  Only valid with --uninstall: also `rm -rf` TARGET_DIR/.beads.
@@ -244,7 +424,7 @@ Options:
   --help, -h     Show this help.
 
 Behavior:
-  * Existing .claude/ files that differ are backed up to <file>.bak.<timestamp>
+  * Existing provider files that differ are backed up to <file>.bak.<timestamp>
     before overwriting (unless --force). Identical files are left untouched.
   * CLAUDE.md: created if absent; if it has the managed markers only the
     content between them is replaced; otherwise the block is appended and all
@@ -257,24 +437,28 @@ Behavior:
     mode creates is also kept out of `git status`: a managed block is added
     to <git-common-dir>/info/exclude (resolved via `git rev-parse
     --git-common-dir`, so this works correctly from a worktree too) listing
-    CLAUDE.local.md, .claude/, .beads/, *.bak.[0-9]*, and *.new. If any of
-    the first three paths is already tracked, a warning is printed (an exclude entry
-    can't hide a tracked path) but nothing else changes. `.gitignore` itself
+    provider-local entries. Claude keeps its legacy `CLAUDE.local.md` and
+    broad `.claude/` entries; Codex lists only exact domestique-owned leaves
+    and state. `.beads/` is added only when domestique's safe guest
+    initialization created it; broad backup and `.new` suffix patterns
+    are never added. Pre-existing visible Codex paths remain visible across
+    reruns and scoped uninstall. If an owned path is already tracked, a
+    warning is printed (an exclude can't hide it). `.gitignore` itself
     is never read, written, or otherwise touched by guest mode. A non-git target
     directory prints a warning and skips the exclude step entirely (guest
     install of the rest still proceeds). Net effect: a --guest install
     followed by --uninstall returns the host repo to byte-for-byte clean
     git status, provided nothing installed was modified by hand (modified
     files are preserved as <file>.uninstalled.<timestamp> and show up as
-    untracked) and --with-beads was not used (its `bd setup claude`
-    artifacts aren't covered by the exclude block).
-  * Guest mode is sticky: a guest install writes a marker at
-    .claude/.domestique/mode. A later plain re-run (no --guest/--no-guest)
-    against that same target detects the marker and stays in guest mode
-    instead of silently un-guesting the install; pass --no-guest to convert
+    untracked) and no preserved `.beads/` workspace remains (use
+    --purge-beads to remove one).
+  * Guest mode is sticky per provider: a guest install writes a mode marker
+    in that provider's domestique state. A later plain re-run detects it and
+    stays in guest mode instead of silently un-guesting the install; pass
+    --no-guest to convert
     back to normal on purpose.
   * Running twice in a row makes no changes on the second run.
-  * Pre-existing install with no snapshot yet (.claude/.domestique/ absent)
+  * Pre-existing install with no provider snapshot yet
     and a differing file: ADOPTED, not overwritten — local edits are left in
     place and the base snapshot is seeded from the pristine emitted content
     (not the edited file) so the next run 3-way-merges in upstream changes
@@ -288,6 +472,8 @@ EOF
 }
 
 TARGET_DIR=""
+PLATFORM_ARG=""
+PLATFORM_EXPLICIT=0
 DRY_RUN=0
 WITH_BEADS=0
 FORCE=0
@@ -299,6 +485,11 @@ PURGE_BEADS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --platform)
+      [ "$#" -ge 2 ] || { echo "Missing argument for --platform" >&2; exit 2; }
+      PLATFORM_ARG="$2"; PLATFORM_EXPLICIT=1; shift ;;
+    --platform=*)
+      PLATFORM_ARG="${1#--platform=}"; PLATFORM_EXPLICIT=1 ;;
     --dry-run)      DRY_RUN=1 ;;
     --with-beads)   WITH_BEADS=1 ;;
     --force)        FORCE=1 ;;
@@ -318,6 +509,15 @@ while [ $# -gt 0 ]; do
 done
 TARGET_DIR="${TARGET_DIR:-.}"
 
+case "${PLATFORM_ARG:-claude}" in
+  claude|codex|both) ;;
+  *)
+    echo "Error: --platform must be one of: claude, codex, both (got '$PLATFORM_ARG')." >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
 if [ "$GUEST_EXPLICIT" -eq 1 ] && [ "$NO_GUEST" -eq 1 ]; then
   echo "Error: --guest and --no-guest are mutually exclusive." >&2
   usage >&2
@@ -330,9 +530,225 @@ if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   exit 2
 fi
 
+# configure_provider <claude|codex> — select one provider's inventory and
+# snapshot namespace. Policy destination is finalized after sticky guest mode
+# is resolved for that provider.
+configure_provider() {
+  CURRENT_PROVIDER="$1"
+  SNAPSHOT_TOUCHED=0
+  POLICY_DEST=""
+  case "$CURRENT_PROVIDER" in
+    claude)
+      SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
+      POLICY_EMITTER="emit_policy"
+      POLICY_LABEL="CLAUDE.md"
+      POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
+      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+      ;;
+    codex)
+      SNAPSHOT_DIR="$TARGET_DIR/.codex/.domestique"
+      POLICY_EMITTER="emit_codex_policy"
+      POLICY_LABEL="AGENTS.md"
+      POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
+      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
+      ;;
+  esac
+  SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
+  MODE_MARKER="$SNAPSHOT_DIR/mode"
+}
+
+# resolve_provider_mode — apply explicit guest/no-guest selection or the
+# provider's own sticky marker. Different installed providers may therefore
+# retain different guest modes on the same selector-less rerun.
+resolve_provider_mode() {
+  local marker_content=""
+  GUEST="$REQUESTED_GUEST"
+  if [ -e "$MODE_MARKER" ]; then
+    marker_content="$(cat "$MODE_MARKER" 2>/dev/null || true)"
+    case "$marker_content" in
+      guest)
+        if [ "$NO_GUEST" -eq 1 ]; then
+          if [ "$DRY_RUN" -eq 1 ]; then
+            note_dry "remove mode marker $MODE_MARKER (--no-guest)"
+          else
+            rm -f "$MODE_MARKER"
+          fi
+          echo "domestique: converting guest install for $CURRENT_PROVIDER in $TARGET_DIR to normal mode." >&2
+          if [ "$CURRENT_PROVIDER" = "claude" ]; then
+            echo "  CLAUDE.local.md is left in place; fold any customizations into CLAUDE.md or remove it by hand." >&2
+          else
+            echo '  Skills and agents are retained; normal mode now adds the active root AGENTS policy block.' >&2
+          fi
+          GUEST=0
+        elif [ "$GUEST_EXPLICIT" -eq 0 ]; then
+          GUEST=1
+          echo "Note: existing $CURRENT_PROVIDER guest install detected in $TARGET_DIR — staying in guest mode. Pass --no-guest to convert." >&2
+        fi
+        ;;
+      *)
+        echo "Warning: $MODE_MARKER has unexpected content '$marker_content' (expected 'guest') — treating $CURRENT_PROVIDER as normal." >&2
+        GUEST=0
+        ;;
+    esac
+  elif [ "$NO_GUEST" -eq 1 ]; then
+    echo "Note: --no-guest passed but no $CURRENT_PROVIDER guest marker was found — proceeding normally." >&2
+    GUEST=0
+  fi
+
+  case "$CURRENT_PROVIDER:$GUEST" in
+    claude:1)
+      POLICY_DEST="CLAUDE.local.md"
+      POLICY_LABEL="$POLICY_DEST"
+      if [ -e "$TARGET_DIR/CLAUDE.md" ] && grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/CLAUDE.md" 2>/dev/null; then
+        echo "Warning: a normal domestique install exists in $TARGET_DIR/CLAUDE.md — left untouched; guest policy goes to $TARGET_DIR/$POLICY_DEST." >&2
+      fi
+      ;;
+    claude:0)
+      POLICY_DEST="CLAUDE.md"
+      POLICY_LABEL="$POLICY_DEST"
+      ;;
+    codex:1)
+      # No additive root instruction file exists in Codex. Skills-only guest
+      # mode is intentional and leaves both host AGENTS files byte-untouched.
+      POLICY_DEST=""
+      POLICY_LABEL="skills-only"
+      ;;
+    codex:0)
+      if [ -e "$TARGET_DIR/AGENTS.override.md" ]; then
+        POLICY_DEST="AGENTS.override.md"
+      else
+        POLICY_DEST="AGENTS.md"
+      fi
+      POLICY_LABEL="$POLICY_DEST"
+      ;;
+  esac
+
+  if [ -n "$POLICY_DEST" ]; then
+    POLICY_SNAPSHOT="$SNAPSHOT_BASE/$POLICY_DEST.block"
+  else
+    POLICY_SNAPSHOT=""
+  fi
+}
+
+# Record the exact Codex paths that domestique may hide in guest mode.  The
+# file is written for normal installs too, so a later normal -> guest
+# conversion can distinguish domestique-created files from host files that
+# merely happened to exist before installation.  Older managed exclude blocks
+# are accepted as a one-time migration source.
+codex_exclude_was_owned() {
+  local rel="$1" ownership="$TARGET_DIR/.codex/.domestique/guest-excludes"
+  if [ -e "$ownership" ] && grep -qxF "$rel" "$ownership" 2>/dev/null; then
+    return 0
+  fi
+
+  local common_dir="" exclude_file
+  if command -v git >/dev/null 2>&1; then
+    common_dir="$(git -C "$TARGET_DIR" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
+    if [ -n "$common_dir" ]; then
+      case "$common_dir" in /*) : ;; *) common_dir="$TARGET_DIR/$common_dir" ;; esac
+    fi
+  fi
+  [ -z "$common_dir" ] && [ -d "$TARGET_DIR/.git" ] && common_dir="$TARGET_DIR/.git"
+  [ -n "$common_dir" ] || return 1
+  exclude_file="$common_dir/info/exclude"
+  [ -e "$exclude_file" ] || return 1
+  awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" -v wanted="$rel" '
+    $0 == beginm && !seen { seen=1; inblock=1; next }
+    inblock && $0 == endm { exit found ? 0 : 1 }
+    inblock && $0 == wanted { found=1 }
+    END { exit found ? 0 : 1 }
+  ' "$exclude_file"
+}
+
+write_codex_guest_ownership() {
+  local ownership="$TARGET_DIR/.codex/.domestique/guest-excludes"
+  local staged="$TMPDIR_WORK/codex_guest_excludes"
+  {
+    [ "${CODEX_PREEXIST_IMPL:-0}" -eq 1 ] || printf '.codex/agents/implementer.toml\n'
+    [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
+    printf '.codex/.domestique/\n'
+    [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
+    [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
+    [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
+    [ "${CODEX_PREEXIST_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/agents/openai.yaml\n'
+  } > "$staged"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "record exact Codex guest ownership -> $ownership"
+  else
+    mkdir -p "$(dirname "$ownership")"
+    [ -e "$ownership" ] && cmp -s "$staged" "$ownership" || cp "$staged" "$ownership"
+  fi
+}
+
+write_provider_manifest() {
+  [ "$SNAPSHOT_TOUCHED" -eq 1 ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
+  else
+    mkdir -p "$SNAPSHOT_DIR"
+    write_manifest
+  fi
+}
+
+install_current_provider() {
+  echo "domestique: platform=$CURRENT_PROVIDER mode=$([ "$GUEST" -eq 1 ] && printf guest || printf normal) policy=${POLICY_DEST:-skills-only}"
+
+  if [ -n "$POLICY_DEST" ]; then
+    install_claude_md "$TARGET_DIR/$POLICY_DEST" "$([ "$GUEST" -eq 1 ] && printf guest || printf normal)" "$POLICY_EMITTER"
+  fi
+
+  case "$CURRENT_PROVIDER" in
+    claude)
+      install_plain "$TARGET_DIR/.claude/agents/implementer.md" emit_implementer
+      install_plain "$TARGET_DIR/.claude/agents/reviewer.md" emit_reviewer
+      install_plain "$TARGET_DIR/.claude/commands/decompose.md" emit_decompose
+      install_plain "$TARGET_DIR/.claude/commands/goal.md" emit_goal
+      ;;
+    codex)
+      install_plain "$TARGET_DIR/.codex/agents/implementer.toml" emit_codex_implementer
+      install_plain "$TARGET_DIR/.codex/agents/reviewer.toml" emit_codex_reviewer
+      install_plain "$TARGET_DIR/.agents/skills/domestique/SKILL.md" emit_codex_skill
+      install_plain "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" emit_codex_decompose_skill
+      install_plain "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" emit_codex_goal_skill
+      install_plain "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" emit_codex_goal_metadata
+      write_codex_guest_ownership
+      ;;
+  esac
+
+  if [ "$GUEST" -eq 1 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "write mode marker -> $MODE_MARKER (guest)"
+    else
+      mkdir -p "$(dirname "$MODE_MARKER")"
+      printf 'guest\n' > "$MODE_MARKER"
+    fi
+  fi
+  write_provider_manifest
+}
+
+persist_platform_set() {
+  local state_dir state_file old
+  [ "$CONFLICT_OCCURRED" -eq 0 ] || return 0
+  for state_dir in "$TARGET_DIR/.claude/.domestique" "$TARGET_DIR/.codex/.domestique"; do
+    case "$state_dir" in
+      "$TARGET_DIR/.claude/.domestique") [ "$SELECT_CLAUDE" -eq 1 ] || continue ;;
+      "$TARGET_DIR/.codex/.domestique") [ "$SELECT_CODEX" -eq 1 ] || continue ;;
+    esac
+    state_file="$state_dir/platforms"
+    old="$(cat "$state_file" 2>/dev/null || true)"
+    [ "$old" = "$PLATFORM_SET" ] && continue
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "persist platform set '$PLATFORM_SET' -> $state_file"
+    else
+      mkdir -p "$state_dir"
+      printf '%s\n' "$PLATFORM_SET" > "$state_file"
+    fi
+  done
+}
+
 if [ "$UNINSTALL" -eq 1 ]; then
   if [ "$GUEST_EXPLICIT" -eq 1 ] || [ "$NO_GUEST" -eq 1 ] || [ "$WITH_BEADS" -eq 1 ]; then
-    echo "Error: --uninstall is only combinable with --dry-run, --force, --purge-beads, and TARGET_DIR." >&2
+    echo "Error: --uninstall is only combinable with --platform, --dry-run, --force, --purge-beads, and TARGET_DIR." >&2
     usage >&2
     exit 2
   fi
@@ -344,58 +760,63 @@ if [ ! -d "$TARGET_DIR" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Sticky guest mode: a guest install writes a marker at
-# .claude/.domestique/mode (content: "guest"). A later run against the same
-# TARGET_DIR with neither --guest nor --no-guest must NOT silently fall back
-# to normal mode (which would write the policy block into the tracked
-# CLAUDE.md and skip the git-exclude logic) — it stays in guest mode. Explicit
-# --no-guest converts back to normal (marker removed, by-hand instructions
-# printed, no auto-migration of CLAUDE.local.md/exclude content). Unexpected
-# marker content is treated as a corrupt/foreign marker: warn and proceed as
-# normal mode.
+# Platform selection. Provider-owned `platforms` files all carry the same
+# canonical installed set. Explicit installs add to that set; selector-less
+# reruns use it. A legacy Claude state dir without a platforms file counts as
+# Claude, while a genuinely fresh selector-less install remains Claude-only.
 # ---------------------------------------------------------------------------
-MODE_MARKER="$TARGET_DIR/.claude/.domestique/mode"
-if [ "$UNINSTALL" -eq 1 ]; then
-  : # --uninstall does its own mode detection in do_uninstall(); skip the
-    # install-path sticky-guest-mode logic entirely.
-elif [ -e "$MODE_MARKER" ]; then
-  MODE_MARKER_CONTENT="$(cat "$MODE_MARKER" 2>/dev/null || true)"
-  case "$MODE_MARKER_CONTENT" in
-    guest)
-      if [ "$NO_GUEST" -eq 1 ]; then
-        if [ "$DRY_RUN" -eq 1 ]; then
-          echo "  [dry-run] remove mode marker $MODE_MARKER (--no-guest)"
-        else
-          rm -f "$MODE_MARKER"
-        fi
-        echo "domestique: converting guest install in $TARGET_DIR to a normal install." >&2
-        echo "  This run installs CLAUDE.md normally. domestique does not auto-migrate" >&2
-        echo "  content — by hand you may want to:" >&2
-        echo "    - remove $TARGET_DIR/CLAUDE.local.md, or fold its customizations into" >&2
-        echo "      $TARGET_DIR/CLAUDE.md" >&2
-        echo "    - optionally clean the domestique-managed block out of" >&2
-        echo "      <git-common-dir>/info/exclude" >&2
-        GUEST=0
-      elif [ "$GUEST_EXPLICIT" -eq 0 ]; then
-        GUEST=1
-        echo "Note: existing guest install detected in $TARGET_DIR — staying in guest mode. Pass --no-guest to convert to a normal install." >&2
-      fi
-      ;;
-    *)
-      echo "Warning: $MODE_MARKER has unexpected content '$MODE_MARKER_CONTENT' (expected 'guest') — ignoring it and treating this as a normal install." >&2
-      ;;
+SELECT_CLAUDE=0
+SELECT_CODEX=0
+PERSISTED_CLAUDE=0
+PERSISTED_CODEX=0
+
+read_platform_state() {
+  local statefile="$1" value
+  [ -e "$statefile" ] || return 0
+  value="$(cat "$statefile" 2>/dev/null || true)"
+  case "$value" in
+    claude) PERSISTED_CLAUDE=1 ;;
+    codex) PERSISTED_CODEX=1 ;;
+    both) PERSISTED_CLAUDE=1; PERSISTED_CODEX=1 ;;
+    *) echo "Warning: ignoring invalid domestique platform state '$value' in $statefile." >&2 ;;
   esac
-elif [ "$NO_GUEST" -eq 1 ]; then
-  echo "Note: --no-guest passed but no guest-mode marker found in $TARGET_DIR — nothing to convert; proceeding with a normal install." >&2
+}
+
+read_platform_state "$TARGET_DIR/.claude/.domestique/platforms"
+read_platform_state "$TARGET_DIR/.codex/.domestique/platforms"
+
+# Backfill provider state that predates the platforms marker.
+if [ "$PERSISTED_CLAUDE" -eq 0 ] && [ -d "$TARGET_DIR/.claude/.domestique" ]; then
+  PERSISTED_CLAUDE=1
+fi
+if [ "$PERSISTED_CODEX" -eq 0 ] && [ -d "$TARGET_DIR/.codex/.domestique" ]; then
+  PERSISTED_CODEX=1
 fi
 
-POLICY_DEST="CLAUDE.md"
-if [ "$GUEST" -eq 1 ]; then
-  POLICY_DEST="CLAUDE.local.md"
-  if [ -e "$TARGET_DIR/CLAUDE.md" ] && grep -qF "$MARKER_BEGIN" "$TARGET_DIR/CLAUDE.md"; then
-    echo "Warning: a non-guest domestique install exists in $TARGET_DIR/CLAUDE.md — left untouched. Installing policy into $TARGET_DIR/$POLICY_DEST instead." >&2
-  fi
+if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
+  SELECT_CLAUDE="$PERSISTED_CLAUDE"
+  SELECT_CODEX="$PERSISTED_CODEX"
+  case "$PLATFORM_ARG" in
+    claude) SELECT_CLAUDE=1 ;;
+    codex) SELECT_CODEX=1 ;;
+    both) SELECT_CLAUDE=1; SELECT_CODEX=1 ;;
+  esac
+elif [ "$PERSISTED_CLAUDE" -eq 1 ] || [ "$PERSISTED_CODEX" -eq 1 ]; then
+  SELECT_CLAUDE="$PERSISTED_CLAUDE"
+  SELECT_CODEX="$PERSISTED_CODEX"
+else
+  SELECT_CLAUDE=1
 fi
+
+if [ "$SELECT_CLAUDE" -eq 1 ] && [ "$SELECT_CODEX" -eq 1 ]; then
+  PLATFORM_SET="both"
+elif [ "$SELECT_CODEX" -eq 1 ]; then
+  PLATFORM_SET="codex"
+else
+  PLATFORM_SET="claude"
+fi
+
+REQUESTED_GUEST="$GUEST"
 
 TS="$(date +%Y%m%d%H%M%S)"
 TMPDIR_WORK="$(mktemp -d)"
@@ -430,10 +851,19 @@ print_group() {
   for item in "$@"; do echo "    - $item"; done
 }
 
+# Provider configuration is swapped before each install projection. Initialize
+# with Claude values for compatibility; configure_provider replaces them before
+# every selected provider is installed.
+CURRENT_PROVIDER="claude"
+POLICY_DEST="CLAUDE.md"
+POLICY_EMITTER="emit_policy"
+POLICY_LABEL="CLAUDE.md"
+POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
+MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+
 # ---------------------------------------------------------------------------
-# Base snapshot / manifest (foundation for a future 3-way merge on upgrade;
-# this run only records the snapshot of what was just emitted — it does not
-# read or merge against a prior snapshot). See docs/install-upgrade-design.md.
+# Base snapshot / manifest. The existing merge implementation is provider
+# neutral once these paths and inventory values are configured.
 # ---------------------------------------------------------------------------
 SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
 SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
@@ -482,35 +912,20 @@ snapshot_claude_block() {
   cp "$content" "$basepath"
 }
 
-# managed_files_list — compute the files= value from actual on-disk state at
-# write time, not just this run's POLICY_DEST. This keeps the manifest
-# accurate in mixed-mode directories (one that has seen both a plain install
-# and a --guest install), where the file that a prior run of the OTHER mode
-# wrote into the managed block is still present and still managed.
-# Always includes this run's POLICY_DEST (the block was just written/updated
-# this run, so it is unconditionally current) plus CLAUDE.md and/or
-# CLAUDE.local.md if either currently carries the managed-block markers.
-# Order: the four fixed .claude/ files first (matching the pre-existing
-# convention), then CLAUDE.md if present/managed, then CLAUDE.local.md if
-# present/managed.
+# managed_files_list — provider inventory plus every sound managed policy
+# destination still on disk. The current policy destination is included under
+# dry-run even before it exists.
 managed_files_list() {
-  local out=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
-  local policyfile have_claude_md=0 have_claude_local=0
-  for policyfile in CLAUDE.md CLAUDE.local.md; do
-    if [ "$policyfile" = "$POLICY_DEST" ]; then
-      # This run's target: the block was just written, so it's current
-      # regardless of what a filesystem check would say under --dry-run.
-      [ "$policyfile" = "CLAUDE.md" ] && have_claude_md=1
-      [ "$policyfile" = "CLAUDE.local.md" ] && have_claude_local=1
-      continue
+  local out="$MANAGED_PLAIN_FILES" policyfile include
+  for policyfile in $POLICY_CANDIDATES; do
+    include=0
+    if [ -n "$POLICY_DEST" ] && [ "$policyfile" = "$POLICY_DEST" ]; then
+      include=1
+    elif [ -e "$TARGET_DIR/$policyfile" ] && grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/$policyfile" 2>/dev/null; then
+      include=1
     fi
-    if [ -e "$TARGET_DIR/$policyfile" ] && grep -qF "$MARKER_BEGIN" "$TARGET_DIR/$policyfile" 2>/dev/null; then
-      [ "$policyfile" = "CLAUDE.md" ] && have_claude_md=1
-      [ "$policyfile" = "CLAUDE.local.md" ] && have_claude_local=1
-    fi
+    [ "$include" -eq 1 ] && out="$out,$policyfile"
   done
-  [ "$have_claude_md" -eq 1 ] && out="$out,CLAUDE.md"
-  [ "$have_claude_local" -eq 1 ] && out="$out,CLAUDE.local.md"
   printf '%s' "$out"
 }
 
@@ -529,6 +944,7 @@ write_manifest() {
   [ -z "$sha" ] && sha="unavailable"
   {
     printf 'snapshot_format=1\n'
+    printf 'platform=%s\n' "$CURRENT_PROVIDER"
     printf 'domestique_version=%s\n' "$DOMESTIQUE_VERSION"
     printf 'installed_ref=%s\n' "$ref"
     printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -708,11 +1124,11 @@ markers_sane() {
 #     overwrite, no .bak); re-run to merge upstream.
 # See docs/install-upgrade-design.md §3.
 install_claude_md() {
-  local dest="$1" mode="${2:-normal}"
+  local dest="$1" mode="${2:-normal}" emitter="${3:-emit_policy}"
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
   local policybody="$TMPDIR_WORK/policybody"
 
-  emit_policy "$mode" > "$policybody"
+  "$emitter" "$mode" > "$policybody"
 
   # Build the managed block: BEGIN marker + verbatim policy + END marker.
   {
@@ -832,7 +1248,7 @@ install_claude_md() {
               cp "$result" "$dest"
             fi
             SUM_BACKEDUP+=("$backup")
-            SUM_MERGED+=("$dest (CLAUDE.md block)")
+            SUM_MERGED+=("$dest ($POLICY_LABEL block)")
             snapshot_claude_block "$policybody"
             return 0
           fi
@@ -954,8 +1370,10 @@ install_git_exclude() {
   # Warn (never fail) if a guest-managed path is already tracked in the
   # target repo — an exclude entry cannot hide an already-tracked path.
   if command -v git >/dev/null 2>&1; then
-    local trackme
-    for trackme in "CLAUDE.local.md" ".claude" ".beads"; do
+    local trackme tracked_paths=".beads"
+    [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths="CLAUDE.local.md .claude $tracked_paths"
+    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal $tracked_paths"
+    for trackme in $tracked_paths; do
       if git -C "$target" ls-files --error-unmatch "$trackme" >/dev/null 2>&1; then
         echo "Warning: $trackme is already tracked in $target — a git exclude entry cannot hide a tracked path. Run 'git rm --cached -r $trackme' if you want it hidden." >&2
       fi
@@ -964,11 +1382,30 @@ install_git_exclude() {
 
   {
     printf '%s\n' "$GITEXCLUDE_MARKER_BEGIN"
-    printf 'CLAUDE.local.md\n'
-    printf '.claude/\n'
-    printf '.beads/\n'
-    printf '*.bak.[0-9]*\n'
-    printf '*.new\n'
+    if [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ]; then
+      printf 'CLAUDE.local.md\n'
+      printf '.claude/\n'
+    fi
+    if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ]; then
+      local codex_ownership="$target/.codex/.domestique/guest-excludes"
+      if [ -e "$codex_ownership" ]; then
+        cat "$codex_ownership"
+      else
+        # Dry-run and legacy-state fallback.  Fresh real installs persist the
+        # exact list before this block is reconciled.
+        [ "${CODEX_PREEXIST_IMPL:-0}" -eq 1 ] || printf '.codex/agents/implementer.toml\n'
+        [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
+        printf '.codex/.domestique/\n'
+        [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
+        [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
+        [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
+        [ "${CODEX_PREEXIST_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/agents/openai.yaml\n'
+      fi
+    fi
+    if { [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.claude/.domestique/beads-owned" ]; } ||
+       { [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.codex/.domestique/beads-owned" ]; }; then
+      printf '.beads/\n'
+    fi
     printf '%s\n' "$GITEXCLUDE_MARKER_END"
   } > "$block"
 
@@ -1024,24 +1461,109 @@ install_git_exclude() {
   fi
 }
 
+# Remove only domestique's managed ignore block.  This is also run after a
+# guest -> normal conversion so stale ignores cannot keep normal assets hidden.
+remove_git_exclude() {
+  local target="$1" common_dir="" exclude_file result="$TMPDIR_WORK/exclude_remove_result"
+  if command -v git >/dev/null 2>&1; then
+    common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
+    if [ -n "$common_dir" ]; then
+      case "$common_dir" in /*) : ;; *) common_dir="$target/$common_dir" ;; esac
+    fi
+  fi
+  [ -z "$common_dir" ] && [ -d "$target/.git" ] && common_dir="$target/.git"
+  [ -n "$common_dir" ] || return 0
+  exclude_file="$common_dir/info/exclude"
+  [ -e "$exclude_file" ] || return 0
+  grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null || return 0
+  if ! grep -qF "$GITEXCLUDE_MARKER_END" "$exclude_file" 2>/dev/null; then
+    echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
+    echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+    exit 1
+  fi
+  awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" '
+    $0 == beginm && !seen { seen=1; inblock=1; next }
+    inblock && $0 == endm { inblock=0; next }
+    inblock { next }
+    { print }
+  ' "$exclude_file" > "$result"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "strip domestique block from $exclude_file"
+  else
+    cp "$result" "$exclude_file"
+  fi
+  SUM_UPDATED+=("$exclude_file (removed stale guest block)")
+}
+
+# `.beads/` is shared across providers. If one domestique guest projection
+# created it, every subsequently active guest provider must carry that fact so
+# a scoped uninstall of the original owner cannot make the workspace visible.
+sync_guest_beads_ownership() {
+  local claude_marker="$TARGET_DIR/.claude/.domestique/beads-owned"
+  local codex_marker="$TARGET_DIR/.codex/.domestique/beads-owned"
+  if [ ! -d "$TARGET_DIR/.beads" ]; then
+    if [ "$DRY_RUN" -eq 0 ]; then
+      rm -f "$claude_marker" "$codex_marker"
+    fi
+    return 0
+  fi
+  [ "${ANY_GUEST:-0}" -eq 1 ] || return 0
+  if [ ! -e "$claude_marker" ] && [ ! -e "$codex_marker" ]; then
+    return 0
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "propagate shared .beads ownership across active guest providers"
+    return 0
+  fi
+  if [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ]; then
+    mkdir -p "$(dirname "$claude_marker")"
+    : > "$claude_marker"
+  fi
+  if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ]; then
+    mkdir -p "$(dirname "$codex_marker")"
+    : > "$codex_marker"
+  fi
+}
+
 # do_uninstall <target-dir>
 # Remove everything domestique installed into <target-dir>, and only that.
 # See usage() --uninstall for the summary of what is (and is not) removed.
 do_uninstall() {
   local target="$1"
-  local snapshot_dir="$target/.claude/.domestique"
-  local snapshot_base="$snapshot_dir/base"
   local anything_done=0
 
-  # --- 1. the four managed plain files, safety-compared -------------------
-  local rel emitter dest staged basepath reference
-  while IFS='|' read -r rel emitter; do
+  # Fixed path inventories are not ownership proof by themselves. Require a
+  # provider state tree or one of our managed policy markers before touching
+  # plain projection files; this keeps a never-installed host file safe even
+  # if its bytes happen to match a domestique template exactly.
+  local claude_evidence=0 codex_evidence=0 evidence_file
+  [ -d "$target/.claude/.domestique" ] && claude_evidence=1
+  [ -d "$target/.codex/.domestique" ] && codex_evidence=1
+  for evidence_file in "$target/CLAUDE.md" "$target/CLAUDE.local.md"; do
+    [ -e "$evidence_file" ] && grep -qxF "$MARKER_BEGIN" "$evidence_file" 2>/dev/null && claude_evidence=1
+  done
+  for evidence_file in "$target/AGENTS.md" "$target/AGENTS.override.md"; do
+    [ -e "$evidence_file" ] && grep -qxF "$MARKER_BEGIN" "$evidence_file" 2>/dev/null && codex_evidence=1
+  done
+
+  # --- 1. provider-owned plain files, safety-compared ----------------------
+  local provider state_rel rel emitter dest staged basepath reference
+  while IFS='|' read -r provider state_rel rel emitter; do
     [ -z "$rel" ] && continue
+    [ "$provider" = "claude" ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && continue
+    [ "$provider" = "codex" ] && [ "$UNINSTALL_CODEX" -eq 0 ] && continue
+    [ "$provider" = "claude" ] && [ "$claude_evidence" -eq 0 ] && continue
+    [ "$provider" = "codex" ] && [ "$codex_evidence" -eq 0 ] && continue
     dest="$target/$rel"
     [ -e "$dest" ] || continue
+    if [ "$provider" = "codex" ] && [ -e "$target/.codex/.domestique/guest-excludes" ] &&
+       ! grep -qxF "$rel" "$target/.codex/.domestique/guest-excludes" 2>/dev/null; then
+      SUM_KEPT+=("$dest (pre-existing; never domestique-owned)")
+      continue
+    fi
     staged="$TMPDIR_WORK/uninstall_staged"
     "$emitter" > "$staged"
-    basepath="$snapshot_base/$rel"
+    basepath="$target/$state_rel/base/$rel"
     reference="$basepath"
     [ -e "$reference" ] || reference="$staged"
 
@@ -1072,17 +1594,23 @@ do_uninstall() {
       SUM_KEPT+=("$kept")
     fi
   done <<UNINSTALL_FILES
-.claude/agents/implementer.md|emit_implementer
-.claude/agents/reviewer.md|emit_reviewer
-.claude/commands/decompose.md|emit_decompose
-.claude/commands/goal.md|emit_goal
+claude|.claude/.domestique|.claude/agents/implementer.md|emit_implementer
+claude|.claude/.domestique|.claude/agents/reviewer.md|emit_reviewer
+claude|.claude/.domestique|.claude/commands/decompose.md|emit_decompose
+claude|.claude/.domestique|.claude/commands/goal.md|emit_goal
+codex|.codex/.domestique|.codex/agents/implementer.toml|emit_codex_implementer
+codex|.codex/.domestique|.codex/agents/reviewer.toml|emit_codex_reviewer
+codex|.codex/.domestique|.agents/skills/domestique/SKILL.md|emit_codex_skill
+codex|.codex/.domestique|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
+codex|.codex/.domestique|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
+codex|.codex/.domestique|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
 UNINSTALL_FILES
 
-  # --- 2/4. managed block in CLAUDE.md and/or CLAUDE.local.md -------------
-  # Handle BOTH policy files if both carry the marker (a dir that saw mixed
-  # plain + guest use) rather than trusting the mode marker alone.
-  local policyfile policymode
-  for policyfile in CLAUDE.md CLAUDE.local.md; do
+  # --- 2. managed policy blocks for selected providers --------------------
+  local policyfile policymode policyemitter policybase
+  while IFS='|' read -r provider policyfile policymode policyemitter policybase; do
+    [ "$provider" = "claude" ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && continue
+    [ "$provider" = "codex" ] && [ "$UNINSTALL_CODEX" -eq 0 ] && continue
     dest="$target/$policyfile"
     [ -e "$dest" ] || continue
 
@@ -1133,8 +1661,6 @@ UNINSTALL_FILES
 
     anything_done=1
 
-    if [ "$policyfile" = "CLAUDE.local.md" ]; then policymode="guest"; else policymode="normal"; fi
-
     local oursblock pristine refblock modified=0
     oursblock="$TMPDIR_WORK/uninstall_oursblock"
     awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
@@ -1144,8 +1670,8 @@ UNINSTALL_FILES
     ' "$dest" > "$oursblock"
 
     pristine="$TMPDIR_WORK/uninstall_pristine"
-    emit_policy "$policymode" > "$pristine"
-    refblock="$snapshot_base/$policyfile.block"
+    "$policyemitter" "$policymode" > "$pristine"
+    refblock="$target/$policybase/base/$policyfile.block"
     [ -e "$refblock" ] || refblock="$pristine"
     cmp -s "$oursblock" "$refblock" || modified=1
 
@@ -1188,9 +1714,30 @@ UNINSTALL_FILES
       fi
       SUM_REMOVED+=("$dest")
     fi
-  done
+  done <<UNINSTALL_POLICIES
+claude|CLAUDE.md|normal|emit_policy|.claude/.domestique
+claude|CLAUDE.local.md|guest|emit_policy|.claude/.domestique
+codex|AGENTS.md|normal|emit_codex_policy|.codex/.domestique
+codex|AGENTS.override.md|normal|emit_codex_policy|.codex/.domestique
+UNINSTALL_POLICIES
 
-  # --- 5. managed block in <git-common-dir>/info/exclude ------------------
+  # --- 3. managed block in <git-common-dir>/info/exclude ------------------
+  # A scoped uninstall retains an exact union for any other provider that is
+  # still guest-installed. Only the final guest-provider removal strips it.
+  local keep_claude_guest=0 keep_codex_guest=0
+  if [ "$UNINSTALL_CLAUDE" -eq 0 ] && [ "$(cat "$target/.claude/.domestique/mode" 2>/dev/null || true)" = "guest" ]; then
+    keep_claude_guest=1
+  fi
+  if [ "$UNINSTALL_CODEX" -eq 0 ] && [ "$(cat "$target/.codex/.domestique/mode" 2>/dev/null || true)" = "guest" ]; then
+    keep_codex_guest=1
+  fi
+
+  if [ "$keep_claude_guest" -eq 1 ] || [ "$keep_codex_guest" -eq 1 ]; then
+    CLAUDE_GUEST_SELECTED="$keep_claude_guest"
+    CODEX_GUEST_SELECTED="$keep_codex_guest"
+    install_git_exclude "$target"
+    anything_done=1
+  else
   local common_dir="" exclude_file
   if command -v git >/dev/null 2>&1; then
     common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
@@ -1226,9 +1773,16 @@ UNINSTALL_FILES
     fi
   fi
   # Non-git target: nothing was installed there — skip silently.
+  fi
 
-  # --- 6. snapshot dir + mode marker (do this LAST — steps 1/2 read it) ----
-  if [ -e "$snapshot_dir" ]; then
+  # --- 4. selected provider state (do this after snapshot comparisons) -----
+  local snapshot_dir
+  for snapshot_dir in "$target/.claude/.domestique" "$target/.codex/.domestique"; do
+    case "$snapshot_dir" in
+      "$target/.claude/.domestique") [ "$UNINSTALL_CLAUDE" -eq 1 ] || continue ;;
+      "$target/.codex/.domestique") [ "$UNINSTALL_CODEX" -eq 1 ] || continue ;;
+    esac
+    [ -e "$snapshot_dir" ] || continue
     anything_done=1
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "remove $snapshot_dir (snapshots, manifest, mode marker)"
@@ -1236,15 +1790,42 @@ UNINSTALL_FILES
       rm -rf "$snapshot_dir"
     fi
     SUM_REMOVED+=("$snapshot_dir")
+  done
+
+  # Keep the surviving provider's persisted set authoritative.
+  local remaining_state="" remaining_value=""
+  if [ "$UNINSTALL_CLAUDE" -eq 1 ] && [ "$UNINSTALL_CODEX" -eq 0 ] && [ -d "$target/.codex/.domestique" ]; then
+    remaining_state="$target/.codex/.domestique/platforms"; remaining_value="codex"
+  elif [ "$UNINSTALL_CODEX" -eq 1 ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && [ -d "$target/.claude/.domestique" ]; then
+    remaining_state="$target/.claude/.domestique/platforms"; remaining_value="claude"
+  fi
+  if [ -n "$remaining_state" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "persist platform set '$remaining_value' -> $remaining_state"
+    else
+      printf '%s\n' "$remaining_value" > "$remaining_state"
+    fi
   fi
 
   # Prune now-empty dirs, never one that still has user content.
   if [ "$DRY_RUN" -eq 1 ]; then
-    note_dry "prune $target/.claude/agents, $target/.claude/commands, $target/.claude if left empty"
+    note_dry "prune selected provider directories if left empty"
   else
-    rmdir "$target/.claude/agents" 2>/dev/null || true
-    rmdir "$target/.claude/commands" 2>/dev/null || true
-    rmdir "$target/.claude" 2>/dev/null || true
+    if [ "$UNINSTALL_CLAUDE" -eq 1 ]; then
+      rmdir "$target/.claude/agents" 2>/dev/null || true
+      rmdir "$target/.claude/commands" 2>/dev/null || true
+      rmdir "$target/.claude" 2>/dev/null || true
+    fi
+    if [ "$UNINSTALL_CODEX" -eq 1 ]; then
+      rmdir "$target/.codex/agents" 2>/dev/null || true
+      rmdir "$target/.codex" 2>/dev/null || true
+      rmdir "$target/.agents/skills/domestique-goal/agents" 2>/dev/null || true
+      rmdir "$target/.agents/skills/domestique-goal" 2>/dev/null || true
+      rmdir "$target/.agents/skills/domestique-decompose" 2>/dev/null || true
+      rmdir "$target/.agents/skills/domestique" 2>/dev/null || true
+      rmdir "$target/.agents/skills" 2>/dev/null || true
+      rmdir "$target/.agents" 2>/dev/null || true
+    fi
   fi
 
   # --- 7. .beads/ — never touched by default -------------------------------
@@ -1285,75 +1866,140 @@ UNINSTALL_FILES
 }
 
 if [ "$UNINSTALL" -eq 1 ]; then
-  echo "domestique: uninstalling from $TARGET_DIR"
+  UNINSTALL_CLAUDE=1
+  UNINSTALL_CODEX=1
+  if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
+    UNINSTALL_CLAUDE=0
+    UNINSTALL_CODEX=0
+    case "$PLATFORM_ARG" in
+      claude) UNINSTALL_CLAUDE=1 ;;
+      codex) UNINSTALL_CODEX=1 ;;
+      both) UNINSTALL_CLAUDE=1; UNINSTALL_CODEX=1 ;;
+    esac
+  fi
+  echo "domestique: uninstalling from $TARGET_DIR (platform=${PLATFORM_ARG:-all})"
   [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
   do_uninstall "$TARGET_DIR"
   exit $?
 fi
 
 # ---------------------------------------------------------------------------
-echo "domestique: installing into $TARGET_DIR"
+echo "domestique: installing into $TARGET_DIR (platforms=$PLATFORM_SET)"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
 
-POLICY_MODE="normal"
-[ "$GUEST" -eq 1 ] && POLICY_MODE="guest"
-install_claude_md "$TARGET_DIR/$POLICY_DEST" "$POLICY_MODE"
-install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
-install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
-install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
-install_plain     "$TARGET_DIR/.claude/commands/goal.md"        emit_goal
-
-if [ "$GUEST" -eq 1 ]; then
-  install_git_exclude "$TARGET_DIR"
-  # Write/refresh the sticky guest-mode marker so a later plain re-run (no
-  # --guest/--no-guest) against this same TARGET_DIR stays in guest mode
-  # instead of silently un-guesting the install. Idempotent: re-writing the
-  # same content on every guest run is harmless and also recreates the
-  # marker if it was somehow lost.
-  if [ "$DRY_RUN" -eq 1 ]; then
-    note_dry "write mode marker -> $MODE_MARKER (guest)"
-  else
-    mkdir -p "$(dirname "$MODE_MARKER")"
-    printf 'guest\n' > "$MODE_MARKER"
+ANY_GUEST=0
+CLAUDE_GUEST_SELECTED=0
+CODEX_GUEST_SELECTED=0
+# Preserve the pre-install visibility of existing untracked Codex-owned
+# paths: guest exclude hides only files domestique is creating itself.
+CODEX_PREEXIST_IMPL=0
+CODEX_PREEXIST_REVIEWER=0
+CODEX_PREEXIST_BASE_SKILL=0
+CODEX_PREEXIST_DECOMPOSE_SKILL=0
+CODEX_PREEXIST_GOAL_SKILL=0
+CODEX_PREEXIST_GOAL_META=0
+[ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] && ! codex_exclude_was_owned '.codex/agents/implementer.toml' && CODEX_PREEXIST_IMPL=1
+[ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] && ! codex_exclude_was_owned '.codex/agents/reviewer.toml' && CODEX_PREEXIST_REVIEWER=1
+[ -e "$TARGET_DIR/.agents/skills/domestique/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique/SKILL.md' && CODEX_PREEXIST_BASE_SKILL=1
+[ -e "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-decompose/SKILL.md' && CODEX_PREEXIST_DECOMPOSE_SKILL=1
+[ -e "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-goal/SKILL.md' && CODEX_PREEXIST_GOAL_SKILL=1
+[ -e "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" ] && ! codex_exclude_was_owned '.agents/skills/domestique-goal/agents/openai.yaml' && CODEX_PREEXIST_GOAL_META=1
+if [ "$SELECT_CLAUDE" -eq 1 ]; then
+  configure_provider claude
+  resolve_provider_mode
+  if [ "$GUEST" -eq 1 ]; then
+    ANY_GUEST=1
+    CLAUDE_GUEST_SELECTED=1
   fi
+  install_current_provider
+fi
+if [ "$SELECT_CODEX" -eq 1 ]; then
+  configure_provider codex
+  resolve_provider_mode
+  if [ "$GUEST" -eq 1 ]; then
+    ANY_GUEST=1
+    CODEX_GUEST_SELECTED=1
+    printf '%s\n' "Note: Codex guest mode is skills-only; start each new session with \`\$domestique\`." >&2
+  fi
+  install_current_provider
 fi
 
-# --- snapshot manifest ------------------------------------------------------
-# Only (re)write the manifest if at least one managed file was actually
-# created/updated/backed-up this run. On a fully clean no-op run (everything
-# skipped as identical) the manifest is left untouched so re-running the
-# installer twice in a row produces byte-identical .claude/.domestique/ state.
-if [ "$SNAPSHOT_TOUCHED" -eq 1 ]; then
-  if [ "$DRY_RUN" -eq 1 ]; then
-    note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
-  else
-    mkdir -p "$SNAPSHOT_DIR"
-    write_manifest
-  fi
-fi
+persist_platform_set
 
 # --- beads (opt-in) --------------------------------------------------------
 if [ "$WITH_BEADS" -eq 1 ]; then
   if command -v bd >/dev/null 2>&1; then
+    BD_READY_FOR_SETUP=0
     if [ -d "$TARGET_DIR/.beads" ]; then
       SUM_SKIPPED+=("bd init (.beads/ already present)")
+      BD_READY_FOR_SETUP=1
     else
-      if [ "$DRY_RUN" -eq 1 ]; then
-        note_dry "run: bd init (in $TARGET_DIR)"
-      else
-        ( cd "$TARGET_DIR" && bd init )
+      BD_INIT_SAFE=1
+      if [ "$DRY_RUN" -eq 0 ]; then
+        BD_INIT_HELP="$(bd init --help 2>&1 || true)"
+        case "$BD_INIT_HELP" in
+          *--skip-agents*--skip-hooks*) : ;;
+          *) BD_INIT_SAFE=0 ;;
+        esac
+        if [ "$ANY_GUEST" -eq 1 ]; then
+          case "$BD_INIT_HELP" in *--stealth*) : ;; *) BD_INIT_SAFE=0 ;; esac
+        fi
       fi
-      SUM_CREATED+=(".beads/ (bd init)")
+      if [ "$BD_INIT_SAFE" -eq 0 ]; then
+        echo "Warning: installed bd lacks the safe init flags required by domestique; skipping --with-beads initialization." >&2
+        SUM_SKIPPED+=("beads init (safe --skip-agents/--skip-hooks flags unavailable)")
+      elif [ "$DRY_RUN" -eq 1 ]; then
+        if [ "$ANY_GUEST" -eq 1 ]; then
+          note_dry "run: bd init --stealth --skip-agents --skip-hooks --non-interactive (in $TARGET_DIR)"
+        else
+          note_dry "run: bd init --skip-agents --skip-hooks --non-interactive (in $TARGET_DIR)"
+        fi
+      else
+        if [ "$ANY_GUEST" -eq 1 ]; then
+          ( cd "$TARGET_DIR" && bd init --stealth --skip-agents --skip-hooks --non-interactive )
+          if [ "$CLAUDE_GUEST_SELECTED" -eq 1 ]; then
+            mkdir -p "$TARGET_DIR/.claude/.domestique"
+            : > "$TARGET_DIR/.claude/.domestique/beads-owned"
+          fi
+          if [ "$CODEX_GUEST_SELECTED" -eq 1 ]; then
+            mkdir -p "$TARGET_DIR/.codex/.domestique"
+            : > "$TARGET_DIR/.codex/.domestique/beads-owned"
+          fi
+        else
+          ( cd "$TARGET_DIR" && bd init --skip-agents --skip-hooks --non-interactive )
+        fi
+      fi
+      [ "$BD_INIT_SAFE" -eq 1 ] && SUM_CREATED+=(".beads/ (bd init)")
+      [ "$BD_INIT_SAFE" -eq 1 ] && BD_READY_FOR_SETUP=1
     fi
-    if [ "$DRY_RUN" -eq 1 ]; then
-      note_dry "run: bd setup claude (in $TARGET_DIR)"
+
+    if [ "$ANY_GUEST" -eq 1 ]; then
+      echo "Note: guest mode intentionally skips bd setup provider recipes to preserve host instructions and hooks." >&2
+      SUM_SKIPPED+=("bd setup (guest isolation)")
+    elif [ "$BD_READY_FOR_SETUP" -eq 1 ]; then
+      if [ "$SELECT_CLAUDE" -eq 1 ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then note_dry "run: bd setup claude (in $TARGET_DIR)"
+        else ( cd "$TARGET_DIR" && bd setup claude ); fi
+        SUM_UPDATED+=("bd setup claude")
+      fi
+      if [ "$SELECT_CODEX" -eq 1 ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then note_dry "run: bd setup codex (in $TARGET_DIR)"
+        else ( cd "$TARGET_DIR" && bd setup codex ); fi
+        SUM_UPDATED+=("bd setup codex")
+      fi
     else
-      ( cd "$TARGET_DIR" && bd setup claude )
+      SUM_SKIPPED+=("bd setup (beads workspace unavailable)")
     fi
-    SUM_UPDATED+=("bd setup claude")
   else
     SUM_SKIPPED+=("beads: 'bd' not found on PATH — skipped (install not required)")
   fi
+fi
+
+sync_guest_beads_ownership
+if [ "$ANY_GUEST" -eq 1 ]; then
+  install_git_exclude "$TARGET_DIR"
+else
+  remove_git_exclude "$TARGET_DIR"
 fi
 
 # --- summary ---------------------------------------------------------------

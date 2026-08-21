@@ -24,13 +24,14 @@ Options:
   --dry-run            Only show the preview; do not apply.
   --force              Pass through to domestique.sh (discard local edits,
                         take upstream verbatim; see domestique.sh --help).
-  --guest              Pass through to domestique.sh (route the managed
-                        policy block to CLAUDE.local.md; see
-                        domestique.sh --help). Not usually needed here: a
-                        prior guest install is sticky via a marker file
-                        (.claude/.domestique/mode) that domestique.sh checks
-                        itself, so a target stays in guest mode on repeat
-                        updates even without this flag.
+  --platform <value>   Pass through the install platform: claude, codex, or
+                        both. When omitted, domestique.sh reuses its persisted
+                        platform set (or defaults to Claude on a first run).
+  --guest              Pass through to domestique.sh. Claude uses
+                        CLAUDE.local.md; Codex uses skills-only guest mode and
+                        leaves root AGENTS files untouched. Prior guest mode
+                        is sticky through provider-owned state, so repeat
+                        updates normally do not need this flag.
   --no-guest           Pass through to domestique.sh: convert an existing
                         guest install back to normal (see domestique.sh
                         --help for what is and isn't auto-migrated).
@@ -51,6 +52,7 @@ UPDATER_DRY_RUN=0
 FORCE=0
 GUEST=0
 NO_GUEST=0
+PLATFORM=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,6 +62,10 @@ while [ $# -gt 0 ]; do
     --source=*) SOURCE="${1#--source=}" ;;
     --dry-run) UPDATER_DRY_RUN=1 ;;
     --force)   FORCE=1 ;;
+    --platform)
+      [ $# -ge 2 ] || { echo "Missing argument for --platform" >&2; exit 2; }
+      PLATFORM="$2"; shift ;;
+    --platform=*) PLATFORM="${1#--platform=}" ;;
     --guest)     GUEST=1 ;;
     --no-guest)  NO_GUEST=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -73,6 +79,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 TARGET_DIR="${TARGET_DIR:-.}"
+
+case "$PLATFORM" in
+  ""|claude|codex|both) : ;;
+  *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, or both)" >&2; exit 2 ;;
+esac
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -112,14 +123,14 @@ fi
 
 # Passed through to the fetched domestique.sh verbatim. Note: even if
 # neither --guest nor --no-guest is given here, a target that was previously
-# guest-installed stays in guest mode on its own — domestique.sh detects its
-# sticky .claude/.domestique/mode marker and keeps guest mode without any
-# help from update.sh. These flags exist for explicitly setting/converting
-# mode from update.sh directly.
+# guest-installed stays in guest mode on its own — domestique.sh detects each
+# provider's sticky mode marker and keeps guest mode without help from
+# update.sh. These flags exist for explicitly setting/converting mode here.
 FORCE_ARGS=()
 [ "$FORCE" -eq 1 ] && FORCE_ARGS+=(--force)
 [ "$GUEST" -eq 1 ] && FORCE_ARGS+=(--guest)
 [ "$NO_GUEST" -eq 1 ] && FORCE_ARGS+=(--no-guest)
+[ -n "$PLATFORM" ] && FORCE_ARGS+=(--platform "$PLATFORM")
 
 echo
 echo "--- Preview (dry run) ---"

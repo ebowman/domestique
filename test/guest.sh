@@ -104,7 +104,7 @@ rm -f "$V2G.orig"
 chmod +x "$V2G"
 
 MODE_MARKER_REL=".claude/.domestique/mode"
-EXCLUDE_PATTERNS=("CLAUDE.local.md" ".claude/" ".beads/" '*.bak.[0-9]*' "*.new")
+EXCLUDE_PATTERNS=("CLAUDE.local.md" ".claude/")
 
 # ---------------------------------------------------------------------------
 # Scenario 1: fresh guest install
@@ -136,7 +136,10 @@ scenario_fresh_guest_install() {
   for pat in "${EXCLUDE_PATTERNS[@]}"; do
     grep -qxF "$pat" "$t/.git/info/exclude" || allpats=0
   done
-  check "exclude file has all 5 managed patterns" test "$allpats" -eq 1
+  check "exclude file has exact Claude guest patterns" test "$allpats" -eq 1
+  check "exclude does not broadly hide beads or suffixes" bash -c '
+    ! grep -Eq "^(\\.beads/|\\*\\.bak|\\*\\.new)$" "$1"
+  ' _ "$t/.git/info/exclude"
   check "exclude file has managed BEGIN marker" grep -qF "# BEGIN domestique (managed)" "$t/.git/info/exclude"
   check "mode marker == guest" bash -c '[ "$(cat "$1")" = "guest" ]' _ "$t/$MODE_MARKER_REL"
 }

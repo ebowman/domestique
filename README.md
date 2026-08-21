@@ -1,13 +1,14 @@
 # domestique
 
-A Claude Code config for a **multi-model orchestration workflow**: an
+A Claude Code and Codex config for a **multi-model orchestration workflow**: an
 **orchestrator** session that designs the work and adjudicates, an
 **implementer** subagent that executes, and a **reviewer** subagent that
 independently verifies — with the plan of record tracked in
 [beads](https://github.com/steveyegge/beads). The orchestrator runs on a
-strong planning model (**Fable and Opus both work well**); the implementer
-and reviewer are pinned to Sonnet and Opus respectively. See the three agent
-subsections below for what each one does and why.
+strong planning model. Claude installs pin the implementer and reviewer to
+Sonnet and Opus; Codex installs pin them to `gpt-5.6-terra` at medium effort
+and `gpt-5.6` at high effort. See the three agent subsections below for what
+each one does and why.
 
 The point of the split is to spend model capability where it pays off.
 Delegating both implementation *and* verification keeps the orchestrator's
@@ -20,10 +21,12 @@ trusted.
 The topology has three steps, at three different frequencies — that's the
 whole loop:
 
-> After setting your session's model once per session — Fable and Opus both
-> work well as the orchestrator — run:
+> After setting your session's orchestrator model, start with one of these
+> platform-native invocations:
 >
-> `/decompose <significant task or milestone>`
+> - Claude Code: `/decompose <significant task or milestone>`
+> - Codex: `$domestique-decompose <significant task or milestone>`
+>
 > * determines an overall architecture
 > * breaks work into Task beads, under an Epic, including detailed design
 >   instructions and inter-task dependencies
@@ -39,54 +42,58 @@ whole loop:
 >
 > When all tasks in an epic are complete, tell the orchestrator to
 > **"land the plane"** and it will:
-> * close the Epic bead
-> * sync your beads to the remote
-> * update your milestone definition file per your policy in CLAUDE.md
+> * file any loose discovered work as beads
+> * run the final quality gates
+> * follow Claude's installed session-close policy, or in Codex report
+>   proposed handoff commands and obey the active commit/sync/push authority
 
 The three agents behind that topology — each pinned to the model tier that
 matches what it's for:
 
-### Orchestrator (Fable or Opus)
+### Orchestrator
 
-Your main Claude Code session, on a strong planning model. Decomposes goals
+Your main Claude Code or Codex session, on a strong planning model. Decomposes goals
 into beads, claims and dispatches one bead at a time, adjudicates the
 reviewer's verdict against the implementer's report, and decides what's next.
 Writes code itself only for trivial one-liners — it's reserved for the
 judgment-heavy work, where mistakes are expensive.
 
-### Implementer (Sonnet)
+### Implementer
 
-The `implementer` subagent, on a fast, cheap model. Receives one bounded task,
+The `implementer` subagent, on a fast, efficient model. Receives one bounded task,
 claims it and marks it in progress, does exactly that, runs the tests/linter,
 and returns a terse summary. It does **not** close its own bead — the
 orchestrator closes beads after the reviewer passes them.
 
-### Reviewer (Opus)
+### Reviewer
 
 The `reviewer` subagent, on a strong, independent model. In a *fresh context*
 (no anchoring on the implementer's story), it inspects the real `git diff`,
 reads the changed files, runs the tests itself, and returns a PASS / FAIL /
 NEEDS-WORK verdict judged against the bead's done-criteria — a stronger,
-non-peer check than the implementer, since a peer at the same tier as Sonnet
-would be more likely to miss what Sonnet missed. It reviews only — it never
-edits code or touches bead state.
+non-peer check than the implementer. It reviews only — it never edits code or
+touches bead state. In Codex, the orchestrator fingerprints tracked and staged
+changes plus bead state before and after review; any reviewer-introduced delta
+is a failed review and an immediate stop.
 
-Each subagent's model is pinned in its frontmatter (`model: sonnet` for the
-implementer, `model: opus` for the reviewer), so they always run on their own
-model no matter what the orchestrator session is set to — running the
-orchestrator on Opus doesn't undermine the Opus reviewer, either: the
-reviewer's value is its fresh context and independence, not being a
-different model tier from the orchestrator. The agents are the first-class
-objects here — the model tier is just the capability each one runs on.
+Each subagent has a platform-native model pin: Claude frontmatter uses
+`model: sonnet` and `model: opus`; Codex TOML uses `gpt-5.6-terra` with
+`model_reasoning_effort = "medium"` and `gpt-5.6` with
+`model_reasoning_effort = "high"`. The agents are the first-class objects —
+the model tier is just the capability each one runs on. If a pinned Codex
+model is unavailable to your account, Codex reports the affected role and
+model. Edit that role's TOML, or remove its `model` and
+`model_reasoning_effort` keys to inherit the parent; domestique never silently
+substitutes one role's model for another.
 
 By default, the orchestrator stops and checks in with you between beads — it
 won't drain the queue unattended unless you tell it to (see
-[`/goal`](#goal--unattended-epic-mode), below).
+[unattended epic mode](#unattended-epic-mode), below).
 
 **Per Epic:**
 
 ```
-   you ─▶ /decompose ─▶ ┌──────────────────────────────────────────────┐
+   you ─▶ decompose ─▶ ┌──────────────────────────────────────────────┐
                         │  ORCHESTRATOR (main session)                 │
                         │  architecture · design · deps · beads        │
                         └──────────────────────────────────────────────┘
@@ -102,7 +109,7 @@ won't drain the queue unattended unless you tell it to (see
               one task     │              │ summary       │ PASS / FAIL
              (bead id)     ▼              │               │ verdict
                         ┌──────────────────┴──┐   ┌────────┴─────────────┐
-                        │ SONNET implementer   │   │ OPUS reviewer        │
+                        │ implementer          │   │ reviewer             │
                         │ do task · test ·     │   │ fresh context ·      │
                         │ report back          │   │ diff · tests · judge │
                         └──────────────────────┘   └──────────────────────┘
@@ -112,8 +119,8 @@ won't drain the queue unattended unless you tell it to (see
 
 ```
    you ─▶ "land the plane" ─▶ ┌───────────────────────────────────────┐
-                              │  close epic · sync beads ·            │
-                              │  update milestone file                │
+                              │  final gates · file loose work ·      │
+                              │  policy/authority-aware handoff       │
                               └───────────────────────────────────────┘
 ```
 
@@ -136,12 +143,19 @@ one idempotent command; the other two are how you start each session.
 **One idempotent command does both.** Run it in a repo to install; run it
 again anytime to upgrade — it installs what's missing and safely
 3-way-merges any files you've edited locally instead of overwriting them
-(see [Upgrading](#upgrading)). One-liner into the current directory (add
-`--with-beads` to initialize beads in the same step, or `--dry-run` to
-preview without touching anything):
+(see [Upgrading](#upgrading)). Select the client explicitly for a new Codex
+or dual-client install; omitting `--platform` on a brand-new install preserves
+the original Claude-only default:
 
 ```sh
+# Claude Code (the backward-compatible default)
 curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --with-beads
+
+# Codex only
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform codex --with-beads
+
+# Both clients in the same repo
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform both --with-beads
 ```
 
 Or clone once and reuse across machines (recommended):
@@ -152,14 +166,27 @@ ln -sf ~/.local/share/domestique/domestique.sh ~/.local/bin/domestique.sh
 alias dom="$HOME/.local/bin/domestique.sh"          # add to ~/.zshrc or ~/.bashrc
 alias dom-guest="$HOME/.local/bin/domestique.sh --guest"  # guest installs (see below)
 # then, in any repo:
-dom --with-beads
+dom --platform codex --with-beads
 ```
 
-This installs `CLAUDE.md` (the orchestration policy, in a managed block that
-coexists with your own content), `.claude/agents/implementer.md` (the Sonnet
-implementer) and `.claude/agents/reviewer.md` (the Opus reviewer), and
-`.claude/commands/decompose.md` (the `/decompose` command) and
-`.claude/commands/goal.md` (the `/goal` command).
+The platform projections are deliberately separate:
+
+- **Claude Code:** `CLAUDE.md` policy block,
+  `.claude/agents/{implementer,reviewer}.md`, and
+  `.claude/commands/{decompose,goal}.md`.
+- **Codex:** a policy block in an existing root `AGENTS.override.md`, or in
+  `AGENTS.md` when no override exists; custom agents at
+  `.codex/agents/{implementer,reviewer}.toml`; and namespaced repo skills at
+  `.agents/skills/domestique*/`. The goal skill's `agents/openai.yaml`
+  disables implicit invocation, so only an explicit `$domestique-goal`
+  authorizes unattended work.
+
+An explicit platform install adds that projection to domestique's persisted
+platform set. Later runs without `--platform` update the recorded set rather
+than guessing from installed binaries or arbitrary project files. A legacy
+provider state tree with no platform record implies that provider. `--platform codex`
+in a fresh repo creates no `.claude/` artifacts; use `--platform both` when
+you intentionally want both clients.
 
 **Installing locally, per project, makes the agents yours to extend.** Since
 the config lands in your own repo rather than some shared global location,
@@ -170,28 +197,38 @@ above — see [Upgrading](#upgrading) for the mechanics.
 
 ### 2. Set the orchestrator session's model
 
-Open Claude Code in the repo and set the session model once — Fable and Opus
-both work well as the orchestrator:
+In Claude Code, Fable and Opus both work well as the orchestrator:
 
 ```
 /model fable
 ```
 
-(`/model opus` works too.) Each subagent's model is already pinned in its
-frontmatter, independent of this setting (see [The loop](#the-loop), above).
-To retune, edit `model:` in the agent files: drop the reviewer to `sonnet`
-for cheaper/faster peer review, or raise it for maximum rigor on high-stakes
-work.
+(`/model opus` works too.) In Codex, select the main session model with its
+normal model control. Subagents remain pinned independently in their TOML
+files. Local edits to either platform's agent files survive upgrades through
+the same three-way merge path.
 
 ### 3. Make sure beads is initialized in this repo
 
 This assumes `bd` is already installed (see "About beads", above). If you
-installed with `--with-beads` and `bd` was on your PATH, this repo-level
-initialization is already done. Otherwise, once per repo:
+installed with `--with-beads`, `bd` was on your PATH, and it supports the
+required safe flags, this repo-level initialization is already done. Otherwise
+domestique warns and skips it. In normal mode, domestique initializes beads
+without allowing `bd init` to install agent files or hooks, then runs the
+recipe for each selected client. Equivalent manual setup is:
 
 ```sh
-bd init && bd setup claude
+bd init --skip-agents --skip-hooks --non-interactive
+bd setup claude   # Claude projection
+bd setup codex    # Codex projection; run both recipes for --platform both
 ```
+
+Guest mode is stricter: it uses
+`bd init --stealth --skip-agents --skip-hooks --non-interactive` and
+intentionally skips all provider setup recipes, because those recipes may
+modify host instructions, hooks, or tracked files. If the installed `bd` does
+not support the safe init flags, domestique skips initialization with a
+warning instead of weakening guest isolation.
 
 **Verify it's wired up:** `bd ready` returns tasks (beads is live), and asking
 the orchestrator to "dispatch next ready bead" spawns the `implementer`
@@ -214,72 +251,72 @@ use the `dom-guest` alias in any repo:
 dom-guest
 ```
 
-**What it guarantees.** Nothing lands in the repo's tracked history. The
-orchestration policy goes into `CLAUDE.local.md` instead of `CLAUDE.md` — the
-tracked `CLAUDE.md` is never read, written, or backed up. Everything domestique
-creates (`CLAUDE.local.md`, `.claude/`, `.beads/`, and the `.bak.<timestamp>`/
-`.new` files a merge conflict might produce) is added to a managed block in
-`<git-common-dir>/info/exclude` (the local, never-committed sibling of
-`.gitignore` — resolved via `git rev-parse --git-common-dir`, so it lands in
-the right place even when you're in a worktree; `.gitignore` itself is never
-touched). Run `git status` right after a guest install *without*
-`--with-beads` and it comes back clean. With `--with-beads`, this doesn't
-currently hold: `bd setup claude` also writes `.agents/`, `.codex/`,
-`.gitignore`, `AGENTS.md`, and `CLAUDE.md`, none of which guest mode's exclude
-block covers, so those show up as tracked-file edits or untracked paths in
-`git status`. This is a known limitation and is being addressed. Real output
-from `domestique.sh --dry-run --guest` (no `--with-beads`) in a scratch repo
-(per-file `snapshot base ->` and the
-manifest-write lines elided for brevity):
+**What it guarantees.** Nothing domestique creates lands in the repo's
+tracked history. Guest mode never edits `.gitignore`; it writes a managed
+block in
+`<git-common-dir>/info/exclude`, the local never-committed sibling of
+`.gitignore`. Resolving the Git common directory makes the same guarantee in
+a worktree. A fresh guest install in a previously clean repository, including
+one using the safe `--with-beads` path, leaves `git status` clean.
 
+The two clients achieve that isolation differently:
+
+- **Claude guest:** the policy goes into `CLAUDE.local.md`; tracked
+  `CLAUDE.md` is never read, changed, or backed up. Claude agents, commands,
+  and state are excluded by the compatibility entries `CLAUDE.local.md` and
+  `.claude/`; this legacy broad `.claude/` entry can also hide pre-existing
+  untracked content below that directory. `.beads/` is excluded only when domestique
+  created it through the safe guest initialization path.
+- **Codex guest:** both `AGENTS.md` and `AGENTS.override.md` are always left
+  byte-untouched. Codex has no additive local project-instruction file, and
+  creating an override would shadow the host's `AGENTS.md`. Domestique
+  therefore installs only the two custom agents and the namespaced skills,
+  excluded at their exact paths, with provider state under
+  `.codex/.domestique`. Start each new Codex session with `$domestique`.
+  Operational skills are self-contained; the base skill can also match
+  “dispatch next ready bead” and “land the plane.” This is functional guest
+  support, not a claim that Codex automatically loads domestique policy at
+  session startup.
+
+Codex guest excludes are intentionally narrow: domestique does not hide an entire
+pre-existing `.agents/` or `.codex/` tree, and it does not newly hide a path
+that was already untracked before installation. It also does not add broad
+`*.new` or backup-suffix patterns. A tracked collision cannot
+be hidden by `info/exclude`; domestique reports it instead of claiming a
+clean install. If the target is not a Git repository, the exclude step is
+skipped with a warning and the remaining guest install can proceed.
+
+Examples:
+
+```sh
+dom --guest                         # Claude guest (legacy default)
+dom --guest --platform codex        # Codex skills-only guest
+dom --guest --platform both         # both local projections
+dom --guest --platform codex --with-beads
 ```
-domestique: installing into .
-(dry run — no files will be modified)
-  [dry-run] create ./CLAUDE.local.md (managed block only)
-  [dry-run] create ./.claude/agents/implementer.md
-  [dry-run] create ./.claude/agents/reviewer.md
-  [dry-run] create ./.claude/commands/decompose.md
-  [dry-run] create ./.claude/commands/goal.md
-  [dry-run] update ./.git/info/exclude (managed block)
-  [dry-run] write mode marker -> ./.claude/.domestique/mode (guest)
 
-Summary (planned):
-  Created:
-    - ./CLAUDE.local.md
-    - ./.claude/agents/implementer.md
-    - ./.claude/agents/reviewer.md
-    - ./.claude/commands/decompose.md
-    - ./.claude/commands/goal.md
-  Updated:
-    - ./.git/info/exclude
-  (dry run: nothing was actually changed)
-Done.
-```
+**Sticky mode and platform selection.** Guest mode is recorded separately in
+each installed provider's state (`.claude/.domestique` and/or
+`.codex/.domestique`). Re-running without `--guest` or `--no-guest` respects
+that state, as does `update.sh`. The persisted platform set likewise makes a
+selector-less rerun update the already installed provider set. Pass
+`--no-guest` to convert deliberately; Claude prints guidance for folding any
+`CLAUDE.local.md` customization into `CLAUDE.md`, while Codex begins managing
+the active root AGENTS file. Nothing is auto-migrated. Passing `--guest` and
+`--no-guest` together remains a usage error.
 
-If any of those paths is already tracked in the host repo, domestique warns
-(an exclude entry can't hide a tracked path) but keeps going. If the target
-isn't a git repository at all, the exclude step is skipped with a warning and
-the rest of the guest install still proceeds.
+## Unattended epic mode
 
-**Sticky mode.** A guest install writes a marker at
-`.claude/.domestique/mode`. Re-running the plain install command later (no
-`--guest`, no `--no-guest`) against the same directory detects that marker
-and stays in guest mode — it won't silently start writing into the tracked
-`CLAUDE.md`. `update.sh` respects the same marker on upgrades. Pass
-`--no-guest` to convert on purpose: it removes the marker, prints by-hand
-instructions for folding `CLAUDE.local.md` into `CLAUDE.md` (nothing is
-auto-migrated), and that same run installs `CLAUDE.md` normally. Passing
-both `--guest` and `--no-guest` together is a usage error.
-
-## `/goal` — unattended epic mode
-
-`/decompose` plans; `/goal <epic-id>` executes. It drains one beads epic to
+Claude uses `/decompose` and `/goal <epic-id>`; Codex uses
+`$domestique-decompose` and `$domestique-goal <epic-id>`. The goal workflow
+drains one beads epic to
 completion by repeatedly running the implementer → reviewer loop **without
-stopping between beads**. `/goal` is the only thing that lifts the default
-check-in-between-beads rule (see [The loop](#the-loop), above), and only
-within strict bounds.
+stopping between beads**. The platform's explicit goal invocation is the
+only thing that lifts the default check-in-between-beads rule (see
+[The loop](#the-loop), above), and only within strict bounds. The Codex goal
+skill cannot be invoked implicitly.
 
-**Authorization is scoped and temporary.** A `/goal <epic-id>` invocation is
+**Authorization is scoped and temporary.** A goal invocation is
 the sole thing that authorizes continuous, unattended dispatch — and only
 across that epic's beads. It expires the instant the epic completes or any
 stop condition fires, and it never carries over to another epic or a later
@@ -306,21 +343,27 @@ reports anything needing push/merge authority as a proposed command for you
 to run — never executing it itself.
 
 ```
-/decompose Add rate limiting to the public API   # plan: epic + bounded tasks
-/goal <epic-id>                                   # execute: drain the epic, unattended, on its own branch
+# Claude Code
+/decompose Add rate limiting to the public API
+/goal <epic-id>
+
+# Codex
+$domestique-decompose Add rate limiting to the public API
+$domestique-goal <epic-id>
 ```
 
-When `/goal` stops — completion, ceiling, or a stop condition — review the
+When goal execution stops — completion, ceiling, or a stop condition — review the
 epic branch's diffs and commit history, then merge the epic branch into main
-by hand, or prompt Claude to do it for you.
+by hand, or explicitly ask your coding client to do it.
 
 ## Safety & idempotency
 
-- **Your `CLAUDE.md` survives.** Everything outside the managed block is
-  preserved byte-for-byte, whether or not the block existed before (see
-  [Upgrading](#upgrading) for merge specifics).
-- **Backups.** Any file that would change is backed up first — `CLAUDE.md`
-  *always*, even under `--force`.
+- **Your project instructions survive.** In normal mode, everything outside
+  the managed block in `CLAUDE.md`, `AGENTS.md`, or `AGENTS.override.md` is
+  preserved byte-for-byte. Codex guest mode never touches either AGENTS file.
+- **Backups.** Policy files are backed up before modification, including
+  under `--force`; plain managed files follow the documented merge/force
+  rules.
 - **Run it twice** and the second run makes no changes (and creates no new
   backup).
 - **`--dry-run`** computes and prints the full plan while touching nothing.
@@ -331,19 +374,23 @@ by hand, or prompt Claude to do it for you.
 domestique.sh [TARGET_DIR] [options]
 
 Options:
+  --platform P   Select claude, codex, or both. A new selector-less install
+                 defaults to claude; later selector-less runs use persisted
+                 selection.
   --dry-run      Print planned changes; touch nothing.
-  --with-beads   If `bd` is on PATH: `bd init` (only when no .beads/) then
-                 `bd setup claude`. If `bd` is absent, note it and skip.
-  --force        Overwrite differing .claude/ files without a .bak backup.
-                 (CLAUDE.md is ALWAYS backed up before modification.)
-  --guest        Route the managed policy block to CLAUDE.local.md instead of
-                 CLAUDE.md — for installing into a repo you don't own (see
-                 "Using domestique in a repo you don't own", above).
+  --with-beads   Initialize beads with agent/hook writes disabled. Normal
+                 mode then runs setup recipes for selected providers; guest
+                 mode skips provider setup to preserve isolation.
+  --force        Overwrite differing managed plain files instead of merging;
+                 policy files are still backed up before modification.
+  --guest        Install local-only state for a repo you don't own. Claude
+                 uses CLAUDE.local.md; Codex uses skills only and leaves both
+                 AGENTS files untouched.
   --no-guest     Convert an existing guest install back to normal. Mutually
                  exclusive with --guest.
   --uninstall    Remove everything domestique installed (see "Uninstalling",
-                 below). Combinable only with --dry-run, --force,
-                 --purge-beads, and TARGET_DIR.
+                 below). Add --platform for a scoped uninstall; omit it to
+                 scan all managed providers.
   --purge-beads  Only valid with --uninstall: also remove TARGET_DIR/.beads.
   --help, -h     Show this help.
 ```
@@ -351,13 +398,15 @@ Options:
 Run `domestique.sh --help` for the full option reference, including exact
 behavior notes for each flag.
 
-The installer is a single self-contained bash script with the five config files
-embedded — no network access needed beyond fetching the script itself.
+The installer is a single self-contained Bash script with every Claude and
+Codex template embedded — no network access is needed beyond fetching the
+script itself.
 
 ## Uninstalling
 
 ```sh
-dom --uninstall path/to/repo            # remove everything domestique installed
+dom --uninstall path/to/repo            # remove all managed providers
+dom --uninstall --platform codex path/to/repo  # remove only Codex
 dom --uninstall --dry-run path/to/repo  # preview only
 dom --uninstall --purge-beads path/to/repo   # also remove .beads/
 ```
@@ -366,26 +415,34 @@ dom --uninstall --purge-beads path/to/repo   # also remove .beads/
 above; substitute your own `domestique.sh` invocation and TARGET_DIR as
 needed — TARGET_DIR defaults to the current directory.)
 
-`--uninstall` removes exactly what domestique installed, and nothing else:
-the four `.claude/` files, the managed block in `CLAUDE.md` and/or
-`CLAUDE.local.md` (whichever carry it), the managed block in
-`<git-common-dir>/info/exclude`, and the `.claude/.domestique/` snapshot dir
-and mode marker. It prunes `.claude/agents`, `.claude/commands`, and
-`.claude` itself only if they're left empty, and it never touches `.beads/`
-unless you pass `--purge-beads`. If nothing was installed, it's a no-op
-(exit 0).
+`--uninstall` removes exactly what domestique installed, and nothing else.
+Without `--platform`, it scans both provider inventories. With a platform it
+removes only that projection, updates the persisted platform set, and
+regenerates the shared guest-exclude union for anything still installed.
+Claude ownership covers its four `.claude/` files and policy destinations;
+Codex ownership covers the two `.codex/agents` files, three namespaced
+`SKILL.md` leaves plus goal metadata, and any managed normal-mode AGENTS block.
+Provider state is removed only for the selected projection. `.beads/` is
+never removed unless you pass `--purge-beads`.
 
-**Safety-compared, not blindly deleted.** Each of the four `.claude/` files
-is compared against its recorded base snapshot (or the pristine emitted
-content if no snapshot exists) before removal. Untouched files are deleted
+Parent directories such as `.claude/agents`, `.codex/agents`, and
+`.agents/skills` are pruned only when empty. A Codex uninstall never removes
+an entire user-owned `.codex/` or `.agents/` tree.
+
+**Safety-compared, not blindly deleted.** Each managed Claude or Codex plain
+file is compared against its provider's recorded base snapshot (or the
+pristine emitted content if no snapshot exists) before removal. Domestique
+first requires ownership evidence: that provider's state tree or a managed
+policy marker. A fixed inventory pathname alone is never enough. Untouched files are deleted
 outright; files you've hand-edited are kept, renamed to
-`<file>.uninstalled.<timestamp>`, unless you pass `--force`. The same logic
-applies to the policy files: a managed block that was never modified is
+`<file>.uninstalled.<timestamp>`, unless you pass `--force`. This removal
+applies only to paths domestique created; an adopted, pre-existing Codex file
+is left at its original path. For policy files, a managed block that was never modified is
 stripped with no backup (the file is deleted outright if stripping it leaves
 nothing behind); a modified block is backed up to `<file>.bak.<timestamp>`
 first.
 
-**Marker-sanity refusals.** If a policy file's managed-block markers are
+**Marker-sanity refusals.** If a Claude or Codex policy file's managed-block markers are
 duplicated, mismatched, or in the wrong order, `--uninstall` refuses to touch
 that file — it's reported under `Conflicted`, the run exits `3`, and the file
 is left byte-untouched. Other files still get uninstalled normally; only the
@@ -395,17 +452,21 @@ corrupt one is skipped.
 an otherwise-clean repo, with nothing touched by hand afterward, followed
 immediately by `--uninstall` — every installed file is deleted outright, the
 exclude block is fully stripped back out, and the repo returns to
-byte-for-byte clean `git status`. If you modified an installed file first,
+byte-for-byte clean `git status`, for Claude, Codex, or both. Safe guest
+`--with-beads` never runs provider setup recipes, but `.beads/` is deliberately
+preserved on uninstall and becomes visible again unless `--purge-beads` is
+also passed. If you modified an installed file first,
 that file is deliberately preserved instead of deleted (renamed to
 `<file>.uninstalled.<timestamp>`), so it will show up as untracked in
 `git status` afterward — this is by design (see "Safety-compared, not
 blindly deleted", above), not a broken round trip. Real output from a
-`--guest` install immediately followed by `--uninstall` in a fresh scratch
-repo:
+Claude `--guest` install immediately followed by `--uninstall` in a fresh
+scratch repo (Codex reports its own agent, skill, and state paths instead):
 
 ```
 $ domestique.sh --guest .
-domestique: installing into .
+domestique: installing into . (platforms=claude)
+domestique: platform=claude mode=guest policy=CLAUDE.local.md
 
 Summary:
   Created:
@@ -423,7 +484,7 @@ On branch main
 nothing to commit, working tree clean
 
 $ domestique.sh --uninstall .
-domestique: uninstalling from .
+domestique: uninstalling from . (platform=all)
 
 Summary (uninstall):
   Removed:
@@ -441,18 +502,21 @@ On branch main
 nothing to commit, working tree clean
 ```
 
-and `.claude/` no longer exists at all.
+and `.claude/` no longer exists at all. A scoped Codex uninstall leaves the
+Claude projection and its exclusion entries intact, and vice versa.
 
 ## Upgrading
 
 Re-running the installer 3-way-merges your local edits against upstream
 changes instead of overwriting them.
 
-**How it works.** Every install/upgrade records a base snapshot in
-`.claude/.domestique/` — a pristine copy of what was last installed, plus the
-`CLAUDE.md` managed-block body and a manifest. The next time you run the
-installer, it does a **3-way merge** (`git merge-file`) between your current
-file (yours), that snapshot (base), and the newly emitted content (upstream).
+**How it works.** Every install/upgrade records a provider-specific base
+snapshot: `.claude/.domestique/` for Claude and `.codex/.domestique/` for
+Codex. Each holds pristine copies of what was last installed, managed policy
+block bodies, the persisted platform set, and a manifest of the provider's
+actual owned inventory. The next time you run the installer, it does a
+**3-way merge** (`git merge-file`) between your current file (yours), that
+snapshot (base), and the newly emitted content (upstream).
 If your edits and upstream's changes don't overlap, the merge is clean: your
 edits and the new upstream content are both applied, and the snapshot
 advances so the next upgrade merges from here.
@@ -461,7 +525,8 @@ advances so the next upgrade merges from here.
 reconcile them automatically. In that case domestique:
 - leaves your live file (e.g. `implementer.md`, or `CLAUDE.md`) **untouched**,
 - writes the merge result, conflict markers and all, to `<file>.new` (for
-  `CLAUDE.md` this is `CLAUDE.md.new`),
+  `CLAUDE.md` this is `CLAUDE.md.new`; an AGENTS policy conflict follows the
+  same naming rule),
 - backs up your current file to `<file>.bak.<timestamp>`,
 - and exits **3** so scripts/CI notice.
 
@@ -472,19 +537,21 @@ so each block has four parts — `<<<<<<<` your version, `|||||||` the
 original base, `=======`, and `>>>>>>>` the incoming upstream version;
 delete the markers and the sections you don't want.
 
-**CLAUDE.md specifics.** Only the managed block (between the
+**Policy-file specifics.** Only the managed block (between the
 `<!-- BEGIN domestique (managed) -->` / `<!-- END domestique -->` markers) is
-ever merged or replaced. Everything you've written outside the markers is
-preserved byte-for-byte, merge or no merge, conflict or no conflict.
+ever merged or replaced. This applies to `CLAUDE.md`, `CLAUDE.local.md`, and
+the active normal-mode `AGENTS.md` or `AGENTS.override.md`. Everything outside
+the markers is preserved byte-for-byte. Codex guest mode is the exception by
+design: it never reads or writes either root AGENTS file.
 
 **`--force` and `--dry-run`.** `--force` skips the merge entirely and takes
-upstream verbatim, discarding local edits to that file (`CLAUDE.md` is still
-always backed up first). `--dry-run` computes and prints the full plan —
+upstream verbatim, discarding local edits to that file (policy files are still
+backed up first). `--dry-run` computes and prints the full plan —
 including what a merge or conflict would do — without writing anything.
 
 **First upgrade of a legacy install.** The 3-way merge needs a base snapshot
-to diff against. If a managed file (or the `CLAUDE.md` managed block)
-predates the snapshot feature (no `.claude/.domestique/base/...` entry for it
+to diff against. If a managed file or policy block predates the snapshot
+feature (no provider-state base entry for it
 yet) and differs from what domestique would emit, that first upgrade
 **adopts** it instead of overwriting it: domestique seeds the base snapshot
 from the pristine emitted content and leaves your live file **untouched** —
@@ -492,8 +559,8 @@ no `.bak` is written, because nothing was changed. It reports the file under
 an "Adopted" heading as *"local edits preserved; re-run to merge upstream"*.
 This is default behavior, not a flag — there's nothing to opt into.
 
-That means an existing, customized install (say, an `implementer.md` with a
-hand-added `mcp__…` tool) is brought under management on the very next
+That means an existing, customized install (say, an `implementer.md`, Codex
+agent TOML, or skill with local changes) is brought under management on the very next
 `domestique.sh` run without losing anything: nothing merges and nothing is
 overwritten on the adoption run itself. Run the installer again afterward
 and upstream changes merge normally against the newly-seeded base — your
@@ -504,8 +571,9 @@ described above. Adoption never silently loses local edits, and it never
 silently drops upstream changes either — a conflict is always surfaced,
 never swallowed.
 
-`.claude/.domestique/` is domestique's own bookkeeping (snapshots + manifest)
-— it's safe to add to `.gitignore` if you'd rather not track it.
+`.claude/.domestique/` and `.codex/.domestique/` are domestique's own
+provider bookkeeping. Normal installs may track them as part of the project;
+guest installs exclude only the relevant provider state locally.
 
 ## Updating from GitHub
 
@@ -517,12 +585,17 @@ runs it through the same merge path above:
 ./update.sh path/to/repo          # update a specific target
 ./update.sh --dry-run             # preview only, applies nothing
 ./update.sh --force               # discard local edits, take upstream verbatim
+./update.sh --platform codex      # explicitly update/add the Codex projection
+./update.sh --platform both       # update/add both projections
 ./update.sh --source ./domestique.sh   # use a local file instead of GitHub
 ```
 
 The source defaults to the `main` branch on GitHub and can be overridden with
 `--source <path|url>` or the `DOMESTIQUE_UPDATE_SOURCE` env var. It's safe to
-run on a schedule (e.g. cron or a periodic CI job) — it always previews with
+run on a schedule (e.g. cron or a periodic CI job): `update.sh` forwards an
+explicit `--platform`, while a selector-less update relies on the target's
+persisted platform set (a provider state tree without a platform marker
+implies that provider). It always previews with
 `--dry-run` first, then applies, and exits:
 - `0` — applied cleanly, or already up to date.
 - `3` — one or more files hit a merge conflict; check the `.new`/`.bak`
@@ -532,14 +605,15 @@ run on a schedule (e.g. cron or a periodic CI job) — it always previews with
 
 ## Testing the installer itself
 
-Three self-contained suites cover the installer's own behavior — install/
-upgrade merges, guest mode, and uninstall — each runnable directly, no setup
-beyond a shell and `git`:
+The self-contained suites cover install/upgrade merges, guest mode, Codex,
+mixed-platform state, Beads routing, and uninstall. They require only a shell
+and `git` (plus any suite-specific fake command fixtures):
 
 ```sh
 bash test/upgrade.sh     # 12 scenarios: fresh install, merges, conflicts, adopt
 bash test/guest.sh       # 14 scenarios: --guest, sticky mode, --no-guest, worktrees
 bash test/uninstall.sh   # 23 scenarios: --uninstall, --purge-beads, round-trip, marker refusals
+bash test/codex.sh       # 16 scenarios: Codex, platforms, guest, Beads, updater, uninstall
 ```
 
 ## License
