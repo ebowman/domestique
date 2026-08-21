@@ -972,7 +972,31 @@ UNINSTALL_FILES
   for policyfile in CLAUDE.md CLAUDE.local.md; do
     dest="$target/$policyfile"
     [ -e "$dest" ] || continue
-    grep -qF "$MARKER_BEGIN" "$dest" 2>/dev/null || continue
+
+    local has_begin=0 has_end=0
+    grep -qF "$MARKER_BEGIN" "$dest" 2>/dev/null && has_begin=1
+    grep -qF "$MARKER_END" "$dest" 2>/dev/null && has_end=1
+    [ "$has_begin" -eq 0 ] && [ "$has_end" -eq 0 ] && continue
+
+    # Refuse to guess on a half-marked file (one marker present without its
+    # pair, in either direction): stripping to EOF or leaving a dangling
+    # marker in place would both be data loss. Leave it byte-untouched and
+    # mark the run conflicted, mirroring install's half-marked guard, but
+    # without aborting the whole run — other files still get uninstalled.
+    if [ "$has_begin" -ne "$has_end" ]; then
+      anything_done=1
+      CONFLICT_OCCURRED=1
+      if [ "$has_begin" -eq 1 ]; then
+        echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
+      else
+        echo "Error: $dest has a '$MARKER_END' marker but no matching '$MARKER_BEGIN'." >&2
+      fi
+      echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+      note_dry "ERROR: $dest is half-marked — leaving it untouched, not uninstalling"
+      SUM_CONFLICT+=("$dest (half-marked managed block)")
+      continue
+    fi
+
     anything_done=1
 
     if [ "$policyfile" = "CLAUDE.local.md" ]; then policymode="guest"; else policymode="normal"; fi
@@ -1115,7 +1139,14 @@ UNINSTALL_FILES
   [ "${#SUM_KEPT[@]}"      -gt 0 ] && print_group "Kept (modified)" "${SUM_KEPT[@]}"
   [ "${#SUM_BACKEDUP[@]}"  -gt 0 ] && print_group "Backed up"       "${SUM_BACKEDUP[@]}"
   [ "${#SUM_SKIPPED[@]}"   -gt 0 ] && print_group "Skipped"         "${SUM_SKIPPED[@]}"
+  [ "${#SUM_CONFLICT[@]}"  -gt 0 ] && print_group "Conflicted"      "${SUM_CONFLICT[@]}"
   [ "$DRY_RUN" -eq 1 ] && echo "  (dry run: nothing was actually changed)"
+
+  if [ "$CONFLICT_OCCURRED" -eq 1 ]; then
+    echo
+    echo "One or more files ended in conflict/error — see 'Conflicted' above." >&2
+    return 3
+  fi
   echo "Done."
 }
 
@@ -1123,7 +1154,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
   echo "domestique: uninstalling from $TARGET_DIR"
   [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
   do_uninstall "$TARGET_DIR"
-  exit 0
+  exit $?
 fi
 
 # ---------------------------------------------------------------------------
