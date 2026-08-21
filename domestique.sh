@@ -253,7 +253,21 @@ Behavior:
     The managed policy block is written to CLAUDE.local.md instead of
     CLAUDE.md. A tracked CLAUDE.md is never read, modified, or backed up in
     this mode. If CLAUDE.md already carries a non-guest domestique install,
-    a warning is printed and CLAUDE.md is left untouched.
+    a warning is printed and CLAUDE.md is left untouched. Everything guest
+    mode creates is also kept out of `git status`: a managed block is added
+    to <git-common-dir>/info/exclude (resolved via `git rev-parse
+    --git-common-dir`, so this works correctly from a worktree too) listing
+    CLAUDE.local.md, .claude/, .beads/, *.bak.[0-9]*, and *.new. If any of
+    the first three paths is already tracked, a warning is printed (an exclude entry
+    can't hide a tracked path) but nothing else changes. `.gitignore` itself
+    is never read, written, or otherwise touched by guest mode. A non-git target
+    directory prints a warning and skips the exclude step entirely (guest
+    install of the rest still proceeds). Net effect: a --guest install
+    followed by --uninstall returns the host repo to byte-for-byte clean
+    git status, provided nothing installed was modified by hand (modified
+    files are preserved as <file>.uninstalled.<timestamp> and show up as
+    untracked) and --with-beads was not used (its `bd setup claude`
+    artifacts aren't covered by the exclude block).
   * Guest mode is sticky: a guest install writes a marker at
     .claude/.domestique/mode. A later plain re-run (no --guest/--no-guest)
     against that same target detects the marker and stays in guest mode

@@ -40,21 +40,28 @@ bearing. Introducing a real version constant is out of scope for this design
 
 ```
 .claude/.domestique/
+  mode                                   # sticky guest-mode marker (see §6); absent on normal installs
   manifest                              # small key:value file, shell-parseable
   base/
-    CLAUDE.md.block                     # last-installed managed-block BODY (no markers)
+    CLAUDE.md.block                     # last-installed managed-block BODY (no markers) — normal-mode installs
+    CLAUDE.local.md.block               # same, but for the guest-mode destination — see §6
     .claude/agents/implementer.md
     .claude/agents/reviewer.md
     .claude/commands/decompose.md
+    .claude/commands/goal.md
 ```
 
 The `base/` tree mirrors each managed file's path under the target repo
 verbatim (e.g. `.claude/agents/implementer.md` is snapshotted at
 `base/.claude/agents/implementer.md`), one pristine copy per managed file,
-**except** for `CLAUDE.md`,
-where we snapshot only the managed block's *body* (the content between the
-markers, not the markers themselves and not the surrounding user content) —
-see §3.
+**except** for the policy destination (`CLAUDE.md`, or `CLAUDE.local.md`
+under `--guest` — see §6), where we snapshot only the managed block's *body*
+(the content between the markers, not the markers themselves and not the
+surrounding user content) — see §3. Note `base/` holds up to two separate
+policy-block snapshots (`CLAUDE.md.block` and `CLAUDE.local.md.block`),
+keyed by destination filename, because a target directory can see both a
+plain install and a `--guest` install over its lifetime (see §6) — each
+mode's merge base is independent of the other's.
 
 **Manifest format:** flat `key=value` lines, one per line, no nesting — avoids
 a `jq`/`yq` dependency in a `bash + git + coreutils` script.
@@ -65,8 +72,20 @@ domestique_version=<DOMESTIQUE_VERSION, e.g. 0.1.0>
 installed_ref=<git describe/short-sha of domestique.sh's own repo, or "unknown">
 installed_at=<ISO8601 timestamp>
 script_sha256=<sha256 of domestique.sh, or "unavailable">
-files=.claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,CLAUDE.md
+files=.claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md
 ```
+
+`files=` is **not** simply "this run's policy destination plus the four fixed
+`.claude/` files" — it's computed from actual on-disk state at manifest-write
+time (`managed_files_list`), because a target directory can be in a mixed
+state: a prior plain install left a managed block in `CLAUDE.md`, and a later
+`--guest` run (or vice versa) writes into `CLAUDE.local.md` without touching
+`CLAUDE.md`. Both policy files are still domestique-managed in that
+directory, so `files=` lists whichever of `CLAUDE.md` / `CLAUDE.local.md`
+actually carry the managed-block markers on disk — this run's destination is
+always included (it was just written), plus the *other* policy file if it
+independently carries the markers too. In a mixed-mode directory, `files=`
+can therefore list **both** `CLAUDE.md,CLAUDE.local.md`, not just one.
 
 **When it's written:**
 - **At install** (first time, no `.claude/.domestique/` present): after each
@@ -77,9 +96,12 @@ files=.claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/
   exactly the freshly-emitted content (clean install, clean merge, or
   `--force` overwrite). A conflicted file's base snapshot is left untouched.
 
-**Gitignore:** default to **yes** — recommend the installer append
-`.claude/.domestique/` to the target repo's `.gitignore` if one exists (or
-note it in the summary if none exists / user should add it). Rationale: it is
+**Gitignore:** design intent, not implemented behavior — a case could be made
+for the installer to append `.claude/.domestique/` to the target repo's
+`.gitignore` if one exists (or note it in the summary if none exists). As
+shipped, the installer does not print any such recommendation or touch
+`.gitignore` at all (see the Open Questions entry below); users who want it
+ignored add it by hand. Rationale for wanting this: it is
 per-working-copy merge state, not a shareable artifact, and different clones
 of the same repo could each have their own locally-edited files with
 independently-advancing bases. Tension: a fresh clone (or a clone that never
@@ -281,6 +303,144 @@ as script/invocation bugs worth escalating differently.
 
 ---
 
+## 6. Guest mode (`--guest`)
+
+**Purpose.** Install into a repo you don't own (e.g. a client project) for
+personal use, without touching the tracked `CLAUDE.md` or leaving any trace
+in `git status`.
+
+**Policy destination.** Under `--guest`, `POLICY_DEST` is `CLAUDE.local.md`
+instead of `CLAUDE.md`; every place in §1–§3 that reads/writes "the policy
+file" or "`CLAUDE.md`" targets whatever `POLICY_DEST` resolves to for this
+run. This is why `base/` can hold both `CLAUDE.md.block` and
+`CLAUDE.local.md.block` (see §1) — each mode's merge base is snapshotted
+under its own destination filename, so a `--guest` run never reads or
+advances the plain run's merge base, and vice versa. If a tracked `CLAUDE.md`
+already carries a non-guest domestique install, the guest run warns and
+leaves `CLAUDE.md` untouched entirely (never read, merged, or backed up).
+
+**Guest policy content is a variant, not a different file.** `emit_policy`
+takes a `mode` argument (`normal` or `guest`); the shared prose is identical,
+but the guest variant's final bullet replaces the "export and commit
+`.beads/`" session-end guidance with guidance to never commit `.beads/`,
+`CLAUDE.local.md`, or `.claude/` to the host repo, and to never modify
+`.gitignore` or any other tracked file on the repo's behalf. `emit_goal`'s
+body is mode-invariant but carries a self-scoping caveat noting that in guest
+installs, unattended `/goal` commits stay on local branches that are never
+pushed — doubling down on the same never-touch-the-host-repo guarantee.
+Because the merge/snapshot machinery in §2/§3 operates on whatever
+`emit_policy "$mode"` currently emits, upgrading a guest install re-merges
+against the guest variant's snapshot, not the normal variant's — the two
+never cross-contaminate.
+
+**Exclude-block management (`install_git_exclude`).** Guest mode adds a
+managed block (`GITEXCLUDE_MARKER_BEGIN`/`GITEXCLUDE_MARKER_END`, using `#`
+comments — the exclude file's syntax, not `CLAUDE.md`'s HTML-comment
+markers) to `<git-common-dir>/info/exclude`, listing `CLAUDE.local.md`,
+`.claude/`, `.beads/`, `*.bak.[0-9]*`, and `*.new`. The common dir is
+resolved via `git -C <target> rev-parse --git-common-dir`, so this correctly
+targets the shared `.git` even when `<target>` is a worktree (falling back to
+`<target>/.git/info/exclude` if `git` isn't on `PATH` but `.git` is a real
+directory). If the target isn't a git repository at all, the step is skipped
+with a warning — nothing else about the guest install is blocked by this.
+Before writing, `install_git_exclude` also warns (never fails) if any of
+`CLAUDE.local.md`, `.claude`, or `.beads` is already tracked in the target
+repo, since an exclude entry can't retroactively hide a tracked path. The
+exclude block itself follows the same idempotent create/update/skip-if-
+identical logic as the plain-file path in §2, but with no merge: it's always
+a wholesale block replace (there's no user content to preserve *inside* the
+block, only outside it, which is handled the same way `install_claude_md`
+preserves content outside its markers).
+
+**Sticky mode marker.** A guest install writes `.claude/.domestique/mode`
+(content: `guest`) after the policy file and the four `.claude/` files are
+installed (the manifest write and the opt-in `--with-beads` step, if any,
+happen after the marker, not before it). A later run against the
+same target with neither `--guest` nor `--no-guest` reads that marker and
+forces guest mode back on (with a printed note) rather than silently
+reverting to normal — this is what makes flag-less re-runs, and `update.sh`
+upgrades (which don't pass `--guest` themselves unless told to), stay in
+guest mode. `--no-guest` converts on purpose: it removes the marker and
+prints by-hand conversion instructions (nothing is auto-migrated — the user
+decides whether to fold `CLAUDE.local.md` into `CLAUDE.md` or drop it, and
+whether to clean the exclude block by hand), and that same run installs
+`CLAUDE.md` normally. Passing both `--guest` and `--no-guest` is a usage
+error (exit 2) resolved before any file I/O happens. A marker with any
+content other than exactly `guest` is treated as corrupt/foreign: a warning
+is printed and the run proceeds as a normal install (it does not error out,
+unlike the markers_sane refusals in §3/§7 — an unrecognized *mode* marker is
+not the same failure mode as unsound *managed-block* markers in a policy
+file).
+
+---
+
+## 7. Uninstall (`--uninstall`, `--purge-beads`)
+
+**Scope.** Removes exactly what domestique installed and nothing else: the
+four plain `.claude/` files, the managed block in `CLAUDE.md` and/or
+`CLAUDE.local.md` (whichever currently carry it — both, if the target saw
+mixed plain/guest use), the managed block in `<git-common-dir>/info/exclude`,
+and the `.claude/.domestique/` snapshot dir (including the mode marker).
+`.claude/agents`, `.claude/commands`, and `.claude` itself are pruned only if
+left empty afterward. `.beads/` is left in place by default (with a printed
+note) since it may hold work unrelated to domestique's own install; pass
+`--purge-beads` to remove it too. Combinable only with `--dry-run`,
+`--force`, `--purge-beads`, and `TARGET_DIR` — combining with `--guest`,
+`--no-guest`, or `--with-beads` is a usage error (exit 2), since those flags
+only make sense for an install run.
+
+**Snapshot-compare safety (mirrors §2's ADOPT reasoning in reverse).** Each of
+the four plain `.claude/` files is compared against its recorded base
+snapshot (falling back to the pristine freshly-emitted content if no
+snapshot exists — e.g. a legacy install that predates the snapshot feature).
+An exact match means the file was never modified after install, so it's
+deleted outright with no backup. A mismatch means the user edited it: it's
+kept, renamed to `<file>.uninstalled.<timestamp>`, unless `--force` is
+passed, in which case it's removed anyway (noted as "modified, --force" in
+the summary). The same compare-then-decide logic governs the policy files'
+managed blocks: the on-disk block body is diffed against
+`CLAUDE.md.block`/`CLAUDE.local.md.block` (or the pristine `emit_policy`
+output for the matching mode, if no snapshot exists); an unmodified block is
+stripped with no backup, and the file is deleted entirely if stripping
+leaves nothing but whitespace behind, while a modified block is backed up to
+`<file>.bak.<timestamp>` before stripping.
+
+**Marker-sanity refusals.** Before stripping a policy file's managed block,
+`--uninstall` runs the same `markers_sane` check §3 uses for install: a
+result other than `none`/`ok` (i.e. `half`, `dup_begin`, `dup_end`, or
+`inverted` — a half-marked file, duplicate BEGIN/END markers, or END
+appearing before BEGIN) means the naive strip would act on the wrong span,
+so that file is left byte-untouched, reported under `Conflicted`, and the
+overall run exits `3` — but processing continues for every other file
+(unlike install's half-marker refusal, which aborts the whole run; uninstall
+treats a corrupt marker in one file as a partial failure, not a hard stop,
+since other installed files are still safe to remove).
+
+**No-op behavior.** If nothing domestique installed is found in the target
+(`anything_done` stays `0` across every step), `--uninstall` prints a note
+and exits `0` — it's a clean no-op, not an error.
+
+**`--dry-run`.** Performs every comparison and decision above but writes,
+deletes, and renames nothing — it prints exactly what would happen (create/
+remove/keep/backup) for every step, matching the real run's summary
+structure (`Removed` / `Kept (modified)` / `Backed up` / `Skipped` /
+`Conflicted`).
+
+**Round-trip guarantee.** For the common case — a `--guest` install into an
+otherwise-clean host repo, immediately followed by `--uninstall` — every
+installed file is deleted outright (nothing was ever modified), the exclude
+block is fully stripped back out, `.claude/.domestique/` is removed, and the
+now-empty `.claude/agents`, `.claude/commands`, and `.claude` directories are
+pruned, leaving the host repo at byte-for-byte clean `git status`. This is
+the practical safety property guest mode exists to provide, and it's
+verified by `test/uninstall.sh`. It does not extend to `--with-beads`
+installs: `bd setup claude` writes `.agents/`, `.codex/`, `.gitignore`,
+`AGENTS.md`, and `CLAUDE.md`, none of which guest mode's exclude block
+covers, so those remain as tracked-file edits or untracked paths after
+`--uninstall`.
+
+---
+
 ## Open questions / risks
 
 - **Is "`--force` = discard-and-take-theirs" the right redefinition, or does
@@ -291,13 +451,14 @@ as script/invocation bugs worth escalating differently.
   second flag. This needs an operator decision only if the discard-everything
   behavior turns out to be too blunt in practice.
 - **`.gitignore` mutation:** should the installer actually *edit* the target
-  repo's `.gitignore` to add `.claude/.domestique/`, or only print a
-  recommendation? Editing another project's `.gitignore` automatically is a
-  bigger claim on the target repo than the current script makes anywhere
-  else (it only ever writes inside `.claude/` and `CLAUDE.md`). Defaulted
-  here to **print a recommendation, do not auto-edit** `.gitignore` — but
-  this is a real product-behavior fork that should be confirmed, not just
-  assumed.
+  repo's `.gitignore` to add `.claude/.domestique/`, or print a
+  recommendation, or do neither? Editing another project's `.gitignore`
+  automatically is a bigger claim on the target repo than the current script
+  makes anywhere else (it only ever writes inside `.claude/` and
+  `CLAUDE.md`/`CLAUDE.local.md`, plus the git-exclude file under `--guest`).
+  As shipped, the installer does **neither** — it doesn't edit `.gitignore`
+  and doesn't print a recommendation about it either; this remains an open,
+  unimplemented product-behavior fork, not a confirmed default.
 - **Snapshot corruption/tampering:** if a file inside `.claude/.domestique/base/`
   is hand-edited or deleted between runs, `git merge-file` will happily merge
   against garbage or the "no snapshot" fallback fires. This design does not

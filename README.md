@@ -149,7 +149,8 @@ Or clone once and reuse across machines (recommended):
 ```sh
 git clone https://github.com/ebowman/domestique.git ~/.local/share/domestique
 ln -sf ~/.local/share/domestique/domestique.sh ~/.local/bin/domestique.sh
-alias dom="$HOME/.local/bin/domestique.sh"   # add to ~/.zshrc or ~/.bashrc
+alias dom="$HOME/.local/bin/domestique.sh"          # add to ~/.zshrc or ~/.bashrc
+alias dom-guest="$HOME/.local/bin/domestique.sh --guest"  # guest installs (see below)
 # then, in any repo:
 dom --with-beads
 ```
@@ -196,6 +197,79 @@ bd init && bd setup claude
 the orchestrator to "dispatch next ready bead" spawns the `implementer`
 subagent to do the work and the `reviewer` subagent to check it — rather than
 the orchestrator editing or verifying files itself.
+
+## Using domestique in a repo you don't own
+
+Working in someone else's repo (a client project, a coworker's service) but
+still want the loop? Pass `--guest`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --guest
+```
+
+Or, with the clone-once setup from [Setup](#1-install-or-upgrade-the-config-in-your-repo),
+use the `dom-guest` alias in any repo:
+
+```sh
+dom-guest
+```
+
+**What it guarantees.** Nothing lands in the repo's tracked history. The
+orchestration policy goes into `CLAUDE.local.md` instead of `CLAUDE.md` — the
+tracked `CLAUDE.md` is never read, written, or backed up. Everything domestique
+creates (`CLAUDE.local.md`, `.claude/`, `.beads/`, and the `.bak.<timestamp>`/
+`.new` files a merge conflict might produce) is added to a managed block in
+`<git-common-dir>/info/exclude` (the local, never-committed sibling of
+`.gitignore` — resolved via `git rev-parse --git-common-dir`, so it lands in
+the right place even when you're in a worktree; `.gitignore` itself is never
+touched). Run `git status` right after a guest install *without*
+`--with-beads` and it comes back clean. With `--with-beads`, this doesn't
+currently hold: `bd setup claude` also writes `.agents/`, `.codex/`,
+`.gitignore`, `AGENTS.md`, and `CLAUDE.md`, none of which guest mode's exclude
+block covers, so those show up as tracked-file edits or untracked paths in
+`git status`. This is a known limitation and is being addressed. Real output
+from `domestique.sh --dry-run --guest` (no `--with-beads`) in a scratch repo
+(per-file `snapshot base ->` and the
+manifest-write lines elided for brevity):
+
+```
+domestique: installing into .
+(dry run — no files will be modified)
+  [dry-run] create ./CLAUDE.local.md (managed block only)
+  [dry-run] create ./.claude/agents/implementer.md
+  [dry-run] create ./.claude/agents/reviewer.md
+  [dry-run] create ./.claude/commands/decompose.md
+  [dry-run] create ./.claude/commands/goal.md
+  [dry-run] update ./.git/info/exclude (managed block)
+  [dry-run] write mode marker -> ./.claude/.domestique/mode (guest)
+
+Summary (planned):
+  Created:
+    - ./CLAUDE.local.md
+    - ./.claude/agents/implementer.md
+    - ./.claude/agents/reviewer.md
+    - ./.claude/commands/decompose.md
+    - ./.claude/commands/goal.md
+  Updated:
+    - ./.git/info/exclude
+  (dry run: nothing was actually changed)
+Done.
+```
+
+If any of those paths is already tracked in the host repo, domestique warns
+(an exclude entry can't hide a tracked path) but keeps going. If the target
+isn't a git repository at all, the exclude step is skipped with a warning and
+the rest of the guest install still proceeds.
+
+**Sticky mode.** A guest install writes a marker at
+`.claude/.domestique/mode`. Re-running the plain install command later (no
+`--guest`, no `--no-guest`) against the same directory detects that marker
+and stays in guest mode — it won't silently start writing into the tracked
+`CLAUDE.md`. `update.sh` respects the same marker on upgrades. Pass
+`--no-guest` to convert on purpose: it removes the marker, prints by-hand
+instructions for folding `CLAUDE.local.md` into `CLAUDE.md` (nothing is
+auto-migrated), and that same run installs `CLAUDE.md` normally. Passing
+both `--guest` and `--no-guest` together is a usage error.
 
 ## `/goal` — unattended epic mode
 
@@ -262,11 +336,112 @@ Options:
                  `bd setup claude`. If `bd` is absent, note it and skip.
   --force        Overwrite differing .claude/ files without a .bak backup.
                  (CLAUDE.md is ALWAYS backed up before modification.)
+  --guest        Route the managed policy block to CLAUDE.local.md instead of
+                 CLAUDE.md — for installing into a repo you don't own (see
+                 "Using domestique in a repo you don't own", above).
+  --no-guest     Convert an existing guest install back to normal. Mutually
+                 exclusive with --guest.
+  --uninstall    Remove everything domestique installed (see "Uninstalling",
+                 below). Combinable only with --dry-run, --force,
+                 --purge-beads, and TARGET_DIR.
+  --purge-beads  Only valid with --uninstall: also remove TARGET_DIR/.beads.
   --help, -h     Show this help.
 ```
 
+Run `domestique.sh --help` for the full option reference, including exact
+behavior notes for each flag.
+
 The installer is a single self-contained bash script with the five config files
 embedded — no network access needed beyond fetching the script itself.
+
+## Uninstalling
+
+```sh
+dom --uninstall path/to/repo            # remove everything domestique installed
+dom --uninstall --dry-run path/to/repo  # preview only
+dom --uninstall --purge-beads path/to/repo   # also remove .beads/
+```
+
+(`dom` is the alias from [Setup](#1-install-or-upgrade-the-config-in-your-repo),
+above; substitute your own `domestique.sh` invocation and TARGET_DIR as
+needed — TARGET_DIR defaults to the current directory.)
+
+`--uninstall` removes exactly what domestique installed, and nothing else:
+the four `.claude/` files, the managed block in `CLAUDE.md` and/or
+`CLAUDE.local.md` (whichever carry it), the managed block in
+`<git-common-dir>/info/exclude`, and the `.claude/.domestique/` snapshot dir
+and mode marker. It prunes `.claude/agents`, `.claude/commands`, and
+`.claude` itself only if they're left empty, and it never touches `.beads/`
+unless you pass `--purge-beads`. If nothing was installed, it's a no-op
+(exit 0).
+
+**Safety-compared, not blindly deleted.** Each of the four `.claude/` files
+is compared against its recorded base snapshot (or the pristine emitted
+content if no snapshot exists) before removal. Untouched files are deleted
+outright; files you've hand-edited are kept, renamed to
+`<file>.uninstalled.<timestamp>`, unless you pass `--force`. The same logic
+applies to the policy files: a managed block that was never modified is
+stripped with no backup (the file is deleted outright if stripping it leaves
+nothing behind); a modified block is backed up to `<file>.bak.<timestamp>`
+first.
+
+**Marker-sanity refusals.** If a policy file's managed-block markers are
+duplicated, mismatched, or in the wrong order, `--uninstall` refuses to touch
+that file — it's reported under `Conflicted`, the run exits `3`, and the file
+is left byte-untouched. Other files still get uninstalled normally; only the
+corrupt one is skipped.
+
+**The round-trip guarantee.** For the common case — a `--guest` install into
+an otherwise-clean repo, with nothing touched by hand afterward, followed
+immediately by `--uninstall` — every installed file is deleted outright, the
+exclude block is fully stripped back out, and the repo returns to
+byte-for-byte clean `git status`. If you modified an installed file first,
+that file is deliberately preserved instead of deleted (renamed to
+`<file>.uninstalled.<timestamp>`), so it will show up as untracked in
+`git status` afterward — this is by design (see "Safety-compared, not
+blindly deleted", above), not a broken round trip. Real output from a
+`--guest` install immediately followed by `--uninstall` in a fresh scratch
+repo:
+
+```
+$ domestique.sh --guest .
+domestique: installing into .
+
+Summary:
+  Created:
+    - ./CLAUDE.local.md
+    - ./.claude/agents/implementer.md
+    - ./.claude/agents/reviewer.md
+    - ./.claude/commands/decompose.md
+    - ./.claude/commands/goal.md
+  Updated:
+    - ./.git/info/exclude (managed block)
+Done.
+
+$ git status
+On branch main
+nothing to commit, working tree clean
+
+$ domestique.sh --uninstall .
+domestique: uninstalling from .
+
+Summary (uninstall):
+  Removed:
+    - ./.claude/agents/implementer.md
+    - ./.claude/agents/reviewer.md
+    - ./.claude/commands/decompose.md
+    - ./.claude/commands/goal.md
+    - ./CLAUDE.local.md
+    - ./.git/info/exclude (managed block)
+    - ./.claude/.domestique
+Done.
+
+$ git status
+On branch main
+nothing to commit, working tree clean
+```
+
+and `.claude/` no longer exists at all.
 
 ## Upgrading
 
@@ -354,6 +529,18 @@ run on a schedule (e.g. cron or a periodic CI job) — it always previews with
   files and resolve by hand as described above.
 - `4` — couldn't fetch or validate the source `domestique.sh`; nothing was
   touched.
+
+## Testing the installer itself
+
+Three self-contained suites cover the installer's own behavior — install/
+upgrade merges, guest mode, and uninstall — each runnable directly, no setup
+beyond a shell and `git`:
+
+```sh
+bash test/upgrade.sh     # 12 scenarios: fresh install, merges, conflicts, adopt
+bash test/guest.sh       # 14 scenarios: --guest, sticky mode, --no-guest, worktrees
+bash test/uninstall.sh   # 23 scenarios: --uninstall, --purge-beads, round-trip, marker refusals
+```
 
 ## License
 
