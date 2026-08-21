@@ -24,6 +24,16 @@ Options:
   --dry-run            Only show the preview; do not apply.
   --force              Pass through to domestique.sh (discard local edits,
                         take upstream verbatim; see domestique.sh --help).
+  --guest              Pass through to domestique.sh (route the managed
+                        policy block to CLAUDE.local.md; see
+                        domestique.sh --help). Not usually needed here: a
+                        prior guest install is sticky via a marker file
+                        (.claude/.domestique/mode) that domestique.sh checks
+                        itself, so a target stays in guest mode on repeat
+                        updates even without this flag.
+  --no-guest           Pass through to domestique.sh: convert an existing
+                        guest install back to normal (see domestique.sh
+                        --help for what is and isn't auto-migrated).
   --help, -h           Show this help.
 
 Exit codes (propagated from the underlying domestique.sh run):
@@ -39,6 +49,8 @@ TARGET_DIR=""
 SOURCE="${DOMESTIQUE_UPDATE_SOURCE:-$DEFAULT_SOURCE}"
 UPDATER_DRY_RUN=0
 FORCE=0
+GUEST=0
+NO_GUEST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,6 +60,8 @@ while [ $# -gt 0 ]; do
     --source=*) SOURCE="${1#--source=}" ;;
     --dry-run) UPDATER_DRY_RUN=1 ;;
     --force)   FORCE=1 ;;
+    --guest)     GUEST=1 ;;
+    --no-guest)  NO_GUEST=1 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -96,8 +110,16 @@ if ! bash -n "$FETCHED"; then
   exit 4
 fi
 
+# Passed through to the fetched domestique.sh verbatim. Note: even if
+# neither --guest nor --no-guest is given here, a target that was previously
+# guest-installed stays in guest mode on its own — domestique.sh detects its
+# sticky .claude/.domestique/mode marker and keeps guest mode without any
+# help from update.sh. These flags exist for explicitly setting/converting
+# mode from update.sh directly.
 FORCE_ARGS=()
 [ "$FORCE" -eq 1 ] && FORCE_ARGS+=(--force)
+[ "$GUEST" -eq 1 ] && FORCE_ARGS+=(--guest)
+[ "$NO_GUEST" -eq 1 ] && FORCE_ARGS+=(--no-guest)
 
 echo
 echo "--- Preview (dry run) ---"

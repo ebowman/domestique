@@ -9,10 +9,17 @@ DOMESTIQUE_VERSION="0.1.0"
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
 
+# Sibling markers for plain-text (non-HTML-comment) targets, e.g. the git
+# exclude file, which uses '#' comments.
+GITEXCLUDE_MARKER_BEGIN='# BEGIN domestique (managed)'
+GITEXCLUDE_MARKER_END='# END domestique'
+
 # ---------------------------------------------------------------------------
 # Embedded source of truth (verbatim; edit here, nowhere else).
 # ---------------------------------------------------------------------------
-emit_policy() { cat <<'DOM_EOF'
+emit_policy() {
+  local mode="${1:-normal}"
+  cat <<'DOM_EOF'
 # Orchestration policy
 
 This session is the **orchestrator**. Your job is planning, delegation, and review — not implementation.
@@ -52,8 +59,19 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 - One task in flight at a time. Bounded WIP.
 - Subagents return summaries, never full file dumps. Your context is the constraint — keep it lean, don't re-read large outputs.
 - Do not spawn agent teams for this sequential pipeline. Subagents only.
+DOM_EOF
+  case "$mode" in
+    guest)
+      cat <<'DOM_EOF'
+- At session end ("land the plane"): file any loose discovered work as beads and run `bd export` if desired, but never commit `.beads/`, `CLAUDE.local.md`, or `.claude/` to this repo — domestique state is personal and stays local. Never modify `.gitignore` or any other tracked file on the repo's behalf.
+DOM_EOF
+      ;;
+    *)
+      cat <<'DOM_EOF'
 - At session end ("land the plane"): file any loose discovered work as beads, then export and commit (`bd export`, then commit `.beads/`). `bd export` writes the git-tracked `.beads/*.jsonl` — that JSONL is the versioned snapshot. There is no `bd sync`; bd is Dolt-backed now, and `bd dolt commit` records local Dolt history only (`.beads/dolt/` is gitignored, so it never affects a clean tree).
 DOM_EOF
+      ;;
+  esac
 }
 
 emit_implementer() { cat <<'DOM_EOF'
@@ -147,7 +165,7 @@ argument-hint: <epic-id>
 Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
 
 ## Branch isolation (load-bearing)
-Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it.
+Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
 
 ## Per-cycle loop
 For each cycle:
@@ -200,6 +218,29 @@ Options:
                  `bd setup claude`. If `bd` is absent, note it and skip.
   --force        Overwrite differing .claude/ files without a .bak backup.
                  (CLAUDE.md is ALWAYS backed up before modification.)
+  --guest        Route the managed orchestration-policy block to
+                 CLAUDE.local.md instead of CLAUDE.md.
+  --no-guest     Convert an existing guest install back to normal: removes
+                 the sticky guest-mode marker and prints by-hand conversion
+                 instructions (nothing is auto-migrated), then this run
+                 installs CLAUDE.md normally. A no-op note if the target
+                 isn't a guest install. Mutually exclusive with --guest
+                 (passing both is a usage error).
+  --uninstall    Remove everything domestique installed from TARGET_DIR, and
+                 only that: the four .claude/ files (safety-compared against
+                 their base snapshot or pristine content — modified files are
+                 kept and renamed to <file>.uninstalled.<timestamp> instead of
+                 deleted, unless --force), the managed block in CLAUDE.md
+                 and/or CLAUDE.local.md (whichever contain it), the managed
+                 block in <git-common-dir>/info/exclude, and the
+                 .claude/.domestique/ snapshot dir and mode marker. Prunes
+                 .claude/agents, .claude/commands, and .claude only if left
+                 empty. Never touches .beads/ (see --purge-beads). Combinable
+                 only with --dry-run, --force, --purge-beads, and TARGET_DIR;
+                 combining with --guest, --no-guest, or --with-beads is a
+                 usage error.
+  --purge-beads  Only valid with --uninstall: also `rm -rf` TARGET_DIR/.beads.
+                 Without --uninstall this is a usage error.
   --help, -h     Show this help.
 
 Behavior:
@@ -208,6 +249,16 @@ Behavior:
   * CLAUDE.md: created if absent; if it has the managed markers only the
     content between them is replaced; otherwise the block is appended and all
     existing content is preserved verbatim. Always backed up before change.
+  * --guest: for installing into a repo you don't own, for personal use only.
+    The managed policy block is written to CLAUDE.local.md instead of
+    CLAUDE.md. A tracked CLAUDE.md is never read, modified, or backed up in
+    this mode. If CLAUDE.md already carries a non-guest domestique install,
+    a warning is printed and CLAUDE.md is left untouched.
+  * Guest mode is sticky: a guest install writes a marker at
+    .claude/.domestique/mode. A later plain re-run (no --guest/--no-guest)
+    against that same target detects the marker and stays in guest mode
+    instead of silently un-guesting the install; pass --no-guest to convert
+    back to normal on purpose.
   * Running twice in a row makes no changes on the second run.
   * Pre-existing install with no snapshot yet (.claude/.domestique/ absent)
     and a differing file: ADOPTED, not overwritten — local edits are left in
@@ -226,13 +277,22 @@ TARGET_DIR=""
 DRY_RUN=0
 WITH_BEADS=0
 FORCE=0
+GUEST=0
+GUEST_EXPLICIT=0
+NO_GUEST=0
+UNINSTALL=0
+PURGE_BEADS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run)    DRY_RUN=1 ;;
-    --with-beads) WITH_BEADS=1 ;;
-    --force)      FORCE=1 ;;
-    -h|--help)    usage; exit 0 ;;
+    --dry-run)      DRY_RUN=1 ;;
+    --with-beads)   WITH_BEADS=1 ;;
+    --force)        FORCE=1 ;;
+    --guest)        GUEST=1; GUEST_EXPLICIT=1 ;;
+    --no-guest)     NO_GUEST=1 ;;
+    --uninstall)    UNINSTALL=1 ;;
+    --purge-beads)  PURGE_BEADS=1 ;;
+    -h|--help)      usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
@@ -244,9 +304,83 @@ while [ $# -gt 0 ]; do
 done
 TARGET_DIR="${TARGET_DIR:-.}"
 
+if [ "$GUEST_EXPLICIT" -eq 1 ] && [ "$NO_GUEST" -eq 1 ]; then
+  echo "Error: --guest and --no-guest are mutually exclusive." >&2
+  usage >&2
+  exit 2
+fi
+
+if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+  echo "Error: --purge-beads is only valid together with --uninstall." >&2
+  usage >&2
+  exit 2
+fi
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  if [ "$GUEST_EXPLICIT" -eq 1 ] || [ "$NO_GUEST" -eq 1 ] || [ "$WITH_BEADS" -eq 1 ]; then
+    echo "Error: --uninstall is only combinable with --dry-run, --force, --purge-beads, and TARGET_DIR." >&2
+    usage >&2
+    exit 2
+  fi
+fi
+
 if [ ! -d "$TARGET_DIR" ]; then
   echo "Target directory does not exist: $TARGET_DIR" >&2
   exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Sticky guest mode: a guest install writes a marker at
+# .claude/.domestique/mode (content: "guest"). A later run against the same
+# TARGET_DIR with neither --guest nor --no-guest must NOT silently fall back
+# to normal mode (which would write the policy block into the tracked
+# CLAUDE.md and skip the git-exclude logic) — it stays in guest mode. Explicit
+# --no-guest converts back to normal (marker removed, by-hand instructions
+# printed, no auto-migration of CLAUDE.local.md/exclude content). Unexpected
+# marker content is treated as a corrupt/foreign marker: warn and proceed as
+# normal mode.
+# ---------------------------------------------------------------------------
+MODE_MARKER="$TARGET_DIR/.claude/.domestique/mode"
+if [ "$UNINSTALL" -eq 1 ]; then
+  : # --uninstall does its own mode detection in do_uninstall(); skip the
+    # install-path sticky-guest-mode logic entirely.
+elif [ -e "$MODE_MARKER" ]; then
+  MODE_MARKER_CONTENT="$(cat "$MODE_MARKER" 2>/dev/null || true)"
+  case "$MODE_MARKER_CONTENT" in
+    guest)
+      if [ "$NO_GUEST" -eq 1 ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+          echo "  [dry-run] remove mode marker $MODE_MARKER (--no-guest)"
+        else
+          rm -f "$MODE_MARKER"
+        fi
+        echo "domestique: converting guest install in $TARGET_DIR to a normal install." >&2
+        echo "  This run installs CLAUDE.md normally. domestique does not auto-migrate" >&2
+        echo "  content — by hand you may want to:" >&2
+        echo "    - remove $TARGET_DIR/CLAUDE.local.md, or fold its customizations into" >&2
+        echo "      $TARGET_DIR/CLAUDE.md" >&2
+        echo "    - optionally clean the domestique-managed block out of" >&2
+        echo "      <git-common-dir>/info/exclude" >&2
+        GUEST=0
+      elif [ "$GUEST_EXPLICIT" -eq 0 ]; then
+        GUEST=1
+        echo "Note: existing guest install detected in $TARGET_DIR — staying in guest mode. Pass --no-guest to convert to a normal install." >&2
+      fi
+      ;;
+    *)
+      echo "Warning: $MODE_MARKER has unexpected content '$MODE_MARKER_CONTENT' (expected 'guest') — ignoring it and treating this as a normal install." >&2
+      ;;
+  esac
+elif [ "$NO_GUEST" -eq 1 ]; then
+  echo "Note: --no-guest passed but no guest-mode marker found in $TARGET_DIR — nothing to convert; proceeding with a normal install." >&2
+fi
+
+POLICY_DEST="CLAUDE.md"
+if [ "$GUEST" -eq 1 ]; then
+  POLICY_DEST="CLAUDE.local.md"
+  if [ -e "$TARGET_DIR/CLAUDE.md" ] && grep -qF "$MARKER_BEGIN" "$TARGET_DIR/CLAUDE.md"; then
+    echo "Warning: a non-guest domestique install exists in $TARGET_DIR/CLAUDE.md — left untouched. Installing policy into $TARGET_DIR/$POLICY_DEST instead." >&2
+  fi
 fi
 
 TS="$(date +%Y%m%d%H%M%S)"
@@ -261,12 +395,26 @@ SUM_SKIPPED=()
 SUM_MERGED=()
 SUM_CONFLICT=()
 SUM_ADOPTED=()
+# --uninstall-only accumulators.
+SUM_REMOVED=()
+SUM_KEPT=()
 
 # Set to 1 if any file ended in a merge conflict or hard merge error this run;
 # drives the final non-zero exit (see docs/install-upgrade-design.md §4).
 CONFLICT_OCCURRED=0
 
 note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
+
+# print_group <label> <item...> — used by both the install and uninstall
+# summary printers. Hoisted here (from its original position just above the
+# install summary) so do_uninstall() can call it too.
+print_group() {
+  local label="$1"; shift
+  [ "$#" -eq 0 ] && return 0
+  echo "  $label:"
+  local item
+  for item in "$@"; do echo "    - $item"; done
+}
 
 # ---------------------------------------------------------------------------
 # Base snapshot / manifest (foundation for a future 3-way merge on upgrade;
@@ -275,7 +423,10 @@ note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
 # ---------------------------------------------------------------------------
 SNAPSHOT_DIR="$TARGET_DIR/.claude/.domestique"
 SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
-MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md"
+# Policy managed-block snapshot is keyed by destination filename (CLAUDE.md
+# vs CLAUDE.local.md under --guest) so a --guest run never reads or rewrites
+# the plain run's merge base, and vice versa. See docs/install-upgrade-design.md.
+POLICY_SNAPSHOT="$SNAPSHOT_BASE/$POLICY_DEST.block"
 SNAPSHOT_TOUCHED=0
 
 # rel_to_base <dest> -> absolute path under SNAPSHOT_BASE mirroring <dest>'s
@@ -304,9 +455,10 @@ snapshot_plain() {
 
 # snapshot_claude_block <content-file>
 # Record the managed block BODY (no marker lines) as the future merge base
-# for CLAUDE.md. Call only after CLAUDE.md was actually created/updated.
+# for the policy file at $POLICY_DEST (CLAUDE.md, or CLAUDE.local.md under
+# --guest). Call only after $POLICY_DEST was actually created/updated.
 snapshot_claude_block() {
-  local content="$1" basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+  local content="$1" basepath="$POLICY_SNAPSHOT"
   SNAPSHOT_TOUCHED=1
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
@@ -314,6 +466,38 @@ snapshot_claude_block() {
   fi
   mkdir -p "$(dirname "$basepath")"
   cp "$content" "$basepath"
+}
+
+# managed_files_list — compute the files= value from actual on-disk state at
+# write time, not just this run's POLICY_DEST. This keeps the manifest
+# accurate in mixed-mode directories (one that has seen both a plain install
+# and a --guest install), where the file that a prior run of the OTHER mode
+# wrote into the managed block is still present and still managed.
+# Always includes this run's POLICY_DEST (the block was just written/updated
+# this run, so it is unconditionally current) plus CLAUDE.md and/or
+# CLAUDE.local.md if either currently carries the managed-block markers.
+# Order: the four fixed .claude/ files first (matching the pre-existing
+# convention), then CLAUDE.md if present/managed, then CLAUDE.local.md if
+# present/managed.
+managed_files_list() {
+  local out=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+  local policyfile have_claude_md=0 have_claude_local=0
+  for policyfile in CLAUDE.md CLAUDE.local.md; do
+    if [ "$policyfile" = "$POLICY_DEST" ]; then
+      # This run's target: the block was just written, so it's current
+      # regardless of what a filesystem check would say under --dry-run.
+      [ "$policyfile" = "CLAUDE.md" ] && have_claude_md=1
+      [ "$policyfile" = "CLAUDE.local.md" ] && have_claude_local=1
+      continue
+    fi
+    if [ -e "$TARGET_DIR/$policyfile" ] && grep -qF "$MARKER_BEGIN" "$TARGET_DIR/$policyfile" 2>/dev/null; then
+      [ "$policyfile" = "CLAUDE.md" ] && have_claude_md=1
+      [ "$policyfile" = "CLAUDE.local.md" ] && have_claude_local=1
+    fi
+  done
+  [ "$have_claude_md" -eq 1 ] && out="$out,CLAUDE.md"
+  [ "$have_claude_local" -eq 1 ] && out="$out,CLAUDE.local.md"
+  printf '%s' "$out"
 }
 
 # write_manifest — flat key=value manifest describing the snapshot.
@@ -335,7 +519,7 @@ write_manifest() {
     printf 'installed_ref=%s\n' "$ref"
     printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'script_sha256=%s\n' "$sha"
-    printf 'files=%s\n' "$MANAGED_FILES"
+    printf 'files=%s\n' "$(managed_files_list)"
   } > "$manifest"
 }
 
@@ -456,6 +640,44 @@ install_plain() {
   SUM_CONFLICT+=("$dest ($kind; see $newfile)")
 }
 
+# markers_sane <file>
+# Checks the domestique managed-block markers (MARKER_BEGIN/MARKER_END) in
+# <file> for structural soundness before install/uninstall trust them to
+# delimit a single well-formed block. Prints "<status> <begin-count>
+# <end-count>" to stdout; status is one of:
+#   none       - neither marker present
+#   ok         - exactly one of each, BEGIN before END
+#   half       - exactly one marker present, its pair missing
+#   dup_begin  - BEGIN appears more than once
+#   dup_end    - END appears more than once
+#   inverted   - one of each present, but END appears before BEGIN
+# Any status other than none/ok means the naive BEGIN..END awk strip/splice
+# would silently touch the wrong span (data loss) - callers must refuse.
+markers_sane() {
+  local file="$1" bc ec bl el
+  bc=$(grep -cxF "$MARKER_BEGIN" "$file" 2>/dev/null || true)
+  ec=$(grep -cxF "$MARKER_END" "$file" 2>/dev/null || true)
+  bc="${bc:-0}"; ec="${ec:-0}"
+  if [ "$bc" -eq 0 ] && [ "$ec" -eq 0 ]; then
+    echo "none $bc $ec"; return 0
+  fi
+  if [ "$bc" -gt 1 ]; then
+    echo "dup_begin $bc $ec"; return 0
+  fi
+  if [ "$ec" -gt 1 ]; then
+    echo "dup_end $bc $ec"; return 0
+  fi
+  if [ "$bc" -eq 0 ] || [ "$ec" -eq 0 ]; then
+    echo "half $bc $ec"; return 0
+  fi
+  bl=$(grep -nxF "$MARKER_BEGIN" "$file" | head -1 | cut -d: -f1)
+  el=$(grep -nxF "$MARKER_END" "$file" | head -1 | cut -d: -f1)
+  if [ "$bl" -gt "$el" ]; then
+    echo "inverted $bc $ec"; return 0
+  fi
+  echo "ok $bc $ec"
+}
+
 # install_claude_md <dest>
 # Missing/no-markers/half-marker -> unchanged from before (create, append,
 # refuse). Has both markers, block differs:
@@ -472,11 +694,11 @@ install_plain() {
 #     overwrite, no .bak); re-run to merge upstream.
 # See docs/install-upgrade-design.md §3.
 install_claude_md() {
-  local dest="$1"
+  local dest="$1" mode="${2:-normal}"
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
   local policybody="$TMPDIR_WORK/policybody"
 
-  emit_policy > "$policybody"
+  emit_policy "$mode" > "$policybody"
 
   # Build the managed block: BEGIN marker + verbatim policy + END marker.
   {
@@ -497,16 +719,46 @@ install_claude_md() {
     return 0
   fi
 
-  # Refuse to guess on a half-marked file (BEGIN but no END): swallowing
-  # everything after BEGIN would be data loss. Leave it untouched and bail.
-  if grep -qF "$MARKER_BEGIN" "$dest" && ! grep -qF "$MARKER_END" "$dest"; then
-    echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
-    echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
-    exit 1
-  fi
+  # Refuse to guess on a structurally unsound managed-block file: a
+  # half-marked file (one marker without its pair), duplicate BEGIN/END
+  # markers, or END appearing before BEGIN would all make the extract/splice
+  # below act on the wrong span - swallowing or misplacing user content is
+  # data loss. Leave it untouched and bail.
+  local marker_status marker_bc marker_ec
+  read -r marker_status marker_bc marker_ec < <(markers_sane "$dest")
+  case "$marker_status" in
+    none|ok) ;;
+    half)
+      if [ "$marker_bc" -eq 0 ]; then
+        echo "Error: $dest has a '$MARKER_END' marker but no matching '$MARKER_BEGIN'." >&2
+      else
+        echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
+      fi
+      echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+    dup_begin)
+      echo "Error: $dest has more than one '$MARKER_BEGIN' marker ($marker_bc occurrences)." >&2
+      echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+    dup_end)
+      echo "Error: $dest has more than one '$MARKER_END' marker ($marker_ec occurrences)." >&2
+      echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+    inverted)
+      echo "Error: $dest has a '$MARKER_END' marker appearing before its '$MARKER_BEGIN' marker." >&2
+      echo "       Refusing to edit a file with markers in the wrong order. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+  esac
 
   # Case B: has both markers -> replace only the region between them, verbatim rest.
-  if grep -qF "$MARKER_BEGIN" "$dest"; then
+  # marker_status is already known-"ok" here (none/half/dup_*/inverted all
+  # exited above), so dispatch on it rather than re-testing with a substring
+  # grep that could disagree with markers_sane's whole-line semantics.
+  if [ "$marker_status" = "ok" ]; then
     # Extract the current on-disk block body (ours-block) for a potential
     # 3-way merge, and build the wholesale-replace result (today's behavior)
     # for the no-merge-needed / legacy / --force paths.
@@ -532,7 +784,7 @@ install_claude_md() {
       if [ "$FORCE" -eq 1 ]; then
         : # wholesale replace (already computed in $result above), no merge.
       else
-        local basepath="$SNAPSHOT_BASE/CLAUDE.md.block"
+        local basepath="$POLICY_SNAPSHOT"
         if [ -e "$basepath" ]; then
           # 3-way merge the block body: ours=$oursblock, base=$basepath,
           # theirs=$policybody.
@@ -633,7 +885,7 @@ install_claude_md() {
   if cmp -s "$result" "$dest"; then
     # Already current — but if there's no block base snapshot yet (legacy
     # install), seed it now so future runs have a base to merge against.
-    if [ ! -e "$SNAPSHOT_BASE/CLAUDE.md.block" ]; then
+    if [ ! -e "$POLICY_SNAPSHOT" ]; then
       snapshot_claude_block "$policybody"
     fi
     SUM_SKIPPED+=("$dest (managed block already current)")
@@ -652,15 +904,405 @@ install_claude_md() {
   snapshot_claude_block "$policybody"
 }
 
+# install_git_exclude <target-dir>
+# Guest-mode only: hide everything domestique creates from git via a managed
+# block in the target repo's git exclude file (.git/info/exclude — a
+# local-only ignore file, unlike .gitignore, so it is never committed).
+# Resolves the exclude file via `git -C <target> rev-parse --git-common-dir`
+# so worktrees/submodules land in the shared common git dir; falls back to
+# <target>/.git/info/exclude if git isn't on PATH but .git is a real dir;
+# warns and skips (without failing) if the target isn't a git repo at all.
+install_git_exclude() {
+  local target="$1" common_dir="" exclude_file
+  local block="$TMPDIR_WORK/exclude_block" result="$TMPDIR_WORK/exclude_result"
+
+  if command -v git >/dev/null 2>&1; then
+    common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
+    if [ -n "$common_dir" ]; then
+      case "$common_dir" in
+        /*) : ;;
+        *) common_dir="$target/$common_dir" ;;
+      esac
+    fi
+  fi
+  if [ -z "$common_dir" ] && [ -d "$target/.git" ]; then
+    common_dir="$target/.git"
+  fi
+
+  if [ -z "$common_dir" ]; then
+    echo "Warning: $target does not look like a git repository — skipping the .git/info/exclude managed block (guest mode)." >&2
+    SUM_SKIPPED+=(".git/info/exclude (not a git repository)")
+    return 0
+  fi
+
+  exclude_file="$common_dir/info/exclude"
+
+  # Warn (never fail) if a guest-managed path is already tracked in the
+  # target repo — an exclude entry cannot hide an already-tracked path.
+  if command -v git >/dev/null 2>&1; then
+    local trackme
+    for trackme in "CLAUDE.local.md" ".claude" ".beads"; do
+      if git -C "$target" ls-files --error-unmatch "$trackme" >/dev/null 2>&1; then
+        echo "Warning: $trackme is already tracked in $target — a git exclude entry cannot hide a tracked path. Run 'git rm --cached -r $trackme' if you want it hidden." >&2
+      fi
+    done
+  fi
+
+  {
+    printf '%s\n' "$GITEXCLUDE_MARKER_BEGIN"
+    printf 'CLAUDE.local.md\n'
+    printf '.claude/\n'
+    printf '.beads/\n'
+    printf '*.bak.[0-9]*\n'
+    printf '*.new\n'
+    printf '%s\n' "$GITEXCLUDE_MARKER_END"
+  } > "$block"
+
+  if [ -e "$exclude_file" ]; then
+    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" && ! grep -qF "$GITEXCLUDE_MARKER_END" "$exclude_file"; then
+      echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
+      echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+      exit 1
+    fi
+
+    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file"; then
+      awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" -v blockfile="$block" '
+        BEGIN { while ((getline line < blockfile) > 0) blk = blk line ORS }
+        $0 == beginm && !seen { seen=1; inblock=1; printf "%s", blk; next }
+        inblock && $0 == endm { inblock=0; next }
+        inblock { next }
+        { print }
+      ' "$exclude_file" > "$result"
+    else
+      cp "$exclude_file" "$result"
+      if [ -s "$result" ] && [ "$(tail -c 1 "$result" | wc -l)" -eq 0 ]; then
+        printf '\n' >> "$result"
+      fi
+      cat "$block" >> "$result"
+    fi
+  else
+    cp "$block" "$result"
+  fi
+
+  if [ -e "$exclude_file" ] && cmp -s "$result" "$exclude_file"; then
+    SUM_SKIPPED+=("$exclude_file (managed block already current)")
+    return 0
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    if [ -e "$exclude_file" ]; then
+      note_dry "update $exclude_file (managed block)"
+      SUM_UPDATED+=("$exclude_file")
+    else
+      note_dry "create $exclude_file (managed block only)"
+      SUM_CREATED+=("$exclude_file")
+    fi
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$exclude_file")"
+  if [ -e "$exclude_file" ]; then
+    cp "$result" "$exclude_file"
+    SUM_UPDATED+=("$exclude_file (managed block)")
+  else
+    cp "$result" "$exclude_file"
+    SUM_CREATED+=("$exclude_file")
+  fi
+}
+
+# do_uninstall <target-dir>
+# Remove everything domestique installed into <target-dir>, and only that.
+# See usage() --uninstall for the summary of what is (and is not) removed.
+do_uninstall() {
+  local target="$1"
+  local snapshot_dir="$target/.claude/.domestique"
+  local snapshot_base="$snapshot_dir/base"
+  local anything_done=0
+
+  # --- 1. the four managed plain files, safety-compared -------------------
+  local rel emitter dest staged basepath reference
+  while IFS='|' read -r rel emitter; do
+    [ -z "$rel" ] && continue
+    dest="$target/$rel"
+    [ -e "$dest" ] || continue
+    staged="$TMPDIR_WORK/uninstall_staged"
+    "$emitter" > "$staged"
+    basepath="$snapshot_base/$rel"
+    reference="$basepath"
+    [ -e "$reference" ] || reference="$staged"
+
+    if cmp -s "$dest" "$reference"; then
+      anything_done=1
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $dest"
+      else
+        rm -f "$dest"
+      fi
+      SUM_REMOVED+=("$dest")
+    elif [ "$FORCE" -eq 1 ]; then
+      anything_done=1
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $dest (modified, --force)"
+      else
+        rm -f "$dest"
+      fi
+      SUM_REMOVED+=("$dest (modified, --force)")
+    else
+      anything_done=1
+      local kept="$dest.uninstalled.$TS"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "keep $dest (modified) -> would rename to $kept"
+      else
+        mv "$dest" "$kept"
+      fi
+      SUM_KEPT+=("$kept")
+    fi
+  done <<UNINSTALL_FILES
+.claude/agents/implementer.md|emit_implementer
+.claude/agents/reviewer.md|emit_reviewer
+.claude/commands/decompose.md|emit_decompose
+.claude/commands/goal.md|emit_goal
+UNINSTALL_FILES
+
+  # --- 2/4. managed block in CLAUDE.md and/or CLAUDE.local.md -------------
+  # Handle BOTH policy files if both carry the marker (a dir that saw mixed
+  # plain + guest use) rather than trusting the mode marker alone.
+  local policyfile policymode
+  for policyfile in CLAUDE.md CLAUDE.local.md; do
+    dest="$target/$policyfile"
+    [ -e "$dest" ] || continue
+
+    local marker_status marker_bc marker_ec
+    read -r marker_status marker_bc marker_ec < <(markers_sane "$dest")
+    [ "$marker_status" = "none" ] && continue
+
+    # Refuse to guess on a structurally unsound managed-block file: one
+    # marker present without its pair, duplicate BEGIN/END markers, or END
+    # appearing before BEGIN would all make the strip below act on the wrong
+    # span (data loss). Leave it byte-untouched and mark the run conflicted,
+    # mirroring install's guard, but without aborting the whole run — other
+    # files still get uninstalled.
+    if [ "$marker_status" != "ok" ]; then
+      anything_done=1
+      CONFLICT_OCCURRED=1
+      local marker_problem=""
+      case "$marker_status" in
+        half)
+          if [ "$marker_bc" -eq 0 ]; then
+            echo "Error: $dest has a '$MARKER_END' marker but no matching '$MARKER_BEGIN'." >&2
+          else
+            echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
+          fi
+          echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+          marker_problem="half-marked managed block"
+          ;;
+        dup_begin)
+          echo "Error: $dest has more than one '$MARKER_BEGIN' marker ($marker_bc occurrences)." >&2
+          echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+          marker_problem="duplicate BEGIN marker"
+          ;;
+        dup_end)
+          echo "Error: $dest has more than one '$MARKER_END' marker ($marker_ec occurrences)." >&2
+          echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+          marker_problem="duplicate END marker"
+          ;;
+        inverted)
+          echo "Error: $dest has a '$MARKER_END' marker appearing before its '$MARKER_BEGIN' marker." >&2
+          echo "       Refusing to edit a file with markers in the wrong order. Fix it by hand and re-run." >&2
+          marker_problem="markers in wrong order (END before BEGIN)"
+          ;;
+      esac
+      note_dry "ERROR: $dest has $marker_problem — leaving it untouched, not uninstalling"
+      SUM_CONFLICT+=("$dest ($marker_problem)")
+      continue
+    fi
+
+    anything_done=1
+
+    if [ "$policyfile" = "CLAUDE.local.md" ]; then policymode="guest"; else policymode="normal"; fi
+
+    local oursblock pristine refblock modified=0
+    oursblock="$TMPDIR_WORK/uninstall_oursblock"
+    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
+      $0 == beginm && !seen { seen=1; inblock=1; next }
+      inblock && $0 == endm { inblock=0; next }
+      inblock { print }
+    ' "$dest" > "$oursblock"
+
+    pristine="$TMPDIR_WORK/uninstall_pristine"
+    emit_policy "$policymode" > "$pristine"
+    refblock="$snapshot_base/$policyfile.block"
+    [ -e "$refblock" ] || refblock="$pristine"
+    cmp -s "$oursblock" "$refblock" || modified=1
+
+    # Strip the block (including markers), preserving everything else
+    # verbatim. Back the file up first ONLY when the block was user-modified
+    # relative to its base/pristine content — an exact-inverse strip needs no
+    # backup and must not leave a stray .bak behind (round-trip byte-parity
+    # with the pre-install tree, verified by scenario a/b).
+    local result backup
+    result="$TMPDIR_WORK/uninstall_result"
+    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
+      $0 == beginm && !seen { seen=1; inblock=1; next }
+      inblock && $0 == endm { inblock=0; next }
+      inblock { next }
+      { print }
+    ' "$dest" > "$result"
+
+    if [ "$modified" -eq 1 ]; then
+      backup="$dest.bak.$TS"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "backup $dest -> $backup (managed block was modified)"
+      else
+        cp "$dest" "$backup"
+      fi
+      SUM_BACKEDUP+=("$backup")
+    fi
+
+    if grep -q '[^[:space:]]' "$result" 2>/dev/null; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "strip managed block from $dest, leaving the rest of the file intact"
+      else
+        cp "$result" "$dest"
+      fi
+      SUM_REMOVED+=("$dest (managed block)")
+    else
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $dest (empty after stripping managed block)"
+      else
+        rm -f "$dest"
+      fi
+      SUM_REMOVED+=("$dest")
+    fi
+  done
+
+  # --- 5. managed block in <git-common-dir>/info/exclude ------------------
+  local common_dir="" exclude_file
+  if command -v git >/dev/null 2>&1; then
+    common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
+    if [ -n "$common_dir" ]; then
+      case "$common_dir" in
+        /*) : ;;
+        *) common_dir="$target/$common_dir" ;;
+      esac
+    fi
+  fi
+  if [ -z "$common_dir" ] && [ -d "$target/.git" ]; then
+    common_dir="$target/.git"
+  fi
+
+  if [ -n "$common_dir" ]; then
+    exclude_file="$common_dir/info/exclude"
+    if [ -e "$exclude_file" ] && grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null; then
+      anything_done=1
+      local exresult
+      exresult="$TMPDIR_WORK/uninstall_exclude_result"
+      awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" '
+        $0 == beginm && !seen { seen=1; inblock=1; next }
+        inblock && $0 == endm { inblock=0; next }
+        inblock { next }
+        { print }
+      ' "$exclude_file" > "$exresult"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "strip domestique block from $exclude_file (preserving everything else)"
+      else
+        cp "$exresult" "$exclude_file"
+      fi
+      SUM_REMOVED+=("$exclude_file (managed block)")
+    fi
+  fi
+  # Non-git target: nothing was installed there — skip silently.
+
+  # --- 6. snapshot dir + mode marker (do this LAST — steps 1/2 read it) ----
+  if [ -e "$snapshot_dir" ]; then
+    anything_done=1
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "remove $snapshot_dir (snapshots, manifest, mode marker)"
+    else
+      rm -rf "$snapshot_dir"
+    fi
+    SUM_REMOVED+=("$snapshot_dir")
+  fi
+
+  # Prune now-empty dirs, never one that still has user content.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "prune $target/.claude/agents, $target/.claude/commands, $target/.claude if left empty"
+  else
+    rmdir "$target/.claude/agents" 2>/dev/null || true
+    rmdir "$target/.claude/commands" 2>/dev/null || true
+    rmdir "$target/.claude" 2>/dev/null || true
+  fi
+
+  # --- 7. .beads/ — never touched by default -------------------------------
+  if [ -d "$target/.beads" ]; then
+    if [ "$PURGE_BEADS" -eq 1 ]; then
+      anything_done=1
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $target/.beads (--purge-beads)"
+      else
+        rm -rf "$target/.beads"
+      fi
+      SUM_REMOVED+=("$target/.beads (--purge-beads)")
+    else
+      echo "Note: $target/.beads left in place (domestique never removes it by default) — pass --purge-beads, or remove it by hand: rm -rf $target/.beads" >&2
+    fi
+  fi
+
+  echo
+  if [ "$anything_done" -eq 0 ]; then
+    echo "domestique: nothing to remove in $target — no domestique install detected."
+    return 0
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned uninstall):"; else echo "Summary (uninstall):"; fi
+  [ "${#SUM_REMOVED[@]}"   -gt 0 ] && print_group "Removed"         "${SUM_REMOVED[@]}"
+  [ "${#SUM_KEPT[@]}"      -gt 0 ] && print_group "Kept (modified)" "${SUM_KEPT[@]}"
+  [ "${#SUM_BACKEDUP[@]}"  -gt 0 ] && print_group "Backed up"       "${SUM_BACKEDUP[@]}"
+  [ "${#SUM_SKIPPED[@]}"   -gt 0 ] && print_group "Skipped"         "${SUM_SKIPPED[@]}"
+  [ "${#SUM_CONFLICT[@]}"  -gt 0 ] && print_group "Conflicted"      "${SUM_CONFLICT[@]}"
+  [ "$DRY_RUN" -eq 1 ] && echo "  (dry run: nothing was actually changed)"
+
+  if [ "$CONFLICT_OCCURRED" -eq 1 ]; then
+    echo
+    echo "One or more files ended in conflict/error — see 'Conflicted' above." >&2
+    return 3
+  fi
+  echo "Done."
+}
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  echo "domestique: uninstalling from $TARGET_DIR"
+  [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
+  do_uninstall "$TARGET_DIR"
+  exit $?
+fi
+
 # ---------------------------------------------------------------------------
 echo "domestique: installing into $TARGET_DIR"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
 
-install_claude_md "$TARGET_DIR/CLAUDE.md"
+POLICY_MODE="normal"
+[ "$GUEST" -eq 1 ] && POLICY_MODE="guest"
+install_claude_md "$TARGET_DIR/$POLICY_DEST" "$POLICY_MODE"
 install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
 install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
 install_plain     "$TARGET_DIR/.claude/commands/goal.md"        emit_goal
+
+if [ "$GUEST" -eq 1 ]; then
+  install_git_exclude "$TARGET_DIR"
+  # Write/refresh the sticky guest-mode marker so a later plain re-run (no
+  # --guest/--no-guest) against this same TARGET_DIR stays in guest mode
+  # instead of silently un-guesting the install. Idempotent: re-writing the
+  # same content on every guest run is harmless and also recreates the
+  # marker if it was somehow lost.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "write mode marker -> $MODE_MARKER (guest)"
+  else
+    mkdir -p "$(dirname "$MODE_MARKER")"
+    printf 'guest\n' > "$MODE_MARKER"
+  fi
+fi
 
 # --- snapshot manifest ------------------------------------------------------
 # Only (re)write the manifest if at least one managed file was actually
@@ -703,13 +1345,6 @@ fi
 # --- summary ---------------------------------------------------------------
 echo
 if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned):"; else echo "Summary:"; fi
-print_group() {
-  local label="$1"; shift
-  [ "$#" -eq 0 ] && return 0
-  echo "  $label:"
-  local item
-  for item in "$@"; do echo "    - $item"; done
-}
 [ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"    "${SUM_CREATED[@]}"
 [ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"    "${SUM_UPDATED[@]}"
 [ "${#SUM_MERGED[@]}"   -gt 0 ] && print_group "Merged"     "${SUM_MERGED[@]}"
