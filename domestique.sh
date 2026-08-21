@@ -609,6 +609,44 @@ install_plain() {
   SUM_CONFLICT+=("$dest ($kind; see $newfile)")
 }
 
+# markers_sane <file>
+# Checks the domestique managed-block markers (MARKER_BEGIN/MARKER_END) in
+# <file> for structural soundness before install/uninstall trust them to
+# delimit a single well-formed block. Prints "<status> <begin-count>
+# <end-count>" to stdout; status is one of:
+#   none       - neither marker present
+#   ok         - exactly one of each, BEGIN before END
+#   half       - exactly one marker present, its pair missing
+#   dup_begin  - BEGIN appears more than once
+#   dup_end    - END appears more than once
+#   inverted   - one of each present, but END appears before BEGIN
+# Any status other than none/ok means the naive BEGIN..END awk strip/splice
+# would silently touch the wrong span (data loss) - callers must refuse.
+markers_sane() {
+  local file="$1" bc ec bl el
+  bc=$(grep -cxF "$MARKER_BEGIN" "$file" 2>/dev/null || true)
+  ec=$(grep -cxF "$MARKER_END" "$file" 2>/dev/null || true)
+  bc="${bc:-0}"; ec="${ec:-0}"
+  if [ "$bc" -eq 0 ] && [ "$ec" -eq 0 ]; then
+    echo "none $bc $ec"; return 0
+  fi
+  if [ "$bc" -gt 1 ]; then
+    echo "dup_begin $bc $ec"; return 0
+  fi
+  if [ "$ec" -gt 1 ]; then
+    echo "dup_end $bc $ec"; return 0
+  fi
+  if [ "$bc" -eq 0 ] || [ "$ec" -eq 0 ]; then
+    echo "half $bc $ec"; return 0
+  fi
+  bl=$(grep -nxF "$MARKER_BEGIN" "$file" | head -1 | cut -d: -f1)
+  el=$(grep -nxF "$MARKER_END" "$file" | head -1 | cut -d: -f1)
+  if [ "$bl" -gt "$el" ]; then
+    echo "inverted $bc $ec"; return 0
+  fi
+  echo "ok $bc $ec"
+}
+
 # install_claude_md <dest>
 # Missing/no-markers/half-marker -> unchanged from before (create, append,
 # refuse). Has both markers, block differs:
@@ -650,16 +688,46 @@ install_claude_md() {
     return 0
   fi
 
-  # Refuse to guess on a half-marked file (BEGIN but no END): swallowing
-  # everything after BEGIN would be data loss. Leave it untouched and bail.
-  if grep -qF "$MARKER_BEGIN" "$dest" && ! grep -qF "$MARKER_END" "$dest"; then
-    echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
-    echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
-    exit 1
-  fi
+  # Refuse to guess on a structurally unsound managed-block file: a
+  # half-marked file (one marker without its pair), duplicate BEGIN/END
+  # markers, or END appearing before BEGIN would all make the extract/splice
+  # below act on the wrong span - swallowing or misplacing user content is
+  # data loss. Leave it untouched and bail.
+  local marker_status marker_bc marker_ec
+  read -r marker_status marker_bc marker_ec < <(markers_sane "$dest")
+  case "$marker_status" in
+    none|ok) ;;
+    half)
+      if [ "$marker_bc" -eq 0 ]; then
+        echo "Error: $dest has a '$MARKER_END' marker but no matching '$MARKER_BEGIN'." >&2
+      else
+        echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
+      fi
+      echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+    dup_begin)
+      echo "Error: $dest has more than one '$MARKER_BEGIN' marker ($marker_bc occurrences)." >&2
+      echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+    dup_end)
+      echo "Error: $dest has more than one '$MARKER_END' marker ($marker_ec occurrences)." >&2
+      echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+    inverted)
+      echo "Error: $dest has a '$MARKER_END' marker appearing before its '$MARKER_BEGIN' marker." >&2
+      echo "       Refusing to edit a file with markers in the wrong order. Fix it by hand and re-run." >&2
+      exit 1
+      ;;
+  esac
 
   # Case B: has both markers -> replace only the region between them, verbatim rest.
-  if grep -qF "$MARKER_BEGIN" "$dest"; then
+  # marker_status is already known-"ok" here (none/half/dup_*/inverted all
+  # exited above), so dispatch on it rather than re-testing with a substring
+  # grep that could disagree with markers_sane's whole-line semantics.
+  if [ "$marker_status" = "ok" ]; then
     # Extract the current on-disk block body (ours-block) for a potential
     # 3-way merge, and build the wholesale-replace result (today's behavior)
     # for the no-merge-needed / legacy / --force paths.
@@ -973,27 +1041,48 @@ UNINSTALL_FILES
     dest="$target/$policyfile"
     [ -e "$dest" ] || continue
 
-    local has_begin=0 has_end=0
-    grep -qF "$MARKER_BEGIN" "$dest" 2>/dev/null && has_begin=1
-    grep -qF "$MARKER_END" "$dest" 2>/dev/null && has_end=1
-    [ "$has_begin" -eq 0 ] && [ "$has_end" -eq 0 ] && continue
+    local marker_status marker_bc marker_ec
+    read -r marker_status marker_bc marker_ec < <(markers_sane "$dest")
+    [ "$marker_status" = "none" ] && continue
 
-    # Refuse to guess on a half-marked file (one marker present without its
-    # pair, in either direction): stripping to EOF or leaving a dangling
-    # marker in place would both be data loss. Leave it byte-untouched and
-    # mark the run conflicted, mirroring install's half-marked guard, but
-    # without aborting the whole run — other files still get uninstalled.
-    if [ "$has_begin" -ne "$has_end" ]; then
+    # Refuse to guess on a structurally unsound managed-block file: one
+    # marker present without its pair, duplicate BEGIN/END markers, or END
+    # appearing before BEGIN would all make the strip below act on the wrong
+    # span (data loss). Leave it byte-untouched and mark the run conflicted,
+    # mirroring install's guard, but without aborting the whole run — other
+    # files still get uninstalled.
+    if [ "$marker_status" != "ok" ]; then
       anything_done=1
       CONFLICT_OCCURRED=1
-      if [ "$has_begin" -eq 1 ]; then
-        echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
-      else
-        echo "Error: $dest has a '$MARKER_END' marker but no matching '$MARKER_BEGIN'." >&2
-      fi
-      echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
-      note_dry "ERROR: $dest is half-marked — leaving it untouched, not uninstalling"
-      SUM_CONFLICT+=("$dest (half-marked managed block)")
+      local marker_problem=""
+      case "$marker_status" in
+        half)
+          if [ "$marker_bc" -eq 0 ]; then
+            echo "Error: $dest has a '$MARKER_END' marker but no matching '$MARKER_BEGIN'." >&2
+          else
+            echo "Error: $dest has a '$MARKER_BEGIN' marker but no matching '$MARKER_END'." >&2
+          fi
+          echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+          marker_problem="half-marked managed block"
+          ;;
+        dup_begin)
+          echo "Error: $dest has more than one '$MARKER_BEGIN' marker ($marker_bc occurrences)." >&2
+          echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+          marker_problem="duplicate BEGIN marker"
+          ;;
+        dup_end)
+          echo "Error: $dest has more than one '$MARKER_END' marker ($marker_ec occurrences)." >&2
+          echo "       Refusing to edit a file with duplicate markers. Fix it by hand and re-run." >&2
+          marker_problem="duplicate END marker"
+          ;;
+        inverted)
+          echo "Error: $dest has a '$MARKER_END' marker appearing before its '$MARKER_BEGIN' marker." >&2
+          echo "       Refusing to edit a file with markers in the wrong order. Fix it by hand and re-run." >&2
+          marker_problem="markers in wrong order (END before BEGIN)"
+          ;;
+      esac
+      note_dry "ERROR: $dest has $marker_problem — leaving it untouched, not uninstalling"
+      SUM_CONFLICT+=("$dest ($marker_problem)")
       continue
     fi
 
