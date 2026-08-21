@@ -9,6 +9,11 @@ DOMESTIQUE_VERSION="0.1.0"
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
 
+# Sibling markers for plain-text (non-HTML-comment) targets, e.g. the git
+# exclude file, which uses '#' comments.
+GITEXCLUDE_MARKER_BEGIN='# BEGIN domestique (managed)'
+GITEXCLUDE_MARKER_END='# END domestique'
+
 # ---------------------------------------------------------------------------
 # Embedded source of truth (verbatim; edit here, nowhere else).
 # ---------------------------------------------------------------------------
@@ -687,6 +692,112 @@ install_claude_md() {
   snapshot_claude_block "$policybody"
 }
 
+# install_git_exclude <target-dir>
+# Guest-mode only: hide everything domestique creates from git via a managed
+# block in the target repo's git exclude file (.git/info/exclude — a
+# local-only ignore file, unlike .gitignore, so it is never committed).
+# Resolves the exclude file via `git -C <target> rev-parse --git-common-dir`
+# so worktrees/submodules land in the shared common git dir; falls back to
+# <target>/.git/info/exclude if git isn't on PATH but .git is a real dir;
+# warns and skips (without failing) if the target isn't a git repo at all.
+install_git_exclude() {
+  local target="$1" common_dir="" exclude_file
+  local block="$TMPDIR_WORK/exclude_block" result="$TMPDIR_WORK/exclude_result"
+
+  if command -v git >/dev/null 2>&1; then
+    common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
+    if [ -n "$common_dir" ]; then
+      case "$common_dir" in
+        /*) : ;;
+        *) common_dir="$target/$common_dir" ;;
+      esac
+    fi
+  fi
+  if [ -z "$common_dir" ] && [ -d "$target/.git" ]; then
+    common_dir="$target/.git"
+  fi
+
+  if [ -z "$common_dir" ]; then
+    echo "Warning: $target does not look like a git repository — skipping the .git/info/exclude managed block (guest mode)." >&2
+    SUM_SKIPPED+=(".git/info/exclude (not a git repository)")
+    return 0
+  fi
+
+  exclude_file="$common_dir/info/exclude"
+
+  # Warn (never fail) if a guest-managed path is already tracked in the
+  # target repo — an exclude entry cannot hide an already-tracked path.
+  if command -v git >/dev/null 2>&1; then
+    local trackme
+    for trackme in "CLAUDE.local.md" ".claude" ".beads"; do
+      if git -C "$target" ls-files --error-unmatch "$trackme" >/dev/null 2>&1; then
+        echo "Warning: $trackme is already tracked in $target — a git exclude entry cannot hide a tracked path. Run 'git rm --cached -r $trackme' if you want it hidden." >&2
+      fi
+    done
+  fi
+
+  {
+    printf '%s\n' "$GITEXCLUDE_MARKER_BEGIN"
+    printf 'CLAUDE.local.md\n'
+    printf '.claude/\n'
+    printf '.beads/\n'
+    printf '*.bak.[0-9]*\n'
+    printf '*.new\n'
+    printf '%s\n' "$GITEXCLUDE_MARKER_END"
+  } > "$block"
+
+  if [ -e "$exclude_file" ]; then
+    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" && ! grep -qF "$GITEXCLUDE_MARKER_END" "$exclude_file"; then
+      echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
+      echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
+      exit 1
+    fi
+
+    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file"; then
+      awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" -v blockfile="$block" '
+        BEGIN { while ((getline line < blockfile) > 0) blk = blk line ORS }
+        $0 == beginm && !seen { seen=1; inblock=1; printf "%s", blk; next }
+        inblock && $0 == endm { inblock=0; next }
+        inblock { next }
+        { print }
+      ' "$exclude_file" > "$result"
+    else
+      cp "$exclude_file" "$result"
+      if [ -s "$result" ] && [ "$(tail -c 1 "$result" | wc -l)" -eq 0 ]; then
+        printf '\n' >> "$result"
+      fi
+      cat "$block" >> "$result"
+    fi
+  else
+    cp "$block" "$result"
+  fi
+
+  if [ -e "$exclude_file" ] && cmp -s "$result" "$exclude_file"; then
+    SUM_SKIPPED+=("$exclude_file (managed block already current)")
+    return 0
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    if [ -e "$exclude_file" ]; then
+      note_dry "update $exclude_file (managed block)"
+      SUM_UPDATED+=("$exclude_file")
+    else
+      note_dry "create $exclude_file (managed block only)"
+      SUM_CREATED+=("$exclude_file")
+    fi
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$exclude_file")"
+  if [ -e "$exclude_file" ]; then
+    cp "$result" "$exclude_file"
+    SUM_UPDATED+=("$exclude_file (managed block)")
+  else
+    cp "$result" "$exclude_file"
+    SUM_CREATED+=("$exclude_file")
+  fi
+}
+
 # ---------------------------------------------------------------------------
 echo "domestique: installing into $TARGET_DIR"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
@@ -698,6 +809,10 @@ install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
 install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
 install_plain     "$TARGET_DIR/.claude/commands/goal.md"        emit_goal
+
+if [ "$GUEST" -eq 1 ]; then
+  install_git_exclude "$TARGET_DIR"
+fi
 
 # --- snapshot manifest ------------------------------------------------------
 # Only (re)write the manifest if at least one managed file was actually
