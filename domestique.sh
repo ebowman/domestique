@@ -12,7 +12,9 @@ MARKER_END='<!-- END domestique -->'
 # ---------------------------------------------------------------------------
 # Embedded source of truth (verbatim; edit here, nowhere else).
 # ---------------------------------------------------------------------------
-emit_policy() { cat <<'DOM_EOF'
+emit_policy() {
+  local mode="${1:-normal}"
+  cat <<'DOM_EOF'
 # Orchestration policy
 
 This session is the **orchestrator**. Your job is planning, delegation, and review — not implementation.
@@ -52,8 +54,19 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 - One task in flight at a time. Bounded WIP.
 - Subagents return summaries, never full file dumps. Your context is the constraint — keep it lean, don't re-read large outputs.
 - Do not spawn agent teams for this sequential pipeline. Subagents only.
+DOM_EOF
+  case "$mode" in
+    guest)
+      cat <<'DOM_EOF'
+- At session end ("land the plane"): file any loose discovered work as beads and run `bd export` if desired, but never commit `.beads/`, `CLAUDE.local.md`, or `.claude/` to this repo — domestique state is personal and stays local. Never modify `.gitignore` or any other tracked file on the repo's behalf.
+DOM_EOF
+      ;;
+    *)
+      cat <<'DOM_EOF'
 - At session end ("land the plane"): file any loose discovered work as beads, then export and commit (`bd export`, then commit `.beads/`). `bd export` writes the git-tracked `.beads/*.jsonl` — that JSONL is the versioned snapshot. There is no `bd sync`; bd is Dolt-backed now, and `bd dolt commit` records local Dolt history only (`.beads/dolt/` is gitignored, so it never affects a clean tree).
 DOM_EOF
+      ;;
+  esac
 }
 
 emit_implementer() { cat <<'DOM_EOF'
@@ -147,7 +160,7 @@ argument-hint: <epic-id>
 Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
 
 ## Branch isolation (load-bearing)
-Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it.
+Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
 
 ## Per-cycle loop
 For each cycle:
@@ -494,11 +507,11 @@ install_plain() {
 #     overwrite, no .bak); re-run to merge upstream.
 # See docs/install-upgrade-design.md §3.
 install_claude_md() {
-  local dest="$1"
+  local dest="$1" mode="${2:-normal}"
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
   local policybody="$TMPDIR_WORK/policybody"
 
-  emit_policy > "$policybody"
+  emit_policy "$mode" > "$policybody"
 
   # Build the managed block: BEGIN marker + verbatim policy + END marker.
   {
@@ -678,7 +691,9 @@ install_claude_md() {
 echo "domestique: installing into $TARGET_DIR"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
 
-install_claude_md "$TARGET_DIR/$POLICY_DEST"
+POLICY_MODE="normal"
+[ "$GUEST" -eq 1 ] && POLICY_MODE="guest"
+install_claude_md "$TARGET_DIR/$POLICY_DEST" "$POLICY_MODE"
 install_plain     "$TARGET_DIR/.claude/agents/implementer.md"   emit_implementer
 install_plain     "$TARGET_DIR/.claude/agents/reviewer.md"      emit_reviewer
 install_plain     "$TARGET_DIR/.claude/commands/decompose.md"   emit_decompose
