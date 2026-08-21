@@ -226,6 +226,21 @@ Options:
                  installs CLAUDE.md normally. A no-op note if the target
                  isn't a guest install. Mutually exclusive with --guest
                  (passing both is a usage error).
+  --uninstall    Remove everything domestique installed from TARGET_DIR, and
+                 only that: the four .claude/ files (safety-compared against
+                 their base snapshot or pristine content — modified files are
+                 kept and renamed to <file>.uninstalled.<timestamp> instead of
+                 deleted, unless --force), the managed block in CLAUDE.md
+                 and/or CLAUDE.local.md (whichever contain it), the managed
+                 block in <git-common-dir>/info/exclude, and the
+                 .claude/.domestique/ snapshot dir and mode marker. Prunes
+                 .claude/agents, .claude/commands, and .claude only if left
+                 empty. Never touches .beads/ (see --purge-beads). Combinable
+                 only with --dry-run, --force, --purge-beads, and TARGET_DIR;
+                 combining with --guest, --no-guest, or --with-beads is a
+                 usage error.
+  --purge-beads  Only valid with --uninstall: also `rm -rf` TARGET_DIR/.beads.
+                 Without --uninstall this is a usage error.
   --help, -h     Show this help.
 
 Behavior:
@@ -265,15 +280,19 @@ FORCE=0
 GUEST=0
 GUEST_EXPLICIT=0
 NO_GUEST=0
+UNINSTALL=0
+PURGE_BEADS=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dry-run)    DRY_RUN=1 ;;
-    --with-beads) WITH_BEADS=1 ;;
-    --force)      FORCE=1 ;;
-    --guest)      GUEST=1; GUEST_EXPLICIT=1 ;;
-    --no-guest)   NO_GUEST=1 ;;
-    -h|--help)    usage; exit 0 ;;
+    --dry-run)      DRY_RUN=1 ;;
+    --with-beads)   WITH_BEADS=1 ;;
+    --force)        FORCE=1 ;;
+    --guest)        GUEST=1; GUEST_EXPLICIT=1 ;;
+    --no-guest)     NO_GUEST=1 ;;
+    --uninstall)    UNINSTALL=1 ;;
+    --purge-beads)  PURGE_BEADS=1 ;;
+    -h|--help)      usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
@@ -289,6 +308,20 @@ if [ "$GUEST_EXPLICIT" -eq 1 ] && [ "$NO_GUEST" -eq 1 ]; then
   echo "Error: --guest and --no-guest are mutually exclusive." >&2
   usage >&2
   exit 2
+fi
+
+if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+  echo "Error: --purge-beads is only valid together with --uninstall." >&2
+  usage >&2
+  exit 2
+fi
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  if [ "$GUEST_EXPLICIT" -eq 1 ] || [ "$NO_GUEST" -eq 1 ] || [ "$WITH_BEADS" -eq 1 ]; then
+    echo "Error: --uninstall is only combinable with --dry-run, --force, --purge-beads, and TARGET_DIR." >&2
+    usage >&2
+    exit 2
+  fi
 fi
 
 if [ ! -d "$TARGET_DIR" ]; then
@@ -308,7 +341,10 @@ fi
 # normal mode.
 # ---------------------------------------------------------------------------
 MODE_MARKER="$TARGET_DIR/.claude/.domestique/mode"
-if [ -e "$MODE_MARKER" ]; then
+if [ "$UNINSTALL" -eq 1 ]; then
+  : # --uninstall does its own mode detection in do_uninstall(); skip the
+    # install-path sticky-guest-mode logic entirely.
+elif [ -e "$MODE_MARKER" ]; then
   MODE_MARKER_CONTENT="$(cat "$MODE_MARKER" 2>/dev/null || true)"
   case "$MODE_MARKER_CONTENT" in
     guest)
@@ -359,12 +395,26 @@ SUM_SKIPPED=()
 SUM_MERGED=()
 SUM_CONFLICT=()
 SUM_ADOPTED=()
+# --uninstall-only accumulators.
+SUM_REMOVED=()
+SUM_KEPT=()
 
 # Set to 1 if any file ended in a merge conflict or hard merge error this run;
 # drives the final non-zero exit (see docs/install-upgrade-design.md §4).
 CONFLICT_OCCURRED=0
 
 note_dry() { [ "$DRY_RUN" -eq 1 ] && echo "  [dry-run] $*"; return 0; }
+
+# print_group <label> <item...> — used by both the install and uninstall
+# summary printers. Hoisted here (from its original position just above the
+# install summary) so do_uninstall() can call it too.
+print_group() {
+  local label="$1"; shift
+  [ "$#" -eq 0 ] && return 0
+  echo "  $label:"
+  local item
+  for item in "$@"; do echo "    - $item"; done
+}
 
 # ---------------------------------------------------------------------------
 # Base snapshot / manifest (foundation for a future 3-way merge on upgrade;
@@ -861,6 +911,221 @@ install_git_exclude() {
   fi
 }
 
+# do_uninstall <target-dir>
+# Remove everything domestique installed into <target-dir>, and only that.
+# See usage() --uninstall for the summary of what is (and is not) removed.
+do_uninstall() {
+  local target="$1"
+  local snapshot_dir="$target/.claude/.domestique"
+  local snapshot_base="$snapshot_dir/base"
+  local anything_done=0
+
+  # --- 1. the four managed plain files, safety-compared -------------------
+  local rel emitter dest staged basepath reference
+  while IFS='|' read -r rel emitter; do
+    [ -z "$rel" ] && continue
+    dest="$target/$rel"
+    [ -e "$dest" ] || continue
+    staged="$TMPDIR_WORK/uninstall_staged"
+    "$emitter" > "$staged"
+    basepath="$snapshot_base/$rel"
+    reference="$basepath"
+    [ -e "$reference" ] || reference="$staged"
+
+    if cmp -s "$dest" "$reference"; then
+      anything_done=1
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $dest"
+      else
+        rm -f "$dest"
+      fi
+      SUM_REMOVED+=("$dest")
+    elif [ "$FORCE" -eq 1 ]; then
+      anything_done=1
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $dest (modified, --force)"
+      else
+        rm -f "$dest"
+      fi
+      SUM_REMOVED+=("$dest (modified, --force)")
+    else
+      anything_done=1
+      local kept="$dest.uninstalled.$TS"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "keep $dest (modified) -> would rename to $kept"
+      else
+        mv "$dest" "$kept"
+      fi
+      SUM_KEPT+=("$kept")
+    fi
+  done <<UNINSTALL_FILES
+.claude/agents/implementer.md|emit_implementer
+.claude/agents/reviewer.md|emit_reviewer
+.claude/commands/decompose.md|emit_decompose
+.claude/commands/goal.md|emit_goal
+UNINSTALL_FILES
+
+  # --- 2/4. managed block in CLAUDE.md and/or CLAUDE.local.md -------------
+  # Handle BOTH policy files if both carry the marker (a dir that saw mixed
+  # plain + guest use) rather than trusting the mode marker alone.
+  local policyfile policymode
+  for policyfile in CLAUDE.md CLAUDE.local.md; do
+    dest="$target/$policyfile"
+    [ -e "$dest" ] || continue
+    grep -qF "$MARKER_BEGIN" "$dest" 2>/dev/null || continue
+    anything_done=1
+
+    if [ "$policyfile" = "CLAUDE.local.md" ]; then policymode="guest"; else policymode="normal"; fi
+
+    local oursblock pristine refblock modified=0
+    oursblock="$TMPDIR_WORK/uninstall_oursblock"
+    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
+      $0 == beginm && !seen { seen=1; inblock=1; next }
+      inblock && $0 == endm { inblock=0; next }
+      inblock { print }
+    ' "$dest" > "$oursblock"
+
+    pristine="$TMPDIR_WORK/uninstall_pristine"
+    emit_policy "$policymode" > "$pristine"
+    refblock="$snapshot_base/$policyfile.block"
+    [ -e "$refblock" ] || refblock="$pristine"
+    cmp -s "$oursblock" "$refblock" || modified=1
+
+    # Strip the block (including markers), preserving everything else
+    # verbatim. Back the file up first ONLY when the block was user-modified
+    # relative to its base/pristine content — an exact-inverse strip needs no
+    # backup and must not leave a stray .bak behind (round-trip byte-parity
+    # with the pre-install tree, verified by scenario a/b).
+    local result backup
+    result="$TMPDIR_WORK/uninstall_result"
+    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
+      $0 == beginm && !seen { seen=1; inblock=1; next }
+      inblock && $0 == endm { inblock=0; next }
+      inblock { next }
+      { print }
+    ' "$dest" > "$result"
+
+    if [ "$modified" -eq 1 ]; then
+      backup="$dest.bak.$TS"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "backup $dest -> $backup (managed block was modified)"
+      else
+        cp "$dest" "$backup"
+      fi
+      SUM_BACKEDUP+=("$backup")
+    fi
+
+    if grep -q '[^[:space:]]' "$result" 2>/dev/null; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "strip managed block from $dest, leaving the rest of the file intact"
+      else
+        cp "$result" "$dest"
+      fi
+      SUM_REMOVED+=("$dest (managed block)")
+    else
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $dest (empty after stripping managed block)"
+      else
+        rm -f "$dest"
+      fi
+      SUM_REMOVED+=("$dest")
+    fi
+  done
+
+  # --- 5. managed block in <git-common-dir>/info/exclude ------------------
+  local common_dir="" exclude_file
+  if command -v git >/dev/null 2>&1; then
+    common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
+    if [ -n "$common_dir" ]; then
+      case "$common_dir" in
+        /*) : ;;
+        *) common_dir="$target/$common_dir" ;;
+      esac
+    fi
+  fi
+  if [ -z "$common_dir" ] && [ -d "$target/.git" ]; then
+    common_dir="$target/.git"
+  fi
+
+  if [ -n "$common_dir" ]; then
+    exclude_file="$common_dir/info/exclude"
+    if [ -e "$exclude_file" ] && grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null; then
+      anything_done=1
+      local exresult
+      exresult="$TMPDIR_WORK/uninstall_exclude_result"
+      awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" '
+        $0 == beginm && !seen { seen=1; inblock=1; next }
+        inblock && $0 == endm { inblock=0; next }
+        inblock { next }
+        { print }
+      ' "$exclude_file" > "$exresult"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "strip domestique block from $exclude_file (preserving everything else)"
+      else
+        cp "$exresult" "$exclude_file"
+      fi
+      SUM_REMOVED+=("$exclude_file (managed block)")
+    fi
+  fi
+  # Non-git target: nothing was installed there — skip silently.
+
+  # --- 6. snapshot dir + mode marker (do this LAST — steps 1/2 read it) ----
+  if [ -e "$snapshot_dir" ]; then
+    anything_done=1
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "remove $snapshot_dir (snapshots, manifest, mode marker)"
+    else
+      rm -rf "$snapshot_dir"
+    fi
+    SUM_REMOVED+=("$snapshot_dir")
+  fi
+
+  # Prune now-empty dirs, never one that still has user content.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "prune $target/.claude/agents, $target/.claude/commands, $target/.claude if left empty"
+  else
+    rmdir "$target/.claude/agents" 2>/dev/null || true
+    rmdir "$target/.claude/commands" 2>/dev/null || true
+    rmdir "$target/.claude" 2>/dev/null || true
+  fi
+
+  # --- 7. .beads/ — never touched by default -------------------------------
+  if [ -d "$target/.beads" ]; then
+    if [ "$PURGE_BEADS" -eq 1 ]; then
+      anything_done=1
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "remove $target/.beads (--purge-beads)"
+      else
+        rm -rf "$target/.beads"
+      fi
+      SUM_REMOVED+=("$target/.beads (--purge-beads)")
+    else
+      echo "Note: $target/.beads left in place (domestique never removes it by default) — pass --purge-beads, or remove it by hand: rm -rf $target/.beads" >&2
+    fi
+  fi
+
+  echo
+  if [ "$anything_done" -eq 0 ]; then
+    echo "domestique: nothing to remove in $target — no domestique install detected."
+    return 0
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned uninstall):"; else echo "Summary (uninstall):"; fi
+  [ "${#SUM_REMOVED[@]}"   -gt 0 ] && print_group "Removed"         "${SUM_REMOVED[@]}"
+  [ "${#SUM_KEPT[@]}"      -gt 0 ] && print_group "Kept (modified)" "${SUM_KEPT[@]}"
+  [ "${#SUM_BACKEDUP[@]}"  -gt 0 ] && print_group "Backed up"       "${SUM_BACKEDUP[@]}"
+  [ "${#SUM_SKIPPED[@]}"   -gt 0 ] && print_group "Skipped"         "${SUM_SKIPPED[@]}"
+  [ "$DRY_RUN" -eq 1 ] && echo "  (dry run: nothing was actually changed)"
+  echo "Done."
+}
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  echo "domestique: uninstalling from $TARGET_DIR"
+  [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
+  do_uninstall "$TARGET_DIR"
+  exit 0
+fi
+
 # ---------------------------------------------------------------------------
 echo "domestique: installing into $TARGET_DIR"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
@@ -929,13 +1194,6 @@ fi
 # --- summary ---------------------------------------------------------------
 echo
 if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned):"; else echo "Summary:"; fi
-print_group() {
-  local label="$1"; shift
-  [ "$#" -eq 0 ] && return 0
-  echo "  $label:"
-  local item
-  for item in "$@"; do echo "    - $item"; done
-}
 [ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"    "${SUM_CREATED[@]}"
 [ "${#SUM_UPDATED[@]}"  -gt 0 ] && print_group "Updated"    "${SUM_UPDATED[@]}"
 [ "${#SUM_MERGED[@]}"   -gt 0 ] && print_group "Merged"     "${SUM_MERGED[@]}"
