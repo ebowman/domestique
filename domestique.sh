@@ -427,7 +427,6 @@ SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
 # vs CLAUDE.local.md under --guest) so a --guest run never reads or rewrites
 # the plain run's merge base, and vice versa. See docs/install-upgrade-design.md.
 POLICY_SNAPSHOT="$SNAPSHOT_BASE/$POLICY_DEST.block"
-MANAGED_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,$POLICY_DEST"
 SNAPSHOT_TOUCHED=0
 
 # rel_to_base <dest> -> absolute path under SNAPSHOT_BASE mirroring <dest>'s
@@ -469,6 +468,38 @@ snapshot_claude_block() {
   cp "$content" "$basepath"
 }
 
+# managed_files_list — compute the files= value from actual on-disk state at
+# write time, not just this run's POLICY_DEST. This keeps the manifest
+# accurate in mixed-mode directories (one that has seen both a plain install
+# and a --guest install), where the file that a prior run of the OTHER mode
+# wrote into the managed block is still present and still managed.
+# Always includes this run's POLICY_DEST (the block was just written/updated
+# this run, so it is unconditionally current) plus CLAUDE.md and/or
+# CLAUDE.local.md if either currently carries the managed-block markers.
+# Order: the four fixed .claude/ files first (matching the pre-existing
+# convention), then CLAUDE.md if present/managed, then CLAUDE.local.md if
+# present/managed.
+managed_files_list() {
+  local out=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+  local policyfile have_claude_md=0 have_claude_local=0
+  for policyfile in CLAUDE.md CLAUDE.local.md; do
+    if [ "$policyfile" = "$POLICY_DEST" ]; then
+      # This run's target: the block was just written, so it's current
+      # regardless of what a filesystem check would say under --dry-run.
+      [ "$policyfile" = "CLAUDE.md" ] && have_claude_md=1
+      [ "$policyfile" = "CLAUDE.local.md" ] && have_claude_local=1
+      continue
+    fi
+    if [ -e "$TARGET_DIR/$policyfile" ] && grep -qF "$MARKER_BEGIN" "$TARGET_DIR/$policyfile" 2>/dev/null; then
+      [ "$policyfile" = "CLAUDE.md" ] && have_claude_md=1
+      [ "$policyfile" = "CLAUDE.local.md" ] && have_claude_local=1
+    fi
+  done
+  [ "$have_claude_md" -eq 1 ] && out="$out,CLAUDE.md"
+  [ "$have_claude_local" -eq 1 ] && out="$out,CLAUDE.local.md"
+  printf '%s' "$out"
+}
+
 # write_manifest — flat key=value manifest describing the snapshot.
 write_manifest() {
   local manifest="$SNAPSHOT_DIR/manifest" ref sha
@@ -488,7 +519,7 @@ write_manifest() {
     printf 'installed_ref=%s\n' "$ref"
     printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'script_sha256=%s\n' "$sha"
-    printf 'files=%s\n' "$MANAGED_FILES"
+    printf 'files=%s\n' "$(managed_files_list)"
   } > "$manifest"
 }
 
