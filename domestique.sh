@@ -220,6 +220,12 @@ Options:
                  (CLAUDE.md is ALWAYS backed up before modification.)
   --guest        Route the managed orchestration-policy block to
                  CLAUDE.local.md instead of CLAUDE.md.
+  --no-guest     Convert an existing guest install back to normal: removes
+                 the sticky guest-mode marker and prints by-hand conversion
+                 instructions (nothing is auto-migrated), then this run
+                 installs CLAUDE.md normally. A no-op note if the target
+                 isn't a guest install. Mutually exclusive with --guest
+                 (passing both is a usage error).
   --help, -h     Show this help.
 
 Behavior:
@@ -233,6 +239,11 @@ Behavior:
     CLAUDE.md. A tracked CLAUDE.md is never read, modified, or backed up in
     this mode. If CLAUDE.md already carries a non-guest domestique install,
     a warning is printed and CLAUDE.md is left untouched.
+  * Guest mode is sticky: a guest install writes a marker at
+    .claude/.domestique/mode. A later plain re-run (no --guest/--no-guest)
+    against that same target detects the marker and stays in guest mode
+    instead of silently un-guesting the install; pass --no-guest to convert
+    back to normal on purpose.
   * Running twice in a row makes no changes on the second run.
   * Pre-existing install with no snapshot yet (.claude/.domestique/ absent)
     and a differing file: ADOPTED, not overwritten — local edits are left in
@@ -252,13 +263,16 @@ DRY_RUN=0
 WITH_BEADS=0
 FORCE=0
 GUEST=0
+GUEST_EXPLICIT=0
+NO_GUEST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)    DRY_RUN=1 ;;
     --with-beads) WITH_BEADS=1 ;;
     --force)      FORCE=1 ;;
-    --guest)      GUEST=1 ;;
+    --guest)      GUEST=1; GUEST_EXPLICIT=1 ;;
+    --no-guest)   NO_GUEST=1 ;;
     -h|--help)    usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -271,9 +285,58 @@ while [ $# -gt 0 ]; do
 done
 TARGET_DIR="${TARGET_DIR:-.}"
 
+if [ "$GUEST_EXPLICIT" -eq 1 ] && [ "$NO_GUEST" -eq 1 ]; then
+  echo "Error: --guest and --no-guest are mutually exclusive." >&2
+  usage >&2
+  exit 2
+fi
+
 if [ ! -d "$TARGET_DIR" ]; then
   echo "Target directory does not exist: $TARGET_DIR" >&2
   exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Sticky guest mode: a guest install writes a marker at
+# .claude/.domestique/mode (content: "guest"). A later run against the same
+# TARGET_DIR with neither --guest nor --no-guest must NOT silently fall back
+# to normal mode (which would write the policy block into the tracked
+# CLAUDE.md and skip the git-exclude logic) — it stays in guest mode. Explicit
+# --no-guest converts back to normal (marker removed, by-hand instructions
+# printed, no auto-migration of CLAUDE.local.md/exclude content). Unexpected
+# marker content is treated as a corrupt/foreign marker: warn and proceed as
+# normal mode.
+# ---------------------------------------------------------------------------
+MODE_MARKER="$TARGET_DIR/.claude/.domestique/mode"
+if [ -e "$MODE_MARKER" ]; then
+  MODE_MARKER_CONTENT="$(cat "$MODE_MARKER" 2>/dev/null || true)"
+  case "$MODE_MARKER_CONTENT" in
+    guest)
+      if [ "$NO_GUEST" -eq 1 ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+          echo "  [dry-run] remove mode marker $MODE_MARKER (--no-guest)"
+        else
+          rm -f "$MODE_MARKER"
+        fi
+        echo "domestique: converting guest install in $TARGET_DIR to a normal install." >&2
+        echo "  This run installs CLAUDE.md normally. domestique does not auto-migrate" >&2
+        echo "  content — by hand you may want to:" >&2
+        echo "    - remove $TARGET_DIR/CLAUDE.local.md, or fold its customizations into" >&2
+        echo "      $TARGET_DIR/CLAUDE.md" >&2
+        echo "    - optionally clean the domestique-managed block out of" >&2
+        echo "      <git-common-dir>/info/exclude" >&2
+        GUEST=0
+      elif [ "$GUEST_EXPLICIT" -eq 0 ]; then
+        GUEST=1
+        echo "Note: existing guest install detected in $TARGET_DIR — staying in guest mode. Pass --no-guest to convert to a normal install." >&2
+      fi
+      ;;
+    *)
+      echo "Warning: $MODE_MARKER has unexpected content '$MODE_MARKER_CONTENT' (expected 'guest') — ignoring it and treating this as a normal install." >&2
+      ;;
+  esac
+elif [ "$NO_GUEST" -eq 1 ]; then
+  echo "Note: --no-guest passed but no guest-mode marker found in $TARGET_DIR — nothing to convert; proceeding with a normal install." >&2
 fi
 
 POLICY_DEST="CLAUDE.md"
@@ -812,6 +875,17 @@ install_plain     "$TARGET_DIR/.claude/commands/goal.md"        emit_goal
 
 if [ "$GUEST" -eq 1 ]; then
   install_git_exclude "$TARGET_DIR"
+  # Write/refresh the sticky guest-mode marker so a later plain re-run (no
+  # --guest/--no-guest) against this same TARGET_DIR stays in guest mode
+  # instead of silently un-guesting the install. Idempotent: re-writing the
+  # same content on every guest run is harmless and also recreates the
+  # marker if it was somehow lost.
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "write mode marker -> $MODE_MARKER (guest)"
+  else
+    mkdir -p "$(dirname "$MODE_MARKER")"
+    printf 'guest\n' > "$MODE_MARKER"
+  fi
 fi
 
 # --- snapshot manifest ------------------------------------------------------
