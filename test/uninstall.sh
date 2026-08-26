@@ -105,6 +105,7 @@ MARKER_END='<!-- END domestique -->'
 
 IMPL_REL=".claude/agents/implementer.md"
 REVIEWER_REL=".claude/agents/reviewer.md"
+DRAIN_REL=".claude/commands/drain.md"
 SNAPSHOT_REL=".claude/.domestique"
 MODE_MARKER_REL=".claude/.domestique/mode"
 
@@ -206,6 +207,7 @@ scenario_plain_roundtrip() {
   check "install: exit 0" test "$rc_i" -eq 0
   check "install: implementer.md installed (setup ran)" test -f "$t/$IMPL_REL"
   check "install: CLAUDE.md carries managed block (setup ran)" grep -qF "$MARKER_BEGIN" "$t/CLAUDE.md"
+  check "install: drain.md installed (setup ran)" test -f "$t/$DRAIN_REL"
 
   local out_u rc_u
   out_u="$("$DOM" "$t" --uninstall 2>&1)"; rc_u=$?
@@ -215,6 +217,12 @@ scenario_plain_roundtrip() {
   check "CLAUDE.md byte-identical to pre-install" test "$sha_pre" = "$sha_post"
   check ".claude/ gone" test ! -e "$t/.claude"
   check "git status --porcelain shows ONLY the install .bak" only_bak_in_status "$t"
+  check "drain.md gone" test ! -e "$t/$DRAIN_REL"
+  check "no stray drain.md.* backup files" bash -c '
+    shopt -s nullglob
+    files=("$1".*)
+    [ "${#files[@]}" -eq 0 ]
+  ' _ "$t/$DRAIN_REL"
 }
 
 # ---------------------------------------------------------------------------
@@ -233,6 +241,7 @@ scenario_guest_roundtrip() {
   check "install: CLAUDE.local.md created (setup ran)" test -f "$t/CLAUDE.local.md"
   check "install: exclude has managed block (setup ran)" grep -qF "# BEGIN domestique (managed)" "$t/.git/info/exclude"
   check "install: exclude still has pre-seeded user line (setup ran)" grep -qxF "custom-user-pattern" "$t/.git/info/exclude"
+  check "install: drain.md installed (setup ran)" test -f "$t/$DRAIN_REL"
 
   local out_u rc_u
   out_u="$("$DOM" "$t" --uninstall 2>&1)"; rc_u=$?
@@ -244,6 +253,12 @@ scenario_guest_roundtrip() {
   check "exclude pre-seeded user line preserved" grep -qxF "custom-user-pattern" "$t/.git/info/exclude"
   check "mode marker gone" test ! -e "$t/$MODE_MARKER_REL"
   check ".claude/ gone" test ! -e "$t/.claude"
+  check "drain.md gone" test ! -e "$t/$DRAIN_REL"
+  check "no stray drain.md.* backup files" bash -c '
+    shopt -s nullglob
+    files=("$1".*)
+    [ "${#files[@]}" -eq 0 ]
+  ' _ "$t/$DRAIN_REL"
 }
 
 # ---------------------------------------------------------------------------
