@@ -51,7 +51,7 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 
 ## Unattended epic mode (/goal)
 - The default remains **stop-and-report between beads** (rule 5 of the Delegation loop above). Nothing changes that by itself.
-- A `/goal <epic-id>` invocation is the **only** thing that authorizes continuous, unattended dispatch across an epic's beads. That authorization is scoped to the named epic, expires the instant the epic completes or any stop condition fires, and never carries over to another epic or a later session.
+- A `/goal <epic-id>` invocation (or its alias `/drain <epic-id>`) is the **only** thing that authorizes continuous, unattended dispatch across an epic's beads. That authorization is scoped to the named epic, expires the instant the epic completes or any stop condition fires, and never carries over to another epic or a later session.
 - Unattended runs happen on a **dedicated epic branch** and never commit to the default branch — the human reviews and merges that branch by hand; the loop never merges or pushes.
 - The core invariants still hold even while unattended: **one bead in flight at a time, one commit per bead, and never close a bead the reviewer didn't pass.**
 - For the full loop mechanics and the complete list of stop conditions, see `.claude/commands/goal.md` — they are not restated here.
@@ -163,7 +163,7 @@ description: Drain a beads epic to completion unattended — dedicated branch, o
 argument-hint: <epic-id>
 ---
 
-Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
+Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session. This command is also installed as `/drain` — an alias with identical semantics.
 
 ## Branch isolation (load-bearing)
 Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
@@ -386,6 +386,7 @@ directory). Claude is the compatibility default; Codex uses native surfaces:
   .claude/agents/reviewer.md       reviewer subagent
   .claude/commands/decompose.md    /decompose command
   .claude/commands/goal.md         /goal command
+  .claude/commands/drain.md        /drain command (alias of /goal)
   AGENTS.md or AGENTS.override.md  Codex policy (normal mode, managed block)
   .codex/agents/*.toml             Codex implementer and reviewer
   .agents/skills/domestique*/      Codex workflow skills
@@ -543,7 +544,7 @@ configure_provider() {
       POLICY_EMITTER="emit_policy"
       POLICY_LABEL="CLAUDE.md"
       POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
-      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/drain.md"
       ;;
     codex)
       SNAPSHOT_DIR="$TARGET_DIR/.codex/.domestique"
@@ -703,6 +704,7 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.claude/agents/reviewer.md" emit_reviewer
       install_plain "$TARGET_DIR/.claude/commands/decompose.md" emit_decompose
       install_plain "$TARGET_DIR/.claude/commands/goal.md" emit_goal
+      install_plain "$TARGET_DIR/.claude/commands/drain.md" emit_goal
       ;;
     codex)
       install_plain "$TARGET_DIR/.codex/agents/implementer.toml" emit_codex_implementer
@@ -859,7 +861,7 @@ POLICY_DEST="CLAUDE.md"
 POLICY_EMITTER="emit_policy"
 POLICY_LABEL="CLAUDE.md"
 POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
-MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/drain.md"
 
 # ---------------------------------------------------------------------------
 # Base snapshot / manifest. The existing merge implementation is provider
@@ -1598,6 +1600,7 @@ claude|.claude/.domestique|.claude/agents/implementer.md|emit_implementer
 claude|.claude/.domestique|.claude/agents/reviewer.md|emit_reviewer
 claude|.claude/.domestique|.claude/commands/decompose.md|emit_decompose
 claude|.claude/.domestique|.claude/commands/goal.md|emit_goal
+claude|.claude/.domestique|.claude/commands/drain.md|emit_goal
 codex|.codex/.domestique|.codex/agents/implementer.toml|emit_codex_implementer
 codex|.codex/.domestique|.codex/agents/reviewer.toml|emit_codex_reviewer
 codex|.codex/.domestique|.agents/skills/domestique/SKILL.md|emit_codex_skill
