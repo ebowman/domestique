@@ -173,7 +173,7 @@ The platform projections are deliberately separate:
 
 - **Claude Code:** `CLAUDE.md` policy block,
   `.claude/agents/{implementer,reviewer}.md`, and
-  `.claude/commands/{decompose,goal}.md`.
+  `.claude/commands/{decompose,goal,drain}.md`.
 - **Codex:** a policy block in an existing root `AGENTS.override.md`, or in
   `AGENTS.md` when no override exists; custom agents at
   `.codex/agents/{implementer,reviewer}.toml`; and namespaced repo skills at
@@ -314,7 +314,9 @@ completion by repeatedly running the implementer → reviewer loop **without
 stopping between beads**. The platform's explicit goal invocation is the
 only thing that lifts the default check-in-between-beads rule (see
 [The loop](#the-loop), above), and only within strict bounds. The Codex goal
-skill cannot be invoked implicitly.
+skill cannot be invoked implicitly. On Claude, `/drain <epic-id>` is an
+alias of `/goal <epic-id>` — identical semantics, since "draining an epic"
+is the term this section already uses.
 
 **Authorization is scoped and temporary.** A goal invocation is
 the sole thing that authorizes continuous, unattended dispatch — and only
@@ -345,7 +347,7 @@ to run — never executing it itself.
 ```
 # Claude Code
 /decompose Add rate limiting to the public API
-/goal <epic-id>
+/goal <epic-id>        # or: /drain <epic-id>
 
 # Codex
 $domestique-decompose Add rate limiting to the public API
@@ -419,7 +421,7 @@ needed — TARGET_DIR defaults to the current directory.)
 Without `--platform`, it scans both provider inventories. With a platform it
 removes only that projection, updates the persisted platform set, and
 regenerates the shared guest-exclude union for anything still installed.
-Claude ownership covers its four `.claude/` files and policy destinations;
+Claude ownership covers its five `.claude/` files and policy destinations;
 Codex ownership covers the two `.codex/agents` files, three namespaced
 `SKILL.md` leaves plus goal metadata, and any managed normal-mode AGENTS block.
 Provider state is removed only for the selected projection. `.beads/` is
@@ -475,6 +477,7 @@ Summary:
     - ./.claude/agents/reviewer.md
     - ./.claude/commands/decompose.md
     - ./.claude/commands/goal.md
+    - ./.claude/commands/drain.md
   Updated:
     - ./.git/info/exclude (managed block)
 Done.
@@ -492,6 +495,7 @@ Summary (uninstall):
     - ./.claude/agents/reviewer.md
     - ./.claude/commands/decompose.md
     - ./.claude/commands/goal.md
+    - ./.claude/commands/drain.md
     - ./CLAUDE.local.md
     - ./.git/info/exclude (managed block)
     - ./.claude/.domestique
