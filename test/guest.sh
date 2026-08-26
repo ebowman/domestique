@@ -142,6 +142,7 @@ scenario_fresh_guest_install() {
   ' _ "$t/.git/info/exclude"
   check "exclude file has managed BEGIN marker" grep -qF "# BEGIN domestique (managed)" "$t/.git/info/exclude"
   check "mode marker == guest" bash -c '[ "$(cat "$1")" = "guest" ]' _ "$t/$MODE_MARKER_REL"
+  check "drain.md byte-identical to goal.md" cmp -s "$t/.claude/commands/goal.md" "$t/.claude/commands/drain.md"
 }
 
 # ---------------------------------------------------------------------------

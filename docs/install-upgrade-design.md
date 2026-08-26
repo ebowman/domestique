@@ -53,6 +53,7 @@ a platform record implies that provider.
     .claude/agents/reviewer.md
     .claude/commands/decompose.md
     .claude/commands/goal.md
+    .claude/commands/drain.md             # second projection of emit_goal (same emitter, two destinations)
 
 .codex/.domestique/
   mode                                   # guest marker; absent in normal mode
@@ -98,7 +99,7 @@ installed_ref=<git describe/short-sha of domestique.sh's own repo, or "unknown">
 installed_at=<ISO8601 timestamp>
 script_sha256=<sha256 of domestique.sh, or "unavailable">
 platform=claude
-files=.claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md
+files=.claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/drain.md,CLAUDE.md
 ```
 
 A Codex manifest uses `platform=codex` and lists the actual TOML, skill,
@@ -107,7 +108,7 @@ assumptions: mixed policy history can leave managed blocks in more than one
 possible policy destination, and uninstall must inspect them all.
 
 For Claude, `files=` is **not** simply "this run's policy destination plus
-the four fixed `.claude/` files" — it is computed from actual on-disk state at manifest-write
+the five fixed `.claude/` files" — it is computed from actual on-disk state at manifest-write
 time (`managed_files_list`), because a target directory can be in a mixed
 state: a prior plain install left a managed block in `CLAUDE.md`, and a later
 `--guest` run (or vice versa) writes into `CLAUDE.local.md` without touching
@@ -453,7 +454,7 @@ guest `--with-beads` install; uninstall still preserves
 provider projections. `--uninstall --platform claude|codex|both` is scoped to the
 selected projection, removes it from persisted platform state, and rebuilds
 the shared guest-exclude union for providers that remain. Claude inventory is
-the existing four `.claude` projection files and policy destinations. Codex
+the existing five `.claude` projection files and policy destinations. Codex
 inventory is the two agent TOMLs, three skill leaves plus goal metadata, and
 managed blocks in either possible normal AGENTS destination. Each provider's
 state tree is owned separately. `.beads/` remains unless `--purge-beads` is

@@ -133,6 +133,7 @@ scenario_fresh_install() {
   check "base snapshot for decompose.md written" test -f "$t/.claude/.domestique/base/.claude/commands/decompose.md"
   check "base CLAUDE.md.block snapshot written" test -f "$t/$BASE_CLAUDE_BLOCK_REL"
   check "manifest written" test -f "$t/$MANIFEST_REL"
+  check "drain.md byte-identical to goal.md" cmp -s "$t/.claude/commands/goal.md" "$t/.claude/commands/drain.md"
 }
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,7 @@ scenario_idempotent_reinstall() {
     ! printf "%s" "$1" | grep -Eq "^  (Created|Updated|Merged|Conflicted):"
   ' _ "$out"
   check ".claude/.domestique byte-identical across the two runs" test "$hash_before" = "$hash_after"
+  check "drain.md still byte-identical to goal.md after rerun" cmp -s "$t/.claude/commands/goal.md" "$t/.claude/commands/drain.md"
 }
 
 # ---------------------------------------------------------------------------
