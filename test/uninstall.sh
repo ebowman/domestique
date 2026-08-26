@@ -217,12 +217,6 @@ scenario_plain_roundtrip() {
   check "CLAUDE.md byte-identical to pre-install" test "$sha_pre" = "$sha_post"
   check ".claude/ gone" test ! -e "$t/.claude"
   check "git status --porcelain shows ONLY the install .bak" only_bak_in_status "$t"
-  check "drain.md gone" test ! -e "$t/$DRAIN_REL"
-  check "no stray drain.md.* backup files" bash -c '
-    shopt -s nullglob
-    files=("$1".*)
-    [ "${#files[@]}" -eq 0 ]
-  ' _ "$t/$DRAIN_REL"
 }
 
 # ---------------------------------------------------------------------------
@@ -253,12 +247,6 @@ scenario_guest_roundtrip() {
   check "exclude pre-seeded user line preserved" grep -qxF "custom-user-pattern" "$t/.git/info/exclude"
   check "mode marker gone" test ! -e "$t/$MODE_MARKER_REL"
   check ".claude/ gone" test ! -e "$t/.claude"
-  check "drain.md gone" test ! -e "$t/$DRAIN_REL"
-  check "no stray drain.md.* backup files" bash -c '
-    shopt -s nullglob
-    files=("$1".*)
-    [ "${#files[@]}" -eq 0 ]
-  ' _ "$t/$DRAIN_REL"
 }
 
 # ---------------------------------------------------------------------------

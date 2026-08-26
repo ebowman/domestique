@@ -315,8 +315,7 @@ stopping between beads**. The platform's explicit goal invocation is the
 only thing that lifts the default check-in-between-beads rule (see
 [The loop](#the-loop), above), and only within strict bounds. The Codex goal
 skill cannot be invoked implicitly. On Claude, `/drain <epic-id>` is an
-alias of `/goal <epic-id>` — identical semantics, since "draining an epic"
-is the term this section already uses.
+alias of `/goal <epic-id>`.
 
 **Authorization is scoped and temporary.** A goal invocation is
 the sole thing that authorizes continuous, unattended dispatch — and only
