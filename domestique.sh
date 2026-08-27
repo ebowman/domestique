@@ -143,6 +143,10 @@ argument-hint: <goal, or path to a spec file>
 
 Decompose the following into a beads work graph: $ARGUMENTS
 
+Before creating the epic, check the session's available skills for a grilling skill (named `grilling` or `grill-me`, plain or plugin-namespaced):
+- If present: invoke it on the goal/spec above and run its one-question-at-a-time interview until shared understanding is explicitly confirmed, resolving every open decision. Depth is self-limiting — a tight spec exits after brief confirmation. Only then proceed to create the epic below.
+- If absent: print exactly this notice and continue: `No grilling skill installed — jumping straight to epic creation.`
+
 Rules for a good decomposition:
 - Create one epic for the goal:
   `bd create "<goal>" -t epic -p 1 --description "<why + high-level design>"`
@@ -152,6 +156,10 @@ Rules for a good decomposition:
   `bd dep add <blocked-id> <blocker-id>`   # blocked depends on blocker
 - Keep `bd ready` crisp. No vague someday-items, no research-maybe tasks, nothing not immediately actionable. If it isn't ready to be worked, it doesn't belong in the graph yet.
 - Do not implement anything. Planning only.
+
+After the epic, tasks, and dependencies are created and wired, check available skills for a ponytail-audit skill (plain or plugin-namespaced, e.g. `ponytail:ponytail-audit`):
+- If present: invoke it with the freshly created epic (its task graph) as the audit target — hunting YAGNI beads, mergeable beads, speculative scaffolding, dependency over-wiring. Single pass only. Auto-apply the findings judged relevant (delete/merge/rewire beads), reject the rest, and include an audit delta (applied vs rejected, with reasons) in the final printout below.
+- If absent: print exactly this notice and continue: `No ponytail-audit skill found — presenting first decomposition directly.`
 
 When done, print the resulting graph (`bd ready` plus the epic tree) for my review before any execution, then show the dispatch order:
 1. Run `bd dep tree <epic-id> --direction=up`.
@@ -308,14 +316,30 @@ description: Decompose a goal or specification into a dependency-ordered beads e
 
 Use the goal or specification in the invoking prompt.
 
-1. Create one epic describing why the work exists and its high-level design.
-2. Create bounded child tasks, each completable by a fresh implementer context
+1. Before creating the epic, check the session's available skills for a
+   grilling skill (named `grilling` or `grill-me`, plain or
+   plugin-namespaced). If present, invoke it on the goal/spec and run its
+   one-question-at-a-time interview until shared understanding is explicitly
+   confirmed, resolving every open decision — depth is self-limiting, a tight
+   spec exits after brief confirmation. If absent, print exactly this notice
+   and continue: `No grilling skill installed — jumping straight to epic creation.`
+2. Create one epic describing why the work exists and its high-level design.
+3. Create bounded child tasks, each completable by a fresh implementer context
    in one pass and carrying explicit inputs, outputs, edge cases, and testable
    done criteria.
-3. Add real dependencies so `bd ready` exposes only actionable tasks.
-4. Do not implement anything.
-5. Print `bd ready` plus the epic tree for human review.
-6. Show the dispatch order: run `bd dep tree <epic-id> --direction=up`, then
+4. Add real dependencies so `bd ready` exposes only actionable tasks.
+5. Do not implement anything.
+6. After the epic, tasks, and dependencies are created and wired, check
+   available skills for a ponytail-audit skill (plain or plugin-namespaced,
+   e.g. `ponytail:ponytail-audit`). If present, invoke it with the freshly
+   created epic (its task graph) as the audit target — hunting YAGNI beads,
+   mergeable beads, speculative scaffolding, dependency over-wiring — single
+   pass only, then auto-apply the findings judged relevant (delete, merge,
+   or rewire beads), reject the rest, and include an audit delta (applied vs
+   rejected, with reasons) in the final printout. If absent, print exactly
+   this notice and continue: `No ponytail-audit skill found — presenting first decomposition directly.`
+7. Print `bd ready` plus the epic tree for human review.
+8. Show the dispatch order: run `bd dep tree <epic-id> --direction=up`, then
    render a compact markdown table with one row per task (columns: bead,
    needs first — its blockers, then unblocks — its dependents) derived from
    `bd dep list <all task ids>`, ignoring parent-child edges (epic
