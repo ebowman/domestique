@@ -16,6 +16,7 @@ Codex normal mode installs:
 
 - a managed policy block in an existing active root `AGENTS.override.md`, or `AGENTS.md` otherwise;
 - `.codex/agents/implementer.toml` using `gpt-5.6-terra` at medium effort;
+- `.codex/agents/implementer-heavy.toml` using `gpt-5.6` at high effort, dispatched instead of `implementer.toml` for beads labeled `impl:heavy`;
 - `.codex/agents/reviewer.toml` using `gpt-5.6` at high effort;
 - repo skills `.agents/skills/domestique*/SKILL.md`, including decomposition, dispatch/landing policy, and explicit unattended goal execution;
 - `.agents/skills/domestique-goal/agents/openai.yaml` with `allow_implicit_invocation: false`.

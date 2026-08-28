@@ -105,6 +105,8 @@ chmod +x "$V2G"
 
 MODE_MARKER_REL=".claude/.domestique/mode"
 EXCLUDE_PATTERNS=("CLAUDE.local.md" ".claude/")
+DECOMPOSE_CMD_REL=".claude/commands/decompose.md"
+GOAL_CMD_REL=".claude/commands/goal.md"
 
 # ---------------------------------------------------------------------------
 # Scenario 1: fresh guest install
@@ -142,6 +144,9 @@ scenario_fresh_guest_install() {
   ' _ "$t/.git/info/exclude"
   check "exclude file has managed BEGIN marker" grep -qF "# BEGIN domestique (managed)" "$t/.git/info/exclude"
   check "mode marker == guest" bash -c '[ "$(cat "$1")" = "guest" ]' _ "$t/$MODE_MARKER_REL"
+  check "CLAUDE.local.md has model:opus routing rubric" grep -qF "model:opus" "$t/CLAUDE.local.md"
+  check "decompose command has model:opus routing rubric" grep -qF "model:opus" "$t/$DECOMPOSE_CMD_REL"
+  check "goal command has model:opus routing rubric" grep -qF "model:opus" "$t/$GOAL_CMD_REL"
 }
 
 # ---------------------------------------------------------------------------

@@ -129,6 +129,7 @@ FAKE_BD
 }
 
 IMPL_REL=".codex/agents/implementer.toml"
+IMPL_HEAVY_REL=".codex/agents/implementer-heavy.toml"
 REVIEWER_REL=".codex/agents/reviewer.toml"
 BASE_SKILL_REL=".agents/skills/domestique/SKILL.md"
 DECOMPOSE_SKILL_REL=".agents/skills/domestique-decompose/SKILL.md"
@@ -182,6 +183,14 @@ scenario_agent_toml() {
   check "reviewer effort high" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"high"' "$t/$REVIEWER_REL"
   check "reviewer is not forced read-only" bash -c '! grep -Eq '\''^sandbox_mode[[:space:]]*=[[:space:]]*"read-only"'\'' "$1"' _ "$t/$REVIEWER_REL"
   check "reviewer forbids source edits" grep -Eqi 'do not (edit|modify)|never (edit|modify)|must not (edit|modify)' "$t/$REVIEWER_REL"
+
+  check "implementer-heavy TOML created" test -f "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy name field" grep -Eq '^name[[:space:]]*=[[:space:]]*"implementer-heavy"' "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy model gpt-5.6" grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6"' "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy effort high" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"high"' "$t/$IMPL_HEAVY_REL"
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' >/dev/null 2>&1; then
+    check "implementer-heavy is valid TOML" python3 -c 'import pathlib,tomllib,sys; tomllib.loads(pathlib.Path(sys.argv[1]).read_text())' "$t/$IMPL_HEAVY_REL"
+  fi
   check "orchestrator policy has pre/post diff guard" bash -c '
     grep -Eqi "fingerprint|before and after|pre.review|post.review|diff guard" "$1" "$2"
   ' _ "$t/AGENTS.md" "$t/$BASE_SKILL_REL"
@@ -210,6 +219,8 @@ scenario_skill_metadata() {
   check "decompose skill has description" grep -Eq '^description:[[:space:]]*[^[:space:]]' "$t/$DECOMPOSE_SKILL_REL"
   check "goal skill has description" grep -Eq '^description:[[:space:]]*[^[:space:]]' "$t/$GOAL_SKILL_REL"
   check "goal is explicit-only" grep -Eq '^[[:space:]]*allow_implicit_invocation:[[:space:]]*false[[:space:]]*$' "$t/$GOAL_META_REL"
+  check "base skill mentions impl:heavy routing" grep -qF "impl:heavy" "$t/$BASE_SKILL_REL"
+  check "decompose skill mentions impl:heavy routing" grep -qF "impl:heavy" "$t/$DECOMPOSE_SKILL_REL"
 }
 
 # ---------------------------------------------------------------------------

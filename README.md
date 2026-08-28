@@ -86,6 +86,14 @@ model. Edit that role's TOML, or remove its `model` and
 `model_reasoning_effort` keys to inherit the parent; domestique never silently
 substitutes one role's model for another.
 
+**Per-bead model routing:** at decompose time, the orchestrator judges each
+task against a routing rubric — foundational, 2+ downstream dependents,
+intricate logic, or a cross-cutting refactor — and labels it accordingly:
+`model:opus` in Claude, `impl:heavy` in Codex. A labeled bead's implementer
+dispatch escalates to the stronger tier (Opus, or Codex's `implementer-heavy`
+profile at `gpt-5.6`/high effort); everything else keeps the default
+(Sonnet / `gpt-5.6-terra`). Never label epics — labels inherit to children.
+
 By default, the orchestrator stops and checks in with you between beads — it
 won't drain the queue unattended unless you tell it to (see
 [unattended epic mode](#unattended-epic-mode), below).

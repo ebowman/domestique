@@ -64,6 +64,7 @@ a platform record implies that provider.
     AGENTS.md.block                      # normal mode, when AGENTS.md is active
     AGENTS.override.md.block             # normal mode, when the override is active
     .codex/agents/implementer.toml
+    .codex/agents/implementer-heavy.toml
     .codex/agents/reviewer.toml
     .agents/skills/domestique/SKILL.md
     .agents/skills/domestique-decompose/SKILL.md
