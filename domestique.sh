@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.1.0"
+DOMESTIQUE_VERSION="0.2.0"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -27,7 +27,7 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 
 ## Roles
 - **You (main session, planning model):** decompose work, hold the plan, delegate implementation and review, adjudicate the results, decide what's next. Write code yourself only for trivial one-line edits.
-- **`implementer` subagent (Sonnet):** executes one bounded task at a time in its own context and reports back a summary.
+- **`implementer` subagent (Sonnet; a bead labeled model:opus routes that dispatch to Opus):** executes one bounded task at a time in its own context and reports back a summary.
 - **`reviewer` subagent (Opus):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. A stronger, non-peer check than the implementer. Does not fix anything; reviewing is its only job.
 
 ## Work tracking: beads
@@ -44,7 +44,7 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 
 ## Delegation loop
 1. `bd ready` → pick the highest-priority unblocked task.
-2. Delegate it to the `implementer` subagent with a precise brief and the bead id.
+2. Delegate it to the `implementer` subagent with a precise brief and the bead id. Before dispatching, check `bd label list <id>`; if `model:opus` is present, pass a model override of opus on the implementer dispatch, otherwise use the default (Sonnet).
 3. When the implementer returns, delegate verification to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer inspects the real diff, reads the changed files, and runs the tests in a fresh context — judging the work against the done-criteria, not against the implementer's summary — and returns a pass/fail verdict.
 4. Adjudicate. Weigh the reviewer's verdict against the implementer's summary: if they agree the work is done, close the bead and commit its changes (one commit, bead id in the message); if the reviewer reports gaps, reopen the bead or file a follow-up and route the fix back to the implementer. Read the diff yourself only when the two reports conflict or the verdict is ambiguous — delegating the review is the point.
 5. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
@@ -153,6 +153,9 @@ Rules for a good decomposition:
 - Keep `bd ready` crisp. No vague someday-items, no research-maybe tasks, nothing not immediately actionable. If it isn't ready to be worked, it doesn't belong in the graph yet.
 - Do not implement anything. Planning only.
 
+## Model routing
+Label a task `model:opus` (bd create -l model:opus, or bd label add <id> model:opus) when ANY of: (1) foundational — it creates or reshapes what other beads build on (engine core, schema, public API, shared state model); (2) it has 2+ downstream dependents in the graph; (3) intricate logic — parsing, concurrency, state machines, edge-case-heavy algorithms; (4) cross-cutting refactor across many files. Everything else keeps the default (Sonnet). Never label epics — labels inherit to children. Sanity check: if every bead earns model:opus, the decomposition is too coarse — split until most beads are routine.
+
 When done, print the resulting graph (`bd ready` plus the epic tree) for my review before any execution.
 DOM_EOF
 }
@@ -173,7 +176,7 @@ For each cycle:
 1. `bd ready` scoped to epic $ARGUMENTS — pick the highest-priority unblocked task. If none, the epic is done; go to Completion below.
 2. Assert a clean working tree before starting the bead. If it's dirty, stop and report — do not paper over it.
 3. Claim it and mark in_progress (`bd update <id> --claim`).
-4. Dispatch to the `implementer` subagent with a precise brief built from the bead's description, input/output, and done-criteria.
+4. Dispatch to the `implementer` subagent with a precise brief built from the bead's description, input/output, and done-criteria. Before dispatching, check `bd label list <id>`; if `model:opus` is present, pass a model override of opus on this dispatch, otherwise use the default (Sonnet).
 5. Dispatch to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer must run the full test suite and inspect the real diff every time — never trust the implementer's summary in place of that.
 6. Adjudicate:
    - Reviewer PASS → `git add -A` and commit, message including the bead id, one bead per commit (never batch). Then `bd close <id>`.
@@ -210,6 +213,33 @@ name = "implementer"
 description = "Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
+sandbox_mode = "workspace-write"
+developer_instructions = """
+You are the domestique implementer. Complete exactly one bounded task handed
+to you by the orchestrator, then stop.
+
+- If given a bead id, claim it with `bd update <id> --claim` (or set it
+  in_progress). Never close it; the orchestrator closes only after review.
+- Stay inside the brief. Do not refactor adjacent code or start another bead.
+- Run the relevant tests and linter. Fix failures within scope; report
+  unrelated failures instead of sprawling.
+- File discovered work as a dependent bead rather than implementing it.
+- Never touch credentials, access controls, or use destructive git commands.
+- Stop and report any ambiguity instead of silently choosing new semantics.
+
+Return only: files changed, validation actually run and its result, discovered
+beads, and blockers or decisions the orchestrator needs.
+"""
+DOM_EOF
+}
+
+# NOTE: Codex path untested by author (no Codex environment) — verified by
+# inspection and emitted-file diff only.
+emit_codex_implementer_heavy() { cat <<'DOM_EOF'
+name = "implementer-heavy"
+description = "Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
+model = "gpt-5.6"
+model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 You are the domestique implementer. Complete exactly one bounded task handed
@@ -273,8 +303,13 @@ adjudicate. Do not implement except for genuinely trivial one-line edits.
 For each requested bead:
 
 1. Use `bd ready`, choose one highest-priority unblocked task, and claim it.
-2. Spawn exactly one `implementer` agent with the bead id, numbered brief,
+2. Check the bead's labels (`bd label list <id>`). Spawn exactly one
+   implementer agent — `implementer-heavy` if the bead carries `impl:heavy`,
+   otherwise the default `implementer` — with the bead id, numbered brief,
    affected files, edge cases, and done criteria. Wait for it to finish.
+   Still exactly one implementer at a time, regardless of which profile is
+   spawned. NOTE: Codex path untested by author (no Codex environment) —
+   verified by inspection and emitted-file diff only.
 3. Fingerprint `git diff`, `git diff --cached`, and relevant bead state.
 4. Spawn exactly one fresh `reviewer` agent with the same bead and criteria.
    Wait for it to finish. Do not run implementer and reviewer concurrently.
@@ -311,6 +346,10 @@ Use the goal or specification in the invoking prompt.
 3. Add real dependencies so `bd ready` exposes only actionable tasks.
 4. Do not implement anything.
 5. Print `bd ready` plus the epic tree for human review.
+
+## Model routing
+Label a task `impl:heavy` (bd create -l impl:heavy, or bd label add <id> impl:heavy) when ANY of: (1) foundational — it creates or reshapes what other beads build on (engine core, schema, public API, shared state model); (2) it has 2+ downstream dependents in the graph; (3) intricate logic — parsing, concurrency, state machines, edge-case-heavy algorithms; (4) cross-cutting refactor across many files. Everything else keeps the default implementer profile. Never label epics — labels inherit to children. Sanity check: if every bead earns impl:heavy, the decomposition is too coarse — split until most beads are routine.
+NOTE: Codex path untested by author (no Codex environment) — verified by inspection and emitted-file diff only.
 DOM_EOF
 }
 
@@ -550,7 +589,7 @@ configure_provider() {
       POLICY_EMITTER="emit_codex_policy"
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
-      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
+      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/implementer-heavy.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
       ;;
   esac
   SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
@@ -665,6 +704,7 @@ write_codex_guest_ownership() {
   local staged="$TMPDIR_WORK/codex_guest_excludes"
   {
     [ "${CODEX_PREEXIST_IMPL:-0}" -eq 1 ] || printf '.codex/agents/implementer.toml\n'
+    [ "${CODEX_PREEXIST_IMPL_HEAVY:-0}" -eq 1 ] || printf '.codex/agents/implementer-heavy.toml\n'
     [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
     printf '.codex/.domestique/\n'
     [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
@@ -706,6 +746,7 @@ install_current_provider() {
       ;;
     codex)
       install_plain "$TARGET_DIR/.codex/agents/implementer.toml" emit_codex_implementer
+      install_plain "$TARGET_DIR/.codex/agents/implementer-heavy.toml" emit_codex_implementer_heavy
       install_plain "$TARGET_DIR/.codex/agents/reviewer.toml" emit_codex_reviewer
       install_plain "$TARGET_DIR/.agents/skills/domestique/SKILL.md" emit_codex_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" emit_codex_decompose_skill
@@ -1372,7 +1413,7 @@ install_git_exclude() {
   if command -v git >/dev/null 2>&1; then
     local trackme tracked_paths=".beads"
     [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths="CLAUDE.local.md .claude $tracked_paths"
-    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal $tracked_paths"
+    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/agents/implementer.toml .codex/agents/implementer-heavy.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal $tracked_paths"
     for trackme in $tracked_paths; do
       if git -C "$target" ls-files --error-unmatch "$trackme" >/dev/null 2>&1; then
         echo "Warning: $trackme is already tracked in $target — a git exclude entry cannot hide a tracked path. Run 'git rm --cached -r $trackme' if you want it hidden." >&2
@@ -1394,6 +1435,7 @@ install_git_exclude() {
         # Dry-run and legacy-state fallback.  Fresh real installs persist the
         # exact list before this block is reconciled.
         [ "${CODEX_PREEXIST_IMPL:-0}" -eq 1 ] || printf '.codex/agents/implementer.toml\n'
+        [ "${CODEX_PREEXIST_IMPL_HEAVY:-0}" -eq 1 ] || printf '.codex/agents/implementer-heavy.toml\n'
         [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
         printf '.codex/.domestique/\n'
         [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
@@ -1599,6 +1641,7 @@ claude|.claude/.domestique|.claude/agents/reviewer.md|emit_reviewer
 claude|.claude/.domestique|.claude/commands/decompose.md|emit_decompose
 claude|.claude/.domestique|.claude/commands/goal.md|emit_goal
 codex|.codex/.domestique|.codex/agents/implementer.toml|emit_codex_implementer
+codex|.codex/.domestique|.codex/agents/implementer-heavy.toml|emit_codex_implementer_heavy
 codex|.codex/.domestique|.codex/agents/reviewer.toml|emit_codex_reviewer
 codex|.codex/.domestique|.agents/skills/domestique/SKILL.md|emit_codex_skill
 codex|.codex/.domestique|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
@@ -1893,12 +1936,14 @@ CODEX_GUEST_SELECTED=0
 # Preserve the pre-install visibility of existing untracked Codex-owned
 # paths: guest exclude hides only files domestique is creating itself.
 CODEX_PREEXIST_IMPL=0
+CODEX_PREEXIST_IMPL_HEAVY=0
 CODEX_PREEXIST_REVIEWER=0
 CODEX_PREEXIST_BASE_SKILL=0
 CODEX_PREEXIST_DECOMPOSE_SKILL=0
 CODEX_PREEXIST_GOAL_SKILL=0
 CODEX_PREEXIST_GOAL_META=0
 [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] && ! codex_exclude_was_owned '.codex/agents/implementer.toml' && CODEX_PREEXIST_IMPL=1
+[ -e "$TARGET_DIR/.codex/agents/implementer-heavy.toml" ] && ! codex_exclude_was_owned '.codex/agents/implementer-heavy.toml' && CODEX_PREEXIST_IMPL_HEAVY=1
 [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] && ! codex_exclude_was_owned '.codex/agents/reviewer.toml' && CODEX_PREEXIST_REVIEWER=1
 [ -e "$TARGET_DIR/.agents/skills/domestique/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique/SKILL.md' && CODEX_PREEXIST_BASE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-decompose/SKILL.md' && CODEX_PREEXIST_DECOMPOSE_SKILL=1

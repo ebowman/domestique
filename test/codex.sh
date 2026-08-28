@@ -129,6 +129,7 @@ FAKE_BD
 }
 
 IMPL_REL=".codex/agents/implementer.toml"
+IMPL_HEAVY_REL=".codex/agents/implementer-heavy.toml"
 REVIEWER_REL=".codex/agents/reviewer.toml"
 BASE_SKILL_REL=".agents/skills/domestique/SKILL.md"
 DECOMPOSE_SKILL_REL=".agents/skills/domestique-decompose/SKILL.md"
@@ -182,6 +183,14 @@ scenario_agent_toml() {
   check "reviewer effort high" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"high"' "$t/$REVIEWER_REL"
   check "reviewer is not forced read-only" bash -c '! grep -Eq '\''^sandbox_mode[[:space:]]*=[[:space:]]*"read-only"'\'' "$1"' _ "$t/$REVIEWER_REL"
   check "reviewer forbids source edits" grep -Eqi 'do not (edit|modify)|never (edit|modify)|must not (edit|modify)' "$t/$REVIEWER_REL"
+
+  check "implementer-heavy TOML created" test -f "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy name field" grep -Eq '^name[[:space:]]*=[[:space:]]*"implementer-heavy"' "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy model gpt-5.6" grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6"' "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy effort high" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"high"' "$t/$IMPL_HEAVY_REL"
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import tomllib' >/dev/null 2>&1; then
+    check "implementer-heavy is valid TOML" python3 -c 'import pathlib,tomllib,sys; tomllib.loads(pathlib.Path(sys.argv[1]).read_text())' "$t/$IMPL_HEAVY_REL"
+  fi
   check "orchestrator policy has pre/post diff guard" bash -c '
     grep -Eqi "fingerprint|before and after|pre.review|post.review|diff guard" "$1" "$2"
   ' _ "$t/AGENTS.md" "$t/$BASE_SKILL_REL"
@@ -210,6 +219,8 @@ scenario_skill_metadata() {
   check "decompose skill has description" grep -Eq '^description:[[:space:]]*[^[:space:]]' "$t/$DECOMPOSE_SKILL_REL"
   check "goal skill has description" grep -Eq '^description:[[:space:]]*[^[:space:]]' "$t/$GOAL_SKILL_REL"
   check "goal is explicit-only" grep -Eq '^[[:space:]]*allow_implicit_invocation:[[:space:]]*false[[:space:]]*$' "$t/$GOAL_META_REL"
+  check "base skill mentions impl:heavy routing" grep -qF "impl:heavy" "$t/$BASE_SKILL_REL"
+  check "decompose skill mentions impl:heavy routing" grep -qF "impl:heavy" "$t/$DECOMPOSE_SKILL_REL"
 }
 
 # ---------------------------------------------------------------------------
@@ -393,6 +404,35 @@ scenario_codex_local_edit_and_upgrade_conflict() {
   check "conflict .new retains local side" grep -qF "$local_line" "$t/$IMPL_REL.new"
   check "conflict .new includes upstream side" grep -qF "$upstream_line" "$t/$IMPL_REL.new"
   check "conflict backup emitted" bash -c 'compgen -G "$1.bak.*" >/dev/null' _ "$t/$IMPL_REL"
+}
+
+# ---------------------------------------------------------------------------
+# Scenario 9b: upgrading a pre-0.2.0 Codex install (before implementer-heavy
+# existed) must add .codex/agents/implementer-heavy.toml without disturbing
+# the existing implementer.toml.
+# ---------------------------------------------------------------------------
+scenario_codex_upgrade_adds_implementer_heavy() {
+  local t="$WORKROOT/s9b"; mkdir -p "$t"
+  local old_dom="$WORKROOT/dom-0.1.0.sh"
+  local rc out
+
+  if ! git -C "$REPO_DIR" show 8fa849c:domestique.sh > "$old_dom" 2>/dev/null; then
+    check "fetched pre-0.2.0 domestique.sh from git" false
+    return
+  fi
+  chmod +x "$old_dom"
+
+  "$old_dom" "$t" --platform codex >/dev/null 2>&1; rc=$?
+  check "pre-0.2.0 install exits 0" test "$rc" -eq 0
+  check "pre-0.2.0 install created implementer.toml" test -f "$t/$IMPL_REL"
+  check "pre-0.2.0 install has no implementer-heavy.toml" test ! -e "$t/$IMPL_HEAVY_REL"
+
+  out="$("$DOM" "$t" --platform codex 2>&1)"; rc=$?
+  check "upgrade exits 0" test "$rc" -eq 0
+  check "upgrade adds implementer-heavy.toml" test -f "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy name field" grep -Eq '^name[[:space:]]*=[[:space:]]*"implementer-heavy"' "$t/$IMPL_HEAVY_REL"
+  check "implementer-heavy model field" grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6"' "$t/$IMPL_HEAVY_REL"
+  check "upgrade retains implementer.toml" test -f "$t/$IMPL_REL"
 }
 
 # ---------------------------------------------------------------------------
@@ -656,6 +696,7 @@ run_scenario "Codex idempotency + dry run"                scenario_idempotency_a
 run_scenario "persisted platform selection"               scenario_persisted_platform_selection
 run_scenario "no Claude leakage in Codex-only install"    scenario_no_claude_leakage
 run_scenario "Codex local edit + upgrade conflict"        scenario_codex_local_edit_and_upgrade_conflict
+run_scenario "Codex upgrade adds implementer-heavy.toml"  scenario_codex_upgrade_adds_implementer_heavy
 run_scenario "Codex uninstall round trip + scope"         scenario_codex_uninstall_roundtrip_and_scope
 run_scenario "guest scoped uninstall exact excludes"      scenario_guest_scoped_uninstall_exact_excludes
 run_scenario "beads provider routing"                     scenario_beads_provider_routing

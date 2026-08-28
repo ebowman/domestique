@@ -64,6 +64,7 @@ a platform record implies that provider.
     AGENTS.md.block                      # normal mode, when AGENTS.md is active
     AGENTS.override.md.block             # normal mode, when the override is active
     .codex/agents/implementer.toml
+    .codex/agents/implementer-heavy.toml
     .codex/agents/reviewer.toml
     .agents/skills/domestique/SKILL.md
     .agents/skills/domestique-decompose/SKILL.md
@@ -93,7 +94,7 @@ a `jq`/`yq` dependency in a `bash + git + coreutils` script.
 
 ```
 snapshot_format=1
-domestique_version=<DOMESTIQUE_VERSION, e.g. 0.1.0>
+domestique_version=<DOMESTIQUE_VERSION, e.g. 0.2.0>
 installed_ref=<git describe/short-sha of domestique.sh's own repo, or "unknown">
 installed_at=<ISO8601 timestamp>
 script_sha256=<sha256 of domestique.sh, or "unavailable">
