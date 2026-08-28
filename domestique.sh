@@ -27,7 +27,7 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 
 ## Roles
 - **You (main session, planning model):** decompose work, hold the plan, delegate implementation and review, adjudicate the results, decide what's next. Write code yourself only for trivial one-line edits.
-- **`implementer` subagent (Sonnet):** executes one bounded task at a time in its own context and reports back a summary.
+- **`implementer` subagent (Sonnet; a bead labeled model:opus routes that dispatch to Opus):** executes one bounded task at a time in its own context and reports back a summary.
 - **`reviewer` subagent (Opus):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. A stronger, non-peer check than the implementer. Does not fix anything; reviewing is its only job.
 
 ## Work tracking: beads
@@ -44,7 +44,7 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 
 ## Delegation loop
 1. `bd ready` → pick the highest-priority unblocked task.
-2. Delegate it to the `implementer` subagent with a precise brief and the bead id.
+2. Delegate it to the `implementer` subagent with a precise brief and the bead id. Before dispatching, check `bd label list <id>`; if `model:opus` is present, pass a model override of opus on the implementer dispatch, otherwise use the default (Sonnet).
 3. When the implementer returns, delegate verification to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer inspects the real diff, reads the changed files, and runs the tests in a fresh context — judging the work against the done-criteria, not against the implementer's summary — and returns a pass/fail verdict.
 4. Adjudicate. Weigh the reviewer's verdict against the implementer's summary: if they agree the work is done, close the bead and commit its changes (one commit, bead id in the message); if the reviewer reports gaps, reopen the bead or file a follow-up and route the fix back to the implementer. Read the diff yourself only when the two reports conflict or the verdict is ambiguous — delegating the review is the point.
 5. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
@@ -153,6 +153,9 @@ Rules for a good decomposition:
 - Keep `bd ready` crisp. No vague someday-items, no research-maybe tasks, nothing not immediately actionable. If it isn't ready to be worked, it doesn't belong in the graph yet.
 - Do not implement anything. Planning only.
 
+## Model routing
+Label a task `model:opus` (bd create -l model:opus, or bd label add <id> model:opus) when ANY of: (1) foundational — it creates or reshapes what other beads build on (engine core, schema, public API, shared state model); (2) it has 2+ downstream dependents in the graph; (3) intricate logic — parsing, concurrency, state machines, edge-case-heavy algorithms; (4) cross-cutting refactor across many files. Everything else keeps the default (Sonnet). Never label epics — labels inherit to children. Sanity check: if every bead earns model:opus, the decomposition is too coarse — split until most beads are routine.
+
 When done, print the resulting graph (`bd ready` plus the epic tree) for my review before any execution.
 DOM_EOF
 }
@@ -173,7 +176,7 @@ For each cycle:
 1. `bd ready` scoped to epic $ARGUMENTS — pick the highest-priority unblocked task. If none, the epic is done; go to Completion below.
 2. Assert a clean working tree before starting the bead. If it's dirty, stop and report — do not paper over it.
 3. Claim it and mark in_progress (`bd update <id> --claim`).
-4. Dispatch to the `implementer` subagent with a precise brief built from the bead's description, input/output, and done-criteria.
+4. Dispatch to the `implementer` subagent with a precise brief built from the bead's description, input/output, and done-criteria. Before dispatching, check `bd label list <id>`; if `model:opus` is present, pass a model override of opus on this dispatch, otherwise use the default (Sonnet).
 5. Dispatch to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer must run the full test suite and inspect the real diff every time — never trust the implementer's summary in place of that.
 6. Adjudicate:
    - Reviewer PASS → `git add -A` and commit, message including the bead id, one bead per commit (never batch). Then `bd close <id>`.
