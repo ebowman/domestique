@@ -94,7 +94,7 @@ a `jq`/`yq` dependency in a `bash + git + coreutils` script.
 
 ```
 snapshot_format=1
-domestique_version=<DOMESTIQUE_VERSION, e.g. 0.1.0>
+domestique_version=<DOMESTIQUE_VERSION, e.g. 0.2.0>
 installed_ref=<git describe/short-sha of domestique.sh's own repo, or "unknown">
 installed_at=<ISO8601 timestamp>
 script_sha256=<sha256 of domestique.sh, or "unavailable">
