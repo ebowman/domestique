@@ -24,8 +24,8 @@ Options:
   --dry-run            Only show the preview; do not apply.
   --force              Pass through to domestique.sh (discard local edits,
                         take upstream verbatim; see domestique.sh --help).
-  --platform <value>   Pass through the install platform: claude, codex, or
-                        both. When omitted, domestique.sh reuses its persisted
+  --platform <value>   Pass through the install platform: claude, codex,
+                        copilot, both, or all. When omitted, domestique.sh reuses its persisted
                         platform set (or defaults to Claude on a first run).
   --guest              Pass through to domestique.sh. Claude uses
                         CLAUDE.local.md; Codex uses skills-only guest mode and
@@ -81,8 +81,8 @@ done
 TARGET_DIR="${TARGET_DIR:-.}"
 
 case "$PLATFORM" in
-  ""|claude|codex|both) : ;;
-  *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, or both)" >&2; exit 2 ;;
+  ""|claude|codex|copilot|both|all) : ;;
+  *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, copilot, both, or all)" >&2; exit 2 ;;
 esac
 
 WORK_DIR="$(mktemp -d)"
