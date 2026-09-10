@@ -549,7 +549,7 @@ changed. `main` remains unchanged; this plan neither merges/pushes draft PR
 this contract: global and local are distribution scopes, not normal versus
 guest modes.
 
-**hq-b3q.3 checkpoint:** only explicit `--global` install/update is now
+**CLI checkpoint:** only explicit `--global` install/update is now
 implemented from this contract. Legacy bare/positional installs and the legacy
 updater remain project operations, unchanged; they are **not yet** the private
 local operation specified below. `--local`, state-only, migration, and global
@@ -557,6 +557,149 @@ uninstall remain future work and are refused. Global accepts all seven sets
 below, including the two composite spellings; legacy selection is unchanged.
 The updater validates global scope/options before fetching, forwards no `.`
 target, and does not apply after a failed global preview.
+
+#### hq-b3q.4 internal local safety checkpoint (not a local install CLI)
+
+`domestique.sh` now embeds the following ordinary Bash functions **before
+`usage()`**, so the existing extract-before-usage test/consumer pattern can
+load them without running main. No successful `--local` operation, dummy
+role, new default behavior, or compatibility CLI switch is introduced.
+Legacy normal/guest execution, including its historical limitations, remains
+unchanged. The new fail-closed rules apply to these internal APIs only.
+
+* `local_preflight TARGET PROVIDERS [check|migrate]` is entirely read-only.
+  It resolves an existing exact physical Git top-level, checks the required
+  global core using the embedded trusted API-1 resolver and global ownership
+  checks, validates local state and all six reserved native local leaves,
+  classifies all three legacy provider inventories, and plans shared excludes.
+  `PROVIDERS` accepts the seven canonical sets or `none`; existing native
+  ownership is unioned into the requested inventory. `check` is the default
+  and refuses active legacy authority. `migrate` only plans positively
+  created, unchanged, untracked legacy removals; it does not perform them.
+  `FORCE`/`DRY_RUN` environment variables confer no authority.
+* Successful preflight returns metadata in `L_ROOT`, `L_CORE`, `L_RELEASE`,
+  `L_WANT` (repo-relative native leaves), `L_REMOVE`/`L_REMOVE_HASH`
+  (absolute legacy leaves and digests), `L_LEGACY` (provider:normal/guest
+  evidence), `L_COMMON`, `L_WORKTREES`, `L_EXCLUDE`, `L_EXCLUDE_BEFORE`
+  (digest, or empty for absent), and `L_EXCLUDE_AFTER` (prospective exclude
+  bytes). Arrays after a failure are **not a plan**. `M_*` variables are
+  scratch manifest results, not target receipts. No live native content is
+  placed in a plan, snapshot, backup, conflict file, or diagnostic.
+* `local_manifest_read ROOT` validates format-1 state and actual owned
+  native bytes; `local_inventory`, `local_selected`, `local_pattern`, and
+  `local_exclude_plan` are shared helpers. Call preflight first to initialize
+  the inventory and target. A consumer may filter `L_WANT` to a role subset
+  and replan, but must repeat all preflight checks before publication.
+* `local_migrate TARGET PROVIDERS [DRY]` is the explicit cleanup operation;
+  `DRY` is exactly `0` (default) or `1`. It preflights **every** proposed
+  change before removal and repeats full preflight before each leaf removal.
+  It removes only proven eligible leaves, retaining original legacy
+  snapshots, provenance, directories, and exclusion bytes in place.
+  Interruption/removal failure reports nonzero `PARTIAL`, never rollback or
+  installation success. Stop other writers and inspect the named paths and
+  retained metadata manually before retrying. There is no live-content
+  recovery copy or inferred ownership of a remaining leaf.
+* `local_exclude_apply TARGET PROVIDERS [DRY [check|migrate]]` replans and
+  revalidates, then publishes only the exclude file with a same-directory
+  private stage and rename. Real apply requires an **already valid owned
+  local manifest and all requested actual native leaves**; fresh preflight
+  is not an installation and cannot be passed off as one by calling apply.
+  A byte-identical exclude is not rewritten. Dry-run does not create a
+  stage, lock, state directory, or any other file. This is an existing-owned
+  attachment primitive: `.5` still owns fresh adapter/state publication,
+  routing receipt emission, role selection, and compatibility CLI wiring.
+
+**Implemented local format 1.** The six singleton LF-terminated header
+lines are, in order, `format=1`, `scope=local`,
+`worktree_root=<physical-root>`, `core_root=<canonical-absolute-root>`,
+`core_api=1`, `providers=<set-or-none>`. Adjacent `created`/`baseline`
+pairs follow. As with the implemented global HOME-relative format, local
+native record paths include their native prefix, but are **repo-relative**:
+for example
+`created=codex:.codex/agents/domestique-codex-local-implementer.toml:<sha256>`.
+Only the six exact local table leaves are allowed. Either role subset is
+valid; every listed provider must have at least one pair. `none` has no
+native pairs. Digests are 64 lowercase hex characters, creation digest and
+current generated baseline are distinct metadata, and the live leaf must
+match its baseline. Byte equality without `created` is not ownership.
+Raw-byte validation precedes line parsing (including reused global metadata
+parsers), so Bash cannot silently discard NULs into apparent ownership.
+Parsing also re-emits and byte-compares the manifest, rejecting truncated
+lines, unknown/duplicate keys, unpaired records, paths outside the inventory,
+root mismatches, and invalid provider sets.
+
+The state-tree inventory currently allows only `manifest`, optional
+`routing/`, and the provider receipts specified below, validated against
+the corresponding native records in manifest order. Missing receipts are
+not invented: `.5` decides installation/routing completeness. Unknown
+private entries (including not-yet-supported Beads or recovery formats)
+refuse, even with force. `.6` must extend bounded metadata validation and
+exact subtree accounting before its proven-owned `.beads/` subtrees can be
+accepted; this checkpoint cannot hide `.beads/` wholesale or treat mere
+presence as ownership/readiness.
+
+**Legacy evidence and limits.** Main's snapshot-format-1 manifests and
+draft #11's per-provider layout are parsed, not sourced. Claude snapshots
+provide no whole-leaf creation authority and therefore cannot authorize
+automatic removal. Codex's explicit `guest-excludes` native entries and
+Copilot's immutable `created-files` are creation records, separately from
+their pristine bases. A mode file, if present, must be exactly `guest\n`.
+Absent mode is only a classification of historical normal evidence, never
+permission for normal writes. Normal root blocks remain blockers unless
+whole-leaf creation is recorded and the **entire leaf** equals its
+marker-wrapped baseline. There is no block-stripping authorization for a
+file containing host text. Unmarked, unrecorded host policy is not a
+collision. Edited, adopted, indexed, symlinked, malformed, or ambiguous
+legacy assets require metadata-only manual resolution. The manifest and
+creation records are trusted owner-controlled provenance, not a defense
+against an owner maliciously forging all their own records.
+Legacy manifests, provider/mode records, and creation evidence must be
+NUL-free and LF-terminated before parsing. Policy marker inspection also
+rejects NULs; an unmarked host policy need not have a final LF.
+
+**Shared exclusion policy.** Git's actual NUL-delimited worktree listing is
+read once per plan with checked status; every physical worktree and common
+directory is verified. The new block is bounded by
+`# BEGIN domestique private (format=1)` / `# END domestique private` and
+contains only the union of exact root-anchored native patterns and
+`/.domestique-private/`. Ownership comes from current worktree manifests,
+not a home registry, lease, or the mere presence of a pattern. Every existing
+block pattern needs an actual owning attachment. All candidate patterns
+are checked against every worktree: same-path owned attachments are allowed;
+an existing/indexed host collision, missing/unreadable/malformed state,
+unavailable worktree, or unknown shared block refuses the whole operation.
+Index checks include every repo-bounded ancestor object of native, legacy,
+and private-state paths, even if a regular file, symlink, or gitlink has
+been deleted on disk. Ancestor directory contents are not ancestor objects:
+unrelated tracked siblings remain allowed. All index pathspecs are literal.
+Other attachments' exact patterns are retained. Literal Git metacharacters
+are escaped by `local_pattern`. `local_ignore_effective` checks Git's real
+ignore precedence using a read-only synthetic global exclude; conflicting
+repository `.gitignore` negations refuse instead of promising privacy that
+`info/exclude` cannot provide. Existing info-exclude negations can also cause
+a conservative refusal. Relevant ancestor ignore files are checked for
+readability and symlink collisions, never edited.
+
+Unknown preexisting rules outside managed blocks stay in place and are never
+adopted or deleted. The line-based exclude API refuses NULs or a missing
+final LF before any write, rather than lossily reconstructing host text;
+other host bytes (including non-UTF8 bytes) are preserved exactly.
+Well-formed legacy blocks containing only known exact
+native rules (and the old exact Codex metadata tree) are preserved unchanged,
+not claimed as new ownership. Broad legacy `.claude/`, `.beads/`, or other
+unknown rules **inside legacy blocks refuse**: this checkpoint cannot prove
+all retained recovery assets and therefore does not narrow them automatically.
+Resolve those old blocks manually only after accounting for retained assets
+and every linked worktree. No shared common-dir lock can promise visibility
+isolation for future host files at the same relative path. These checks prove
+the current inventory only; stop other writers, and rerun accounting after
+worktree/state changes. Publication is bounded shell revalidation, not an
+atomic transaction against hostile same-user filesystem mutation.
+
+`bash test/local-preflight.sh` exercises these functions in physical temporary
+HOME/core/repos, including actual legacy installer fixtures and linked
+worktrees. No network, model/native client, real-home install, or successful
+local CLI discovery is asserted.
 
 ### Scope and command line
 

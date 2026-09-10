@@ -1435,6 +1435,593 @@ global_publish_leaf() {
 }
 
 # ---------------------------------------------------------------------------
+# Internal local lifecycle API. Not wired to the CLI until hq-b3q.5.
+# All planning is read-only (including no locks/staging); arrays contain paths
+# and digests only. Callers must check status, not treat partial arrays as a plan.
+local_fail() {
+  printf 'domestique local: %s; stop other writers and resolve this path manually before retrying (no force/adoption).\n' "$*" >&2
+  return 1
+}
+local_path() {
+  (export LC_ALL=C; G_UID="$(id -u)"; global_path "$1" "$2") ||
+    local_fail "unsafe or inaccessible path: $1"
+}
+# Validate raw bytes BEFORE read/command substitution/line tools can discard
+# NUL (notably Bash 3.2). Other bytes are preserved by read -r; individual
+# metadata grammars impose their own restrictions. Host policies may lack LF;
+# line-record files and excludes may not. Never print offending contents.
+local_text_file() (
+  set -o pipefail
+  LC_ALL=C od -An -v -tu1 "$1" | LC_ALL=C awk -v fragment="${2:-0}" '
+    { for (i=1; i<=NF; i++) { if ($i == 0) bad=1; last=$i; seen=1 } }
+    END { exit (bad || (!fragment && seen && last != 10)) }
+  ' || local_fail "NUL or unterminated text record: $1"
+)
+local_root() {
+  local input="$1" absolute walk part rest top LC_ALL=C
+  case "$input" in /*) absolute="$input";; *) absolute="$(pwd -P)/$input";; esac
+  case "$absolute" in *[=$'\001'-$'\037'$'\177']*)
+    local_fail "unserializable target: $absolute"; return 1;; esac
+  # Check components BEFORE physical resolution; cd would erase symlink evidence.
+  walk=""; rest="${absolute#/}"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"; walk="$walk/$part"
+    [ ! -L "$walk" ] || { local_fail "symlink component: $walk"; return 1; }
+    [ "$rest" = "$part" ] && rest="" || rest="${rest#*/}"
+  done
+  [ -d "$absolute" ] || { local_fail "target does not exist as a directory: $absolute (supply an existing Git top-level; no git init)"; return 1; }
+  L_ROOT="$(cd "$absolute" && pwd -P)" || return 1
+  local_path "$L_ROOT" "$L_ROOT" || return 1
+  top="$(git -C "$L_ROOT" rev-parse --show-toplevel 2>/dev/null)" ||
+    { local_fail "not a Git worktree: $L_ROOT (supply an existing Git top-level)"; return 1; }
+  [ "$top" = "$L_ROOT" ] ||
+    { local_fail "not the exact Git top-level: $L_ROOT (use $top)"; return 1; }
+}
+local_untracked() (
+  set -o pipefail
+  local root="$1" candidate="$2" exact=0
+  while :; do
+    # The destination excludes its entire subtree. Ancestors only collide
+    # when they are index OBJECTS, not directories with unrelated host leaves.
+    # NUL framing and literal pathspecs preserve arbitrary indexed filenames.
+    git -C "$root" ls-files -z -- ":(literal)$candidate" | (
+      local indexed=""
+      while IFS= read -r -d '' indexed; do
+        if [ "$exact" = 0 ] || [ "$indexed" = "$candidate" ]; then
+          local_fail "tracked/indexed destination or ancestor: $root/$candidate"
+          exit 1
+        fi
+      done
+      [ -z "$indexed" ]
+    ) || { local_fail "index validation failed: $root/$candidate"; return 1; }
+    case "$candidate" in */*) candidate="${candidate%/*}"; exact=1;; *) break;; esac
+  done
+)
+local_core() {
+  L_CORE="${DOMESTIQUE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/domestique}"
+  local_path "$L_CORE" "$L_CORE" || return 1
+  (
+    set -o pipefail
+    G_ROOT="$L_CORE"; G_UID="$(id -u)"
+    global_no_repo "$G_ROOT"
+    G_C=0; G_X=0; G_P=0; G_KEYS=(); G_CREATED=(); G_BASE=()
+    for p in state state/global-manifest state/pending bin bin/resolve-core active releases; do
+      global_path "$G_ROOT/$p" "$G_ROOT"
+    done
+    [ ! -e "$G_ROOT/state/pending" ] || global_fail "pending global publication"
+    local_text_file "$G_ROOT/state/global-manifest" || exit 1
+    global_read_manifest
+    G_SET="$G_OLD_SET"
+    cmp -s "$G_ROOT/state/global-manifest" <(global_manifest) ||
+      global_fail "noncanonical global-manifest"
+    # The reused global inventory parser is newline-based: prove each actual
+    # filesystem path serializable before allowing that parser to see it.
+    find "$G_ROOT" -mindepth 1 -print0 | (
+      while IFS= read -r -d '' p; do local_path "$p" "$G_ROOT" || exit 1; done
+    ) || exit 1
+    global_check_core_tree
+    global_index core:bin/resolve-core
+    [ "$G_INDEX" != -1 ] && [ -f "$G_ROOT/bin/resolve-core" ] ||
+      global_fail "missing owned resolver"
+    [ "$(global_hash < "$G_ROOT/bin/resolve-core")" = "${G_BASE[G_INDEX]}" ] ||
+      global_fail "edited resolver"
+  ) || { local_fail "invalid required global core: $L_CORE (repair with explicit --global separately)"; return 1; }
+  local_path "$L_CORE/active" "$L_CORE" && local_text_file "$L_CORE/active" || return 1
+  # Execute only the embedded trusted resolver, never installed code.
+  # shellcheck disable=SC2034 # Public preflight binding for the .5 consumer.
+  L_RELEASE="$(bash <(emit_private_core_resolver) bind "$L_CORE" orchestrator)" ||
+    { local_fail "cannot bind API-1 core: $L_CORE (repair global installation separately)"; return 1; }
+}
+local_inventory() {
+  local provider role prefix ext
+  for provider in claude codex copilot; do
+    case "$provider" in claude) prefix=.claude; ext=md;;
+      codex) prefix=.codex; ext=toml;; copilot) prefix=.github; ext=agent.md;; esac
+    for role in implementer reviewer; do
+      printf '%s:%s/agents/domestique-%s-local-%s.%s\n' "$provider" "$prefix" "$provider" "$role" "$ext"
+    done
+  done
+}
+local_selected() {
+  case "$1:$2" in
+    all:*|claude:claude|codex:codex|copilot:copilot|both:claude|both:codex|claude-copilot:claude|claude-copilot:copilot|codex-copilot:codex|codex-copilot:copilot) return 0;;
+    *) return 1;;
+  esac
+}
+local_set_valid() {
+  case "$1" in none|claude|codex|copilot|both|claude-copilot|codex-copilot|all) return 0;;
+    *) local_fail "invalid local providers: $1";;
+  esac
+}
+local_contains() {
+  local wanted="$1" item; shift
+  for item in "$@"; do [ "$item" != "$wanted" ] || return 0; done
+  return 1
+}
+# Format 1: ordered six-line header, then adjacent created/baseline pairs.
+# Paths in this implementation are repo-relative exact native leaves, as in
+# global format 1's HOME-relative records. A subset of either role is valid.
+local_manifest_read() {
+  local LC_ALL=C
+  local root="$1" file="$1/.domestique-private/manifest"
+  local line="" n=0 key value digest previous="" path item allowed provider id roles
+  M_KEYS=(); M_CREATED=(); M_BASE=(); M_SET=none; M_CORE=""
+  local_path "$root/.domestique-private" "$root" || return 1
+  local_untracked "$root" .domestique-private || return 1
+  [ -e "$root/.domestique-private" ] || return 0
+  local_path "$file" "$root" || return 1
+  [ -f "$file" ] || { local_fail "missing local manifest: $file"; return 1; }
+  local_text_file "$file" || return 1
+  while IFS= read -r line; do
+    n=$((n + 1))
+    case "$line" in *'='*'='*|*[$'\001'-$'\037'$'\177']*) local_fail "malformed local manifest: $file"; return 1;; esac
+    case "$n" in
+      1) [ "$line" = format=1 ] || break;;
+      2) [ "$line" = scope=local ] || break;;
+      3) [ "$line" = "worktree_root=$root" ] || break;;
+      4) case "$line" in core_root=/*) M_CORE="${line#core_root=}";; *) break;; esac
+         local_path "$M_CORE" "$M_CORE" || return 1;;
+      5) [ "$line" = core_api=1 ] || break;;
+      6) case "$line" in providers=*) M_SET="${line#providers=}";; *) break;; esac
+         local_set_valid "$M_SET" || return 1;;
+      *)
+        key="${line%%=*}"; value="${line#*=}"; digest="${value##*:}"; value="${value%:*}"
+        global_digest_valid "$digest" || break
+        local_contains "$value" "${L_INVENTORY[@]}" || break
+        local_selected "$M_SET" "${value%%:*}" || break
+        case "$key" in
+          created)
+            [ -z "$previous" ] || break
+            if local_contains "$value" ${M_KEYS[@]+"${M_KEYS[@]}"}; then break; fi
+            M_KEYS+=("$value"); M_CREATED+=("$digest"); previous="$value";;
+          baseline)
+            [ -n "$previous" ] && [ "$previous" = "$value" ] || break
+            M_BASE+=("$digest"); previous="";;
+          *) break;;
+        esac;;
+    esac
+  done < "$file"
+  [ "$n" -ge 6 ] && [ -z "$line" ] && [ -z "$previous" ] ||
+    { local_fail "corrupt local manifest: $file"; return 1; }
+  cmp -s "$file" <(
+    printf 'format=1\nscope=local\nworktree_root=%s\ncore_root=%s\ncore_api=1\nproviders=%s\n' "$root" "$M_CORE" "$M_SET"
+    for ((n=0; n<${#M_KEYS[@]}; n++)); do
+      printf 'created=%s:%s\nbaseline=%s:%s\n' "${M_KEYS[n]}" "${M_CREATED[n]}" "${M_KEYS[n]}" "${M_BASE[n]}"
+    done
+  ) || { local_fail "noncanonical local manifest bytes: $file"; return 1; }
+  for provider in claude codex copilot; do
+    if local_selected "$M_SET" "$provider"; then
+      allowed=0
+      for key in ${M_KEYS[@]+"${M_KEYS[@]}"}; do [ "${key%%:*}" != "$provider" ] || allowed=1; done
+      [ "$allowed" = 1 ] || { local_fail "provider without native records: $file"; return 1; }
+    fi
+  done
+  for ((n=0; n<${#M_KEYS[@]}; n++)); do
+    path="$root/${M_KEYS[n]#*:}"
+    local_path "$path" "$root" && local_untracked "$root" "${M_KEYS[n]#*:}" || return 1
+    [ -f "$path" ] && [ "$(global_hash < "$path")" = "${M_BASE[n]}" ] ||
+      { local_fail "missing or edited owned native leaf: $path"; return 1; }
+  done
+  # State-tree ownership is bounded too. Unknown recovery/Beads formats are
+  # deliberately refused until their consumer defines and validates them.
+  find "$root/.domestique-private" -mindepth 1 -print0 | (
+  while IFS= read -r -d '' path; do
+    local_path "$path" "$root" || return 1
+    case "$path" in
+      "$file") ;;
+      "$root/.domestique-private/routing") [ -d "$path" ] || return 1;;
+      "$root/.domestique-private/routing/"*.receipt)
+        provider="${path##*/}"; provider="${provider%.receipt}"
+        local_selected "$M_SET" "$provider" ||
+          { local_fail "unowned routing receipt: $path"; return 1; }
+        roles=""
+        for item in ${M_KEYS[@]+"${M_KEYS[@]}"}; do
+          [ "${item%%:*}" = "$provider" ] || continue
+          id="${item##*/}"; id="${id%%.*}"
+          roles="${roles}role=$id"$'\n'
+        done
+        cmp -s "$path" <(printf 'format=1\nworktree_root=%s\nprovider=%s\ncore_root=%s\ncore_api=1\n%s' "$root" "$provider" "$M_CORE" "$roles") ||
+          { local_fail "invalid routing receipt: $path"; return 1; };;
+      *) local_fail "unknown private state entry: $path"; return 1;;
+    esac
+  done
+  ) || { local_fail "invalid/unreadable private inventory: $root/.domestique-private"; return 1; }
+}
+local_legacy_inventory() {
+  case "$1" in
+    claude) printf '%s\n' .claude/agents/implementer.md .claude/agents/reviewer.md .claude/commands/decompose.md .claude/commands/goal.md CLAUDE.md CLAUDE.local.md;;
+    codex) printf '%s\n' .codex/agents/implementer.toml .codex/agents/reviewer.toml .agents/skills/domestique/SKILL.md .agents/skills/domestique-decompose/SKILL.md .agents/skills/domestique-goal/SKILL.md .agents/skills/domestique-goal/agents/openai.yaml AGENTS.md AGENTS.override.md;;
+    copilot) printf '%s\n' .github/agents/domestique-implementer.agent.md .github/agents/domestique-reviewer.agent.md .github/skills/domestique/SKILL.md .github/skills/domestique-decompose/SKILL.md .github/skills/domestique-goal/SKILL.md .github/copilot-instructions.md;;
+  esac
+}
+local_policy_path() {
+  case "$1" in CLAUDE.md|CLAUDE.local.md|AGENTS.md|AGENTS.override.md|.github/copilot-instructions.md) return 0;; *) return 1;; esac
+}
+local_policy_sane() {
+  awk -v begin="$MARKER_BEGIN" -v end="$MARKER_END" '
+    /[Bb][Ee][Gg][Ii][Nn] domestique/ { if ($0 != begin || b++ || e) bad=1 }
+    /[Ee][Nn][Dd] domestique/ { if ($0 != end || e++ || !b) bad=1 }
+    END { exit (bad || b != 1 || e != 1) }
+  ' "$1" || local_fail "malformed legacy policy markers: $1"
+}
+# Legacy snapshots are merge bases, NOT creation evidence. Claude has no
+# trustworthy created-file record; Codex guest-excludes and Copilot's immutable
+# created-files are the only supported creation records from main/draft #11.
+local_legacy() {
+  local root="$1" migration="$2" provider prefix state path rel line="" n files item record base policy mode evidence metadata
+  local inventory=() listed=() created=()
+  for provider in claude codex copilot; do
+    case "$provider" in claude) prefix=.claude;; codex) prefix=.codex;; copilot) prefix=.github;; esac
+    state="$root/$prefix/.domestique"; inventory=(); listed=(); created=(); evidence=0; mode=normal
+    while IFS= read -r rel; do inventory+=("$rel"); done < <(local_legacy_inventory "$provider")
+    local_path "$state" "$root" && local_untracked "$root" "$prefix/.domestique" || return 1
+    if [ -e "$state" ]; then
+      find "$state" -print0 | (
+        while IFS= read -r -d '' item; do local_path "$item" "$root" || exit 1; done
+      ) || { local_fail "unreadable/unsafe legacy state: $state"; return 1; }
+      if [ -e "$state/platforms" ]; then
+        local_text_file "$state/platforms" || return 1
+        item="$(cat "$state/platforms")"
+        case "$item" in claude|codex|copilot|both|claude,copilot|codex,copilot|all) ;;
+          *) local_fail "corrupt legacy provider state: $state/platforms"; return 1;; esac
+        cmp -s "$state/platforms" <(printf '%s\n' "$item") ||
+          { local_fail "malformed legacy provider state: $state/platforms"; return 1; }
+      fi
+      local_path "$state/manifest" "$root" || return 1
+      [ -f "$state/manifest" ] || { local_fail "legacy state without manifest: $state"; return 1; }
+      local_text_file "$state/manifest" || return 1
+      n=0; files=""; metadata=""
+      while IFS= read -r line; do
+        n=$((n + 1))
+        case "$line" in *'='*'='*|*[$'\001'-$'\037'$'\177']*) break;; esac
+        case "$n:$line" in
+          1:snapshot_format=1|2:platform="$provider"|3:domestique_version=?*|4:installed_ref=?*|5:installed_at=?*) ;;
+          6:script_sha256=*) [ "${line#*=}" = unavailable ] || global_digest_valid "${line#*=}" || break;;
+          7:files=*) files="${line#files=}";;
+          *) break;;
+        esac
+        metadata="${metadata}${line}"$'\n'
+      done < "$state/manifest"
+      [ "$n" = 7 ] && [ -z "$line" ] && [ -n "$files" ] ||
+        { local_fail "malformed legacy manifest: $state/manifest"; return 1; }
+      cmp -s "$state/manifest" <(printf '%s' "$metadata") ||
+        { local_fail "noncanonical legacy manifest: $state/manifest"; return 1; }
+      case "$files" in *,) local_fail "trailing legacy inventory separator: $state/manifest"; return 1;; esac
+      while [ -n "$files" ]; do
+        rel="${files%%,*}"
+        local_contains "$rel" "${inventory[@]}" && ! local_contains "$rel" ${listed[@]+"${listed[@]}"} ||
+          { local_fail "invalid legacy inventory: $state/manifest"; return 1; }
+        listed+=("$rel")
+        [ "$files" = "$rel" ] && files="" || files="${files#*,}"
+      done
+      local_path "$state/mode" "$root" || return 1
+      if [ -e "$state/mode" ]; then
+        local_text_file "$state/mode" || return 1
+        cmp -s "$state/mode" <(printf 'guest\n') ||
+          { local_fail "corrupt legacy mode: $state/mode"; return 1; }
+        mode=guest
+      fi
+      record=""
+      case "$provider" in codex) record="$state/guest-excludes";; copilot) record="$state/created-files";; esac
+      if [ -n "$record" ]; then
+        local_path "$record" "$root" || return 1
+        if [ -e "$record" ]; then
+          [ -f "$record" ] || { local_fail "invalid legacy provenance: $record"; return 1; }
+          local_text_file "$record" || return 1
+          while IFS= read -r line; do
+            # Codex's metadata-tree line is not native creation authority.
+            [ "$provider:$line" != 'codex:.codex/.domestique/' ] || continue
+            local_contains "$line" "${listed[@]}" && ! local_contains "$line" ${created[@]+"${created[@]}"} ||
+              { local_fail "malformed legacy creation record: $record"; return 1; }
+            created+=("$line")
+          done < "$record"
+          [ -z "$line" ] || { local_fail "truncated legacy provenance: $record"; return 1; }
+        fi
+      fi
+    fi
+    for rel in "${inventory[@]}"; do
+      path="$root/$rel"
+      local_path "$path" "$root" || return 1
+      policy=0; local_policy_path "$rel" && policy=1
+      if [ "$policy" = 1 ] && [ -f "$path" ]; then
+        local_text_file "$path" 1 || return 1
+        # A host policy WITHOUT any Domestique marker is not a collision.
+        if ! grep -qiE '(BEGIN|END) domestique' "$path"; then
+          if ! local_contains "$rel" ${listed[@]+"${listed[@]}"}; then continue; fi
+          local_fail "legacy policy lost its markers: $path"; return 1
+        fi
+      elif [ ! -e "$path" ]; then
+        # Indexed-but-deleted native files still collide.
+        [ "$policy" = 1 ] || local_untracked "$root" "$rel" || return 1
+        continue
+      fi
+      evidence=1
+      local_untracked "$root" "$rel" || return 1
+      [ -f "$path" ] || { local_fail "ambiguous legacy destination: $path"; return 1; }
+      [ "$migration" = migrate ] ||
+        { local_fail "active legacy $mode authority: $path (explicit migration required)"; return 1; }
+      local_contains "$rel" ${created[@]+"${created[@]}"} ||
+        { local_fail "adopted/unknown legacy creation: $path (resolve authority manually; snapshots are not ownership)"; return 1; }
+      base="$state/base/$rel"; [ "$policy" = 0 ] || base="$base.block"
+      local_path "$base" "$root" || return 1
+      [ -f "$base" ] || { local_fail "missing legacy baseline: $base"; return 1; }
+      if [ "$policy" = 1 ]; then
+        local_policy_sane "$path" || return 1
+        # Whole-leaf creation PLUS exact marker-wrapped baseline only.
+        # Never strip a block out of host text or infer whole-file authority.
+        cmp -s "$path" <(printf '%s\n' "$MARKER_BEGIN"; cat "$base"; printf '%s\n' "$MARKER_END") ||
+          { local_fail "edited/malformed or host-mixed legacy policy: $path"; return 1; }
+      else
+        cmp -s "$path" "$base" || { local_fail "edited legacy leaf: $path"; return 1; }
+      fi
+      L_REMOVE+=("$path"); L_REMOVE_HASH+=("$(global_hash < "$path")")
+    done
+    [ "$evidence" = 0 ] || L_LEGACY+=("$provider:$mode")
+  done
+}
+# Literal, root-anchored Git patterns (not shell glob patterns).
+local_pattern() {
+  local p="$1"
+  p="${p//\\/\\\\}"; p="${p//\*/\\*}"; p="${p//\?/\\?}"
+  p="${p//\[/\\[}"; p="${p//\]/\\]}"; p="${p// /\\ }"
+  printf '/%s\n' "$p"
+}
+local_common() {
+  local common
+  # Preserve trailing path newlines for validation, rather than silently
+  # resolving a different common directory after command substitution.
+  common="$(git -C "$1" rev-parse --git-common-dir && printf '.')" || return 1
+  common="${common%.}"; common="${common%$'\n'}"
+  case "$common" in /*) ;; *) common="$1/$common";; esac
+  case "$common" in *[=$'\001'-$'\037'$'\177']*)
+    local_fail "unserializable common directory for $1"; return 1;; esac
+  # Git returns .git/worktrees/../.. in some versions; check symlinks first.
+  local walk="" rest="${common#/}" part
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"; walk="$walk/$part"
+    [ ! -L "$walk" ] || { local_fail "symlinked common directory: $walk"; return 1; }
+    [ "$rest" = "$part" ] && rest="" || rest="${rest#*/}"
+  done
+  L_COMMON="$(cd "$common" && pwd -P)" || return 1
+  local_path "$L_COMMON/info/exclude" "$L_COMMON" || return 1
+}
+local_worktree_list() (
+  set -o pipefail
+  git -C "$1" worktree list --porcelain -z | (
+    record=""
+    while IFS= read -r -d '' record; do
+      case "$record" in
+        worktree\ *)
+          local_path "${record#worktree }" "${record#worktree }" || exit 1
+          printf '%s\n' "${record#worktree }";;
+        prunable*|bare) local_fail "unavailable/ambiguous shared worktree for $1"; exit 1;;
+        ''|HEAD\ *|branch\ *|detached|locked*) ;;
+        *) local_fail "unknown worktree enumeration record for $1"; exit 1;;
+      esac
+    done
+    [ -z "$record" ] || { local_fail "unterminated worktree enumeration for $1"; exit 1; }
+  )
+)
+# Test Git's real ignore precedence without creating an exclude or scratch
+# worktree. A lower-priority, read-only synthetic global exclude proves the
+# candidate is effective despite repository .gitignore rules. Existing info
+# negations may conservatively refuse too; we do not rewrite host policy.
+local_ignore_effective() {
+  local root="$1" rel="$2" pattern="$3" parent="$1" component rest="$2" probe="$2"
+  while :; do
+    local_path "$parent/.gitignore" "$root" || return 1
+    [ ! -e "$parent/.gitignore" ] || [ -f "$parent/.gitignore" ] ||
+      { local_fail "invalid ignore policy: $parent/.gitignore"; return 1; }
+    case "$rest" in */*) component="${rest%%/*}"; rest="${rest#*/}"; parent="$parent/$component";;
+      *) break;;
+    esac
+  done
+  [ "$rel" != .domestique-private ] || probe="$rel/manifest"
+  git -C "$root" -c core.excludesFile=<(printf '%s\n' "$pattern") check-ignore -q --no-index -- "$probe" ||
+    { local_fail "exact exclusion ineffective against existing Git ignore policy: $root/$rel (resolve conflicting rules without changing host visibility)"; return 1; }
+}
+# Shared block contains exact pattern union, not a registry. Ownership is
+# re-derived from every actual worktree's validated local manifest each time.
+# Unknown preexisting rules stay byte-for-byte; legacy broad blocks require
+# manual resolution (we cannot prove ownership of retained recovery contents).
+local_exclude_plan() {
+  local target="$L_ROOT" common oldroot="$L_ROOT" line="" wt rel key pattern path found listing existing=() proposed=() worktrees=()
+  local begin='# BEGIN domestique private (format=1)' end='# END domestique private' inside=0 seen=0 legacy_seen=0
+  local_common "$target" || return 1
+  common="$L_COMMON"; L_EXCLUDE="$common/info/exclude"
+  L_EXCLUDE_BEFORE=""; L_EXCLUDE_AFTER=""
+  if [ -e "$L_EXCLUDE" ]; then
+    [ -f "$L_EXCLUDE" ] || { local_fail "not an exclude file: $L_EXCLUDE"; return 1; }
+    local_text_file "$L_EXCLUDE" || return 1
+    L_EXCLUDE_BEFORE="$(global_hash < "$L_EXCLUDE")"
+    while IFS= read -r line; do
+      if [ "$inside" = legacy ]; then
+        if [ "$line" = "$GITEXCLUDE_MARKER_END" ]; then inside=0
+        else
+          # Preserve (never adopt/remove) exact old rules. Broad exclusions
+          # cannot be reconciled without proving ALL retained recovery assets.
+          found=0
+          [ "$line" != '.codex/.domestique/' ] || found=1
+          for wt in claude codex copilot; do
+            while IFS= read -r rel; do
+              case "$rel" in */*) [ "$line" != "$rel" ] || found=1;; esac
+            done < <(local_legacy_inventory "$wt")
+          done
+          [ "$found" = 1 ] ||
+            { local_fail "broad/unknown legacy exclude needs manual retained-asset accounting: $L_EXCLUDE"; return 1; }
+        fi
+        L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${line}"$'\n'
+        continue
+      fi
+      case "$line" in
+        "$begin") [ "$inside:$seen" = 0:0 ] || break; inside=1; seen=1;;
+        "$end") [ "$inside" = 1 ] || break; inside=0;;
+        "$GITEXCLUDE_MARKER_BEGIN")
+          [ "$inside:$legacy_seen" = 0:0 ] || break
+          inside=legacy; legacy_seen=1; L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${line}"$'\n';;
+        '#'*domestique*) local_fail "legacy/unknown exclude block needs manual accounting of retained assets: $L_EXCLUDE"; return 1;;
+        *)
+          if [ "$inside" = 1 ]; then existing+=("$line")
+          else L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${line}"$'\n'; fi;;
+      esac
+    done < "$L_EXCLUDE"
+    [ -z "$line" ] && [ "$inside" = 0 ] ||
+      { local_fail "malformed or unterminated shared exclude: $L_EXCLUDE"; return 1; }
+  fi
+  # One checked NUL enumeration, not two potentially different snapshots.
+  # Root paths are validated before serializing them to newline-separated data.
+  listing="$(local_worktree_list "$target")" ||
+    { local_fail "cannot enumerate actual worktrees: $common"; return 1; }
+  while IFS= read -r wt; do worktrees+=("$wt"); done <<< "$listing"
+  [ "${#worktrees[@]}" -gt 0 ] && local_contains "$target" "${worktrees[@]}" ||
+    { local_fail "missing worktree accounting: $common"; return 1; }
+  # shellcheck disable=SC2034 # Public metadata for the consumer/reviewer.
+  L_WORKTREES=("${worktrees[@]}")
+  L_OWNED_PATTERNS=()
+  for wt in "${worktrees[@]}"; do
+    local_root "$wt" && local_common "$wt" || return 1
+    [ "$L_COMMON" = "$common" ] || { local_fail "mismatched worktree common directory: $wt"; return 1; }
+    local_manifest_read "$wt" || return 1
+    if [ -e "$wt/.domestique-private" ]; then L_OWNED_PATTERNS+=('/.domestique-private/'); fi
+    for key in ${M_KEYS[@]+"${M_KEYS[@]}"}; do L_OWNED_PATTERNS+=("$(local_pattern "${key#*:}")"); done
+  done
+  for pattern in ${existing[@]+"${existing[@]}"}; do
+    local_contains "$pattern" ${L_OWNED_PATTERNS[@]+"${L_OWNED_PATTERNS[@]}"} ||
+      { local_fail "shared pattern without actual ownership: $L_EXCLUDE"; return 1; }
+    if local_contains "$pattern" ${proposed[@]+"${proposed[@]}"}; then
+      local_fail "duplicate shared pattern: $L_EXCLUDE"; return 1
+    fi
+    proposed+=("$pattern")
+  done
+  # Keep all other attachments private, even when their exact patterns differ.
+  for pattern in ${L_OWNED_PATTERNS[@]+"${L_OWNED_PATTERNS[@]}"}; do
+    local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
+  done
+  for rel in .domestique-private/ ${L_WANT[@]+"${L_WANT[@]}"}; do
+    pattern="$(local_pattern "$rel")"
+    local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
+  done
+  for wt in "${worktrees[@]}"; do
+    local_manifest_read "$wt" || return 1
+    for pattern in "${proposed[@]}"; do
+      # Proposed patterns can only originate in fixed inventories above.
+      rel=""
+      [ "$pattern" != '/.domestique-private/' ] || rel=.domestique-private
+      for key in "${L_INVENTORY[@]}"; do
+        [ "$pattern" != "$(local_pattern "${key#*:}")" ] || rel="${key#*:}"
+      done
+      [ -n "$rel" ] || { local_fail "unsupported shared pattern: $L_EXCLUDE"; return 1; }
+      local_path "$wt/$rel" "$wt" && local_untracked "$wt" "$rel" || return 1
+      local_ignore_effective "$wt" "$rel" "$pattern" || return 1
+      if [ -e "$wt/$rel" ]; then
+        found=0
+        if [ "$rel" = .domestique-private ]; then found=1
+        else
+          for key in ${M_KEYS[@]+"${M_KEYS[@]}"}; do [ "${key#*:}" != "$rel" ] || found=1; done
+        fi
+        [ "$found" = 1 ] || { local_fail "shared exclude would hide host destination: $wt/$rel"; return 1; }
+      fi
+    done
+  done
+  L_ROOT="$oldroot"; L_COMMON="$common"
+  L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${begin}"$'\n'
+  for pattern in "${proposed[@]}"; do L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${pattern}"$'\n'; done
+  L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${end}"$'\n'
+}
+# local_preflight TARGET PROVIDERS [check|migrate]
+# L_WANT is the selected exact native inventory (union with existing records).
+# .5 may select a role subset by filtering L_WANT and replanning exclusions.
+local_preflight() {
+  local target="$1" selection="$2" migration="${3:-check}" key
+  L_WANT=(); L_REMOVE=(); L_REMOVE_HASH=(); L_LEGACY=(); L_INVENTORY=()
+  case "$migration" in check|migrate) ;; *) local_fail "explicit check or migrate required: $target"; return 1;; esac
+  local_set_valid "$selection" && local_root "$target" && local_core || return 1
+  while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
+  local_manifest_read "$L_ROOT" || return 1
+  [ -z "$M_CORE" ] || [ "$M_CORE" = "$L_CORE" ] ||
+    { local_fail "local core identity mismatch: $L_ROOT/.domestique-private/manifest"; return 1; }
+  for key in "${L_INVENTORY[@]}"; do
+    local_path "$L_ROOT/${key#*:}" "$L_ROOT" && local_untracked "$L_ROOT" "${key#*:}" || return 1
+    if [ -e "$L_ROOT/${key#*:}" ] && ! local_contains "$key" ${M_KEYS[@]+"${M_KEYS[@]}"}; then
+      local_fail "unknown native destination (identical bytes are not ownership): $L_ROOT/${key#*:}"; return 1
+    fi
+    if local_selected "$selection" "${key%%:*}" || local_contains "$key" ${M_KEYS[@]+"${M_KEYS[@]}"}; then
+      L_WANT+=("${key#*:}")
+    fi
+  done
+  local_legacy "$L_ROOT" "$migration" && local_exclude_plan
+}
+# Apply primitives deliberately rerun the ENTIRE preflight, not just a cached
+# leaf test. No promise of atomicity against hostile same-user mutation.
+local_exclude_apply() (
+  local target="$1" selection="$2" dry="${3:-0}" migration="${4:-check}" stage
+  case "$dry" in 0|1) ;; *) local_fail "dry-run must be 0 or 1: $target"; exit 1;; esac
+  local_preflight "$target" "$selection" "$migration" || exit 1
+  [ "$dry" = 0 ] || exit 0
+  # Exclusion publication is only for actually installed, validated state.
+  # It cannot turn a fresh plan into a success-shaped installation.
+  [ -f "$L_ROOT/.domestique-private/manifest" ] ||
+    { local_fail "install and record actual native/state ownership before exclude apply: $L_ROOT/.domestique-private/manifest"; exit 1; }
+  for p in ${L_WANT[@]+"${L_WANT[@]}"}; do
+    [ -f "$L_ROOT/$p" ] || { local_fail "unpublished planned leaf: $L_ROOT/$p"; exit 1; }
+  done
+  if [ -f "$L_EXCLUDE" ] && cmp -s "$L_EXCLUDE" <(printf '%s' "$L_EXCLUDE_AFTER"); then exit 0; fi
+  # No lock claims that worktree enumeration is exhaustive forever. Revalidate
+  # immediately before writing and refuse concurrent exclude changes.
+  local_preflight "$target" "$selection" "$migration" || exit 1
+  umask 077
+  stage="$(mktemp "$L_COMMON/info/.domestique-exclude.XXXXXX")" || exit 1
+  trap 'rm -f "$stage"' EXIT
+  printf '%s' "$L_EXCLUDE_AFTER" > "$stage" || { local_fail "PARTIAL exclude stage: $stage"; exit 1; }
+  local_path "$L_EXCLUDE" "$L_COMMON" || exit 1
+  if [ -e "$L_EXCLUDE" ]; then
+    [ "$(global_hash < "$L_EXCLUDE")" = "$L_EXCLUDE_BEFORE" ] ||
+      { local_fail "shared exclude changed: $L_EXCLUDE"; exit 1; }
+  else [ -z "$L_EXCLUDE_BEFORE" ] || exit 1; fi
+  mv "$stage" "$L_EXCLUDE" || { local_fail "PARTIAL exclude publication: $L_EXCLUDE"; exit 1; }
+)
+local_migrate() (
+  local target="$1" selection="$2" dry="${3:-0}" j path targets=() hashes=()
+  case "$dry" in 0|1) ;; *) local_fail "dry-run must be 0 or 1: $target"; exit 1;; esac
+  local_preflight "$target" "$selection" migrate || exit 1
+  [ "$dry" = 0 ] || exit 0
+  targets=(${L_REMOVE[@]+"${L_REMOVE[@]}"}); hashes=(${L_REMOVE_HASH[@]+"${L_REMOVE_HASH[@]}"})
+  for ((j=0; j<${#targets[@]}; j++)); do
+    path="${targets[j]}"
+    local_preflight "$target" "$selection" migrate ||
+      { local_fail "PARTIAL migration; preflight changed before removal: $path"; exit 1; }
+    local_contains "$path" ${L_REMOVE[@]+"${L_REMOVE[@]}"} ||
+      { local_fail "PARTIAL migration; creation authority changed: $path"; exit 1; }
+    local_path "$path" "$L_ROOT" && local_untracked "$L_ROOT" "${path#"$L_ROOT"/}" ||
+      { local_fail "PARTIAL migration; inspect retained legacy metadata: $path"; exit 1; }
+    [ -f "$path" ] && [ "$(global_hash < "$path")" = "${hashes[j]}" ] ||
+      { local_fail "PARTIAL migration; changed leaf: $path"; exit 1; }
+    rm "$path" || { local_fail "PARTIAL migration; failed removal: $path"; exit 1; }
+  done
+  # Retain snapshots/provenance and all exclusion rules. No live bytes copied,
+  # no adapter/state installation, and no claim that migration installs roles.
+)
+
 usage() {
   cat <<'EOF'
 Usage: domestique.sh [TARGET_DIR] [options]
