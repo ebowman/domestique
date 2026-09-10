@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # domestique.sh — install the domestique orchestration config into a repo.
-# Claude Code remains the default projection; --platform also supports Codex
-# and a simultaneous Claude+Codex install. All runtime assets remain embedded
+# Claude Code remains the default projection; --platform also supports Codex,
+# Copilot, and their simultaneous install. All runtime assets remain embedded
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
@@ -24,6 +24,11 @@ emit_policy() {
 # Orchestration policy
 
 This session is the **orchestrator**. Your job is planning, delegation, and review — not implementation.
+
+**Runtime scope:** This policy and its `/goal` command are for Claude Code
+only. GitHub Copilot may read this file, but must not treat its `/goal`,
+`/decompose`, or Claude subagent syntax as Domestique authorization. In
+Copilot, only explicit `/domestique-goal <epic-id>` has that authority.
 
 ## Roles
 - **You (main session, planning model):** decompose work, hold the plan, delegate implementation and review, adjudicate the results, decide what's next. Write code yourself only for trivial one-line edits.
@@ -163,6 +168,10 @@ description: Drain a beads epic to completion unattended — dedicated branch, o
 argument-hint: <epic-id>
 ---
 
+This command is for Claude Code only. GitHub Copilot must not execute it or
+interpret `/goal` as authorization; Copilot requires explicit
+`/domestique-goal <epic-id>` instead.
+
 Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
 
 ## Branch isolation (load-bearing)
@@ -267,6 +276,10 @@ description: Orchestrate a beads-backed implementer then independent reviewer wo
 
 # Domestique orchestration
 
+Runtime scope: this `$domestique` skill is for Codex. GitHub Copilot must not
+interpret dollar-skill syntax, native `/goal`, or this file as authority; only
+explicit `/domestique-goal <epic-id>` may authorize Copilot work.
+
 Act as the orchestrator: plan, delegate, wait, independently review, and
 adjudicate. Do not implement except for genuinely trivial one-line edits.
 
@@ -322,6 +335,9 @@ description: Explicitly drain one named beads epic using domestique's bounded im
 
 # Unattended epic execution
 
+Runtime scope: this Codex skill does not authorize GitHub Copilot. Copilot
+must require explicit `/domestique-goal <epic-id>` under its native skill.
+
 The explicit `$domestique-goal <epic-id>` invocation is the sole authorization
 to continue between beads. It applies only to that epic and expires on
 completion, a stop condition, or after 15 closed beads.
@@ -358,6 +374,11 @@ DOM_EOF
 # the self-contained $domestique skill, leaving host AGENTS files untouched.
 emit_codex_policy() { cat <<'DOM_EOF'
 # Domestique orchestration policy (Codex)
+
+**Runtime scope:** This policy and its `$domestique-goal` syntax are for Codex
+only. GitHub Copilot may read this file; it must not treat dollar-skill syntax
+or native `/goal` as Domestique authorization. In Copilot, only explicit
+`/domestique-goal <epic-id>` has that authority.
 
 This session is the orchestrator. Use `$domestique-decompose` for planning,
 then follow the `$domestique` sequential implementer → wait → reviewer → wait
@@ -565,7 +586,7 @@ usage() {
 Usage: domestique.sh [TARGET_DIR] [options]
 
 Installs domestique orchestration config into TARGET_DIR (default: current
-directory). Claude is the compatibility default; Codex uses native surfaces:
+directory). Claude is the compatibility default; Codex and Copilot use native surfaces:
   CLAUDE.md                        orchestration policy (in a managed block)
   .claude/agents/implementer.md    implementer subagent
   .claude/agents/reviewer.md       reviewer subagent
@@ -574,9 +595,12 @@ directory). Claude is the compatibility default; Codex uses native surfaces:
   AGENTS.md or AGENTS.override.md  Codex policy (normal mode, managed block)
   .codex/agents/*.toml             Codex implementer and reviewer
   .agents/skills/domestique*/      Codex workflow skills
+  .github/agents/domestique-*.agent.md       Copilot custom agents
+  .github/skills/domestique*/SKILL.md        Copilot workflow skills
+  .github/copilot-instructions.md             Copilot policy (normal mode)
 
 Options:
-  --platform <p> Select claude, codex, or both. A fresh selector-less install
+  --platform <p> Select claude, codex, copilot, both, or all. A fresh selector-less install
                  remains Claude-only. Explicit installs add to the persisted
                  provider set; later selector-less runs update that set.
   --dry-run      Print planned changes; touch nothing.
@@ -695,9 +719,9 @@ done
 TARGET_DIR="${TARGET_DIR:-.}"
 
 case "${PLATFORM_ARG:-claude}" in
-  claude|codex|both) ;;
+  claude|codex|copilot|both|all) ;;
   *)
-    echo "Error: --platform must be one of: claude, codex, both (got '$PLATFORM_ARG')." >&2
+    echo "Error: --platform must be one of: claude, codex, copilot, both, all (got '$PLATFORM_ARG')." >&2
     usage >&2
     exit 2
     ;;
@@ -715,7 +739,7 @@ if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   exit 2
 fi
 
-# configure_provider <claude|codex> — select one provider's inventory and
+# configure_provider <claude|codex|copilot> — select one provider's inventory and
 # snapshot namespace. Policy destination is finalized after sticky guest mode
 # is resolved for that provider.
 configure_provider() {
@@ -736,6 +760,13 @@ configure_provider() {
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
       MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
+      ;;
+    copilot)
+      SNAPSHOT_DIR="$TARGET_DIR/.github/.domestique"
+      POLICY_EMITTER="emit_copilot_policy"
+      POLICY_LABEL="copilot-instructions.md"
+      POLICY_CANDIDATES=".github/copilot-instructions.md"
+      MANAGED_PLAIN_FILES=".github/agents/domestique-implementer.agent.md,.github/agents/domestique-reviewer.agent.md,.github/skills/domestique/SKILL.md,.github/skills/domestique-decompose/SKILL.md,.github/skills/domestique-goal/SKILL.md"
       ;;
   esac
   SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
@@ -806,6 +837,10 @@ resolve_provider_mode() {
       fi
       POLICY_LABEL="$POLICY_DEST"
       ;;
+    copilot:0)
+      POLICY_DEST=".github/copilot-instructions.md"
+      POLICY_LABEL="$POLICY_DEST"
+      ;;
   esac
 
   if [ -n "$POLICY_DEST" ]; then
@@ -865,6 +900,33 @@ write_codex_guest_ownership() {
   fi
 }
 
+# Copilot's ownership record is written from its first normal install too.
+# It records created leaves only; snapshots merely support merging and are not
+# evidence that a pre-existing host file was created by domestique.
+write_copilot_ownership() {
+  # This is creation provenance, not a guest exclude list.  In particular,
+  # a future Copilot guest projection must leave host instruction files
+  # visible even when this record says we created the policy.
+  local ownership="$TARGET_DIR/.github/.domestique/created-files"
+  local staged="$TMPDIR_WORK/copilot_created_files"
+  {
+    [ "${COPILOT_PREEXIST_POLICY:-0}" -eq 1 ] || printf '.github/copilot-instructions.md\n'
+    [ "${COPILOT_PREEXIST_IMPL:-0}" -eq 1 ] || printf '.github/agents/domestique-implementer.agent.md\n'
+    [ "${COPILOT_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.github/agents/domestique-reviewer.agent.md\n'
+    [ "${COPILOT_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.github/skills/domestique/SKILL.md\n'
+    [ "${COPILOT_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.github/skills/domestique-decompose/SKILL.md\n'
+    [ "${COPILOT_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.github/skills/domestique-goal/SKILL.md\n'
+  } > "$staged"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "record exact Copilot creation provenance -> $ownership"
+  else
+    mkdir -p "$(dirname "$ownership")"
+    # First-install provenance is immutable: later reruns must not turn a
+    # pre-existing/adopted leaf into an owned one merely because it now exists.
+    [ -e "$ownership" ] || cp "$staged" "$ownership"
+  fi
+}
+
 write_provider_manifest() {
   [ "$SNAPSHOT_TOUCHED" -eq 1 ] || return 0
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -898,6 +960,14 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" emit_codex_goal_metadata
       write_codex_guest_ownership
       ;;
+    copilot)
+      install_plain "$TARGET_DIR/.github/agents/domestique-implementer.agent.md" emit_copilot_implementer
+      install_plain "$TARGET_DIR/.github/agents/domestique-reviewer.agent.md" emit_copilot_reviewer
+      install_plain "$TARGET_DIR/.github/skills/domestique/SKILL.md" emit_copilot_skill
+      install_plain "$TARGET_DIR/.github/skills/domestique-decompose/SKILL.md" emit_copilot_decompose_skill
+      install_plain "$TARGET_DIR/.github/skills/domestique-goal/SKILL.md" emit_copilot_goal_skill
+      write_copilot_ownership
+      ;;
   esac
 
   if [ "$GUEST" -eq 1 ]; then
@@ -914,10 +984,11 @@ install_current_provider() {
 persist_platform_set() {
   local state_dir state_file old
   [ "$CONFLICT_OCCURRED" -eq 0 ] || return 0
-  for state_dir in "$TARGET_DIR/.claude/.domestique" "$TARGET_DIR/.codex/.domestique"; do
+  for state_dir in "$TARGET_DIR/.claude/.domestique" "$TARGET_DIR/.codex/.domestique" "$TARGET_DIR/.github/.domestique"; do
     case "$state_dir" in
       "$TARGET_DIR/.claude/.domestique") [ "$SELECT_CLAUDE" -eq 1 ] || continue ;;
       "$TARGET_DIR/.codex/.domestique") [ "$SELECT_CODEX" -eq 1 ] || continue ;;
+      "$TARGET_DIR/.github/.domestique") [ "$SELECT_COPILOT" -eq 1 ] || continue ;;
     esac
     state_file="$state_dir/platforms"
     old="$(cat "$state_file" 2>/dev/null || true)"
@@ -952,8 +1023,10 @@ fi
 # ---------------------------------------------------------------------------
 SELECT_CLAUDE=0
 SELECT_CODEX=0
+SELECT_COPILOT=0
 PERSISTED_CLAUDE=0
 PERSISTED_CODEX=0
+PERSISTED_COPILOT=0
 
 read_platform_state() {
   local statefile="$1" value
@@ -963,12 +1036,60 @@ read_platform_state() {
     claude) PERSISTED_CLAUDE=1 ;;
     codex) PERSISTED_CODEX=1 ;;
     both) PERSISTED_CLAUDE=1; PERSISTED_CODEX=1 ;;
+    copilot) PERSISTED_COPILOT=1 ;;
+    claude,copilot) PERSISTED_CLAUDE=1; PERSISTED_COPILOT=1 ;;
+    codex,copilot) PERSISTED_CODEX=1; PERSISTED_COPILOT=1 ;;
+    all) PERSISTED_CLAUDE=1; PERSISTED_CODEX=1; PERSISTED_COPILOT=1 ;;
     *) echo "Warning: ignoring invalid domestique platform state '$value' in $statefile." >&2 ;;
   esac
 }
 
 read_platform_state "$TARGET_DIR/.claude/.domestique/platforms"
 read_platform_state "$TARGET_DIR/.codex/.domestique/platforms"
+read_platform_state "$TARGET_DIR/.github/.domestique/platforms"
+
+# State can be lost independently of an installed policy.  A complete
+# domestique managed block is provider-specific evidence; do not infer
+# ownership from arbitrary instruction text or matching payload bytes.
+copilot_policy_is_managed() {
+  local policy="$TARGET_DIR/.github/copilot-instructions.md" begin_count end_count
+  begin_count="$(grep -cxF "$MARKER_BEGIN" "$policy" 2>/dev/null || true)"
+  end_count="$(grep -cxF "$MARKER_END" "$policy" 2>/dev/null || true)"
+  begin_count="${begin_count:-0}"
+  end_count="${end_count:-0}"
+  [ "$begin_count" -eq 1 ] && [ "$end_count" -eq 1 ]
+}
+
+policy_is_managed() {
+  local policy="$1" begin_count end_count
+  begin_count="$(grep -cxF "$MARKER_BEGIN" "$policy" 2>/dev/null || true)"
+  end_count="$(grep -cxF "$MARKER_END" "$policy" 2>/dev/null || true)"
+  begin_count="${begin_count:-0}"
+  end_count="${end_count:-0}"
+  [ "$begin_count" -eq 1 ] && [ "$end_count" -eq 1 ]
+}
+
+# compatibility_policy_is_owned_or_marked <provider> <relative-policy-path>
+# A policy snapshot/manifest is path-specific ownership evidence.  A marker,
+# including an incomplete or otherwise malformed one, is also evidence for
+# that known policy path: malformed does not make an owned policy host text.
+# Do not infer policy ownership merely from a provider state directory, since
+# a normal Codex install can legitimately use AGENTS.override.md while a host
+# AGENTS.md remains unmanaged.
+compatibility_policy_is_owned_or_marked() {
+  local provider="$1" rel="$2" state policy="$TARGET_DIR/$2" status
+  case "$provider" in
+    claude) state="$TARGET_DIR/.claude/.domestique" ;;
+    codex) state="$TARGET_DIR/.codex/.domestique" ;;
+    *) return 1 ;;
+  esac
+  [ -e "$policy" ] || return 1
+  read -r status _ _ < <(markers_sane "$policy")
+  [ "$status" != "none" ] && return 0
+  [ -e "$state/base/$rel.block" ] && return 0
+  grep -qxF "files=${rel}" "$state/manifest" 2>/dev/null && return 0
+  grep -qE "(^|,)${rel}(,|$)" "$state/manifest" 2>/dev/null
+}
 
 # Backfill provider state that predates the platforms marker.
 if [ "$PERSISTED_CLAUDE" -eq 0 ] && [ -d "$TARGET_DIR/.claude/.domestique" ]; then
@@ -977,24 +1098,48 @@ fi
 if [ "$PERSISTED_CODEX" -eq 0 ] && [ -d "$TARGET_DIR/.codex/.domestique" ]; then
   PERSISTED_CODEX=1
 fi
+if [ "$PERSISTED_CLAUDE" -eq 0 ] && { policy_is_managed "$TARGET_DIR/CLAUDE.md" || policy_is_managed "$TARGET_DIR/CLAUDE.local.md"; }; then
+  PERSISTED_CLAUDE=1
+fi
+if [ "$PERSISTED_CODEX" -eq 0 ] && { policy_is_managed "$TARGET_DIR/AGENTS.md" || policy_is_managed "$TARGET_DIR/AGENTS.override.md"; }; then
+  PERSISTED_CODEX=1
+fi
+if [ "$PERSISTED_COPILOT" -eq 0 ] && [ -d "$TARGET_DIR/.github/.domestique" ]; then
+  PERSISTED_COPILOT=1
+fi
+if [ "$PERSISTED_COPILOT" -eq 0 ] && copilot_policy_is_managed; then
+  PERSISTED_COPILOT=1
+fi
 
 if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
   SELECT_CLAUDE="$PERSISTED_CLAUDE"
   SELECT_CODEX="$PERSISTED_CODEX"
+  SELECT_COPILOT="$PERSISTED_COPILOT"
   case "$PLATFORM_ARG" in
     claude) SELECT_CLAUDE=1 ;;
     codex) SELECT_CODEX=1 ;;
     both) SELECT_CLAUDE=1; SELECT_CODEX=1 ;;
+    copilot) SELECT_COPILOT=1 ;;
+    all) SELECT_CLAUDE=1; SELECT_CODEX=1; SELECT_COPILOT=1 ;;
   esac
-elif [ "$PERSISTED_CLAUDE" -eq 1 ] || [ "$PERSISTED_CODEX" -eq 1 ]; then
+elif [ "$PERSISTED_CLAUDE" -eq 1 ] || [ "$PERSISTED_CODEX" -eq 1 ] || [ "$PERSISTED_COPILOT" -eq 1 ]; then
   SELECT_CLAUDE="$PERSISTED_CLAUDE"
   SELECT_CODEX="$PERSISTED_CODEX"
+  SELECT_COPILOT="$PERSISTED_COPILOT"
 else
   SELECT_CLAUDE=1
 fi
 
-if [ "$SELECT_CLAUDE" -eq 1 ] && [ "$SELECT_CODEX" -eq 1 ]; then
+if [ "$SELECT_CLAUDE" -eq 1 ] && [ "$SELECT_CODEX" -eq 1 ] && [ "$SELECT_COPILOT" -eq 1 ]; then
+  PLATFORM_SET="all"
+elif [ "$SELECT_CLAUDE" -eq 1 ] && [ "$SELECT_CODEX" -eq 1 ]; then
   PLATFORM_SET="both"
+elif [ "$SELECT_CLAUDE" -eq 1 ] && [ "$SELECT_COPILOT" -eq 1 ]; then
+  PLATFORM_SET="claude,copilot"
+elif [ "$SELECT_CODEX" -eq 1 ] && [ "$SELECT_COPILOT" -eq 1 ]; then
+  PLATFORM_SET="codex,copilot"
+elif [ "$SELECT_COPILOT" -eq 1 ]; then
+  PLATFORM_SET="copilot"
 elif [ "$SELECT_CODEX" -eq 1 ]; then
   PLATFORM_SET="codex"
 else
@@ -1002,6 +1147,122 @@ else
 fi
 
 REQUESTED_GUEST="$GUEST"
+
+copilot_compatibility_guards_are_safe() {
+  # Project the same reconciliation functions used below into a deliberately
+  # tiny shadow tree.  A guard must be present after the operation that would
+  # actually run, not merely be recognizable by a prefix in today's file.
+  # In particular, adoption leaves legacy text in place, while a clean merge
+  # may safely restore a newly-added guard.  The shadow contains only known
+  # compatibility surfaces and their bases; real targets are never written.
+  local shadow="$TMPDIR_WORK/copilot-guard-shadow" rel provider
+  rm -rf "$shadow"
+  mkdir -p "$shadow"
+
+  copy_guard_surface() {
+    local path="$1"
+    [ -e "$TARGET_DIR/$path" ] || return 0
+    mkdir -p "$shadow/$(dirname "$path")"
+    cp "$TARGET_DIR/$path" "$shadow/$path"
+  }
+  copy_guard_state() {
+    local state="$1" path
+    for path in platforms mode created-files guest-excludes manifest \
+      base/CLAUDE.md.block base/CLAUDE.local.md.block \
+      base/AGENTS.md.block base/AGENTS.override.md.block \
+      base/.claude/commands/goal.md \
+      base/.agents/skills/domestique/SKILL.md \
+      base/.agents/skills/domestique-goal/SKILL.md; do
+      [ -e "$TARGET_DIR/$state/$path" ] || continue
+      mkdir -p "$shadow/$state/$(dirname "$path")"
+      cp "$TARGET_DIR/$state/$path" "$shadow/$state/$path"
+    done
+  }
+  for rel in CLAUDE.md CLAUDE.local.md AGENTS.md AGENTS.override.md \
+    .claude/commands/goal.md .agents/skills/domestique/SKILL.md \
+    .agents/skills/domestique-goal/SKILL.md; do
+    copy_guard_surface "$rel"
+  done
+  copy_guard_state .claude/.domestique
+  copy_guard_state .codex/.domestique
+
+  # The authoritative emitters define the complete required paragraph.  Match
+  # its ordered lines as a unit, so a host sentence or first-line prefix does
+  # not satisfy the boundary.
+  guard_paragraph_is_present() {
+    local file="$1" emitter="$2" anchor="$3" expected="$TMPDIR_WORK/guard-expected"
+    "$emitter" | awk -v anchor="$anchor" '
+      $0 == anchor { found=1 }
+      found { print }
+      found && /^$/ { exit }
+    ' > "$expected"
+    [ -s "$expected" ] || return 1
+    awk 'NR == FNR { want[++n]=$0; next }
+         { if ($0 == want[seen + 1]) { seen++; if (seen == n) exit 0 }
+           else seen=($0 == want[1] ? 1 : 0) }
+         END { exit seen == n ? 0 : 1 }' "$expected" "$file"
+  }
+  (
+    TARGET_DIR="$shadow"
+    TMPDIR_WORK="$shadow/.scratch"
+    mkdir -p "$TMPDIR_WORK"
+    DRY_RUN=0
+    SNAPSHOT_TOUCHED=0
+    CONFLICT_OCCURRED=0
+    SUM_CREATED=(); SUM_UPDATED=(); SUM_BACKEDUP=(); SUM_SKIPPED=()
+    SUM_MERGED=(); SUM_CONFLICT=(); SUM_ADOPTED=()
+
+    # Run only selected legacy providers.  Copilot itself cannot make an
+    # existing Claude/Codex guard safe, so it is intentionally not projected.
+    for provider in claude codex; do
+      case "$provider" in
+        claude) [ "$SELECT_CLAUDE" -eq 1 ] || continue ;;
+        codex) [ "$SELECT_CODEX" -eq 1 ] || continue ;;
+      esac
+      configure_provider "$provider"
+      resolve_provider_mode
+      install_current_provider
+      [ "$CONFLICT_OCCURRED" -eq 0 ] || exit 1
+    done
+
+    # Policy-specific snapshots/manifests and any managed marker (including a
+    # malformed one) establish ownership.  Do not inspect unmarked host
+    # policies merely because a sibling policy made this provider persistent.
+    for rel in CLAUDE.md CLAUDE.local.md; do
+      compatibility_policy_is_owned_or_marked claude "$rel" || continue
+      read -r marker_status _ _ < <(markers_sane "$TARGET_DIR/$rel")
+      [ "$marker_status" = "none" ] || [ "$marker_status" = "ok" ] || { printf '%s\n' "$rel" > "$shadow/failure"; exit 1; }
+      guard_paragraph_is_present "$TARGET_DIR/$rel" emit_policy '**Runtime scope:** This policy and its `/goal` command are for Claude Code' || { printf '%s\n' "$rel" > "$shadow/failure"; exit 1; }
+    done
+    for rel in AGENTS.md AGENTS.override.md; do
+      compatibility_policy_is_owned_or_marked codex "$rel" || continue
+      read -r marker_status _ _ < <(markers_sane "$TARGET_DIR/$rel")
+      [ "$marker_status" = "none" ] || [ "$marker_status" = "ok" ] || { printf '%s\n' "$rel" > "$shadow/failure"; exit 1; }
+      guard_paragraph_is_present "$TARGET_DIR/$rel" emit_codex_policy '**Runtime scope:** This policy and its `$domestique-goal` syntax are for Codex' || { printf '%s\n' "$rel" > "$shadow/failure"; exit 1; }
+    done
+
+    # Provider state (or a managed policy above) establishes ownership of the
+    # corresponding known compatibility leaves.  Missing leaves are safe only
+    # when the selected reconciliation creates them; otherwise they are not a
+    # discoverable legacy payload.
+    if [ "$PERSISTED_CLAUDE" -eq 1 ] && [ -e "$TARGET_DIR/.claude/commands/goal.md" ]; then
+      guard_paragraph_is_present "$TARGET_DIR/.claude/commands/goal.md" emit_goal 'This command is for Claude Code only. GitHub Copilot must not execute it or' || { printf '%s\n' '.claude/commands/goal.md' > "$shadow/failure"; exit 1; }
+    fi
+    if [ "$PERSISTED_CODEX" -eq 1 ] && [ -e "$TARGET_DIR/.agents/skills/domestique/SKILL.md" ]; then
+      guard_paragraph_is_present "$TARGET_DIR/.agents/skills/domestique/SKILL.md" emit_codex_skill 'Runtime scope: this `$domestique` skill is for Codex. GitHub Copilot must not' || { printf '%s\n' '.agents/skills/domestique/SKILL.md' > "$shadow/failure"; exit 1; }
+    fi
+    if [ "$PERSISTED_CODEX" -eq 1 ] && [ -e "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" ]; then
+      guard_paragraph_is_present "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" emit_codex_goal_skill 'Runtime scope: this Codex skill does not authorize GitHub Copilot. Copilot' || { printf '%s\n' '.agents/skills/domestique-goal/SKILL.md' > "$shadow/failure"; exit 1; }
+    fi
+  ) || {
+    local guard_failure
+    guard_failure="$(cat "$shadow/failure" 2>/dev/null || printf 'with an unresolved reconciliation')"
+    echo "Error: Copilot cannot safely establish the complete runtime authorization guard in managed compatibility surface $guard_failure. No files were changed." >&2
+    echo "       Preserve local edits, repair that managed file with the current authoritative guard, then re-run; --force does not update inactive policy paths." >&2
+    return 1
+  }
+  return 0
+}
 
 TS="$(date +%Y%m%d%H%M%S)"
 TMPDIR_WORK="$(mktemp -d)"
@@ -1327,6 +1588,7 @@ install_claude_md() {
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest (managed block only)"
     else
+      mkdir -p "$(dirname "$dest")"
       cp "$blk" "$dest"
     fi
     SUM_CREATED+=("$dest")
@@ -1977,19 +2239,29 @@ UNINSTALL_POLICIES
     SUM_REMOVED+=("$snapshot_dir")
   done
 
-  # Keep the surviving provider's persisted set authoritative.
-  local remaining_state="" remaining_value=""
-  if [ "$UNINSTALL_CLAUDE" -eq 1 ] && [ "$UNINSTALL_CODEX" -eq 0 ] && [ -d "$target/.codex/.domestique" ]; then
-    remaining_state="$target/.codex/.domestique/platforms"; remaining_value="codex"
-  elif [ "$UNINSTALL_CODEX" -eq 1 ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && [ -d "$target/.claude/.domestique" ]; then
-    remaining_state="$target/.claude/.domestique/platforms"; remaining_value="claude"
+  # Keep every surviving provider's persisted set authoritative, including a
+  # Copilot projection which this interim installer intentionally leaves intact.
+  local remain_claude=0 remain_codex=0 remain_copilot=0 remaining_value="" remaining_state
+  [ -d "$target/.claude/.domestique" ] && remain_claude=1
+  [ -d "$target/.codex/.domestique" ] && remain_codex=1
+  [ -d "$target/.github/.domestique" ] && remain_copilot=1
+  if [ "$remain_claude" -eq 1 ] && [ "$remain_codex" -eq 1 ] && [ "$remain_copilot" -eq 1 ]; then remaining_value="all"
+  elif [ "$remain_claude" -eq 1 ] && [ "$remain_codex" -eq 1 ]; then remaining_value="both"
+  elif [ "$remain_claude" -eq 1 ] && [ "$remain_copilot" -eq 1 ]; then remaining_value="claude,copilot"
+  elif [ "$remain_codex" -eq 1 ] && [ "$remain_copilot" -eq 1 ]; then remaining_value="codex,copilot"
+  elif [ "$remain_claude" -eq 1 ]; then remaining_value="claude"
+  elif [ "$remain_codex" -eq 1 ]; then remaining_value="codex"
+  elif [ "$remain_copilot" -eq 1 ]; then remaining_value="copilot"
   fi
-  if [ -n "$remaining_state" ]; then
-    if [ "$DRY_RUN" -eq 1 ]; then
-      note_dry "persist platform set '$remaining_value' -> $remaining_state"
-    else
-      printf '%s\n' "$remaining_value" > "$remaining_state"
-    fi
+  if [ -n "$remaining_value" ]; then
+    for remaining_state in "$target/.claude/.domestique/platforms" "$target/.codex/.domestique/platforms" "$target/.github/.domestique/platforms"; do
+      [ -d "$(dirname "$remaining_state")" ] || continue
+      if [ "$DRY_RUN" -eq 1 ]; then
+        note_dry "persist platform set '$remaining_value' -> $remaining_state"
+      else
+        printf '%s\n' "$remaining_value" > "$remaining_state"
+      fi
+    done
   fi
 
   # Prune now-empty dirs, never one that still has user content.
@@ -2053,19 +2325,40 @@ UNINSTALL_POLICIES
 if [ "$UNINSTALL" -eq 1 ]; then
   UNINSTALL_CLAUDE=1
   UNINSTALL_CODEX=1
+  UNINSTALL_COPILOT=1
   if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
     UNINSTALL_CLAUDE=0
     UNINSTALL_CODEX=0
+    UNINSTALL_COPILOT=0
     case "$PLATFORM_ARG" in
       claude) UNINSTALL_CLAUDE=1 ;;
       codex) UNINSTALL_CODEX=1 ;;
       both) UNINSTALL_CLAUDE=1; UNINSTALL_CODEX=1 ;;
+      copilot) UNINSTALL_COPILOT=1 ;;
+      all) UNINSTALL_CLAUDE=1; UNINSTALL_CODEX=1; UNINSTALL_COPILOT=1 ;;
     esac
+  fi
+  if [ "$UNINSTALL_COPILOT" -eq 1 ] && { [ -d "$TARGET_DIR/.github/.domestique" ] || [ -e "$TARGET_DIR/.github/.domestique/mode" ] || { [ -e "$TARGET_DIR/.github/copilot-instructions.md" ] && grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/.github/copilot-instructions.md" 2>/dev/null; }; }; then
+    echo "Error: Copilot uninstall is not supported yet; no files were changed." >&2
+    exit 1
   fi
   echo "domestique: uninstalling from $TARGET_DIR (platform=${PLATFORM_ARG:-all})"
   [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
   do_uninstall "$TARGET_DIR"
   exit $?
+fi
+
+# Copilot guest projection is deliberately deferred to its owning lifecycle
+# task.  Check it only for installation: a scoped Claude/Codex uninstall must
+# be allowed to retain an existing Copilot guest projection unchanged.
+if [ "$SELECT_COPILOT" -eq 1 ] && { [ "$REQUESTED_GUEST" -eq 1 ] || [ "$NO_GUEST" -eq 1 ] || [ "$(cat "$TARGET_DIR/.github/.domestique/mode" 2>/dev/null || true)" = "guest" ]; }; then
+  echo "Error: Copilot guest install or conversion is not supported yet; no files were changed." >&2
+  exit 1
+fi
+if [ "$SELECT_COPILOT" -eq 1 ] && ! copilot_compatibility_guards_are_safe; then
+  echo "Error: refusing to enable Copilot with legacy or locally modified Claude/Codex authorization guards; no files were changed." >&2
+  echo "       Repair the affected managed compatibility guard and re-run; the preflight above identifies the path." >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -2106,6 +2399,23 @@ if [ "$SELECT_CODEX" -eq 1 ]; then
     CODEX_GUEST_SELECTED=1
     printf '%s\n' "Note: Codex guest mode is skills-only; start each new session with \`\$domestique\`." >&2
   fi
+  install_current_provider
+fi
+if [ "$SELECT_COPILOT" -eq 1 ]; then
+  COPILOT_PREEXIST_POLICY=0
+  COPILOT_PREEXIST_IMPL=0
+  COPILOT_PREEXIST_REVIEWER=0
+  COPILOT_PREEXIST_BASE_SKILL=0
+  COPILOT_PREEXIST_DECOMPOSE_SKILL=0
+  COPILOT_PREEXIST_GOAL_SKILL=0
+  [ -e "$TARGET_DIR/.github/copilot-instructions.md" ] && [ ! -e "$TARGET_DIR/.github/.domestique/created-files" ] && COPILOT_PREEXIST_POLICY=1
+  [ -e "$TARGET_DIR/.github/agents/domestique-implementer.agent.md" ] && [ ! -e "$TARGET_DIR/.github/.domestique/created-files" ] && COPILOT_PREEXIST_IMPL=1
+  [ -e "$TARGET_DIR/.github/agents/domestique-reviewer.agent.md" ] && [ ! -e "$TARGET_DIR/.github/.domestique/created-files" ] && COPILOT_PREEXIST_REVIEWER=1
+  [ -e "$TARGET_DIR/.github/skills/domestique/SKILL.md" ] && [ ! -e "$TARGET_DIR/.github/.domestique/created-files" ] && COPILOT_PREEXIST_BASE_SKILL=1
+  [ -e "$TARGET_DIR/.github/skills/domestique-decompose/SKILL.md" ] && [ ! -e "$TARGET_DIR/.github/.domestique/created-files" ] && COPILOT_PREEXIST_DECOMPOSE_SKILL=1
+  [ -e "$TARGET_DIR/.github/skills/domestique-goal/SKILL.md" ] && [ ! -e "$TARGET_DIR/.github/.domestique/created-files" ] && COPILOT_PREEXIST_GOAL_SKILL=1
+  configure_provider copilot
+  resolve_provider_mode
   install_current_provider
 fi
 
@@ -2171,6 +2481,10 @@ if [ "$WITH_BEADS" -eq 1 ]; then
         if [ "$DRY_RUN" -eq 1 ]; then note_dry "run: bd setup codex (in $TARGET_DIR)"
         else ( cd "$TARGET_DIR" && bd setup codex ); fi
         SUM_UPDATED+=("bd setup codex")
+      fi
+      if [ "$SELECT_COPILOT" -eq 1 ]; then
+        echo "Note: Copilot --with-beads skips bd setup copilot; its recipe writes plugin/global configuration outside this projection." >&2
+        SUM_SKIPPED+=("bd setup copilot (intentionally skipped)")
       fi
     else
       SUM_SKIPPED+=("bd setup (beads workspace unavailable)")
