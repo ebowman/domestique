@@ -941,10 +941,513 @@ $(emit_private_adapter_body copilot "$scope" "$role" "$root")
 DOM_EOF
 }
 
+# Explicit global scope is deliberately separate from the legacy project
+# merge engine. Never feed user-native metadata to that engine.
+global_fail() { printf 'domestique global: %s\n' "$*" >&2; exit 1; }
+global_hash() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256
+  else sha256sum; fi | awk '{print $1}'
+}
+global_stat() {
+  if [ "$(uname -s)" = Darwin ]; then stat -f '%u %Lp' "$1"
+  else stat -c '%u %a' "$1"; fi
+}
+
+# Walk only exact ancestors, never provider directory inventories. System
+# ancestors may be root-owned; writable shared ancestors must be sticky.
+global_path() {
+  local path="$1" boundary="$2" walk="" rest part info owner mode bits parent
+  case "$path" in /|/*/|*//*|*/./*|*/../*|*/.|*/..|*[=$'\001'-$'\037'$'\177']*)
+    global_fail "noncanonical or non-data path";;
+    /*) ;; *) global_fail "absolute paths required";; esac
+  rest="${path#/}"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"; walk="$walk/$part"
+    [ "$part" = "$rest" ] && rest="" || rest="${rest#*/}"
+    [ ! -L "$walk" ] || global_fail "symlinked path component: $walk"
+    if [ -e "$walk" ]; then
+      [ -z "$rest" ] || [ -d "$walk" ] || global_fail "non-directory parent: $walk"
+      info="$(global_stat "$walk")" || global_fail "cannot stat path"
+      owner="${info%% *}"; mode="${info#* }"; bits=$((8#$mode))
+      case "$walk/" in "$boundary/"*)
+        [ "$owner" = "$G_UID" ] || global_fail "unowned path: $walk"
+        [ $((bits & 022)) -eq 0 ] || global_fail "writable by others: $walk"
+        [ $((bits & 0600)) -eq 384 ] || global_fail "owner read/write permissions required: $walk"
+        [ -r "$walk" ] && [ -w "$walk" ] || global_fail "unreadable/unwritable path: $walk"
+        ;;
+        *)
+          [ "$owner" = 0 ] || [ "$owner" = "$G_UID" ] || global_fail "unsafe ancestor owner: $walk"
+          [ $((bits & 022)) -eq 0 ] || {
+            [ -d "$walk" ] && [ $((bits & 01000)) -ne 0 ] && [ "$owner" = 0 ] ||
+              global_fail "unsafe writable ancestor: $walk"
+          }
+          ;;
+      esac
+      [ ! -d "$walk" ] || [ -x "$walk" ] || global_fail "unsearchable directory: $walk"
+      [ -f "$walk" ] || [ -d "$walk" ] || global_fail "unsupported filesystem object: $walk"
+    else
+      parent="${walk%/*}"; [ -n "$parent" ] || parent=/
+      if [ -e "$parent" ]; then
+        [ -d "$parent" ] && [ -w "$parent" ] && [ -x "$parent" ] ||
+          global_fail "cannot create under parent: $parent"
+      fi
+    fi
+  done
+}
+global_no_repo() {
+  local p="$1"
+  while [ ! -d "$p" ]; do p="${p%/*}"; [ -n "$p" ] || p=/; done
+  if git -C "$p" rev-parse --show-toplevel >/dev/null 2>&1; then
+    global_fail "global destination is inside a worktree: $1"
+  fi
+}
+global_select() {
+  case "$1" in
+    claude) G_C=1;; codex) G_X=1;; copilot) G_P=1;;
+    both) G_C=1; G_X=1;; claude-copilot) G_C=1; G_P=1;;
+    codex-copilot) G_X=1; G_P=1;; all) G_C=1; G_X=1; G_P=1;;
+    *) global_fail "invalid persisted provider set";;
+  esac
+}
+global_set_name() {
+  case "$G_C$G_X$G_P" in
+    100) G_SET=claude;; 010) G_SET=codex;; 001) G_SET=copilot;;
+    110) G_SET=both;; 101) G_SET=claude-copilot;;
+    011) G_SET=codex-copilot;; 111) G_SET=all;;
+    *) global_fail "empty provider set";;
+  esac
+}
+# Native keys are provider-qualified HOME-relative leaves (Codex spans two
+# native roots). core: is reserved, and cannot be selected as a provider.
+global_inventory() {
+  local provider suffix role skills agents ext
+  for provider in claude codex copilot; do
+    case "$provider" in
+      claude) [ "$G_C" = 1 ] || continue; skills=.claude; agents=.claude; ext=md;;
+      codex) [ "$G_X" = 1 ] || continue; skills=.agents; agents=.codex; ext=toml;;
+      copilot) [ "$G_P" = 1 ] || continue; skills=.copilot; agents=.copilot; ext=agent.md;;
+    esac
+    for suffix in '' -decompose -goal; do
+      printf '%s:%s/skills/domestique-%s%s/SKILL.md\n' "$provider" "$skills" "$provider" "$suffix"
+    done
+    for role in implementer reviewer; do
+      printf '%s:%s/agents/domestique-%s-%s.%s\n' "$provider" "$agents" "$provider" "$role" "$ext"
+    done
+    [ "$provider" != codex ] || printf '%s\n' 'codex:.agents/skills/domestique-codex-goal/agents/openai.yaml'
+  done
+}
+global_emit_leaf() {
+  local key="$1" provider="${1%%:*}" leaf="${1#*:}" suffix="" role
+  case "$key" in
+    core:bin/resolve-core) emit_private_core_resolver;;
+    core:active) printf 'release=%s\n' "$G_RELEASE";;
+    core:releases/*/API) emit_private_core_api "$G_RELEASE";;
+    core:releases/*/SHA256SUMS) emit_private_core_sums;;
+    core:releases/*/roles/*.md)
+      role="${leaf##*/}"; "emit_private_core_${role%.md}";;
+    */openai.yaml) emit_private_codex_goal_metadata;;
+    */SKILL.md)
+      case "$leaf" in *-decompose/*) suffix=-decompose;; *-goal/*) suffix=-goal;; esac
+      "emit_private_${provider}_skill" "$suffix" "$G_ROOT";;
+    *)
+      case "$leaf" in *-implementer.*) role=implementer;; *-reviewer.*) role=reviewer;;
+        *) global_fail "invalid inventory leaf";; esac
+      "emit_private_${provider}_agent" global "$role" "$G_ROOT";;
+  esac
+}
+global_destination() {
+  case "$1" in core:*) G_DEST="$G_ROOT/${1#*:}";;
+    *) G_DEST="$HOME/${1#*:}";; esac
+}
+global_index() {
+  local j
+  G_INDEX=-1
+  for ((j=0; j<${#G_KEYS[@]}; j++)); do
+    if [ "${G_KEYS[j]}" = "$1" ]; then G_INDEX="$j"; return; fi
+  done
+}
+global_digest_valid() {
+  [ "${#1}" -eq 64 ] && case "$1" in *[!0-9a-f]*) return 1;; *) return 0;; esac
+}
+
+# Parse data, never source/eval it. Exact ordered singleton header followed by
+# paired created/baseline records; re-emission below rejects every ambiguity.
+global_read_manifest() {
+  local file="$G_ROOT/state/global-manifest" line key value digest previous="" n=0
+  local old_c="$G_C" old_x="$G_X" old_p="$G_P" expected actual
+  [ -f "$file" ] || global_fail "core exists without global-manifest; manual recovery required"
+  while IFS= read -r line; do
+    n=$((n + 1))
+    case "$n" in
+      1) [ "$line" = format=1 ] || global_fail "invalid manifest format";;
+      2) [ "$line" = scope=global ] || global_fail "invalid manifest scope";;
+      3) [ "$line" = "core_root=$G_ROOT" ] || global_fail "manifest root mismatch";;
+      4) [ "$line" = core_api=1 ] || global_fail "incompatible manifest API";;
+      5)
+        case "$line" in providers=*) ;; *) global_fail "missing manifest providers";; esac
+        G_C=0; G_X=0; G_P=0; global_select "${line#providers=}"
+        G_OLD_SET="${line#providers=}"
+        ;;
+      *)
+        key="${line%%=*}"; value="${line#*=}"; digest="${value##*:}"; value="${value%:*}"
+        global_digest_valid "$digest" || global_fail "invalid manifest digest"
+        case "$key" in
+          created)
+            [ -z "$previous" ] || global_fail "unpaired manifest record"
+            global_index "$value"; [ "$G_INDEX" = -1 ] || global_fail "duplicate manifest leaf"
+            G_KEYS+=("$value"); G_CREATED+=("$digest"); previous="$value";;
+          baseline)
+            [ -n "$previous" ] && [ "$previous" = "$value" ] || global_fail "unpaired baseline"
+            G_BASE+=("$digest"); previous="";;
+          *) global_fail "unknown manifest field";;
+        esac
+        ;;
+    esac
+  done < "$file"
+  [ "$n" -ge 7 ] && [ -z "$previous" ] && [ -z "$line" ] || global_fail "truncated manifest"
+  expected="$(global_inventory)"
+  actual="$(printf '%s\n' "${G_KEYS[@]}" | grep -v '^core:' || true)"
+  [ "$expected" = "$actual" ] || global_fail "manifest native inventory mismatch"
+  G_C="$old_c"; G_X="$old_x"; G_P="$old_p"; global_select "$G_OLD_SET"
+}
+global_manifest() {
+  local j
+  printf 'format=1\nscope=global\ncore_root=%s\ncore_api=1\nproviders=%s\n' "$G_ROOT" "$G_SET"
+  for ((j=0; j<${#G_KEYS[@]}; j++)); do
+    printf 'created=%s:%s\nbaseline=%s:%s\n' "${G_KEYS[j]}" "${G_CREATED[j]}" "${G_KEYS[j]}" "${G_BASE[j]}"
+  done
+}
+
+# Passing an existing parent directory, with the desired basename on the
+# source, makes ln perform one link(2) at the exact leaf. Passing the desired
+# leaf as ln's destination would instead descend into a newly appeared
+# directory (or symlink to one). This works with both BSD and GNU ln.
+global_link_new() {
+  local source="$1" dest="$2" linkdir
+  linkdir="$(mktemp -d "${dest%/*}/.domestique-link.XXXXXXXX")" || return
+  ln "$source" "$linkdir/${dest##*/}" || return
+  ln "$linkdir/${dest##*/}" "${dest%/*}" || return
+  rm -rf "$linkdir"
+}
+
+global_check_core_tree() {
+  local paths path key allowed parent
+  paths="$(find "$G_ROOT" -mindepth 1 -print)" || global_fail "cannot inspect owned core"
+  while IFS= read -r path; do
+    global_path "$path" "$G_ROOT"
+    allowed=0
+    [ "$path" != "$G_ROOT/state/global-manifest" ] || allowed=1
+    for key in "${G_KEYS[@]}" core:state/global-manifest; do
+      case "$key" in core:*) ;; *) continue;; esac
+      parent="$G_ROOT/${key#*:}"
+      while [ "$parent" != "$G_ROOT" ]; do
+        [ "$path" != "$parent" ] || allowed=1
+        parent="${parent%/*}"
+      done
+    done
+    [ "$allowed" = 1 ] || global_fail "unowned core entry; not adopted: $path"
+  done <<< "$paths"
+}
+
+global_install() {
+  G_UID="$(id -u)"
+  G_ROOT="${DOMESTIQUE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/domestique}"
+  G_C=0; G_X=0; G_P=0; G_OLD_SET=""; G_KEYS=(); G_CREATED=(); G_BASE=()
+  global_path "$HOME" "$HOME"; global_no_repo "$HOME"
+  [ -z "${XDG_STATE_HOME:-}" ] || global_path "$XDG_STATE_HOME" "$XDG_STATE_HOME"
+  global_path "$G_ROOT" "$G_ROOT"; global_no_repo "$G_ROOT"
+  case "$HOME/" in "$G_ROOT/"*) global_fail "core overlaps HOME";; esac
+  local native
+  for native in .claude .agents .codex .copilot; do
+    case "$G_ROOT/" in "$HOME/$native/"*) global_fail "core overlaps native root";; esac
+  done
+  # Validate all reserved state paths before opening any of them.
+  local p key digest j role old_count=0 old_active="" new_keys="" release old_manifest=""
+  for p in state state/global-manifest state/pending state/previous state/published bin bin/resolve-core active releases; do
+    global_path "$G_ROOT/$p" "$G_ROOT"
+  done
+  [ ! -e "$G_ROOT/state/pending" ] ||
+    global_fail "PARTIAL publication: state/pending retained; follow documented manual recovery before retry"
+  if [ -e "$G_ROOT" ]; then
+    global_read_manifest
+    old_count="${#G_KEYS[@]}"
+    global_check_core_tree
+    local selected_set
+    global_set_name; selected_set="$G_SET"; G_SET="$G_OLD_SET"
+    old_manifest="$(global_manifest)"
+    G_SET="$selected_set"
+    # Check every owned leaf against pristine digests without copying bytes.
+    # No force escape, no backups, no excerpts (even for metadata corruption).
+    for ((j=0; j<old_count; j++)); do
+      key="${G_KEYS[j]}"
+      case "$key" in
+        core:bin/resolve-core|core:active) ;;
+        core:releases/*)
+          [ "${G_CREATED[j]}" = "${G_BASE[j]}" ] ||
+            global_fail "immutable release provenance changed"
+          p="${key#core:releases/}"; release="${p%%/*}"; p="${p#*/}"
+          global_digest_valid "${release#r-}" && [ "${release#r-}" != "$release" ] ||
+            global_fail "invalid manifest release"
+          case "$p" in API|SHA256SUMS|roles/goal.md|roles/implementer.md|roles/orchestrator.md|roles/reviewer.md) ;;
+            *) global_fail "out-of-bounds core leaf";; esac
+          ;;
+        core:*) global_fail "out-of-bounds core leaf";;
+      esac
+      global_destination "$key"; global_path "$G_DEST" "${G_DEST%/${key#*:}}"
+      global_no_repo "$G_DEST"
+      [ -f "$G_DEST" ] || global_fail "missing owned asset: $key"
+      digest="$(global_hash < "$G_DEST")"
+      [ "$digest" = "${G_BASE[j]}" ] ||
+        global_fail "edited/corrupt owned asset: $key; left untouched (including --force); restore pristine bytes manually"
+    done
+    global_index core:active; [ "$G_INDEX" != -1 ] || global_fail "missing active provenance"
+    global_index core:bin/resolve-core; [ "$G_INDEX" != -1 ] || global_fail "missing helper provenance"
+  fi
+  if [ "$PLATFORM_EXPLICIT" = 1 ]; then global_select "$PLATFORM_ARG"
+  elif [ -z "$G_OLD_SET" ]; then global_select claude; fi
+  global_set_name
+  G_RELEASE="$(emit_private_core_release_id)"
+  global_index "core:releases/$G_RELEASE/API"
+  local release_owned="$G_INDEX"
+
+  # Temporary rendering uses only embedded source, never live native metadata.
+  # It is outside destination trees, even for a dry run with absent roots.
+  local temp_parent="${TMPDIR:-/tmp}"
+  temp_parent="$(cd "$temp_parent" && pwd -P)" || global_fail "temporary parent unavailable"
+  case "$temp_parent/" in "$HOME/"*|"$G_ROOT/"*) global_fail "temporary staging must be outside destination roots";; esac
+  global_no_repo "$temp_parent"
+  global_path "$temp_parent/domestique-stage" "$temp_parent/domestique-stage"
+  G_STAGE="$(mktemp -d "$temp_parent/domestique-global.XXXXXXXX")"
+  G_STAGE="$(cd "$G_STAGE" && pwd -P)"
+  G_WRITING=0
+  trap 'rc=$?; rm -rf "$G_STAGE"; if [ "$rc" -ne 0 ] && [ "$G_WRITING" = 1 ]; then printf "%s\n" "domestique global: PARTIAL publication; active was switched only if all assets completed. Retain state/pending and global-manifest; see recovery documentation." >&2; fi' EXIT
+  mkdir -p "$G_STAGE/core/releases/$G_RELEASE/roles"
+  emit_private_core_resolver > "$G_STAGE/resolver"
+  bash -n "$G_STAGE/resolver" || global_fail "emitted helper syntax"
+  for role in goal implementer orchestrator reviewer; do
+    "emit_private_core_$role" > "$G_STAGE/core/releases/$G_RELEASE/roles/$role.md"
+  done
+  emit_private_core_api "$G_RELEASE" > "$G_STAGE/core/releases/$G_RELEASE/API"
+  emit_private_core_sums > "$G_STAGE/core/releases/$G_RELEASE/SHA256SUMS"
+  bash "$G_STAGE/resolver" bind "$G_STAGE/core" orchestrator "$G_RELEASE" >/dev/null ||
+    global_fail "staged core validation failed"
+  if [ "$old_count" -gt 0 ]; then
+    # Never execute the installed helper, even when its recorded digest agrees.
+    old_active="$(bash "$G_STAGE/resolver" bind "$G_ROOT" orchestrator)" ||
+      global_fail "existing core validation failed"
+    local checked_releases=" "
+    for key in "${G_KEYS[@]}"; do
+      case "$key" in core:releases/*)
+        release="${key#core:releases/}"; release="${release%%/*}"
+        case "$checked_releases" in *" $release "*) continue;; esac
+        checked_releases="$checked_releases$release "
+        for p in API SHA256SUMS roles/goal.md roles/implementer.md roles/orchestrator.md roles/reviewer.md; do
+          global_index "core:releases/$release/$p"
+          [ "$G_INDEX" != -1 ] || global_fail "incomplete release provenance"
+        done
+        bash "$G_STAGE/resolver" bind "$G_ROOT" reviewer "$release" >/dev/null ||
+          global_fail "retained release validation failed";;
+      esac
+    done
+    global_index "core:releases/$old_active/API"
+    [ "$G_INDEX" != -1 ] || global_fail "active release is unowned"
+    # Canonical file formatting is independently checked, not just parsed.
+    local save_set="$G_SET"
+    G_SET="$G_OLD_SET"
+    cmp -s "$G_ROOT/state/global-manifest" <(global_manifest) ||
+      global_fail "noncanonical global-manifest"
+    G_SET="$save_set"
+  fi
+
+  new_keys="$(global_inventory)
+core:bin/resolve-core
+core:active"
+  for p in API SHA256SUMS roles/goal.md roles/implementer.md roles/orchestrator.md roles/reviewer.md; do
+    new_keys="$new_keys"$'\n'"core:releases/$G_RELEASE/$p"
+  done
+  G_PLAN_KEYS=(); G_PLAN_OLD=(); G_PLAN_HASH=()
+  while IFS= read -r key; do
+    global_destination "$key"
+    case "$key" in core:*) global_path "$G_DEST" "$G_ROOT";;
+      *) global_path "$G_DEST" "$HOME";; esac
+    global_no_repo "$G_DEST"
+    global_index "$key"; j="$G_INDEX"
+    if [ "$j" = -1 ]; then
+      [ ! -e "$G_DEST" ] || global_fail "unknown collision (even identical/--force): $key"
+    fi
+    p="${#G_PLAN_KEYS[@]}"
+    global_emit_leaf "$key" > "$G_STAGE/leaf-$p"
+    # Emitted fenced shell is checked without executing any model/client.
+    case "$key" in */SKILL.md|claude:*|copilot:*)
+      awk '/^```bash$/ {on=1; next} /^```$/ {on=0} on' "$G_STAGE/leaf-$p" |
+        bash -n || global_fail "emitted adapter shell syntax";;
+    esac
+    digest="$(global_hash < "$G_STAGE/leaf-$p")"
+    G_PLAN_KEYS+=("$key"); G_PLAN_HASH+=("$digest")
+    if [ "$j" = -1 ]; then
+      G_PLAN_OLD+=(""); G_KEYS+=("$key"); G_CREATED+=("$digest"); G_BASE+=("$digest")
+    else
+      G_PLAN_OLD+=("${G_BASE[j]}"); G_BASE[j]="$digest"
+    fi
+  done <<< "$new_keys"
+  # Normalize native inventory order on additive installs, followed by core
+  # assets in their retained insertion order. No timestamps or live snapshots.
+  local ordered_keys=() ordered_created=() ordered_base=()
+  while IFS= read -r key; do
+    global_index "$key"
+    ordered_keys+=("$key"); ordered_created+=("${G_CREATED[G_INDEX]}"); ordered_base+=("${G_BASE[G_INDEX]}")
+  done < <(global_inventory; printf '%s\n' "${G_KEYS[@]}" | grep '^core:')
+  G_KEYS=("${ordered_keys[@]}"); G_CREATED=("${ordered_created[@]}"); G_BASE=("${ordered_base[@]}")
+  global_manifest > "$G_STAGE/manifest"
+  if [ "$old_count" -gt 0 ]; then printf '%s\n' "$old_manifest" > "$G_STAGE/previous"
+  else printf '%s\n' 'fresh-install' > "$G_STAGE/previous"; fi
+  if [ "$old_count" -gt 0 ] && cmp -s "$G_STAGE/manifest" "$G_ROOT/state/global-manifest"; then
+    printf 'domestique global: up to date (%s)\n' "$G_SET"; return
+  fi
+  printf 'domestique global: plan providers=%s release=%s\n' "$G_SET" "$G_RELEASE"
+  [ "$DRY_RUN" = 0 ] || return 0
+
+  # An exclusive pending journal is also the bounded writer lock. Hard links
+  # create leaves without clobbering a file that appeared after preflight.
+  # Existing leaves are rechecked immediately before same-directory rename.
+  umask 077
+  # Recheck the entire plan before creating anything in a destination tree.
+  if [ "$old_count" -gt 0 ]; then
+    cmp -s "$G_STAGE/previous" "$G_ROOT/state/global-manifest" ||
+      global_fail "state changed after preflight"
+  else
+    [ ! -e "$G_ROOT" ] && [ ! -L "$G_ROOT" ] ||
+      global_fail "core root appeared after preflight"
+  fi
+  for ((j=0; j<${#G_PLAN_KEYS[@]}; j++)); do
+    key="${G_PLAN_KEYS[j]}"; global_destination "$key"
+    case "$key" in core:*) global_path "$G_DEST" "$G_ROOT";;
+      *) global_path "$G_DEST" "$HOME";; esac
+    if [ -z "${G_PLAN_OLD[j]}" ]; then
+      [ ! -e "$G_DEST" ] || global_fail "destination appeared after preflight: $key"
+    else
+      [ -f "$G_DEST" ] && [ "$(global_hash < "$G_DEST")" = "${G_PLAN_OLD[j]}" ] ||
+        global_fail "destination changed after preflight: $key"
+    fi
+  done
+  G_WRITING=1
+  if [ "$old_count" = 0 ]; then
+    mkdir -p "${G_ROOT%/*}"
+    mkdir "$G_ROOT" || global_fail "core root appeared during creation"
+  fi
+  mkdir -p "$G_ROOT/state" "$G_ROOT/releases" "$G_ROOT/bin"
+  p="$(mktemp "$G_ROOT/state/.journal.XXXXXXXX")"
+  cp "$G_STAGE/manifest" "$p"
+  if ! global_link_new "$p" "$G_ROOT/state/pending"; then
+    rm -f "$p"
+    global_fail "concurrent/partial publication; pending journal already exists"
+  fi
+  rm "$p"
+  G_WRITING=1
+  p="$(mktemp "$G_ROOT/state/.journal.XXXXXXXX")"
+  cp "$G_STAGE/previous" "$p"
+  global_link_new "$p" "$G_ROOT/state/previous" || global_fail "previous journal appeared; not adopted"
+  rm "$p"
+  p="$(mktemp "$G_ROOT/state/.journal.XXXXXXXX")"
+  global_link_new "$p" "$G_ROOT/state/published" || global_fail "publication log appeared; not adopted"
+  rm "$p"
+  if [ "$release_owned" = -1 ]; then
+    # mkdir (without -p) exclusively claims the exact final name. Unlike a
+    # directory mv, it cannot follow a racing symlink or nest inside a racing
+    # directory, even an empty/identical one. Do not populate unless we won.
+    p="$G_ROOT/releases/$G_RELEASE"
+    mkdir "$p" || global_fail "release appeared during publication; not adopted"
+    printf 'release-claimed=%s\n' "$G_RELEASE" >> "$G_ROOT/state/published"
+    mkdir "$p/roles"
+    # Only generated, fixed allowlisted files enter this unadvertised release.
+    # Noclobber also refuses a leaf that appeared after the directory claim.
+    (
+      set -C
+      for key in API SHA256SUMS roles/goal.md roles/implementer.md roles/orchestrator.md roles/reviewer.md; do
+        cat "$G_STAGE/core/releases/$G_RELEASE/$key" > "$p/$key" || exit 1
+      done
+    ) || global_fail "release population failed"
+    global_validate_published_release
+    printf 'release=%s\n' "$G_RELEASE" >> "$G_ROOT/state/published"
+  fi
+  for ((j=0; j<${#G_PLAN_KEYS[@]}; j++)); do
+    key="${G_PLAN_KEYS[j]}"
+    case "$key" in core:active|core:releases/*) continue;; esac
+    [ "${G_PLAN_OLD[j]}" != "${G_PLAN_HASH[j]}" ] || continue
+    global_publish_leaf "$j"
+  done
+  # State and adapters are compatible with both API-1 releases. Active LAST.
+  local manifest_stage
+  manifest_stage="$(mktemp -d "$G_ROOT/state/.manifest.XXXXXXXX")"
+  p="$manifest_stage/global-manifest"
+  cp "$G_STAGE/manifest" "$p"
+  if [ "$old_count" = 0 ]; then
+    global_link_new "$p" "$G_ROOT/state/global-manifest" || global_fail "manifest appeared; not adopted"
+    rm "$p"
+  else
+    cmp -s "$G_STAGE/previous" "$G_ROOT/state/global-manifest" ||
+      global_fail "manifest changed during publication"
+    mv -f "$p" "$G_ROOT/state"
+  fi
+  rmdir "$manifest_stage"
+  for ((j=0; j<${#G_PLAN_KEYS[@]}; j++)); do
+    [ "${G_PLAN_KEYS[j]}" = core:active ] || continue
+    [ "${G_PLAN_OLD[j]}" != "${G_PLAN_HASH[j]}" ] || continue
+    global_publish_leaf "$j"
+  done
+  global_validate_published_release
+  rm "$G_ROOT/state/published"
+  rm "$G_ROOT/state/previous"
+  rm "$G_ROOT/state/pending"
+  G_WRITING=0
+  printf 'domestique global: published (%s)\n' "$G_SET"
+}
+global_validate_published_release() {
+  # Execute only the freshly emitted compatible helper, never installed code.
+  bash "$G_STAGE/resolver" bind "$G_ROOT" orchestrator "$G_RELEASE" >/dev/null ||
+    global_fail "final published release validation failed"
+  diff -r "$G_STAGE/core/releases/$G_RELEASE" "$G_ROOT/releases/$G_RELEASE" >/dev/null ||
+    global_fail "final published release differs from exact staged inventory"
+}
+global_publish_leaf() {
+  local j="$1" key="${G_PLAN_KEYS[$1]}" parent stage stage_dir digest
+  global_destination "$key"
+  case "$key" in core:*) global_path "$G_DEST" "$G_ROOT";;
+    *) global_path "$G_DEST" "$HOME";; esac
+  parent="${G_DEST%/*}"; mkdir -p "$parent"
+  stage_dir="$(mktemp -d "$parent/.domestique-stage.XXXXXXXX")"
+  stage="$stage_dir/${G_DEST##*/}"
+  cp "$G_STAGE/leaf-$j" "$stage"
+  digest="$(global_hash < "$stage")"
+  [ "$digest" = "${G_PLAN_HASH[j]}" ] || global_fail "staged asset digest mismatch: $key"
+  if [ "$key" = core:active ]; then global_validate_published_release; fi
+  if [ -z "${G_PLAN_OLD[j]}" ]; then
+    ln "$stage" "$parent" || global_fail "destination appeared; not adopted: $key"
+    rm "$stage"
+  else
+    [ -f "$G_DEST" ] && [ ! -L "$G_DEST" ] &&
+      [ "$(global_hash < "$G_DEST")" = "${G_PLAN_OLD[j]}" ] ||
+      global_fail "destination changed; left untouched: $key"
+    mv -f "$stage" "$parent"
+  fi
+  rmdir "$stage_dir"
+  printf 'published=%s:%s\n' "$key" "${G_PLAN_HASH[j]}" >> "$G_ROOT/state/published"
+}
+
 # ---------------------------------------------------------------------------
 usage() {
   cat <<'EOF'
 Usage: domestique.sh [TARGET_DIR] [options]
+       domestique.sh --global [--platform P] [--dry-run] [--force] [--guest]
+
+Explicit --global installs private native user skills/agents and the shared
+API-1 core; no target or repository writes. Default Claude; additive persisted
+provider union. Also accepts claude-copilot and codex-copilot. --guest is a
+deprecated no-op here. Unknown or edited native assets refuse even --force.
+--with-beads, --purge-beads, --no-guest and targets are invalid with --global.
+Global uninstall and --local/state-only/migration are future work, refused.
+Without --global, the legacy project behavior below is unchanged (never an
+implicit home installation).
 
 Installs domestique orchestration config into TARGET_DIR (default: current
 directory). Claude is the compatibility default; Codex and Copilot use native surfaces:
@@ -1042,6 +1545,7 @@ EOF
 }
 
 TARGET_DIR=""
+TARGET_EXPLICIT=0
 PLATFORM_ARG=""
 PLATFORM_EXPLICIT=0
 DRY_RUN=0
@@ -1052,9 +1556,11 @@ GUEST_EXPLICIT=0
 NO_GUEST=0
 UNINSTALL=0
 PURGE_BEADS=0
+GLOBAL=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --global) GLOBAL=1 ;;
     --platform)
       [ "$#" -ge 2 ] || { echo "Missing argument for --platform" >&2; exit 2; }
       PLATFORM_ARG="$2"; PLATFORM_EXPLICIT=1; shift ;;
@@ -1071,12 +1577,26 @@ while [ $# -gt 0 ]; do
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
+      TARGET_EXPLICIT=1
       if [ -z "$TARGET_DIR" ]; then TARGET_DIR="$1"
       else echo "Unexpected argument: $1" >&2; exit 2; fi
       ;;
   esac
   shift
 done
+if [ "$GLOBAL" = 1 ]; then
+  [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$WITH_BEADS" = 0 ] &&
+    [ "$PURGE_BEADS" = 0 ] && [ "$NO_GUEST" = 0 ] ||
+    { echo "Invalid --global scope/target/options" >&2; exit 2; }
+  [ "$UNINSTALL" = 0 ] || { echo "Global uninstall is not implemented yet" >&2; exit 2; }
+  case "${PLATFORM_ARG:-claude}" in claude|codex|copilot|both|claude-copilot|codex-copilot|all) ;;
+    *) echo "Invalid global --platform" >&2; exit 2;; esac
+  [ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM_ARG" ] ||
+    { echo "Empty --platform" >&2; exit 2; }
+  [ "$GUEST" = 0 ] || echo "Warning: --guest is a deprecated no-op in global scope" >&2
+  global_install
+  exit 0
+fi
 TARGET_DIR="${TARGET_DIR:-.}"
 
 case "${PLATFORM_ARG:-claude}" in

@@ -10,6 +10,14 @@ DEFAULT_SOURCE="https://raw.githubusercontent.com/ebowman/domestique/main/domest
 usage() {
   cat <<EOF
 Usage: update.sh [TARGET_DIR] [options]
+       update.sh --global [options]
+
+--global updates private native user defaults and the API-1 core, with no
+target argument or repository writes. A failed global preview never applies.
+Global --guest is a deprecated no-op; --no-guest is invalid. --local,
+state-only, migration and global uninstall are not implemented yet.
+Global unknown or edited native assets refuse, even with --force.
+Legacy bare/positional operation below remains project-only.
 
 Fetches the latest domestique.sh (default source:
   $DEFAULT_SOURCE
@@ -25,7 +33,8 @@ Options:
   --force              Pass through to domestique.sh (discard local edits,
                         take upstream verbatim; see domestique.sh --help).
   --platform <value>   Pass through the install platform: claude, codex,
-                        copilot, both, or all. When omitted, domestique.sh reuses its persisted
+                        copilot, both, or all (global also: claude-copilot,
+                        codex-copilot). When omitted, domestique.sh reuses its persisted
                         platform set (or defaults to Claude on a first run).
   --guest              Pass through to domestique.sh. Claude uses
                         CLAUDE.local.md; Codex uses skills-only guest mode and
@@ -47,15 +56,19 @@ EOF
 }
 
 TARGET_DIR=""
+TARGET_EXPLICIT=0
 SOURCE="${DOMESTIQUE_UPDATE_SOURCE:-$DEFAULT_SOURCE}"
 UPDATER_DRY_RUN=0
 FORCE=0
 GUEST=0
 NO_GUEST=0
 PLATFORM=""
+PLATFORM_EXPLICIT=0
+GLOBAL=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --global) GLOBAL=1 ;;
     --source)
       [ $# -ge 2 ] || { echo "Missing argument for --source" >&2; exit 2; }
       SOURCE="$2"; shift ;;
@@ -64,24 +77,36 @@ while [ $# -gt 0 ]; do
     --force)   FORCE=1 ;;
     --platform)
       [ $# -ge 2 ] || { echo "Missing argument for --platform" >&2; exit 2; }
-      PLATFORM="$2"; shift ;;
-    --platform=*) PLATFORM="${1#--platform=}" ;;
+      PLATFORM="$2"; PLATFORM_EXPLICIT=1; shift ;;
+    --platform=*) PLATFORM="${1#--platform=}"; PLATFORM_EXPLICIT=1 ;;
     --guest)     GUEST=1 ;;
     --no-guest)  NO_GUEST=1 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
+      TARGET_EXPLICIT=1
       if [ -z "$TARGET_DIR" ]; then TARGET_DIR="$1"
       else echo "Unexpected argument: $1" >&2; exit 2; fi
       ;;
   esac
   shift
 done
-TARGET_DIR="${TARGET_DIR:-.}"
+TARGET_ARGS=()
+if [ "$GLOBAL" = 1 ]; then
+  [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
+    { echo "Invalid --global scope/target/options" >&2; exit 2; }
+  [ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM" ] ||
+    { echo "Empty --platform" >&2; exit 2; }
+else
+  TARGET_DIR="${TARGET_DIR:-.}"
+  TARGET_ARGS+=("$TARGET_DIR")
+fi
 
 case "$PLATFORM" in
   ""|claude|codex|copilot|both|all) : ;;
+  claude-copilot|codex-copilot)
+    [ "$GLOBAL" = 1 ] || { echo "Provider combination requires --global at this checkpoint" >&2; exit 2; };;
   *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, copilot, both, or all)" >&2; exit 2 ;;
 esac
 
@@ -127,6 +152,7 @@ fi
 # provider's sticky mode marker and keeps guest mode without help from
 # update.sh. These flags exist for explicitly setting/converting mode here.
 FORCE_ARGS=()
+[ "$GLOBAL" -eq 1 ] && FORCE_ARGS+=(--global)
 [ "$FORCE" -eq 1 ] && FORCE_ARGS+=(--force)
 [ "$GUEST" -eq 1 ] && FORCE_ARGS+=(--guest)
 [ "$NO_GUEST" -eq 1 ] && FORCE_ARGS+=(--no-guest)
@@ -135,7 +161,12 @@ FORCE_ARGS=()
 echo
 echo "--- Preview (dry run) ---"
 rc=0
-bash "$FETCHED" --dry-run "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "$TARGET_DIR" || rc=$?
+bash "$FETCHED" --dry-run "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" || rc=$?
+
+if [ "$GLOBAL" = 1 ] && [ "$rc" -ne 0 ]; then
+  echo "domestique update: global preview failed; not applying." >&2
+  exit "$rc"
+fi
 
 if [ "$UPDATER_DRY_RUN" -eq 1 ]; then
   echo
@@ -146,7 +177,7 @@ fi
 echo
 echo "--- Applying ---"
 rc=0
-bash "$FETCHED" "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "$TARGET_DIR" || rc=$?
+bash "$FETCHED" "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" || rc=$?
 
 echo
 case "$rc" in
