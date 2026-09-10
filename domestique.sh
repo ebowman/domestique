@@ -581,6 +581,367 @@ DOM_EOF
 }
 
 # ---------------------------------------------------------------------------
+# Dormant private Core API 1 payloads.  These emitters deliberately have no
+# caller in the legacy installer below; hq-b3q.3 owns publication and native
+# installation.  Keeping them here makes a fetched domestique.sh sufficient
+# to render a release without a checkout or network dependency.
+# ---------------------------------------------------------------------------
+emit_private_core_orchestrator() { cat <<'DOM_EOF'
+# Domestique private core: orchestrator
+
+Use beads as the plan of record. Ordinary work handles one ready bead only:
+validate the requested bead/tools/epic where relevant, use `bd ready` scoped
+to that epic when one was supplied, and do not call an epic complete while any
+descendant is blocked, open, or in_progress. Before branch changes require a
+clean tree. Work only on a dedicated non-default branch.
+
+Dispatch exactly one implementer, wait, then a fresh independent reviewer;
+never run them concurrently. Fingerprint tracked changes, staged changes,
+visible nonignored untracked names and contents, and relevant bead state both
+before and after review. Reviewer-caused changes stop the workflow. The
+reviewer must inspect the real diff and pass the full project suite before a
+bead may be closed or committed. At most one corrective implementer pass and
+one re-review are allowed. Source commits require user authorization; never
+commit private state or personal configuration. Native Claude roles retain
+native Anthropic defaults, Codex roles retain native OpenAI defaults, and
+Copilot has no Domestique pin. Honor an explicit ephemeral per-call/session
+role/model/vendor request only where the native client supports it. Before
+dispatch state the requested role-to-model mapping and pass the explicit
+native per-call arguments; never persist it to files, settings, beads, or
+memory. An incomplete vendor restriction must not invent a model: inherit
+only a known compatible choice or stop for clarification. Requested mappings
+require the requested model/effort to be available or stop without substitution.
+Native client precedence still applies; native defaults apply only when the
+user made no request and cannot override another client's file or session
+settings. Copilot runtime may fall back if the requested model or effort is
+unavailable. Domestique's stop/no-substitution instruction is not hard vendor
+or billing enforcement; avoid Auto when vendor selection matters.
+
+## Common routing protocol (before any delegation)
+
+Resolve the physical Git worktree root with `git rev-parse --show-toplevel`
+and `cd` to that directory followed by `pwd -P`; failure means STOP.
+Use exactly `<physical-worktree-root>/.domestique-private/routing/<provider>.receipt`,
+where provider and core_root are the invoking wrapper's literal Provider and
+core_root, not values chosen by the receipt. Receipt format is UTF-8,
+LF-terminated key=value lines, in this exact order:
+format=1
+worktree_root=<absolute physical Git worktree root>
+provider=<wrapper Provider>
+core_root=<wrapper core_root>
+core_api=1
+role=<exact local implementer or reviewer ID>
+Repeat only role, once per installed implementer/reviewer (at least one).
+Require a readable non-symlinked receipt, exact physical worktree_root,
+exact wrapper provider/core_root and core_api=1. Reject unknown or missing
+fields, extra lines, duplicate singleton fields (including conflicting
+duplicates), duplicate roles, or any other role ID. Each semantic role is
+unique; never accept two implementers or two reviewers.
+
+The complete dispatch table is:
+| Provider | Role | global-only ID | local-required ID |
+| claude | implementer | domestique-claude-implementer | domestique-claude-local-implementer |
+| claude | reviewer | domestique-claude-reviewer | domestique-claude-local-reviewer |
+| codex | implementer | domestique-codex-implementer | domestique-codex-local-implementer |
+| codex | reviewer | domestique-codex-reviewer | domestique-codex-local-reviewer |
+| copilot | implementer | domestique-copilot-implementer | domestique-copilot-local-implementer |
+| copilot | reviewer | domestique-copilot-reviewer | domestique-copilot-local-reviewer |
+Orchestrator and goal are core loads in the current session, never subagent IDs.
+
+Choose global-only or local-required separately for implementer and reviewer.
+An explicit per-role user choice controls that role; global-only is deliberate,
+never recovery. Otherwise a valid receipt listing the requested role or native
+adapter evidence for that requested local role makes it local-required.
+A present unreadable/broken receipt is local evidence: STOP, do not infer
+global from a validation failure. With no local intent or receipt/adapter
+evidence for that role, choose global-only. A receipt listing only one role
+does not require the other role to be local absent other evidence or intent.
+For local-required, require the matching receipt role and exact native ID
+discovery after the client's reload boundary, project/server trust, and
+required read/shell capability. Missing required receipt, malformed receipt,
+missing/colliding native discovery, denied trust, or unavailable read/shell
+means STOP, never global fallback or broader tools. Confirm native discovery,
+trust and read/shell capability for global-only too; failure also means STOP.
+Bind this provider-and-role map in ephemeral workflow context before dispatch;
+never persist it. The map stays fixed: mid-run receipt/adapter disappearance
+or changed required evidence means STOP, never fallback or reclassification.
+Pass the same verified DOMESTIQUE_BOUND_RELEASE field in every delegated
+task brief; roles never sample active. Core and routing metadata stay read-only.
+
+Stop and report between ordinary beads. Decompose mode only creates an epic,
+bounded dependency-ordered beads, and prints the graph; it never implements.
+Continuous execution is authorized only by an explicit provider-qualified
+user `domestique-<provider>-goal <epic-id>` invocation. That authorization is
+limited to that open epic and ends on completion or a stop condition. It
+requires a clean tree before branch changes and stops for a missing/invalid
+epic, no scoped ready bead while unfinished descendants remain, dirty tree,
+two failed reviews, a full-suite regression, ambiguity, outside-project or
+configuration work, push/merge, two infrastructure failures, or 15 closures.
+Never push or merge.
+DOM_EOF
+}
+
+emit_private_core_implementer() { cat <<'DOM_EOF'
+# Domestique private core: implementer
+
+Complete exactly one bounded assigned bead and nothing adjacent. Claim it if
+asked, but never close it. Follow the brief, run project tests and lint, fix
+only in-scope failures, and file discovered work instead of doing it. Do not
+touch credentials, secrets, access controls, destructive Git operations, or
+private state. Core resolution, skill bootstrap, and install metadata are
+read-only; after that, make only brief-authorized scoped source edits and
+user-authorized source commits. Stop and report ambiguity. Return only files
+changed, validation run, discovered beads, and blockers. Do not select a model
+or persist model/session choices.
+DOM_EOF
+}
+
+emit_private_core_reviewer() { cat <<'DOM_EOF'
+# Domestique private core: reviewer
+
+Independently review one assigned bead in a fresh context. Inspect the actual
+diff and changed files, run the full project suite and lint, and judge the
+done criteria rather than the implementer summary. Do not edit, fix, update
+beads, commit, or change private state. Return PASS, FAIL, or NEEDS-WORK with
+commands actually run and concise concrete gaps. Do not select a model or
+persist model/session choices.
+DOM_EOF
+}
+
+emit_private_core_goal() { cat <<'DOM_EOF'
+# Domestique private core: goal authorization
+
+This text authorizes no work by itself. Continuous execution is permitted only
+when the user explicitly invokes the provider-qualified `domestique-<provider>-goal`
+trigger with one literal epic id. Load the orchestrator core and apply its
+entire sequential, clean-tree, dedicated-branch, fingerprint, reviewer-gate,
+one-correction, 15-bead, and stop/no-push/no-merge rules. A native `/goal`,
+loaded skill, inferred intent, or another provider's syntax is not authority.
+The goal authorizes only source data for that literal epic, its descendants,
+and their declared repository work; never configuration, credentials, private
+state, arbitrary repositories, push, or merge.
+DOM_EOF
+}
+
+# Emit the API-1 global-core-owned resolver installed later by hq-b3q.3 at
+# <private-root>/bin/resolve-core. It is outside immutable role releases.
+# CLI: resolve-core bind ROOT ROLE [RELEASE] prints the validated release;
+# resolve-core read ROOT ROLE RELEASE prints only validated role bytes.
+emit_private_core_resolver() { cat <<'DOM_EOF'
+domestique_core_sha256() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | awk '{print $1}'
+  else printf '%s\n' "domestique core: no SHA-256 tool (need shasum or sha256sum)" >&2; return 1; fi
+}
+domestique_core_fail() { printf '%s\n' "domestique core: $*" >&2; return 1; }
+domestique_core_safe_root() {
+  local root="$1" part walk rest
+  case "$root" in /*) ;; *) domestique_core_fail "root is not absolute: $root"; return 1;; esac
+  case "$root" in *$'\n'*|*$'\r'*|*$'\t'*) domestique_core_fail "root contains control characters"; return 1;; esac
+  [ -d "$root" ] && [ ! -L "$root" ] || { domestique_core_fail "root unavailable or symlinked: $root"; return 1; }
+  [ "$(cd "$root" 2>/dev/null && pwd -P)" = "$root" ] || { domestique_core_fail "root is not canonical: $root"; return 1; }
+  walk=/; rest="${root#/}"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    walk="${walk%/}/$part"
+    [ ! -L "$walk" ] || { domestique_core_fail "root has symlinked ancestor: $walk"; return 1; }
+    [ "$part" = "$rest" ] && rest="" || rest="${rest#*/}"
+  done
+}
+domestique_core_safe_release() {
+  case "$1" in r-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0;; *) return 1;; esac
+}
+domestique_core_validate_release() {
+  local root="$1" release="$2" role="$3" base expected actual p digest
+  case "$role" in goal|implementer|orchestrator|reviewer) ;; *) domestique_core_fail "unknown role '$role'"; return;; esac
+  domestique_core_safe_root "$root" || return
+  domestique_core_safe_release "$release" || { domestique_core_fail "invalid release '$release'"; return; }
+  base="$root/releases/$release"
+  for p in "$root/releases" "$base" "$base/roles" "$base/API" "$base/SHA256SUMS" "$base/roles/goal.md" "$base/roles/implementer.md" "$base/roles/orchestrator.md" "$base/roles/reviewer.md"; do
+    [ -r "$p" ] && [ ! -L "$p" ] || { domestique_core_fail "missing, unreadable, or symlinked resource: $p"; return; }
+  done
+  [ -d "$root/releases" ] && [ -d "$base" ] && [ -d "$base/roles" ] || { domestique_core_fail "invalid release directory: $base"; return; }
+  cmp -s "$base/API" <(printf 'format=1\ncore_api=1\nrelease=%s\n' "$release") || { domestique_core_fail "incompatible API at $base/API (required core_api=1)"; return; }
+  expected=""
+  for p in roles/goal.md roles/implementer.md roles/orchestrator.md roles/reviewer.md; do
+    digest="$(domestique_core_sha256 "$base/$p")" || return
+    case "$digest" in *[!0-9a-f]*|'') domestique_core_fail "invalid digest for $p"; return;; esac
+    expected="${expected}${digest}  ${p}"$'\n'
+  done
+  cmp -s "$base/SHA256SUMS" <(printf '%s' "$expected") || { domestique_core_fail "malformed, unordered, or mismatched SHA256SUMS at $base/SHA256SUMS"; return; }
+  actual="$(domestique_core_sha256 "$base/SHA256SUMS")" || return
+  [ "$actual" = "${release#r-}" ] || { domestique_core_fail "release hash does not match SHA256SUMS: $release"; return; }
+}
+domestique_core_bind() {
+  local root="$1" role="$2" requested="${3:-}" active release extra
+  domestique_core_safe_root "$root" || return
+  if [ "$#" -eq 3 ]; then
+    domestique_core_validate_release "$root" "$requested" "$role" || return
+    printf '%s\n' "$requested"
+    return
+  fi
+  [ -r "$root/active" ] && [ ! -L "$root/active" ] || { domestique_core_fail "active pointer unavailable or symlinked: $root/active"; return; }
+  IFS= read -r active < "$root/active" || { domestique_core_fail "malformed active pointer: $root/active"; return; }
+  IFS= read -r extra < <(sed -n '2p' "$root/active") || true
+  case "$active" in release=*) release="${active#release=}";; *) domestique_core_fail "malformed active pointer: $root/active"; return;; esac
+  [ -z "$extra" ] && cmp -s "$root/active" <(printf 'release=%s\n' "$release") || { domestique_core_fail "malformed active pointer: $root/active"; return; }
+  domestique_core_validate_release "$root" "$release" "$role" || return
+  printf '%s\n' "$release"
+}
+domestique_core_read_role() {
+  local root="$1" role="$2" release="$3"
+  domestique_core_validate_release "$root" "$release" "$role" || return
+  command cat "$root/releases/$release/roles/$role.md"
+}
+case "${1:-}" in
+  bind) [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { domestique_core_fail "usage: resolve-core bind ROOT ROLE [RELEASE]"; exit 2; }; shift; domestique_core_bind "$@" ;;
+  read) [ "$#" -eq 4 ] || { domestique_core_fail "usage: resolve-core read ROOT ROLE RELEASE"; exit 2; }; domestique_core_read_role "$2" "$3" "$4" ;;
+  *) domestique_core_fail "usage: resolve-core {bind|read} ROOT ROLE [RELEASE]"; exit 2 ;;
+esac
+DOM_EOF
+}
+
+# Thin complete native adapters.  Metadata is confined to supported native
+# fields; the protocol declaration is prompt body/developer_instructions.
+emit_private_adapter_body() {
+  local provider="$1" scope="$2" role="$3" root="$4"
+  local qroot helper bind
+  printf -v qroot '%q' "$root"
+  helper="${qroot}/bin/resolve-core"
+  if [ "$role" = implementer ] || [ "$role" = reviewer ]; then
+    bind="DOMESTIQUE_BOUND_RELEASE=\"\${1:?missing task-brief DOMESTIQUE_BOUND_RELEASE}\"
+DOMESTIQUE_BOUND_RELEASE=\$(bash ${helper} bind ${qroot} ${role} \"\$DOMESTIQUE_BOUND_RELEASE\") || exit"
+  else
+    bind="if [ \"\$#\" -eq 0 ]; then
+  DOMESTIQUE_BOUND_RELEASE=\$(bash ${helper} bind ${qroot} ${role}) || exit
+else
+  DOMESTIQUE_BOUND_RELEASE=\"\${1:?missing workflow DOMESTIQUE_BOUND_RELEASE}\"
+  DOMESTIQUE_BOUND_RELEASE=\$(bash ${helper} bind ${qroot} ${role} \"\$DOMESTIQUE_BOUND_RELEASE\") || exit
+fi
+printf 'DOMESTIQUE_BOUND_RELEASE=%s\n' \"\$DOMESTIQUE_BOUND_RELEASE\""
+  fi
+  printf 'Provider: %s\nScope: %s\nRole: %s\ncore_root: %s\ncore_api=1\n' "$provider" "$scope" "$role" "$root"
+  cat <<DOM_EOF
+Runtime guard: act only when Provider is ${provider}; stop if invoked through
+another provider's skill or agent discovery.
+Handoff field: DOMESTIQUE_BOUND_RELEASE=<verified release identity> in the
+parent's task brief, retained only in ephemeral workflow context, never config.
+Execute the fenced block in a fresh Bash invocation (bash -c with the block
+as command, -- as argument zero, and the literal field value as argument one).
+Delegated implementer/reviewer MUST receive that explicit task-brief argument;
+never use an inherited environment value or invent a placeholder/default.
+Only a skill starting a NEW workflow may omit the argument to sample active
+once. For subsequent skill loads pass the retained binding as argument one.
+Retain the bootstrap's printed DOMESTIQUE_BOUND_RELEASE field in workflow
+context and copy it literally into every delegated task brief.
+
+\`\`\`bash
+${bind}
+bash ${helper} read ${qroot} orchestrator "\$DOMESTIQUE_BOUND_RELEASE" || exit
+$( [ "$role" != orchestrator ] && printf 'bash %s read %s %s "$DOMESTIQUE_BOUND_RELEASE" || exit\n' "$helper" "$qroot" "$role" )
+\`\`\`
+Read and apply the loaded orchestrator's common routing protocol before role
+work; orchestrator/goal are loads, not dispatch targets. The receipt path is
+\`.domestique-private/routing/${provider}.receipt\` at the physical Git root.
+The helper validates API 1, ordered SHA256SUMS and all role digests before
+reading; missing helper, binding or resource means STOP with no embedded
+policy, active resampling by delegated roles, or arbitrary path execution.
+Core bootstrap/install metadata is read-only;
+after loading, an implementer may make brief-authorized scoped source edits
+and commits, but never commits private state. Reviewer remains nonediting.
+DOM_EOF
+}
+
+emit_private_core_sums() {
+  local role path
+  for role in goal implementer orchestrator reviewer; do
+    path="roles/$role.md"
+    "emit_private_core_$role" | { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; } |
+      awk -v path="$path" '{print $1 "  " path}'
+  done
+}
+emit_private_core_release_id() {
+  emit_private_core_sums | { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; } |
+    awk '{print "r-" $1}'
+}
+emit_private_core_api() {
+  local release="$1"
+  printf 'format=1\ncore_api=1\nrelease=%s\n' "$release"
+}
+
+emit_private_claude_skill() { local mode="$1" role="orchestrator"; [ "$mode" = -goal ] && role="goal"; cat <<DOM_EOF
+---
+name: domestique-claude${mode}
+description: Provider-qualified Domestique ${mode:-ordinary} workflow.
+$( [ "$mode" = -goal ] && printf '%s\n' 'user-invocable: true' 'disable-model-invocation: true' )
+---
+
+$(emit_private_adapter_body claude global "$role" "$2")
+${mode:+This is the explicit $mode mode; planning does not implement and goal
+execution requires its explicit trigger.}
+DOM_EOF
+}
+emit_private_claude_agent() { local scope="$1" role="$2" root="$3" id="domestique-claude" tools="Read, Bash, Glob, Grep"; [ "$scope" = local ] && id="$id-local"; [ "$role" = implementer ] && tools="Read, Write, Edit, Bash, Glob, Grep"; cat <<DOM_EOF
+---
+name: $id-$role
+description: Provider-qualified Domestique $scope $role adapter.
+tools: $tools
+---
+
+$(emit_private_adapter_body claude "$scope" "$role" "$root")
+DOM_EOF
+}
+emit_private_codex_skill() { local mode="$1" role="orchestrator"; [ "$mode" = -goal ] && role="goal"; cat <<DOM_EOF
+---
+name: domestique-codex${mode}
+description: Provider-qualified Domestique ${mode:-ordinary} workflow.
+---
+
+$(emit_private_adapter_body codex global "$role" "$2")
+Goal is explicit-only; decompose is planning-only.
+DOM_EOF
+}
+emit_private_codex_goal_metadata() { cat <<'DOM_EOF'
+interface:
+  display_name: "Domestique Codex Goal"
+  short_description: "Explicit provider-qualified unattended epic workflow"
+  default_prompt: "Use $domestique-codex-goal with an explicit epic id."
+policy:
+  allow_implicit_invocation: false
+DOM_EOF
+}
+emit_private_codex_agent() { local scope="$1" role="$2" root="$3" id="domestique-codex" body; [ "$scope" = local ] && id="$id-local"; body="$(emit_private_adapter_body codex "$scope" "$role" "$root")"; body="$(printf '%s' "$body" | sed 's/\\/\\\\/g; s/"/\\"/g')"; cat <<DOM_EOF
+name = "$id-$role"
+description = "Provider-qualified Domestique $scope $role adapter."
+sandbox_mode = "workspace-write"
+developer_instructions = """
+$body
+"""
+DOM_EOF
+}
+emit_private_copilot_skill() { local mode="$1" role="orchestrator"; [ "$mode" = -goal ] && role="goal"; cat <<DOM_EOF
+---
+name: domestique-copilot${mode}
+description: Provider-qualified Domestique ${mode:-ordinary} workflow.
+user-invocable: true
+disable-model-invocation: true
+---
+
+$(emit_private_adapter_body copilot global "$role" "$2")
+DOM_EOF
+}
+emit_private_copilot_agent() { local scope="$1" role="$2" root="$3" id="domestique-copilot" tools='["read", "search", "execute"]'; [ "$scope" = local ] && id="$id-local"; [ "$role" = implementer ] && tools='["read", "search", "execute", "edit"]'; cat <<DOM_EOF
+---
+name: $id-$role
+description: Provider-qualified Domestique $scope $role adapter.
+tools: $tools
+---
+
+$(emit_private_adapter_body copilot "$scope" "$role" "$root")
+DOM_EOF
+}
+
+# ---------------------------------------------------------------------------
 usage() {
   cat <<'EOF'
 Usage: domestique.sh [TARGET_DIR] [options]

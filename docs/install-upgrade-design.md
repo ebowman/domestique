@@ -623,6 +623,7 @@ adapters continue to name their old root and stop rather than guessing.
   releases/<release>/API              # format=1, core_api=1, release=<release>
   releases/<release>/SHA256SUMS
   releases/<release>/roles/{orchestrator,implementer,reviewer,goal}.md
+  bin/resolve-core                    # API-1 global-core-owned resolver
   active                              # one line: release=<release>
   state/global-manifest               # format=1 ownership record
 ```
@@ -638,8 +639,8 @@ allowlisted file's exact bytes. `API` has exactly the three LF-terminated
 lines `format=1`, `core_api=1`, and `release=<release>`, in that order.
 
 Publication first creates and fsyncs a new, private, non-symlinked
-`releases/<release>` directory, writes and verifies all six allowlisted
-files plus `API` and `SHA256SUMS`, then atomically replaces only `active`
+`releases/<release>` directory, writes and verifies all four role files plus
+`API` and `SHA256SUMS` (six files total), then atomically replaces only `active`
 with a complete temporary file in `<private-root>`. It never promises native
 atomicity across the separate provider roots. A failed stage leaves no active
 pointer change and is reported for manual inspection; releases are never
@@ -650,16 +651,34 @@ Thus an old API-1 adapter and old active API-1 release may coexist during a
 failure. An incompatible API is blocked for an explicit manual migration,
 not generalized schema negotiation.
 
-Every adapter body contains the literal absolute core root, `core_api=1`, its
-role path, and this resolver procedure: read `active` once at workflow start;
-validate its one safe release name; read that release's `API`; validate API 1,
-release identity, the ordered `SHA256SUMS`, and the four file digests; then
-read its named role before role work. The installer emits this small,
-provider-native read/shell-capable resolver instruction rather than a daemon.
-The selected immutable release remains bound for that live workflow; a new
-session reads the then-current `active`. Missing, unreadable, malformed,
-relocated, or incompatible data stops with adapter, root, required/found API,
-and stale-path diagnostics—never an embedded fallback or broader role.
+Every adapter body contains the literal shell-quoted absolute core root and
+calls `bash <private-root>/bin/resolve-core`, rather than
+describing an abstract resolver. This API-1 helper is a global-core-owned
+asset outside immutable role releases and is not a selectable provider. Its
+only interface is `resolve-core bind ROOT ROLE [RELEASE]`, which writes the
+validated release identity alone to stdout, and `resolve-core read ROOT ROLE
+RELEASE`, which writes the validated named role bytes alone to stdout. `ROLE`
+is allowlisted and `RELEASE`, when supplied, prevents any `active` read.
+`bind` without a release reads `active` once; both commands validate the
+absolute canonical non-symlinked root, API 1, release identity, ordered
+`SHA256SUMS`, and all four role digests before stdout. Failures write only a
+diagnostic to stderr and no stdout. The workflow keeps that identity only in
+ephemeral context and passes it explicitly to every role load. A goal first
+binds then reads both orchestrator and goal with that same release; delegated
+implementer/reviewer loads receive the binding and must not resample active.
+The exact handoff is a `DOMESTIQUE_BOUND_RELEASE=<verified release identity>`
+field in the parent's task brief. Execute the emitted fenced Bash block with
+`bash -c`, the block as command, `--` as argument zero, and that literal
+field value as argument one. The block creates only an ephemeral shell
+parameter from that argument, never an inherited environment default.
+Missing/empty/malformed delegated arguments fail before role output; only a
+NEW bootstrap skill may omit the argument. Retain its printed binding in
+workflow context and supply it to every subsequent skill and delegated load.
+All wrappers load orchestrator policy; goal also loads goal at the same binding.
+Missing helper, unreadable bound resources, or incompatible helper/role API
+stops, never executing arbitrary paths or embedded old policy. `.3` installs
+or stages this helper with core compatibility checks, not as a role/provider;
+this task does not install it.
 
 Global install owns only manifest-listed leaves at these provider-native
 locations:
@@ -743,7 +762,7 @@ provider directories, `.beads/` wholesale, or any unknown/host state.
 
 ### Loading, routing, and local capability metadata
 
-Global skills explicitly invoke their same-provider global role IDs. Routing
+Global skills load common orchestrator policy before choosing native IDs. Routing
 is selected separately for the `implementer` and `reviewer` role of each
 workflow request/session:
 
@@ -753,9 +772,10 @@ workflow request/session:
 * A normal request with no explicit choice uses a valid current-worktree
   `<repo>/.domestique-private/routing/<provider>.receipt`, if present, for
   the requested role; if there is no local request or local adapter/receipt
-  evidence, it maps that role to global-only. A present local adapter, receipt,
-  makes the role local-required; it never broadens to global merely because
-  the receipt cannot be read.
+  evidence for that role, it maps that role to global-only. A valid receipt
+  listing only implementer does not require reviewer to be local (or vice
+  versa). Requested-role adapter evidence makes that role local-required.
+  A present broken/unreadable receipt stops rather than broadening to global.
 * Local-required validates the matching provider receipt and its
   `role=<exact-local-ID>` for the requested role, then discovers that exact
   native ID after its reload boundary and confirms required read/shell
@@ -763,9 +783,15 @@ workflow request/session:
   untrusted, unavailable, colliding, or incompatible receipt/role stops
   fail-closed; it never selects the global role or broader tools.
 
-A receipt is private, nonsecret, and contains only `format=1`, physical
-`worktree_root`, `provider`, `core_root`, `core_api=1`, and
-`role=<exact-local-ID>` lines. At workflow start the orchestrator records the
+A receipt is private, nonsecret, non-symlinked file at exactly
+`<physical-worktree-root>/.domestique-private/routing/<provider>.receipt`.
+It has exactly these LF-terminated lines, in order: `format=1`,
+`worktree_root=<absolute physical root>`, `provider=<provider>`,
+`core_root=<absolute canonical private root>`, `core_api=1`, and one
+`role=<exact provider-qualified local ID>` for each installed role. The
+physical root and provider must match the current worktree/provider; duplicate,
+unknown, missing, or mismatched fields stop local-required routing. At
+workflow start the orchestrator records the
 provider-and-role map for that invocation in its ephemeral session/workflow
 context, not in a preference, global registry, native configuration, or new
 persistent model. Once a role is bound local-required, a receipt or adapter
@@ -796,8 +822,15 @@ are not refreshed by a core update, and cannot hide that limitation. Shared
 guardrails, including explicit goal authorization, sequential fresh-context
 review, no push/merge, and private landing, live in the core. “Independent
 review” means a fresh, separate reviewer context; it does not promise a
-stronger or different model/vendor. Persistent model choices remain native
-client settings and any user session choice is ephemeral.
+stronger or different model/vendor. Claude retains native Anthropic defaults,
+Codex native OpenAI defaults, and Copilot has no Domestique pin. A user may
+request a supported role/vendor model for one session only: unavailable
+requests stop with no substitution; otherwise native defaults apply only when
+no request was made. Nothing persists that request or promises to override
+another client's native file/session setting.
+Copilot runtime may fall back if a requested model or effort is unavailable;
+the stop/no-substitution instruction is not hard vendor or billing enforcement.
+Avoid Auto when vendor selection matters.
 
 Local MCP/tool data stays in a complete local native adapter, subject to the
 installed client version and its trust UI:
