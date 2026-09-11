@@ -558,6 +558,92 @@ below, including the two composite spellings; legacy selection is unchanged.
 The updater validates global scope/options before fetching, forwards no `.`
 target, and does not apply after a failed global preview.
 
+#### hq-b3q.10 Beads operation boundary checkpoint (.6 still blocked)
+
+This checkpoint supersedes `.5`'s generic Beads CLI refusal, **not** its
+profile installation/routing contract. Both the actual installer and updater
+accept `--local TARGET --with-beads`, optionally with `--state-only`.
+State-only requires both explicit flags and conflicts with `--platform`.
+Bare/positional `--with-beads`, global initialization, state-only without
+local/Beads, and initialization/uninstall combinations are usage errors
+(exit 2). Valid initialization grammar returns **operational exit 1** before
+any writes, bd execution, source fetch/copy, preview/apply or profile
+installation, including dry-run and combined profile requests. No
+`providers=none`, failed/ready record or path-creation claim is fabricated.
+Ordinary private profile/global installation and updater behavior is unchanged.
+
+**Verified upstream blocker:** installed Homebrew Beads 1.1.2's archived source
+hash matched `gastownhall/beads` tag commit
+`20e493e569c922d1253bdeff068c5e56c94957fb`. At that pinned source:
+
+* [`init_stealth.go:48–90`](https://github.com/gastownhall/beads/blob/20e493e569c922d1253bdeff068c5e56c94957fb/cmd/bd/init_stealth.go#L48-L90)
+  unconditionally adds broad common-dir excludes, including `.beads/`,
+  `.claude/settings.local.json`, `.dolt/`, `*.db`,
+  `.beads-credential-key`, and `.beads/proxieddb/`.
+* [`init_stealth.go:170–223`](https://github.com/gastownhall/beads/blob/20e493e569c922d1253bdeff068c5e56c94957fb/cmd/bd/init_stealth.go#L170-L223)
+  can rewrite/delete root `.gitignore`, without a tracked-file guard.
+* [`init.go:681–708`](https://github.com/gastownhall/beads/blob/20e493e569c922d1253bdeff068c5e56c94957fb/cmd/bd/init.go#L681-L708)
+  and [`init.go:1484–1536`](https://github.com/gastownhall/beads/blob/20e493e569c922d1253bdeff068c5e56c94957fb/cmd/bd/init.go#L1484-L1536)
+  cover initialization/setup behavior: `--skip-agents` now suppresses all
+  provider setup, but does not suppress stealth Git policy. Git `beads.role`
+  and metrics/home writes are additional concerns.
+
+There is no supported skip-Git-policy switch and **no currently certified
+private backend/version**. Installing bd, detecting four flags, or inventing
+a version threshold does not solve this. `.6` remains blocked on a real
+supported backend preserving exact ownership/privacy, without run/rollback
+or HOME/Git shims. No native client or real bd initialization was run for
+this checkpoint. Even `where`, `ping`, `info` or engine startup can write
+metrics, migrations or database state; pure loading/preflight never calls bd.
+
+The standalone installed resolver adds the internal read-only API:
+
+```
+resolve-core beads-guard CORE PHYSICAL_WORKTREE REQUIRED_RELEASE
+```
+
+Its capability declaration is the exact line
+`# beads_guard_api=1 (metadata-only eligibility; no certified backend)`.
+Wrappers check it before invoking the operation; missing/old helper stops
+with an explicit `bash update.sh --global` remedy using the same
+`DOMESTIQUE_HOME`, then reload. This does not silently update anything.
+The guard receives the parent's **literal release**, never samples `active`,
+validates the bound release and exact physical Git root, checks state paths
+and index-only objects/ancestors, and uses the existing strict private
+format-1 ownership parser in runtime mode (native customization is allowed).
+No `.beads` content is read and no bd command, lock, staging or repair runs.
+All current cases refuse with empty stdout: `missing`, `host-unowned`,
+`unsafe-path`, `tracked-index`, `invalid-private`, `invalid-core`, or
+`invalid-project` (exit 1); wrong action/arity is exit 2.
+Failed, partial, malformed and unknown/fake Beads records are rejected as
+`invalid-private`, not parsed into invented readiness. Valid `providers=none`
+or normal native-profile manifests without Beads are still `missing`.
+Existing `.beads` is not ownership, including beside a valid private manifest.
+Every guard refusal includes metadata-only manual guidance and the unsupported
+backend limitation; it never instructs the user to probe/init Beads.
+
+Each provider's actual emitted adapter now has three separately executable
+fences: **core load**, **native role routing**, **project database guard**
+(Codex fences are inside parsed `developer_instructions` TOML). Bind/read
+remain usable without a project database. `.5` role maps and deliberate
+global-only routing remain independent; neither bypasses database eligibility.
+Shared core instructions require the guard at actual workflow startup,
+including decompose-only planning, and before later database operations
+(claim, discovered work, remember, land/export). Implementers guard database
+operations, not source-only edits. Reviewers do not run bd at all, even for
+reads; the parent supplies review criteria/evidence. No role may improvise
+setup/init or apparent read-only bd probes. This is an instruction/executable
+boundary, not OS sandbox enforcement of arbitrary user-written prompts.
+
+Future `.6` hook points are `local_beads_guard` and the strict private ownership
+parser plus explicit local CLI initialization branches. Only after a real
+certified backend exists may `.6` extend ownership/readiness formats and
+add a successful guard route; none exists now. The lifecycle text below is
+**future acceptance**, not a claim that four flags are sufficient today.
+Focused executable coverage is `PYTHONDONTWRITEBYTECODE=1 python3
+test/beads-guard.py`, alongside all four current suites and the clearly
+historical offline fixtures.
+
 #### hq-b3q.5 public private-profile checkpoint
 
 This checkpoint supersedes the older CLI-status statements in `.3`/`.4`
@@ -566,9 +652,10 @@ the private local operation, never the legacy engine. Both scopes accept all
 seven provider sets. Selection adds to the recorded union; a bare rerun uses
 it, fresh state defaults to Claude, and retained `providers=none` creates
 nothing. `--guest` only warns; `--no-guest`, unsupported model/MCP/tool flags,
-malformed scope/target combinations, Beads/state-only and uninstall/purge
+malformed scope/target combinations and uninstall/purge
 refuse before writes (updater: before fetch). `.6`/`.7` own those unfinished
-lifecycle operations. No implicit global installation or update occurs.
+lifecycle operations; `.10` above defines the current Beads refusal grammar.
+No implicit global installation or update occurs.
 Missing/old router helper requires an explicit `bash domestique.sh --global`
 with the same private-root environment.
 
@@ -1246,9 +1333,13 @@ an explicit user decision. In particular, an already existing host
 `.beads/`, even if it looks initialized, is unowned and is neither hidden nor
 adopted.
 
-For an absent eligible `.beads/`, only
-`bd init --stealth --skip-agents --skip-hooks --non-interactive` (or a
-verified equivalent with all safety flags) may run. The local manifest records
+**Future `.6` contract, blocked:** for an absent eligible `.beads/`, a
+supported backend must first be proven to preserve exact private Git policy,
+host files and home state. The originally proposed
+`bd init --stealth --skip-agents --skip-hooks --non-interactive` is **not safe
+on verified 1.1.2** and is not currently run; see the pinned `.10` blocker
+above. Only a genuinely verified supported equivalent may eventually run.
+The future local manifest records
 the path creation separately from database success as
 `beads_path_created=by-init:<attempt-id>`: a successful verified database
 initialization writes `beads_status=ready` and repeated

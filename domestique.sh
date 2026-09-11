@@ -589,6 +589,25 @@ DOM_EOF
 emit_private_core_orchestrator() { cat <<'DOM_EOF'
 # Domestique private core: orchestrator
 
+## Project task-database boundary (all providers and modes)
+
+Loading these definitions and choosing native role routes are read-only and
+do not authorize Beads use. Before actual workflow startup, execute the
+invoking adapter's separate project Beads eligibility fence with the literal
+retained DOMESTIQUE_BOUND_RELEASE. This includes decompose-only planning
+(creating an epic/beads mutates the database), goal, claim, discovered work,
+remember, landing and export. Recheck before subsequent Beads operations.
+Global-only routing does NOT bypass project database eligibility.
+No current private Beads backend is certified: a refusal means STOP Beads
+operations, not install bd, probe its version/help/where/info/ping, initialize,
+run setup, repair, or fall back to an existing host database. Even nominally
+read-only bd commands can write engine/metrics/migration state. Never call bd
+to load definitions or preflight. Missing/old guard capability requires an
+explicit global update, not skipping the guard. Source-only work and native
+customized profile routing remain independent of this database boundary.
+Reviewers must not call bd at all; review supplied bead criteria/evidence
+without opening or writing the private database.
+
 Use beads as the plan of record. Ordinary work handles one ready bead only:
 validate the requested bead/tools/epic where relevant, use `bd ready` scoped
 to that epic when one was supplied, and do not call an epic complete while any
@@ -705,6 +724,9 @@ read-only; after that, make only brief-authorized scoped source edits and
 user-authorized source commits. Stop and report ambiguity. Return only files
 changed, validation run, discovered beads, and blockers. Do not select a model
 or persist model/session choices.
+Before any Beads operation use the adapter's separate project eligibility
+guard with the parent's literal release; failure stops that operation.
+Never improvise bd setup/init or probe bd to establish eligibility.
 DOM_EOF
 }
 
@@ -717,6 +739,8 @@ done criteria rather than the implementer summary. Do not edit, fix, update
 beads, commit, or change private state. Return PASS, FAIL, or NEEDS-WORK with
 commands actually run and concise concrete gaps. Do not select a model or
 persist model/session choices.
+Do not run any bd command, including apparent reads: engine startup can
+write private database state. Use the parent's supplied criteria/evidence.
 DOM_EOF
 }
 
@@ -744,13 +768,14 @@ emit_private_core_resolver() {
 #!/usr/bin/env bash
 set -euo pipefail
 # router_api=1 (standalone, read-only; native discovery is NOT shell validation)
+# beads_guard_api=1 (metadata-only eligibility; no certified backend)
 DOM_EOF
   # Share the byte/ownership/path grammar with installer preflight. No sourcing
   # installed metadata, native config, or the installer at runtime.
   declare -f global_fail global_hash global_stat global_path global_digest_valid \
     local_fail local_path local_text_file local_root local_untracked \
     local_inventory local_selected local_set_valid local_contains local_manifest_read \
-    local_route
+    local_route local_beads_fail local_beads_guard
   cat <<'DOM_EOF'
 domestique_core_sha256() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" | awk '{print $1}'
@@ -820,9 +845,10 @@ domestique_core_read_role() {
 case "${1:-}" in
   router-api) [ "$#" = 1 ] || exit 2; printf 'router_api=1\n';;
   route) shift; local_route "$@";;
+  beads-guard) shift; local_beads_guard "$@";;
   bind) [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { domestique_core_fail "usage: resolve-core bind ROOT ROLE [RELEASE]"; exit 2; }; shift; domestique_core_bind "$@" ;;
   read) [ "$#" -eq 4 ] || { domestique_core_fail "usage: resolve-core read ROOT ROLE RELEASE"; exit 2; }; domestique_core_read_role "$2" "$3" "$4" ;;
-  *) domestique_core_fail "usage: resolve-core {bind|read} ROOT ROLE [RELEASE]"; exit 2 ;;
+  *) domestique_core_fail "usage: resolve-core {bind|read|route|beads-guard}; beads-guard CORE WORKTREE RELEASE (update global installation if capability is missing)" || exit 2 ;;
 esac
 DOM_EOF
 }
@@ -909,6 +935,27 @@ printf 'DOMESTIQUE_ROUTE_implementer=%s\nDOMESTIQUE_ROUTE_reviewer=%s\n' "\$impl
 \`\`\`
 DOM_EOF
   fi
+  cat <<DOM_EOF
+Project Beads eligibility is SEPARATE from loading and native role routing.
+At actual orchestrator/goal/decompose workflow startup, and before any later
+Beads operation (including planning, claim, land/export), execute this fence
+with the retained literal release as argument one. Implementers execute it
+before any Beads operation, not before source-only work. Reviewers never run
+bd, even for reads. This fence itself is safe to execute read-only for any role.
+Nonzero means STOP database use; no setup/init/probes or global-only bypass.
+Missing/old helper means explicitly update the global installation.
+\`\`\`bash
+release="\${1:?missing retained release}"
+if [ ! -r ${helper} ] || [ -L ${helper} ] ||
+   ! grep -qxF '# beads_guard_api=1 (metadata-only eligibility; no certified backend)' ${helper}; then
+  printf '%s\n' 'domestique Beads: missing/old guard; run bash update.sh --global with the same DOMESTIQUE_HOME, then reload; no database operation' >&2
+  exit 1
+fi
+worktree=\$(git rev-parse --show-toplevel) || exit
+worktree=\$(cd "\$worktree" && pwd -P) || exit
+bash ${helper} beads-guard ${qroot} "\$worktree" "\$release" || exit
+\`\`\`
+DOM_EOF
   cat <<'DOM_EOF'
 Route tokens validate filesystem provenance, NOT the whole native schema,
 native exact-ID discovery, project/server trust, or tool availability.
@@ -1787,6 +1834,55 @@ local_route() (
     { local_fail "bound profile/receipt changed; reload and reconfirm native trust, no fallback"; exit 1; }
   printf '%s\n' "$token"
 )
+# Operation boundary only, never called by bind/read/route or installation.
+# No bd execution (even queries can initialize engines/metrics). Format 1 has
+# no Beads ownership records yet; .6 must supply a real certified backend
+# before this guard can acquire any successful readiness path.
+local_beads_fail() {
+  printf 'domestique Beads: %s; %s; database use stopped. Inspect path/ownership metadata manually, retain recovery evidence; do not run bd setup/init/probes. No certified private backend is currently available (.6 blocked).\n' "$1" "$2" >&2
+  return 1
+}
+local_beads_guard() (
+  [ "$#" = 3 ] || {
+    local_beads_fail usage 'expected: resolve-core beads-guard CORE WORKTREE RELEASE; missing/old helper requires bash update.sh --global' || exit 2
+  }
+  local core="$1" target="$2" release="$3" key
+  G_READONLY=1
+  local_path "$core" "$core" &&
+    domestique_core_validate_release "$core" "$release" orchestrator || {
+    local_beads_fail invalid-core 'bound release unavailable/invalid; explicitly update global installation and reload, never resample active'
+    exit 1
+  }
+  local_root "$target" && [ "$L_ROOT" = "$target" ] || {
+    local_beads_fail invalid-project 'supply the exact existing physical Git top-level'
+    exit 1
+  }
+  local_path "$target/.beads" "$target" &&
+    local_path "$target/.domestique-private" "$target" || {
+    local_beads_fail unsafe-path 'symlinked, unowned or inaccessible project state path'
+    exit 1
+  }
+  local_untracked "$target" .beads &&
+    local_untracked "$target" .domestique-private || {
+    local_beads_fail tracked-index 'project state or an index ancestor is tracked; do not hide or adopt it'
+    exit 1
+  }
+  L_INVENTORY=()
+  while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
+  local_manifest_read "$target" runtime || {
+    local_beads_fail invalid-private 'malformed, failed, partial or unsupported private ownership metadata; no readiness inference'
+    exit 1
+  }
+  [ -z "$M_CORE" ] || [ "$M_CORE" = "$core" ] || {
+    local_beads_fail invalid-private 'local manifest core identity mismatch'
+    exit 1
+  }
+  if [ -e "$target/.beads" ]; then
+    local_beads_fail host-unowned 'existing .beads is not proven private ownership; current format cannot certify Beads state'
+  else
+    local_beads_fail missing 'no project .beads; native profiles or providers=none do not establish database eligibility'
+  fi
+)
 local_legacy_inventory() {
   case "$1" in
     claude) printf '%s\n' .claude/agents/implementer.md .claude/agents/reviewer.md .claude/commands/decompose.md .claude/commands/goal.md CLAUDE.md CLAUDE.local.md;;
@@ -2330,14 +2426,19 @@ metadata/exclusions; never home, root policy, settings, skills, or Beads.
   --dry-run     Full preflight without destination writes.
   --force       Never overrides edits, unknown ownership, or unsafe paths.
   --guest       Deprecated warning-only no-op. --no-guest is rejected.
+  --with-beads  Explicit --local TARGET only; initialization is UNSUPPORTED.
+  --state-only  Requires --local TARGET --with-beads; conflicts with --platform.
+                Valid requests fail operationally BEFORE any writes.
   --help, -h    Show help.
 
 Edited owned local native tools/MCP metadata is usable after native reload/
 trust/core-protocol confirmation, but automatic refresh refuses untouched
 even with force. No secrets/backups/merges; full prompt forks stay user-owned.
 Missing/old helper: explicitly run bash domestique.sh --global first.
-Beads/state-only and scoped uninstall/purge are not implemented yet and
-refuse early; no legacy install/uninstall fallback. No model/MCP/tool flags.
+Beads 1.1.2 --stealth writes broad Git policy and may rewrite root .gitignore;
+no supported skip-Git-policy switch or certified private backend exists.
+Installing bd or adding skip flags does not solve this. No bd probes run.
+Scoped uninstall/purge refuses early; no legacy fallback. No model/MCP/tool flags.
 EOF
 }
 
@@ -2501,12 +2602,24 @@ while [ $# -gt 0 ]; do
 done
 [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
   { echo "Invalid target/options; --no-guest is unsupported" >&2; exit 2; }
-[ "$WITH_BEADS$STATE_ONLY$UNINSTALL$PURGE_BEADS" = 0000 ] ||
-  { echo "Beads/state-only and scoped uninstall/purge are not implemented yet; no legacy fallback" >&2; exit 2; }
+[ "$UNINSTALL$PURGE_BEADS" = 00 ] ||
+  { echo "Scoped uninstall/purge is not implemented; cannot combine with initialization; no legacy fallback" >&2; exit 2; }
+[ "$STATE_ONLY" = 0 ] || {
+  [ "$LOCAL$WITH_BEADS$GLOBAL$PLATFORM_EXPLICIT" = 1100 ] ||
+    { echo "--state-only requires explicit --local TARGET --with-beads and no --platform/--global" >&2; exit 2; }
+}
+[ "$WITH_BEADS" = 0 ] || {
+  [ "$LOCAL$GLOBAL" = 10 ] ||
+    { echo "--with-beads requires explicit --local TARGET, not bare/positional or --global" >&2; exit 2; }
+}
 [ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM_ARG" ] ||
   { echo "Empty --platform" >&2; exit 2; }
 case "${PLATFORM_ARG:-claude}" in claude|codex|copilot|both|claude-copilot|codex-copilot|all) ;;
   *) echo "Invalid --platform" >&2; exit 2;; esac
+if [ "$WITH_BEADS" = 1 ]; then
+  echo "domestique Beads: initialization unsupported; no certified private backend currently exists. Beads 1.1.2 --stealth adds broad common-dir exclusions and may rewrite/delete root .gitignore; no supported skip-Git-policy switch. --skip-agents/--skip-hooks/--non-interactive do not solve this. No bd command or installation writes performed (.6 blocked)." >&2
+  exit 1
+fi
 if [ "$GLOBAL" = 1 ]; then
   [ "$LOCAL" = 0 ] && [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$WITH_BEADS" = 0 ] &&
     [ "$PURGE_BEADS" = 0 ] && [ "$NO_GUEST" = 0 ] ||

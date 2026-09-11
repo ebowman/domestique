@@ -19,9 +19,14 @@ Always previews first; ANY failed preview prevents apply.
   --dry-run     Preview only.
   --force       Does not override edited/unknown private native assets.
   --guest       Deprecated warning-only no-op; --no-guest is invalid.
+  --with-beads  Explicit --local TARGET only; currently unsupported (exit 1).
+  --state-only  Requires --local TARGET --with-beads; no --platform.
+                Refuses before source fetch/copy, preview or installation.
   --help, -h    Help.
 Local requires an existing Git top-level and compatible global core; no
-implicit global writes. Beads/state-only/uninstall are not implemented.
+implicit global writes. Beads 1.1.2 --stealth changes broad Git policy/root
+.gitignore; no supported skip-Git-policy switch or certified backend exists.
+Installing bd or adding skip flags does not solve this. Uninstall is unsupported.
 No model, MCP, or tool options are accepted; customize native metadata locally.
 EOF
 }
@@ -85,10 +90,14 @@ PLATFORM=""
 PLATFORM_EXPLICIT=0
 GLOBAL=0
 LOCAL=0
+WITH_BEADS=0
+STATE_ONLY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --global) GLOBAL=1 ;;
+    --with-beads) WITH_BEADS=1 ;;
+    --state-only) STATE_ONLY=1 ;;
     --local)
       [ "$#" -ge 2 ] && [ -n "$2" ] && [ "$TARGET_EXPLICIT" = 0 ] ||
         { echo "--local requires one target" >&2; exit 2; }
@@ -124,6 +133,14 @@ done
   { echo "Invalid target/options; --no-guest is unsupported" >&2; exit 2; }
 [ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM" ] ||
   { echo "Empty --platform" >&2; exit 2; }
+[ "$STATE_ONLY" = 0 ] || {
+  [ "$LOCAL$WITH_BEADS$GLOBAL$PLATFORM_EXPLICIT" = 1100 ] ||
+    { echo "--state-only requires explicit --local TARGET --with-beads and no --platform/--global" >&2; exit 2; }
+}
+[ "$WITH_BEADS" = 0 ] || {
+  [ "$LOCAL$GLOBAL" = 10 ] ||
+    { echo "--with-beads requires explicit --local TARGET, not bare/positional or --global" >&2; exit 2; }
+}
 TARGET_ARGS=()
 if [ "$GLOBAL" = 1 ]; then
   [ "$LOCAL" = 0 ] && [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
@@ -139,6 +156,10 @@ case "$PLATFORM" in
   ""|claude|codex|copilot|both|all|claude-copilot|codex-copilot) : ;;
   *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, copilot, both, or all)" >&2; exit 2 ;;
 esac
+if [ "$WITH_BEADS" = 1 ]; then
+  echo "domestique Beads: initialization unsupported; no certified private backend currently exists. Beads 1.1.2 --stealth adds broad common-dir exclusions and may rewrite/delete root .gitignore; no supported skip-Git-policy switch. --skip-agents/--skip-hooks/--non-interactive do not solve this. No bd command, source fetch/copy, preview or installation writes performed (.6 blocked)." >&2
+  exit 1
+fi
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT

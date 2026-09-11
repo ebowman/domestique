@@ -83,7 +83,7 @@ def body(p, codex=False):
 
 def fences(text):
     blocks = re.findall(r"^```bash\n(.*?)^```$", text, re.M | re.S)
-    check(len(blocks) == 2, "two executable core/routing fences")
+    check(len(blocks) == 3, "three separate executable core/routing/Beads fences")
     return blocks
 
 
@@ -119,9 +119,13 @@ with tempfile.TemporaryDirectory() as temp:
             ext = {"claude": "md", "codex": "toml", "copilot": "agent.md"}[provider]
             agent = HOME / f".{provider}" / "agents" / f"domestique-{provider}-{role}.{ext}"
             text = body(agent, provider == "codex")
-            load, recheck = fences(text)
+            load, recheck, guard = fences(text)
             run("bash", "-c", load, "--", RELEASE, cwd=empty)
             run("bash", "-c", recheck, "--", RELEASE, f"global-only:domestique-{provider}-{role}", cwd=empty)
+            result = refuse("bash", "-c", guard, "--", RELEASE,
+                            cwd=empty, roots=(W,))
+            check(result.stdout == "" and "domestique Beads: missing;" in result.stderr,
+                  "global-only role does not bypass database guard")
             check(not re.search(r"^model\s*[:=]", agent.read_text(), re.M), "no installed model pins")
     check(tree(empty) == untouched, "runtime zero local writes")
 
@@ -314,7 +318,11 @@ with tempfile.TemporaryDirectory() as temp:
         skill = HOME / skillroot / "skills" / f"domestique-{provider}" / "SKILL.md"
         for suffix in ("", "-decompose", "-goal"):
             skill = HOME / skillroot / "skills" / f"domestique-{provider}{suffix}" / "SKILL.md"
-            coreblock, mapblock = fences(body(skill))
+            coreblock, mapblock, guard = fences(body(skill))
+            result = refuse("bash", "-c", guard, "--", RELEASE,
+                            cwd=project, roots=(W,))
+            check(result.stdout == "" and "domestique Beads: missing;" in result.stderr,
+                  "customized profile skill database boundary")
             run("bash", "-c", coreblock, "--", RELEASE, cwd=project)
             mapped = run("bash", "-c", mapblock, "--", RELEASE, cwd=project)
             mapping = dict(line.split("=", 1) for line in mapped.stdout.splitlines())
@@ -322,7 +330,7 @@ with tempfile.TemporaryDirectory() as temp:
                 token = mapping[f"DOMESTIQUE_ROUTE_{role}"]
                 path = native(project, provider, role)
                 text = body(path, provider == "codex")
-                load, recheck = fences(text)
+                load, recheck, guard = fences(text)
                 run("bash", "-c", load, "--", RELEASE, cwd=project)
                 run("bash", "-c", recheck, "--", RELEASE, token, cwd=project)
                 check(run("bash", "-c", recheck, "--", RELEASE, cwd=project, ok=False).returncode != 0,

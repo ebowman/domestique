@@ -16,8 +16,9 @@ if provider == "codex":
     text = tomllib.loads(text)["developer_instructions"]
 assert str(root) in text
 blocks = re.findall(r"^```bash\n(.*?)^```$", text, re.M | re.S)
-assert len(blocks) == 2  # core loading + separate ephemeral routing operation
+assert len(blocks) == 3  # loading, routing, separate project database guard
 command = blocks[0]
+subprocess.run(["bash", "-n"], input=blocks[2], text=True, check=True)
 subprocess.run(["bash", "-n"], input=command, text=True, check=True)
 agent = role in ("implementer", "reviewer")
 assert "read " in command and 'orchestrator "$DOMESTIQUE_BOUND_RELEASE"' in command
