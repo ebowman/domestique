@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
 # update.sh — fetch the latest domestique.sh from GitHub and re-run it
-# against a target directory, reusing the existing 3-way-merge install path
-# (see docs/install-upgrade-design.md §5). This is intentionally a thin
-# wrapper: all merge/backup/conflict logic lives in domestique.sh itself.
+# against an explicit global or private local scope. This is intentionally
+# thin: ownership, pristine-only refresh and publication live in domestique.sh.
 set -euo pipefail
 
 DEFAULT_SOURCE="https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh"
 
 usage() {
+  cat <<EOF
+Usage: update.sh --global [options]
+       update.sh --local TARGET [options]
+       update.sh [TARGET] [options]  (private local; default .)
+
+Fetches $DEFAULT_SOURCE, or --source PATH/URL (DOMESTIQUE_UPDATE_SOURCE).
+Always previews first; ANY failed preview prevents apply.
+  --platform P  claude, codex, copilot, both, claude-copilot, codex-copilot, all
+                Additive union, reused when omitted; fresh default Claude.
+  --dry-run     Preview only.
+  --force       Does not override edited/unknown private native assets.
+  --guest       Deprecated warning-only no-op; --no-guest is invalid.
+  --help, -h    Help.
+Local requires an existing Git top-level and compatible global core; no
+implicit global writes. Beads/state-only/uninstall are not implemented.
+No model, MCP, or tool options are accepted; customize native metadata locally.
+EOF
+}
+
+legacy_usage() {
   cat <<EOF
 Usage: update.sh [TARGET_DIR] [options]
        update.sh --global [options]
@@ -65,12 +84,19 @@ NO_GUEST=0
 PLATFORM=""
 PLATFORM_EXPLICIT=0
 GLOBAL=0
+LOCAL=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --global) GLOBAL=1 ;;
+    --local)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [ "$TARGET_EXPLICIT" = 0 ] ||
+        { echo "--local requires one target" >&2; exit 2; }
+      case "$2" in -*) echo "Invalid --local target" >&2; exit 2;; esac
+      LOCAL=1; TARGET_EXPLICIT=1; TARGET_DIR="$2"; shift;;
     --source)
-      [ $# -ge 2 ] || { echo "Missing argument for --source" >&2; exit 2; }
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "Missing argument for --source" >&2; exit 2; }
+      case "$2" in -*) echo "Invalid --source" >&2; exit 2;; esac
       SOURCE="$2"; shift ;;
     --source=*) SOURCE="${1#--source=}" ;;
     --dry-run) UPDATER_DRY_RUN=1 ;;
@@ -85,6 +111,7 @@ while [ $# -gt 0 ]; do
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
+      [ -n "$1" ] || { echo "Empty target" >&2; exit 2; }
       TARGET_EXPLICIT=1
       if [ -z "$TARGET_DIR" ]; then TARGET_DIR="$1"
       else echo "Unexpected argument: $1" >&2; exit 2; fi
@@ -92,21 +119,24 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+[ -n "$SOURCE" ] || { echo "Empty --source" >&2; exit 2; }
+[ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
+  { echo "Invalid target/options; --no-guest is unsupported" >&2; exit 2; }
+[ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM" ] ||
+  { echo "Empty --platform" >&2; exit 2; }
 TARGET_ARGS=()
 if [ "$GLOBAL" = 1 ]; then
-  [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
+  [ "$LOCAL" = 0 ] && [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
     { echo "Invalid --global scope/target/options" >&2; exit 2; }
   [ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM" ] ||
     { echo "Empty --platform" >&2; exit 2; }
 else
   TARGET_DIR="${TARGET_DIR:-.}"
-  TARGET_ARGS+=("$TARGET_DIR")
+  TARGET_ARGS+=(--local "$TARGET_DIR")
 fi
 
 case "$PLATFORM" in
-  ""|claude|codex|copilot|both|all) : ;;
-  claude-copilot|codex-copilot)
-    [ "$GLOBAL" = 1 ] || { echo "Provider combination requires --global at this checkpoint" >&2; exit 2; };;
+  ""|claude|codex|copilot|both|all|claude-copilot|codex-copilot) : ;;
   *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, copilot, both, or all)" >&2; exit 2 ;;
 esac
 
@@ -146,11 +176,8 @@ if ! bash -n "$FETCHED"; then
   exit 4
 fi
 
-# Passed through to the fetched domestique.sh verbatim. Note: even if
-# neither --guest nor --no-guest is given here, a target that was previously
-# guest-installed stays in guest mode on its own — domestique.sh detects each
-# provider's sticky mode marker and keeps guest mode without help from
-# update.sh. These flags exist for explicitly setting/converting mode here.
+# Pass scope and provider intent through; omitted selection reuses that
+# scope's persisted union. --guest is only a deprecated warning-producing alias.
 FORCE_ARGS=()
 [ "$GLOBAL" -eq 1 ] && FORCE_ARGS+=(--global)
 [ "$FORCE" -eq 1 ] && FORCE_ARGS+=(--force)
@@ -163,8 +190,8 @@ echo "--- Preview (dry run) ---"
 rc=0
 bash "$FETCHED" --dry-run "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" || rc=$?
 
-if [ "$GLOBAL" = 1 ] && [ "$rc" -ne 0 ]; then
-  echo "domestique update: global preview failed; not applying." >&2
+if [ "$rc" -ne 0 ]; then
+  echo "domestique update: preview failed; not applying." >&2
   exit "$rc"
 fi
 

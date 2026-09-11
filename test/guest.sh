@@ -23,6 +23,8 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
+# shellcheck source=test/historical-fixture.sh
+source "$SCRIPT_DIR/historical-fixture.sh"
 
 PASS_COUNT=0
 FAIL_COUNT=0

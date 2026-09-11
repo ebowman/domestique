@@ -558,7 +558,99 @@ below, including the two composite spellings; legacy selection is unchanged.
 The updater validates global scope/options before fetching, forwards no `.`
 target, and does not apply after a failed global preview.
 
-#### hq-b3q.4 internal local safety checkpoint (not a local install CLI)
+#### hq-b3q.5 public private-profile checkpoint
+
+This checkpoint supersedes the older CLI-status statements in `.3`/`.4`
+below. `--local TARGET`, old positional `TARGET`, and bare `.` now all use
+the private local operation, never the legacy engine. Both scopes accept all
+seven provider sets. Selection adds to the recorded union; a bare rerun uses
+it, fresh state defaults to Claude, and retained `providers=none` creates
+nothing. `--guest` only warns; `--no-guest`, unsupported model/MCP/tool flags,
+malformed scope/target combinations, Beads/state-only and uninstall/purge
+refuse before writes (updater: before fetch). `.6`/`.7` own those unfinished
+lifecycle operations. No implicit global installation or update occurs.
+Missing/old router helper requires an explicit `bash domestique.sh --global`
+with the same private-root environment.
+
+Local setup uses `.4` preflight/migration/exclusion accounting, publishes
+only exact provider-qualified native role leaves (both roles for requested
+providers), and records generated baseline digests and creation provenance
+in `.domestique-private/manifest`. Receipts live only in its `routing/`.
+No local skills, root policies, core body copies, settings, `.gitignore`,
+index, hooks, Beads, home registry or global writes are part of local setup.
+An unknown identical leaf is not adopted. Pristine owned files can refresh;
+edited files refuse the entire refresh untouched even with force, before
+rendering or copying any live native content. Full prompt forks are never
+relinked and cannot claim shared-core compatibility.
+
+The standalone installed `bin/resolve-core` adds `router-api` (prints
+`router_api=1`) and:
+
+```
+route CORE PHYSICAL_WORKTREE PROVIDER ROLE REQUIRED_RELEASE INTENT [PIN]
+```
+
+`ROLE` is implementer/reviewer. `INTENT` is default, global-only or
+local-required. The required release is always the literal parent binding;
+route never samples active. Successful output is exactly one ephemeral token:
+`global-only:<exact-ID>` or
+`local-required:<exact-ID>:<manifest-sha256>:<receipt-sha256>:<current-leaf-sha256>`.
+Supply that same token to every subsequent check. A changed/missing bound
+local profile/receipt fails without fallback. Explicit global-only deliberately
+bypasses local evidence; default fails on invalid local evidence, including
+indexed native leaves or indexed path ancestors without working copies.
+Literal Git pathspecs check only the requested leaf/subtree and exact ancestor
+objects, not unrelated tracked host files in provider directories. Private
+manifest/receipt paths and their indexed ancestors are checked as well. A valid
+receipt listing only the other role permits a global requested role only
+when the requested adapter is absent. The two roles bind independently.
+Tokens and hashes of live native content must never be saved to files,
+preferences, Beads or memory.
+
+The resolver reuses `local_manifest_read ROOT runtime`, separating structural
+and creation/path provenance from the install-only pristine baseline check.
+Readable owned untracked nonsymlink regular native roles may have edited
+native tools/MCP metadata at runtime. This is not native schema validation,
+trust proof, authentication, or proof that required tools/core protocol are
+available. Wrappers contain executable core and routing fences (Codex:
+`developer_instructions`), plus a stable loader declaration. Orchestrators
+must use native discovery to independently confirm exact ID/no collision,
+reload after edits, trust, read/shell capability and the active required core
+protocol before delegating. Failure to confirm stops; edited tools never
+waive guardrails. Native registration/auth remain separate user actions.
+No actual native client/server calls are made by setup or these tests.
+Core API 1 and each immutable release's six-file inventory are unchanged.
+
+Publication exclusively claims a private `pending` prospective manifest and
+records successful native creation/refresh digests in `published`. New native
+leaves and new receipts/manifest use exclusive noclobber redirection from
+generated staging (also used for release population). Files, directories and
+dangling symlinks at the final leaf refuse, never become target containers.
+Replacements move a same-basename generated file to the parent directory,
+not to the final leaf as a possible container. Every publication verifies
+the exact final path, regular-file type and generated digest before recording
+creation/refresh or proceeding with receipts/manifest. Replacement is not
+exclusive against concurrent regular-file writers; these checks do not
+promise concurrency isolation. Receipts/manifest publish before the `.4`
+shared exclusion apply/revalidation, and journals clear last. An interrupted
+operation reports `PARTIAL`; normal reruns and routing refuse retained
+journals. Retain them and reconcile exact creation/publication metadata
+manually, never infer creation from the pending intent or byte equality.
+No live metadata is copied into logs/backups/recovery. Only generated source
+is staged. A failure can leave partial native/private files before exclusion
+publication; it is not a successful private installation and must not be
+committed. Cooperating-writer/revalidation limits from `.4` still apply:
+stop other writers; this is not hostile same-user race or power-loss atomicity.
+
+Current production coverage: `local-profiles.sh`, `local-preflight.sh`,
+`global.sh`, `private-core.sh`. Retired normal/guest/merge/uninstall behavior
+is retained as explicitly labelled offline `b60feef` fixture coverage in
+`codex.sh`, `copilot.sh`, `guest.sh`, `upgrade.sh`, `uninstall.sh`, not claimed
+as successful production CLI acceptance. `.4` migration fixtures also use
+that historical installer. Full README and native-version evidence remain
+`.9` and `.8` work respectively.
+
+#### hq-b3q.4 internal local safety checkpoint (historical pre-.5 status)
 
 `domestique.sh` now embeds the following ordinary Bash functions **before
 `usage()`**, so the existing extract-before-usage test/consumer pattern can

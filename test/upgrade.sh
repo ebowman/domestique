@@ -23,6 +23,8 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
+# shellcheck source=test/historical-fixture.sh
+source "$SCRIPT_DIR/historical-fixture.sh"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -339,6 +341,7 @@ scenario_adopt_then_upgrade_merges_plain() {
   check "adopt: base snapshot seeded (pristine, no local edit)" bash -c '! grep -q "mcp__filesystem" "$1"' _ "$t/$BASE_IMPL_REL"
 
   local out2 rc2
+  # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
   out2="$("$V2" "$t" 2>&1)"; rc2=$?
 
   check "upgrade: exit 0" test "$rc2" -eq 0
@@ -422,6 +425,7 @@ scenario_predates_emitter_change_conflict() {
   # diverges between ours (old wording) and base (current wording).
   local before2; before2="$(cat "$t/$IMPL_REL")"
   local out2 rc2
+  # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
   out2="$("$V2" "$t" 2>&1)"; rc2=$?
 
   if [ "$rc2" -eq 0 ]; then

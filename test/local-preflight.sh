@@ -14,6 +14,7 @@ for name in bd curl wget claude codex copilot; do
 done
 export PATH="$WORK/forbidden:$PATH"
 EXTRACT="$WORK/definitions.sh"
+git -C "$ROOT" show b60feef:domestique.sh > "$WORK/historical-domestique.sh"
 awk '/^usage\(\)/ { exit } { print }' "$DOM" > "$EXTRACT"
 # shellcheck source=/dev/null
 source "$EXTRACT"
@@ -66,8 +67,8 @@ owned() {
   } > "$R/.domestique-private/manifest"
 }
 legacy() {
-  # Production emitters, snapshot and immutable created-file formats. No bd.
-  bash "$DOM" --platform "$1" "$R" >/dev/null 2>&1
+  # Historical offline CLI: real retired snapshot/created-file formats. No bd.
+  bash "$WORK/historical-domestique.sh" --platform "$1" "$R" >/dev/null 2>&1
 }
 call bash "$DOM" --global --platform codex
 check 'isolated real core installed' test "$RC" = 0
@@ -205,7 +206,7 @@ refuse 'legacy normal requires opt-in' local_preflight "$R" codex
 refuse 'Codex root policy lacks whole-leaf creation authority' local_migrate "$R" codex
 fixture
 printf 'host normal policy\n' > "$R/AGENTS.md"
-call bash "$DOM" --platform codex --guest "$R"
+call bash "$WORK/historical-domestique.sh" --platform codex --guest "$R"
 check 'actual main guest fixture' test "$RC" = 0
 refuse 'guest authority blocks implicit local install' local_preflight "$R" codex
 before="$(tree)"
@@ -219,7 +220,7 @@ check 'guest only created leaf removed' test ! -e "$R/.codex/agents/implementer.
 check 'host normal policy retained' grep -qxF 'host normal policy' "$R/AGENTS.md"
 check 'old exact exclusions retained without adopting' test "$excludehash" = "$(global_hash < "$R/.git/info/exclude")"
 fixture
-call bash "$DOM" --guest "$R"
+call bash "$WORK/historical-domestique.sh" --guest "$R"
 check 'actual Claude guest fixture' test "$RC" = 0
 refuse 'Claude snapshots are not creation provenance' local_migrate "$R" claude
 fixture; check 'draft-layout Copilot fixture' legacy copilot
@@ -366,10 +367,10 @@ for field in created-files manifest platforms mode; do
     fixture
     if [ "$field" = mode ]; then
       test_provider=codex; state_prefix=.codex
-      call bash "$DOM" --platform codex --guest "$R"
+      call bash "$WORK/historical-domestique.sh" --platform codex --guest "$R"
     else
       test_provider=copilot; state_prefix=.github
-      call bash "$DOM" --platform copilot "$R"
+      call bash "$WORK/historical-domestique.sh" --platform copilot "$R"
     fi
     check "legacy fixture for $field $corruption" test "$RC" = 0
     python3 - "$R/$state_prefix/.domestique/$field" "$corruption" <<'PY'
@@ -386,7 +387,7 @@ PY
   done
 done
 fixture
-call bash "$DOM" --platform codex --guest "$R"
+call bash "$WORK/historical-domestique.sh" --platform codex --guest "$R"
 check 'Codex raw provenance fixture' test "$RC" = 0
 python3 - "$R/.codex/.domestique/guest-excludes" <<'PY'
 import pathlib,sys

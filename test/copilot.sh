@@ -7,6 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOM="$SCRIPT_DIR/../domestique.sh"
 PASS=0
 FAIL=0
+WORKROOT="$(mktemp -d)"
+trap 'rm -rf "$WORKROOT"' EXIT
+# shellcheck source=test/historical-fixture.sh
+source "$SCRIPT_DIR/historical-fixture.sh"
 
 check() {
   local description="$1"; shift
@@ -38,9 +42,6 @@ decompose="$(emit emit_copilot_decompose_skill)"
 goal="$(emit emit_copilot_goal_skill)"
 policy="$(emit emit_copilot_policy)"
 base_without_no_persistence="$(emit_without_no_persistence)"
-
-WORKROOT="$(mktemp -d)"
-trap 'rm -rf "$WORKROOT"' EXIT
 
 treehash() {
   ( cd "$1" && find . -type f -print | LC_ALL=C sort | while IFS= read -r f; do shasum -a 256 "$f"; done ) | shasum -a 256 | awk '{print $1}'
@@ -152,9 +153,9 @@ reconciliation_and_guard_checks() {
   check "scoped uninstall leaves Copilot policy bytes unchanged" test "$before" = "$(shasum -a 256 "$scoped/.github/copilot-instructions.md" | awk '{print $1}')"
 
   local u="$WORKROOT/updater"; mkdir -p "$u"
-  out="$(bash "$SCRIPT_DIR/../update.sh" "$u" --source "$DOM" --platform copilot --dry-run 2>&1)"; rc=$?
+  out="$(bash "$UPDATER" "$u" --source "$DOM" --platform copilot --dry-run 2>&1)"; rc=$?
   check "updater forwards Copilot preview selector" bash -c 'test "$1" -eq 0 && grep -q "platforms=copilot" <<<"$2" && ! test -e "$3/.github"' _ "$rc" "$out" "$u"
-  out="$(bash "$SCRIPT_DIR/../update.sh" "$u" --source "$DOM" --platform copilot 2>&1)"; rc=$?
+  out="$(bash "$UPDATER" "$u" --source "$DOM" --platform copilot 2>&1)"; rc=$?
   check "updater applies Copilot selector after preview" bash -c 'test "$1" -eq 0 && test -f "$2/.github/copilot-instructions.md" && grep -q "Applying" <<<"$3"' _ "$rc" "$u" "$out"
 }
 
@@ -248,7 +249,7 @@ copilot_policy_merge_checks() {
   bash "$DOM" "$update_conflict" --platform copilot >/dev/null 2>&1
   sed -i.orig 's/# Domestique orchestration policy (Copilot)/# updater local Copilot policy/' "$update_conflict/.github/copilot-instructions.md"
   rm -f "$update_conflict/.github/copilot-instructions.md.orig"
-  out="$(bash "$SCRIPT_DIR/../update.sh" "$update_conflict" --source "$v2" --platform copilot 2>&1)"; rc=$?
+  out="$(bash "$UPDATER" "$update_conflict" --source "$v2" --platform copilot 2>&1)"; rc=$?
   check "updater propagates Copilot policy conflict exit 3" bash -c 'test "$1" -eq 3 && test -f "$2/.github/copilot-instructions.md.new" && grep -qi "conflicts" <<<"$3"' _ "$rc" "$update_conflict" "$out"
 
   mkdir -p "$adopt"

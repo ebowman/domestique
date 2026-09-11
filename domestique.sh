@@ -667,6 +667,18 @@ never persist it. The map stays fixed: mid-run receipt/adapter disappearance
 or changed required evidence means STOP, never fallback or reclassification.
 Pass the same verified DOMESTIQUE_BOUND_RELEASE field in every delegated
 task brief; roles never sample active. Core and routing metadata stay read-only.
+Execute the invoking wrapper's routing fence: the standalone resolve-core
+route operation validates ownership and returns each role's ephemeral token.
+Retain both DOMESTIQUE_ROUTE_implementer and DOMESTIQUE_ROUTE_reviewer tokens;
+pass them unchanged to every recheck, and the selected token plus the literal
+DOMESTIQUE_BOUND_RELEASE to each delegated role. Never save tokens or live
+profile hashes to configuration, files, Beads, or memory. Baseline equality
+is an installer refresh safeguard, NOT runtime freshness or native trust:
+owned native tool/MCP metadata may diverge. A changed already-bound profile
+stops until a new deliberate workflow/reload/trust confirmation. Native exact
+ID discovery, read/shell availability and an active stable core loader MUST
+be independently confirmed by the orchestrator; shell/files cannot prove
+them. Full prompt forks are user-maintained outside compatible core upgrades.
 
 Stop and report between ordinary beads. Decompose mode only creates an epic,
 bounded dependency-ordered beads, and prints the graph; it never implements.
@@ -727,7 +739,19 @@ DOM_EOF
 # <private-root>/bin/resolve-core. It is outside immutable role releases.
 # CLI: resolve-core bind ROOT ROLE [RELEASE] prints the validated release;
 # resolve-core read ROOT ROLE RELEASE prints only validated role bytes.
-emit_private_core_resolver() { cat <<'DOM_EOF'
+emit_private_core_resolver() {
+  cat <<'DOM_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+# router_api=1 (standalone, read-only; native discovery is NOT shell validation)
+DOM_EOF
+  # Share the byte/ownership/path grammar with installer preflight. No sourcing
+  # installed metadata, native config, or the installer at runtime.
+  declare -f global_fail global_hash global_stat global_path global_digest_valid \
+    local_fail local_path local_text_file local_root local_untracked \
+    local_inventory local_selected local_set_valid local_contains local_manifest_read \
+    local_route
+  cat <<'DOM_EOF'
 domestique_core_sha256() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" | awk '{print $1}'
   elif command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | awk '{print $1}'
@@ -794,6 +818,8 @@ domestique_core_read_role() {
   command cat "$root/releases/$release/roles/$role.md"
 }
 case "${1:-}" in
+  router-api) [ "$#" = 1 ] || exit 2; printf 'router_api=1\n';;
+  route) shift; local_route "$@";;
   bind) [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { domestique_core_fail "usage: resolve-core bind ROOT ROLE [RELEASE]"; exit 2; }; shift; domestique_core_bind "$@" ;;
   read) [ "$#" -eq 4 ] || { domestique_core_fail "usage: resolve-core read ROOT ROLE RELEASE"; exit 2; }; domestique_core_read_role "$2" "$3" "$4" ;;
   *) domestique_core_fail "usage: resolve-core {bind|read} ROOT ROLE [RELEASE]"; exit 2 ;;
@@ -805,7 +831,8 @@ DOM_EOF
 # fields; the protocol declaration is prompt body/developer_instructions.
 emit_private_adapter_body() {
   local provider="$1" scope="$2" role="$3" root="$4"
-  local qroot helper bind
+  local qroot helper bind route_scope=global-only
+  [ "$scope" != local ] || route_scope=local-required
   printf -v qroot '%q' "$root"
   helper="${qroot}/bin/resolve-core"
   if [ "$role" = implementer ] || [ "$role" = reviewer ]; then
@@ -821,6 +848,7 @@ fi
 printf 'DOMESTIQUE_BOUND_RELEASE=%s\n' \"\$DOMESTIQUE_BOUND_RELEASE\""
   fi
   printf 'Provider: %s\nScope: %s\nRole: %s\ncore_root: %s\ncore_api=1\n' "$provider" "$scope" "$role" "$root"
+  printf 'Stable loader: domestique-core-api-1; router-api-1; native capability edits do not waive shared guardrails.\n'
   cat <<DOM_EOF
 Runtime guard: act only when Provider is ${provider}; stop if invoked through
 another provider's skill or agent discovery.
@@ -849,6 +877,50 @@ policy, active resampling by delegated roles, or arbitrary path execution.
 Core bootstrap/install metadata is read-only;
 after loading, an implementer may make brief-authorized scoped source edits
 and commits, but never commits private state. Reviewer remains nonediting.
+DOM_EOF
+  if [ "$role" = implementer ] || [ "$role" = reviewer ]; then
+    cat <<DOM_EOF
+Before work, also execute this route recheck with the parent's literal release
+as argument one and this role's DOMESTIQUE_ROUTE_${role} token as argument two.
+Missing/changed bindings STOP. This is not native discovery or trust proof.
+\`\`\`bash
+release="\${1:?missing parent release}"
+pin="\${2:?missing parent route pin}"
+worktree=\$(git rev-parse --show-toplevel) || exit
+worktree=\$(cd "\$worktree" && pwd -P) || exit
+bash ${helper} route ${qroot} "\$worktree" ${provider} ${role} "\$release" ${route_scope} "\$pin" || exit
+\`\`\`
+DOM_EOF
+  else
+    cat <<DOM_EOF
+Before ANY delegation execute this read-only routing block with the retained
+literal release as argument one. Arguments two/three are independent user
+intents (default, global-only, local-required) for implementer/reviewer.
+Keep both printed tokens only in ephemeral context. For every later dispatch
+pass those SAME tokens as arguments four/five, never rebind after failure.
+Pass the selected token and release literally in the delegated task brief.
+\`\`\`bash
+release="\${1:?missing retained release}"
+worktree=\$(git rev-parse --show-toplevel) || exit
+worktree=\$(cd "\$worktree" && pwd -P) || exit
+implementer=\$(bash ${helper} route ${qroot} "\$worktree" ${provider} implementer "\$release" "\${2:-default}" "\${4:-}") || exit
+reviewer=\$(bash ${helper} route ${qroot} "\$worktree" ${provider} reviewer "\$release" "\${3:-default}" "\${5:-}") || exit
+printf 'DOMESTIQUE_ROUTE_implementer=%s\nDOMESTIQUE_ROUTE_reviewer=%s\n' "\$implementer" "\$reviewer"
+\`\`\`
+DOM_EOF
+  fi
+  cat <<'DOM_EOF'
+Route tokens validate filesystem provenance, NOT the whole native schema,
+native exact-ID discovery, project/server trust, or tool availability.
+Before delegation the orchestrator MUST independently confirm through native
+discovery the exact selected ID, no collisions, reload after metadata edits,
+native trust, read and shell capability, and that the stable loader declaration
+and required shared core protocol are active. If any cannot be confirmed STOP;
+never delegate to a default/broader role. An edited tools list cannot waive
+guardrails. Registration and authentication remain separate user actions.
+Native metadata edits are supported on owned local roles at runtime; full
+prompt forks are user-maintained, outside compatible shared-core upgrades,
+never silently relinked. A removed core protocol cannot qualify for delegation.
 DOM_EOF
 }
 
@@ -972,8 +1044,12 @@ global_path() {
       case "$walk/" in "$boundary/"*)
         [ "$owner" = "$G_UID" ] || global_fail "unowned path: $walk"
         [ $((bits & 022)) -eq 0 ] || global_fail "writable by others: $walk"
-        [ $((bits & 0600)) -eq 384 ] || global_fail "owner read/write permissions required: $walk"
-        [ -r "$walk" ] && [ -w "$walk" ] || global_fail "unreadable/unwritable path: $walk"
+        if [ "${G_READONLY:-0}" = 1 ]; then
+          [ $((bits & 0400)) -ne 0 ] && [ -r "$walk" ] || global_fail "unreadable path: $walk"
+        else
+          [ $((bits & 0600)) -eq 384 ] || global_fail "owner read/write permissions required: $walk"
+          [ -r "$walk" ] && [ -w "$walk" ] || global_fail "unreadable/unwritable path: $walk"
+        fi
         ;;
         *)
           [ "$owner" = 0 ] || [ "$owner" = "$G_UID" ] || global_fail "unsafe ancestor owner: $walk"
@@ -988,7 +1064,7 @@ global_path() {
     else
       parent="${walk%/*}"; [ -n "$parent" ] || parent=/
       if [ -e "$parent" ]; then
-        [ -d "$parent" ] && [ -w "$parent" ] && [ -x "$parent" ] ||
+        [ -d "$parent" ] && { [ "${G_READONLY:-0}" = 1 ] || [ -w "$parent" ]; } && [ -x "$parent" ] ||
           global_fail "cannot create under parent: $parent"
       fi
     fi
@@ -1435,7 +1511,7 @@ global_publish_leaf() {
 }
 
 # ---------------------------------------------------------------------------
-# Internal local lifecycle API. Not wired to the CLI until hq-b3q.5.
+# Shared local lifecycle API, used by private setup and the standalone router.
 # All planning is read-only (including no locks/staging); arrays contain paths
 # and digests only. Callers must check status, not treat partial arrays as a plan.
 local_fail() {
@@ -1502,7 +1578,7 @@ local_core() {
   local_path "$L_CORE" "$L_CORE" || return 1
   (
     set -o pipefail
-    G_ROOT="$L_CORE"; G_UID="$(id -u)"
+    G_ROOT="$L_CORE"; G_UID="$(id -u)"; G_READONLY=1
     global_no_repo "$G_ROOT"
     G_C=0; G_X=0; G_P=0; G_KEYS=(); G_CREATED=(); G_BASE=()
     for p in state state/global-manifest state/pending bin bin/resolve-core active releases; do
@@ -1525,7 +1601,9 @@ local_core() {
       global_fail "missing owned resolver"
     [ "$(global_hash < "$G_ROOT/bin/resolve-core")" = "${G_BASE[G_INDEX]}" ] ||
       global_fail "edited resolver"
-  ) || { local_fail "invalid required global core: $L_CORE (repair with explicit --global separately)"; return 1; }
+    grep -qxF '# router_api=1 (standalone, read-only; native discovery is NOT shell validation)' "$G_ROOT/bin/resolve-core" ||
+      global_fail "old/incompatible helper; run: bash domestique.sh --global"
+  ) || { local_fail "invalid required global core: $L_CORE; run: bash domestique.sh --global (same DOMESTIQUE_HOME; no implicit global writes)"; return 1; }
   local_path "$L_CORE/active" "$L_CORE" && local_text_file "$L_CORE/active" || return 1
   # Execute only the embedded trusted resolver, never installed code.
   # shellcheck disable=SC2034 # Public preflight binding for the .5 consumer.
@@ -1563,7 +1641,7 @@ local_contains() {
 # global format 1's HOME-relative records. A subset of either role is valid.
 local_manifest_read() {
   local LC_ALL=C
-  local root="$1" file="$1/.domestique-private/manifest"
+  local root="$1" file="$1/.domestique-private/manifest" purpose="${2:-install}"
   local line="" n=0 key value digest previous="" path item allowed provider id roles
   M_KEYS=(); M_CREATED=(); M_BASE=(); M_SET=none; M_CORE=""
   local_path "$root/.domestique-private" "$root" || return 1
@@ -1619,7 +1697,7 @@ local_manifest_read() {
   for ((n=0; n<${#M_KEYS[@]}; n++)); do
     path="$root/${M_KEYS[n]#*:}"
     local_path "$path" "$root" && local_untracked "$root" "${M_KEYS[n]#*:}" || return 1
-    [ -f "$path" ] && [ "$(global_hash < "$path")" = "${M_BASE[n]}" ] ||
+    [ -f "$path" ] && { [ "$purpose" = runtime ] || [ "$(global_hash < "$path")" = "${M_BASE[n]}" ]; } ||
       { local_fail "missing or edited owned native leaf: $path"; return 1; }
   done
   # State-tree ownership is bounded too. Unknown recovery/Beads formats are
@@ -1629,6 +1707,9 @@ local_manifest_read() {
     local_path "$path" "$root" || return 1
     case "$path" in
       "$file") ;;
+      "$root/.domestique-private/pending"|"$root/.domestique-private/published")
+        [ "$purpose" = publication ] && [ -f "$path" ] ||
+          { local_fail "PARTIAL publication retained: $path"; return 1; };;
       "$root/.domestique-private/routing") [ -d "$path" ] || return 1;;
       "$root/.domestique-private/routing/"*.receipt)
         provider="${path##*/}"; provider="${provider%.receipt}"
@@ -1647,6 +1728,65 @@ local_manifest_read() {
   done
   ) || { local_fail "invalid/unreadable private inventory: $root/.domestique-private"; return 1; }
 }
+local_route() (
+  [ "$#" -ge 6 ] && [ "$#" -le 7 ] ||
+    { local_fail "usage: route CORE WORKTREE PROVIDER ROLE RELEASE INTENT [PIN]"; exit 2; }
+  local core="$1" target="$2" provider="$3" role="$4" release="$5" intent="$6" pin="${7:-}"
+  local key leaf="" receipt token id manifest_hash receipt_hash leaf_hash
+  case "$provider" in claude|codex|copilot) ;; *) local_fail "invalid provider"; exit 2;; esac
+  case "$role" in implementer|reviewer) ;; *) local_fail "invalid dispatch role"; exit 2;; esac
+  case "$intent" in default|global-only|local-required) ;; *) local_fail "invalid route intent"; exit 2;; esac
+  G_READONLY=1
+  domestique_core_validate_release "$core" "$release" "$role" || exit 1
+  local_root "$target" || exit 1
+  [ "$L_ROOT" = "$target" ] || { local_fail "route needs physical root"; exit 1; }
+  # A bound route determines scope forever, not an ambient/default preference.
+  if [ -n "$pin" ]; then
+    case "$pin" in
+      global-only:*) [ "$intent" != local-required ] || exit 1; intent=global-only;;
+      local-required:*) [ "$intent" != global-only ] || exit 1; intent=local-required;;
+      *) local_fail "invalid route pin"; exit 1;;
+    esac
+  fi
+  id="domestique-$provider-$role"
+  token="global-only:$id"
+  if [ "$intent" != global-only ]; then
+    L_INVENTORY=()
+    while IFS= read -r key; do
+      L_INVENTORY+=("$key")
+      case "$key" in "$provider:"*"-local-$role."*) leaf="${key#*:}";; esac
+    done < <(local_inventory)
+    receipt="$target/.domestique-private/routing/$provider.receipt"
+    # Check exact evidence paths and index objects even without a working copy.
+    # Ancestors with unrelated tracked host leaves are not local-role evidence.
+    local_path "$receipt" "$target" && local_path "$target/$leaf" "$target" || exit 1
+    local_untracked "$target" "$leaf" &&
+      local_untracked "$target" ".domestique-private/routing/$provider.receipt" || exit 1
+    local_manifest_read "$target" runtime || exit 1
+    [ -z "$M_CORE" ] || [ "$M_CORE" = "$core" ] ||
+      { local_fail "routing core mismatch"; exit 1; }
+    if local_selected "$M_SET" "$provider"; then
+      [ -f "$receipt" ] || { local_fail "missing provider receipt; no fallback"; exit 1; }
+    fi
+    if local_contains "$provider:$leaf" ${M_KEYS[@]+"${M_KEYS[@]}"} ||
+      [ -e "$target/$leaf" ] || [ "$intent" = local-required ]; then
+      [ -f "$receipt" ] && local_contains "$provider:$leaf" ${M_KEYS[@]+"${M_KEYS[@]}"} ||
+        { local_fail "required local receipt/role missing; no global fallback"; exit 1; }
+      # Receipt exact bytes were checked against creation records, not live
+      # baseline equality. Only ephemeral digests of current content follow.
+      manifest_hash="$(global_hash < "$target/.domestique-private/manifest")"
+      receipt_hash="$(global_hash < "$receipt")"
+      leaf_hash="$(global_hash < "$target/$leaf")"
+      token="local-required:domestique-$provider-local-$role:$manifest_hash:$receipt_hash:$leaf_hash"
+    elif [ -e "$receipt" ]; then
+      # A valid receipt listing only the OTHER role permits this global role.
+      [ -f "$receipt" ] || exit 1
+    fi
+  fi
+  [ -z "$pin" ] || [ "$pin" = "$token" ] ||
+    { local_fail "bound profile/receipt changed; reload and reconfirm native trust, no fallback"; exit 1; }
+  printf '%s\n' "$token"
+)
 local_legacy_inventory() {
   case "$1" in
     claude) printf '%s\n' .claude/agents/implementer.md .claude/agents/reviewer.md .claude/commands/decompose.md .claude/commands/goal.md CLAUDE.md CLAUDE.local.md;;
@@ -1901,7 +2041,7 @@ local_exclude_plan() {
   for wt in "${worktrees[@]}"; do
     local_root "$wt" && local_common "$wt" || return 1
     [ "$L_COMMON" = "$common" ] || { local_fail "mismatched worktree common directory: $wt"; return 1; }
-    local_manifest_read "$wt" || return 1
+    local_manifest_read "$wt" "${L_MANIFEST_PURPOSE:-install}" || return 1
     if [ -e "$wt/.domestique-private" ]; then L_OWNED_PATTERNS+=('/.domestique-private/'); fi
     for key in ${M_KEYS[@]+"${M_KEYS[@]}"}; do L_OWNED_PATTERNS+=("$(local_pattern "${key#*:}")"); done
   done
@@ -1922,7 +2062,7 @@ local_exclude_plan() {
     local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
   done
   for wt in "${worktrees[@]}"; do
-    local_manifest_read "$wt" || return 1
+    local_manifest_read "$wt" "${L_MANIFEST_PURPOSE:-install}" || return 1
     for pattern in "${proposed[@]}"; do
       # Proposed patterns can only originate in fixed inventories above.
       rel=""
@@ -1957,7 +2097,7 @@ local_preflight() {
   case "$migration" in check|migrate) ;; *) local_fail "explicit check or migrate required: $target"; return 1;; esac
   local_set_valid "$selection" && local_root "$target" && local_core || return 1
   while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
-  local_manifest_read "$L_ROOT" || return 1
+  local_manifest_read "$L_ROOT" "${L_MANIFEST_PURPOSE:-install}" || return 1
   [ -z "$M_CORE" ] || [ "$M_CORE" = "$L_CORE" ] ||
     { local_fail "local core identity mismatch: $L_ROOT/.domestique-private/manifest"; return 1; }
   for key in "${L_INVENTORY[@]}"; do
@@ -2022,7 +2162,186 @@ local_migrate() (
   # no adapter/state installation, and no claim that migration installs roles.
 )
 
+local_publish_file() {
+  local source="$1" dest="$2" digest="$3" old="${4:-}"
+  local_path "$dest" "$L_ROOT" && local_untracked "$L_ROOT" "${dest#"$L_ROOT"/}" || return 1
+  [ -f "$source" ] && [ ! -L "$source" ] &&
+    [ "${source##*/}" = "${dest##*/}" ] &&
+    [ "$(global_hash < "$source")" = "$digest" ] || return 1
+  if [ -z "$old" ]; then
+    # Reuse release population's portable exclusive leaf creation. Unlike
+    # ln/mv to an exact path, redirection cannot reinterpret it as a container.
+    (set -C; cat "$source" > "$dest") || return 1
+  else
+    [ -f "$dest" ] && [ "$(global_hash < "$dest")" = "$old" ] || return 1
+    # As in global publication, same-basename source to PARENT refuses a
+    # directory at the final leaf rather than nesting into it (BSD and GNU).
+    # This replacement is not exclusive against concurrent regular writers.
+    mv "$source" "${dest%/*}" || return 1
+  fi
+  # Command success alone is not positive provenance. Check the exact final
+  # path/type/bytes before the caller journals anything or publishes metadata.
+  local_path "$dest" "$L_ROOT" && local_untracked "$L_ROOT" "${dest#"$L_ROOT"/}" &&
+    [ -f "$dest" ] && [ "$(global_hash < "$dest")" = "$digest" ] ||
+    { local_fail "unverified published leaf: $dest"; return 1; }
+}
+
+local_install() (
+  local selection=none key path provider role digest j n found stage state changed=0
+  local keys=() created=() bases=() oldkeys=() oldbases=() oldcreated=()
+  local oldmanifest="" oldreceipts=()
+  local L_MANIFEST_PURPOSE=install
+  umask 077
+  local_root "$TARGET_DIR" && local_core || exit 1
+  L_INVENTORY=()
+  while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
+  local_manifest_read "$L_ROOT" || exit 1
+  if [ "$PLATFORM_EXPLICIT" = 1 ]; then selection="$PLATFORM_ARG"
+  elif [ -e "$L_ROOT/.domestique-private" ]; then selection="$M_SET"
+  else selection=claude; fi
+  local_preflight "$L_ROOT" "$selection" migrate || exit 1
+  local_manifest_read "$L_ROOT" || exit 1
+  oldkeys=(${M_KEYS[@]+"${M_KEYS[@]}"}); oldbases=(${M_BASE[@]+"${M_BASE[@]}"}); oldcreated=(${M_CREATED[@]+"${M_CREATED[@]}"})
+  if [ -f "$L_ROOT/.domestique-private/manifest" ]; then
+    oldmanifest="$(global_hash < "$L_ROOT/.domestique-private/manifest")"
+  fi
+  G_C=0; G_X=0; G_P=0
+  [ "$M_SET" = none ] || global_select "$M_SET"
+  [ "$selection" = none ] || global_select "$selection"
+  if [ "$G_C$G_X$G_P" = 000 ]; then
+    printf 'domestique local: providers=none retained; no adapters created\n'
+    exit 0
+  fi
+  global_set_name
+  stage="$(mktemp -d)"
+  trap 'rm -rf "$stage"' EXIT
+  for key in "${L_INVENTORY[@]}"; do
+    provider="${key%%:*}"
+    local_selected "$G_SET" "$provider" || continue
+    path="${key#*:}"
+    case "$path" in *-implementer.*) role=implementer;; *) role=reviewer;; esac
+    mkdir -p "$stage/${path%/*}"
+    "emit_private_${provider}_agent" local "$role" "$L_CORE" > "$stage/$path"
+    digest="$(global_hash < "$stage/$path")"
+    found=-1
+    for ((j=0; j<${#oldkeys[@]}; j++)); do [ "${oldkeys[j]}" != "$key" ] || found="$j"; done
+    keys+=("$key"); bases+=("$digest")
+    if [ "$found" = -1 ]; then created+=("$digest"); changed=1
+    else
+      created+=("${oldcreated[found]}")
+      [ "${oldbases[found]}" = "$digest" ] || changed=1
+    fi
+  done
+  {
+    printf 'format=1\nscope=local\nworktree_root=%s\ncore_root=%s\ncore_api=1\nproviders=%s\n' "$L_ROOT" "$L_CORE" "$G_SET"
+    for ((j=0; j<${#keys[@]}; j++)); do
+      printf 'created=%s:%s\nbaseline=%s:%s\n' "${keys[j]}" "${created[j]}" "${keys[j]}" "${bases[j]}"
+    done
+  } > "$stage/manifest"
+  mkdir "$stage/routing"
+  for provider in claude codex copilot; do
+    local_selected "$G_SET" "$provider" || continue
+    path="$L_ROOT/.domestique-private/routing/$provider.receipt"
+    digest=""
+    if [ -f "$path" ]; then digest="$(global_hash < "$path")"; fi
+    oldreceipts+=("$digest")
+    {
+      printf 'format=1\nworktree_root=%s\nprovider=%s\ncore_root=%s\ncore_api=1\n' "$L_ROOT" "$provider" "$L_CORE"
+      for key in "${keys[@]}"; do
+        [ "${key%%:*}" = "$provider" ] || continue
+        role="${key##*/}"; printf 'role=%s\n' "${role%%.*}"
+      done
+    } > "$stage/routing/$provider.receipt"
+    cmp -s "$stage/routing/$provider.receipt" "$L_ROOT/.domestique-private/routing/$provider.receipt" || changed=1
+  done
+  cmp -s "$stage/manifest" "$L_ROOT/.domestique-private/manifest" || changed=1
+  [ "${#L_REMOVE[@]}" = 0 ] || changed=1
+  if [ "$DRY_RUN" = 1 ]; then
+    printf 'domestique local: preview providers=%s (pristine native roles only)\n' "$G_SET"
+    exit 0
+  fi
+  if [ "$changed" = 0 ]; then
+    local_exclude_apply "$L_ROOT" "$selection" 0 migrate || exit 1
+    printf 'domestique local: already up to date\n'
+    exit 0
+  fi
+  # All destinations/shared-worktree exclusions were preflighted before any
+  # write. Migration retains its original provenance and exact legacy rules.
+  local_migrate "$L_ROOT" "$selection" || exit 1
+  local_preflight "$L_ROOT" "$selection" migrate || exit 1
+  state="$L_ROOT/.domestique-private"
+  if [ ! -e "$state" ]; then mkdir "$state" || exit 1; fi
+  # Exclusive journal claim; contains generated metadata only, never live bytes.
+  (set -C; cat "$stage/manifest" > "$state/pending") ||
+    { local_fail "PARTIAL journal claim: $state"; exit 1; }
+  trap 'local_fail "PARTIAL publication; retain pending/published metadata in $state; manual reconciliation required"; rm -rf "$stage"' EXIT
+  (set -C; printf 'format=1\n' > "$state/published") || exit 1
+  for ((j=0; j<${#keys[@]}; j++)); do
+    key="${keys[j]}"; path="$L_ROOT/${key#*:}"; found=-1
+    local_path "$path" "$L_ROOT" && local_untracked "$L_ROOT" "${key#*:}" || exit 1
+    for ((n=0; n<${#oldkeys[@]}; n++)); do [ "${oldkeys[n]}" != "$key" ] || found="$n"; done
+    if [ "$found" = -1 ]; then
+      [ ! -e "$path" ] || exit 1
+      mkdir -p "${path%/*}" || exit 1
+      local_publish_file "$stage/${key#*:}" "$path" "${bases[j]}" || exit 1
+      printf 'created=%s:%s\n' "$key" "${bases[j]}" >> "$state/published"
+    else
+      [ -f "$path" ] && [ "$(global_hash < "$path")" = "${oldbases[found]}" ] || exit 1
+      if [ "${bases[j]}" != "${oldbases[found]}" ]; then
+        local_publish_file "$stage/${key#*:}" "$path" "${bases[j]}" "${oldbases[found]}" || exit 1
+        printf 'refreshed=%s:%s\n' "$key" "${bases[j]}" >> "$state/published"
+      fi
+    fi
+  done
+  local_path "$state/routing" "$L_ROOT" || exit 1
+  [ -d "$state/routing" ] || mkdir "$state/routing" || exit 1
+  j=0
+  for provider in claude codex copilot; do
+    [ -f "$stage/routing/$provider.receipt" ] || continue
+    path="$state/routing/$provider.receipt"
+    digest="$(global_hash < "$stage/routing/$provider.receipt")"
+    local_publish_file "$stage/routing/$provider.receipt" "$path" "$digest" "${oldreceipts[j]}" || exit 1
+    j=$((j + 1))
+  done
+  digest="$(global_hash < "$stage/manifest")"
+  local_publish_file "$stage/manifest" "$state/manifest" "$digest" "$oldmanifest" || exit 1
+  # Only this publication subprocess can admit its journals during the .4
+  # exact shared exclusion revalidation. Runtime/normal reruns always refuse.
+  L_MANIFEST_PURPOSE=publication
+  local_exclude_apply "$L_ROOT" "$selection" 0 migrate || exit 1
+  rm "$state/pending" "$state/published" || exit 1
+  trap 'rm -rf "$stage"' EXIT
+  printf 'domestique local: installed providers=%s; reload native roles and confirm trust/read/shell before delegation\n' "$G_SET"
+)
+
 usage() {
+  cat <<'EOF'
+Usage: domestique.sh --global [options]
+       domestique.sh --local TARGET [options]
+       domestique.sh [TARGET] [options]  (same private local operation; default .)
+
+--global installs private user-native skills/roles and the shared API-1 core.
+--local requires an existing physical Git top-level and compatible global
+core. It creates only exact provider-qualified native local roles plus private
+metadata/exclusions; never home, root policy, settings, skills, or Beads.
+
+  --platform P  claude, codex, copilot, both, claude-copilot, codex-copilot, all
+                Additive union; default Claude, then persisted union.
+  --dry-run     Full preflight without destination writes.
+  --force       Never overrides edits, unknown ownership, or unsafe paths.
+  --guest       Deprecated warning-only no-op. --no-guest is rejected.
+  --help, -h    Show help.
+
+Edited owned local native tools/MCP metadata is usable after native reload/
+trust/core-protocol confirmation, but automatic refresh refuses untouched
+even with force. No secrets/backups/merges; full prompt forks stay user-owned.
+Missing/old helper: explicitly run bash domestique.sh --global first.
+Beads/state-only and scoped uninstall/purge are not implemented yet and
+refuse early; no legacy install/uninstall fallback. No model/MCP/tool flags.
+EOF
+}
+
+legacy_usage() {
   cat <<'EOF'
 Usage: domestique.sh [TARGET_DIR] [options]
        domestique.sh --global [--platform P] [--dry-run] [--force] [--guest]
@@ -2144,10 +2463,18 @@ NO_GUEST=0
 UNINSTALL=0
 PURGE_BEADS=0
 GLOBAL=0
+LOCAL=0
+STATE_ONLY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --global) GLOBAL=1 ;;
+    --local)
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [ "$TARGET_EXPLICIT" = 0 ] ||
+        { echo "--local requires one target" >&2; exit 2; }
+      case "$2" in -*) echo "Invalid --local target" >&2; exit 2;; esac
+      LOCAL=1; TARGET_EXPLICIT=1; TARGET_DIR="$2"; shift;;
+    --state-only) STATE_ONLY=1;;
     --platform)
       [ "$#" -ge 2 ] || { echo "Missing argument for --platform" >&2; exit 2; }
       PLATFORM_ARG="$2"; PLATFORM_EXPLICIT=1; shift ;;
@@ -2164,6 +2491,7 @@ while [ $# -gt 0 ]; do
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
+      [ -n "$1" ] || { echo "Empty target" >&2; exit 2; }
       TARGET_EXPLICIT=1
       if [ -z "$TARGET_DIR" ]; then TARGET_DIR="$1"
       else echo "Unexpected argument: $1" >&2; exit 2; fi
@@ -2171,8 +2499,16 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+[ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
+  { echo "Invalid target/options; --no-guest is unsupported" >&2; exit 2; }
+[ "$WITH_BEADS$STATE_ONLY$UNINSTALL$PURGE_BEADS" = 0000 ] ||
+  { echo "Beads/state-only and scoped uninstall/purge are not implemented yet; no legacy fallback" >&2; exit 2; }
+[ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM_ARG" ] ||
+  { echo "Empty --platform" >&2; exit 2; }
+case "${PLATFORM_ARG:-claude}" in claude|codex|copilot|both|claude-copilot|codex-copilot|all) ;;
+  *) echo "Invalid --platform" >&2; exit 2;; esac
 if [ "$GLOBAL" = 1 ]; then
-  [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$WITH_BEADS" = 0 ] &&
+  [ "$LOCAL" = 0 ] && [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$WITH_BEADS" = 0 ] &&
     [ "$PURGE_BEADS" = 0 ] && [ "$NO_GUEST" = 0 ] ||
     { echo "Invalid --global scope/target/options" >&2; exit 2; }
   [ "$UNINSTALL" = 0 ] || { echo "Global uninstall is not implemented yet" >&2; exit 2; }
@@ -2185,6 +2521,9 @@ if [ "$GLOBAL" = 1 ]; then
   exit 0
 fi
 TARGET_DIR="${TARGET_DIR:-.}"
+[ "$GUEST" = 0 ] || echo "Warning: --guest is a deprecated no-op in private local scope" >&2
+local_install
+exit 0
 
 case "${PLATFORM_ARG:-claude}" in
   claude|codex|copilot|both|all) ;;

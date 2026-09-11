@@ -27,6 +27,8 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
+# shellcheck source=test/historical-fixture.sh
+source "$SCRIPT_DIR/historical-fixture.sh"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -228,6 +230,7 @@ scenario_guest_roundtrip() {
   printf 'custom-user-pattern\n' >> "$t/.git/info/exclude"
 
   local out_i rc_i
+  # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
   out_i="$("$DOM" "$t" --guest 2>&1)"; rc_i=$?
   check "install: exit 0" test "$rc_i" -eq 0
   check "install: CLAUDE.local.md created (setup ran)" test -f "$t/CLAUDE.local.md"
@@ -235,6 +238,7 @@ scenario_guest_roundtrip() {
   check "install: exclude still has pre-seeded user line (setup ran)" grep -qxF "custom-user-pattern" "$t/.git/info/exclude"
 
   local out_u rc_u
+  # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
   out_u="$("$DOM" "$t" --uninstall 2>&1)"; rc_u=$?
 
   check "uninstall: exit 0" test "$rc_u" -eq 0
@@ -431,6 +435,7 @@ scenario_noop_double_uninstall() {
   "$DOM" "$t" >/dev/null 2>&1
 
   local out1 rc1
+  # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
   out1="$("$DOM" "$t" --uninstall 2>&1)"; rc1=$?
   check "first uninstall: exit 0" test "$rc1" -eq 0
 

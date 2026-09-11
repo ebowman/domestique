@@ -16,7 +16,7 @@ if provider == "codex":
     text = tomllib.loads(text)["developer_instructions"]
 assert str(root) in text
 blocks = re.findall(r"^```bash\n(.*?)^```$", text, re.M | re.S)
-assert len(blocks) == 1
+assert len(blocks) == 2  # core loading + separate ephemeral routing operation
 command = blocks[0]
 subprocess.run(["bash", "-n"], input=command, text=True, check=True)
 agent = role in ("implementer", "reviewer")
