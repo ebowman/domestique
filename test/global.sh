@@ -273,6 +273,7 @@ done
 fixture
 for script in "$DOM" "$UP"; do
   for flag in --with-beads --purge-beads --no-guest --uninstall --local --state-only --model; do
+    [ "$script:$flag" != "$DOM:--uninstall" ] || continue
     refusal "$(basename "$script") global $flag" "$script" --global "$flag"
     check "invocation exit 2 $flag" test "$RC" -eq 2
   done

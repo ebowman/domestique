@@ -1199,6 +1199,7 @@ global_read_manifest() {
   local file="$G_ROOT/state/global-manifest" line key value digest previous="" n=0
   local old_c="$G_C" old_x="$G_X" old_p="$G_P" expected actual
   [ -f "$file" ] || global_fail "core exists without global-manifest; manual recovery required"
+  local_text_file "$file" || global_fail "invalid global manifest text"
   while IFS= read -r line; do
     n=$((n + 1))
     case "$n" in
@@ -1555,6 +1556,261 @@ global_publish_leaf() {
   fi
   rmdir "$stage_dir"
   printf 'published=%s:%s\n' "$key" "${G_PLAN_HASH[j]}" >> "$G_ROOT/state/published"
+}
+
+# Removal has no renderer refresh, adoption, project discovery or native calls.
+# Format 1 proves leaf creation, NOT parent directory creation. Leave all
+# preexisting containers, including empty core containers, for manual review.
+global_remove_path() {
+  local path="$1" p="$1" top
+  case "$path" in "$G_ROOT/"*) global_path "$path" "$G_ROOT";;
+    *) global_path "$path" "$HOME";; esac
+  while [ ! -d "$p" ]; do p="${p%/*}"; [ -n "$p" ] || p=/; done
+  if top="$(git -C "$p" rev-parse --show-toplevel 2>/dev/null)"; then
+    # Literal bounded index queries also detect index-only ancestor objects.
+    local_untracked "$top" "${path#"$top"/}" ||
+      global_fail "indexed global removal destination"
+    global_fail "global destination is inside a worktree: $path"
+  fi
+}
+global_remove_check() {
+  global_remove_path "$1"
+  [ -f "$1" ] && [ "$(global_hash < "$1")" = "$2" ] ||
+    global_fail "missing/changed removal leaf; manual reconciliation required: $1"
+}
+global_remove_new() {
+  # Exclusive exact-file creation: no directory mv or link-to-directory
+  # interpretation. Only re-emitted nonsecret metadata enters these files.
+  local path="$1" text="$2" digest
+  global_remove_path "$path"
+  [ ! -e "$path" ] || global_fail "recovery path appeared: $path"
+  (set -C; printf '%s' "$text" > "$path") ||
+    global_fail "cannot exclusively create recovery metadata: $path"
+  digest="$(printf '%s' "$text" | global_hash)"
+  global_remove_check "$path" "$digest"
+}
+global_remove_log() {
+  local record="$1"
+  global_remove_check "$G_ROOT/state/published" "$G_REMOVE_LOG_HASH"
+  printf '%s\n' "$record" >> "$G_ROOT/state/published" ||
+    global_fail "cannot record completed removal; manually compare exact leaves"
+  G_REMOVE_LOG="${G_REMOVE_LOG}${record}"$'\n'
+  G_REMOVE_LOG_HASH="$(printf '%s' "$G_REMOVE_LOG" | global_hash)"
+  global_remove_check "$G_ROOT/state/published" "$G_REMOVE_LOG_HASH"
+}
+global_remove_retained_core() {
+  local j key
+  # Preflight validated API/binding and every historical release. Require those
+  # exact in-memory baselines again, including the helper, without executing it.
+  for ((j=0; j<${#G_KEYS[@]}; j++)); do
+    key="${G_KEYS[j]}"
+    case "$key" in core:*)
+      global_destination "$key"
+      global_remove_check "$G_DEST" "${G_BASE[j]}";;
+    esac
+  done
+}
+global_uninstall() {
+  G_UID="$(id -u)"
+  G_ROOT="${DOMESTIQUE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/domestique}"
+  G_C=0; G_X=0; G_P=0; G_KEYS=(); G_CREATED=(); G_BASE=()
+  global_path "$HOME" "$HOME"; global_no_repo "$HOME"
+  [ -z "${XDG_STATE_HOME:-}" ] || global_path "$XDG_STATE_HOME" "$XDG_STATE_HOME"
+  global_path "$G_ROOT" "$G_ROOT"; global_no_repo "$G_ROOT"
+  case "$HOME/" in "$G_ROOT/"*) global_fail "core overlaps HOME";; esac
+  local p key j digest release active provider selected retained="" removing=""
+  local old_manifest old_hash plan plan_hash previous_hash new_manifest="" new_hash=""
+  local keys=() created=() bases=() remove_keys=() remove_hashes=()
+  local cleared=()
+  for p in .claude .agents .codex .copilot; do
+    case "$G_ROOT/" in "$HOME/$p/"*) global_fail "core overlaps native root";; esac
+  done
+  for p in state state/global-manifest state/pending state/previous state/published bin bin/resolve-core active releases; do
+    global_remove_path "$G_ROOT/$p"
+  done
+  [ ! -e "$G_ROOT/state/pending" ] ||
+    global_fail "PARTIAL operation: pending retained; metadata-only manual reconciliation required"
+  [ -f "$G_ROOT/state/global-manifest" ] ||
+    global_fail "no owned global state; nothing adopted or removed (even identical); manually reconcile empty containers before reinstall"
+  global_read_manifest
+  G_SET="$G_OLD_SET"
+  old_manifest="$(global_manifest)"$'\n'
+  old_hash="$(printf '%s' "$old_manifest" | global_hash)"
+  global_remove_check "$G_ROOT/state/global-manifest" "$old_hash"
+  # Check serializability before the shared line-oriented core tree validator.
+  find "$G_ROOT" -mindepth 1 -print0 | (
+    while IFS= read -r -d '' p; do global_remove_path "$p"; done
+  ) || global_fail "unsafe core inventory"
+  global_check_core_tree
+  selected="${PLATFORM_ARG:-$G_OLD_SET}"
+  for ((j=0; j<${#G_KEYS[@]}; j++)); do
+    key="${G_KEYS[j]}"
+    case "$key" in
+      core:bin/resolve-core|core:active) ;;
+      core:releases/*)
+        [ "${G_CREATED[j]}" = "${G_BASE[j]}" ] ||
+          global_fail "immutable release provenance changed"
+        p="${key#core:releases/}"; release="${p%%/*}"; p="${p#*/}"
+        global_digest_valid "${release#r-}" && [ "${release#r-}" != "$release" ] ||
+          global_fail "invalid manifest release"
+        case "$p" in API|SHA256SUMS|roles/goal.md|roles/implementer.md|roles/orchestrator.md|roles/reviewer.md) ;;
+          *) global_fail "out-of-bounds core leaf";; esac;;
+      core:*) global_fail "out-of-bounds core leaf";;
+    esac
+    global_destination "$key"; global_remove_path "$G_DEST"
+    [ -f "$G_DEST" ] || global_fail "missing owned asset; manually reconcile: $key"
+    digest="$(global_hash < "$G_DEST")"
+    if [ "$digest" != "${G_BASE[j]}" ]; then
+      provider="${key%%:*}"
+      [ "$provider" != core ] || global_fail "edited/corrupt core; entire removal refused: $key"
+      if local_selected "$selected" "$provider"; then
+        case " $retained " in *" $provider "*) ;; *) retained="$retained $provider";; esac
+      fi
+    fi
+  done
+  for key in core:active core:bin/resolve-core; do
+    global_index "$key"; [ "$G_INDEX" != -1 ] || global_fail "missing core provenance"
+  done
+  # Execute trusted embedded validation, never an installed helper.
+  active="$(bash <(emit_private_core_resolver) bind "$G_ROOT" orchestrator)" ||
+    global_fail "invalid active release"
+  global_index "core:releases/$active/API"
+  [ "$G_INDEX" != -1 ] || global_fail "unowned active release"
+  local checked=" "
+  for key in "${G_KEYS[@]}"; do
+    case "$key" in core:releases/*)
+      release="${key#core:releases/}"; release="${release%%/*}"
+      case "$checked" in *" $release "*) continue;; esac
+      checked="$checked$release "
+      for p in API SHA256SUMS roles/goal.md roles/implementer.md roles/orchestrator.md roles/reviewer.md; do
+        global_index "core:releases/$release/$p"
+        [ "$G_INDEX" != -1 ] || global_fail "incomplete release provenance"
+      done
+      bash <(emit_private_core_resolver) bind "$G_ROOT" reviewer "$release" >/dev/null ||
+        global_fail "invalid retained release";;
+    esac
+  done
+  G_C=0; G_X=0; G_P=0
+  for provider in claude codex copilot; do
+    local_selected "$G_OLD_SET" "$provider" || continue
+    if local_selected "$selected" "$provider"; then
+      case " $retained " in *" $provider "*)
+        printf 'domestique global: %sretain WHOLE edited provider %s, original metadata/all assets/required core (including --force)\n' \
+          "$([ "$DRY_RUN" = 0 ] || printf 'would ')" "$provider" >&2;;
+        *) removing="$removing $provider"; continue;;
+      esac
+    fi
+    global_select "$provider"
+  done
+  if [ -z "$removing" ]; then
+    printf 'domestique global: no eligible selected provider removed\n'
+    [ -z "$retained" ]; return
+  fi
+  G_SET=""
+  if [ "$G_C$G_X$G_P" != 000 ]; then global_set_name
+  else
+    printf 'domestique global: WARNING: local profiles remain in their projects and will stop at required core checks until this global core is restored; no local repair/fallback.\n' >&2
+  fi
+  for ((j=0; j<${#G_KEYS[@]}; j++)); do
+    key="${G_KEYS[j]}"; provider="${key%%:*}"
+    case " $removing " in *" $provider "*) p=remove;;
+      *) if [ "$provider" = core ] && [ -z "$G_SET" ]; then p=remove; else p=keep; fi;;
+    esac
+    if [ "$p" = remove ]; then
+      remove_keys+=("$key"); remove_hashes+=("${G_BASE[j]}")
+    else
+      keys+=("$key"); created+=("${G_CREATED[j]}"); bases+=("${G_BASE[j]}")
+    fi
+  done
+  G_KEYS=(${keys[@]+"${keys[@]}"}); G_CREATED=(${created[@]+"${created[@]}"})
+  G_BASE=(${bases[@]+"${bases[@]}"})
+  if [ -n "$G_SET" ]; then
+    new_manifest="$(global_manifest)"$'\n'
+    new_hash="$(printf '%s' "$new_manifest" | global_hash)"
+  fi
+  plan="$(printf 'format=1\noperation=global-uninstall\ncore_root=%s\nprevious=%s\nremaining=%s\n' "$G_ROOT" "$old_hash" "${G_SET:-absent}"
+    for ((j=0; j<${#remove_keys[@]}; j++)); do
+      printf 'remove=%s:%s\n' "${remove_keys[j]}" "${remove_hashes[j]}"
+    done
+    if [ -z "$G_SET" ]; then printf 'remove=core:state/global-manifest:%s\n' "$old_hash"
+    else printf 'replace=core:state/global-manifest:%s\n' "$new_hash"; fi)"$'\n'
+  printf 'domestique global: %sremove providers:%s; remaining=%s; unproven empty containers retained\n' \
+    "$([ "$DRY_RUN" = 0 ] || printf 'would ')" "$removing" "${G_SET:-absent}"
+  if [ "$DRY_RUN" = 1 ]; then [ -z "$retained" ]; return; fi
+  # Entire plan checked before the first write, then exact leaves rechecked
+  # before each unlink. No broad deletion, no directory ownership inference.
+  global_remove_check "$G_ROOT/state/global-manifest" "$old_hash"
+  for ((j=0; j<${#remove_keys[@]}; j++)); do
+    global_destination "${remove_keys[j]}"
+    global_remove_check "$G_DEST" "${remove_hashes[j]}"
+  done
+  umask 077
+  G_WRITING=1
+  trap 'rc=$?; if [ "$G_WRITING" = 1 ]; then printf "%s\n" "domestique global: PARTIAL removal; retain pending/previous/published and remaining manifest. Stop writers; manually reconcile metadata against exact leaves, never adopt identical unknown files." >&2; fi; exit "$rc"' EXIT
+  global_remove_new "$G_ROOT/state/pending" "$plan"
+  plan_hash="$(printf '%s' "$plan" | global_hash)"
+  global_remove_new "$G_ROOT/state/previous" "$old_manifest"
+  previous_hash="$old_hash"
+  G_REMOVE_LOG=""; G_REMOVE_LOG_HASH="$(printf '' | global_hash)"
+  global_remove_new "$G_ROOT/state/published" ""
+  for ((j=0; j<${#remove_keys[@]}; j++)); do
+    global_remove_check "$G_ROOT/state/pending" "$plan_hash"
+    global_remove_check "$G_ROOT/state/global-manifest" "$old_hash"
+    global_destination "${remove_keys[j]}"
+    global_remove_check "$G_DEST" "${remove_hashes[j]}"
+    unlink "$G_DEST" || global_fail "unlink failed: ${remove_keys[j]}"
+    [ ! -e "$G_DEST" ] && [ ! -L "$G_DEST" ] || global_fail "leaf reappeared after unlink"
+    global_remove_log "removed=${remove_keys[j]}:${remove_hashes[j]}"
+  done
+  global_remove_check "$G_ROOT/state/global-manifest" "$old_hash"
+  if [ -n "$G_SET" ]; then
+    p="$(mktemp -d "$G_ROOT/state/.remove.XXXXXXXX")"
+    global_remove_new "$p/global-manifest" "$new_manifest"
+    global_remove_retained_core
+    global_remove_check "$G_ROOT/state/global-manifest" "$old_hash"
+    mv -f "$p/global-manifest" "$G_ROOT/state" || global_fail "manifest replacement failed"
+    global_remove_check "$G_ROOT/state/global-manifest" "$new_hash"
+    rmdir "$p" || global_fail "manifest stage not empty"
+    global_remove_log "replaced=core:state/global-manifest:$new_hash"
+  else
+    unlink "$G_ROOT/state/global-manifest" || global_fail "manifest unlink failed"
+    [ ! -e "$G_ROOT/state/global-manifest" ] && [ ! -L "$G_ROOT/state/global-manifest" ] ||
+      global_fail "manifest reappeared after unlink"
+    global_remove_log "removed=core:state/global-manifest:$old_hash"
+  fi
+  # Verify final state immediately before clearing journals, never mv's exit
+  # code alone (a racing directory must not yield false successful ownership).
+  if [ -n "$G_SET" ]; then global_remove_check "$G_ROOT/state/global-manifest" "$new_hash"
+  else [ ! -e "$G_ROOT/state/global-manifest" ] && [ ! -L "$G_ROOT/state/global-manifest" ] ||
+    global_fail "manifest reappeared"; fi
+  global_remove_retained_core
+  global_remove_check "$G_ROOT/state/published" "$G_REMOVE_LOG_HASH"
+  global_remove_check "$G_ROOT/state/previous" "$previous_hash"
+  global_remove_check "$G_ROOT/state/pending" "$plan_hash"
+  for p in published previous pending; do
+    for key in ${cleared[@]+"${cleared[@]}"}; do
+      global_remove_path "$G_ROOT/state/$key"
+      [ ! -e "$G_ROOT/state/$key" ] && [ ! -L "$G_ROOT/state/$key" ] ||
+        global_fail "recovery journal reappeared; left untouched: $key"
+    done
+    case "$p" in
+      published) digest="$G_REMOVE_LOG_HASH";;
+      previous) digest="$previous_hash";;
+      pending)
+        # Last bounded core check after other journal unlinks, while the
+        # pending recovery marker still exists. Not a concurrent-writer lock.
+        global_remove_retained_core
+        digest="$plan_hash";;
+    esac
+    global_remove_check "$G_ROOT/state/$p" "$digest"
+    unlink "$G_ROOT/state/$p" || global_fail "recovery journal unlink failed: $p"
+    [ ! -e "$G_ROOT/state/$p" ] && [ ! -L "$G_ROOT/state/$p" ] ||
+      global_fail "recovery journal reappeared; left untouched: $p"
+    cleared+=("$p")
+  done
+  G_WRITING=0
+  printf 'domestique global: completed eligible removal; empty containers left unowned (manual review before reinstall)\n'
+  [ -z "$retained" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -2425,6 +2681,10 @@ metadata/exclusions; never home, root policy, settings, skills, or Beads.
                 Additive union; default Claude, then persisted union.
   --dry-run     Full preflight without destination writes.
   --force       Never overrides edits, unknown ownership, or unsafe paths.
+  --uninstall   With explicit --global only: remove unchanged owned selected
+                providers (default persisted union). Edited providers retained
+                whole; nonzero even in dry-run. Last removal disables local
+                profiles until core restored; project files are never touched.
   --guest       Deprecated warning-only no-op. --no-guest is rejected.
   --with-beads  Explicit --local TARGET only; initialization is UNSUPPORTED.
   --state-only  Requires --local TARGET --with-beads; conflicts with --platform.
@@ -2438,7 +2698,8 @@ Missing/old helper: explicitly run bash domestique.sh --global first.
 Beads 1.1.2 --stealth writes broad Git policy and may rewrite root .gitignore;
 no supported skip-Git-policy switch or certified private backend exists.
 Installing bd or adding skip flags does not solve this. No bd probes run.
-Scoped uninstall/purge refuses early; no legacy fallback. No model/MCP/tool flags.
+Local uninstall/purge refuses early; no legacy fallback. No model/MCP/tool flags.
+Global removal leaves unproven empty directories; review manually before reinstall.
 EOF
 }
 
@@ -2452,7 +2713,7 @@ API-1 core; no target or repository writes. Default Claude; additive persisted
 provider union. Also accepts claude-copilot and codex-copilot. --guest is a
 deprecated no-op here. Unknown or edited native assets refuse even --force.
 --with-beads, --purge-beads, --no-guest and targets are invalid with --global.
-Global uninstall and --local/state-only/migration are future work, refused.
+Global uninstall uses the private owned-only path; local uninstall/purge is future work.
 Without --global, the legacy project behavior below is unchanged (never an
 implicit home installation).
 
@@ -2602,8 +2863,12 @@ while [ $# -gt 0 ]; do
 done
 [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
   { echo "Invalid target/options; --no-guest is unsupported" >&2; exit 2; }
-[ "$UNINSTALL$PURGE_BEADS" = 00 ] ||
-  { echo "Scoped uninstall/purge is not implemented; cannot combine with initialization; no legacy fallback" >&2; exit 2; }
+[ "$PURGE_BEADS" = 0 ] ||
+  { echo "Local purge is not implemented; global purge is invalid; no legacy fallback" >&2; exit 2; }
+[ "$UNINSTALL" = 0 ] || {
+  [ "$GLOBAL$LOCAL$TARGET_EXPLICIT$WITH_BEADS$STATE_ONLY" = 10000 ] ||
+    { echo "Uninstall requires explicit --global without target/initialization; local uninstall is future work, no legacy fallback" >&2; exit 2; }
+}
 [ "$STATE_ONLY" = 0 ] || {
   [ "$LOCAL$WITH_BEADS$GLOBAL$PLATFORM_EXPLICIT" = 1100 ] ||
     { echo "--state-only requires explicit --local TARGET --with-beads and no --platform/--global" >&2; exit 2; }
@@ -2624,13 +2889,12 @@ if [ "$GLOBAL" = 1 ]; then
   [ "$LOCAL" = 0 ] && [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$WITH_BEADS" = 0 ] &&
     [ "$PURGE_BEADS" = 0 ] && [ "$NO_GUEST" = 0 ] ||
     { echo "Invalid --global scope/target/options" >&2; exit 2; }
-  [ "$UNINSTALL" = 0 ] || { echo "Global uninstall is not implemented yet" >&2; exit 2; }
   case "${PLATFORM_ARG:-claude}" in claude|codex|copilot|both|claude-copilot|codex-copilot|all) ;;
     *) echo "Invalid global --platform" >&2; exit 2;; esac
   [ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM_ARG" ] ||
     { echo "Empty --platform" >&2; exit 2; }
   [ "$GUEST" = 0 ] || echo "Warning: --guest is a deprecated no-op in global scope" >&2
-  global_install
+  if [ "$UNINSTALL" = 1 ]; then global_uninstall; else global_install; fi
   exit 0
 fi
 TARGET_DIR="${TARGET_DIR:-.}"

@@ -26,7 +26,8 @@ Always previews first; ANY failed preview prevents apply.
 Local requires an existing Git top-level and compatible global core; no
 implicit global writes. Beads 1.1.2 --stealth changes broad Git policy/root
 .gitignore; no supported skip-Git-policy switch or certified backend exists.
-Installing bd or adding skip flags does not solve this. Uninstall is unsupported.
+Installing bd or adding skip flags does not solve this. This wrapper only updates;
+use domestique.sh --uninstall --global for owned-only global removal.
 No model, MCP, or tool options are accepted; customize native metadata locally.
 EOF
 }
@@ -39,7 +40,8 @@ Usage: update.sh [TARGET_DIR] [options]
 --global updates private native user defaults and the API-1 core, with no
 target argument or repository writes. A failed global preview never applies.
 Global --guest is a deprecated no-op; --no-guest is invalid. --local,
-state-only, migration and global uninstall are not implemented yet.
+state-only and migration are not implemented yet. This wrapper only updates;
+use domestique.sh --uninstall --global for owned-only global removal.
 Global unknown or edited native assets refuse, even with --force.
 Legacy bare/positional operation below remains project-only.
 

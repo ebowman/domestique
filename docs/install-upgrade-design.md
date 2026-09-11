@@ -549,7 +549,8 @@ changed. `main` remains unchanged; this plan neither merges/pushes draft PR
 this contract: global and local are distribution scopes, not normal versus
 guest modes.
 
-**CLI checkpoint:** only explicit `--global` install/update is now
+**Historical hq-b3q.3 CLI checkpoint (superseded by .5/.10/.11 below):**
+only explicit `--global` install/update was
 implemented from this contract. Legacy bare/positional installs and the legacy
 updater remain project operations, unchanged; they are **not yet** the private
 local operation specified below. `--local`, state-only, migration, and global
@@ -644,6 +645,113 @@ Focused executable coverage is `PYTHONDONTWRITEBYTECODE=1 python3
 test/beads-guard.py`, alongside all four current suites and the clearly
 historical offline fixtures.
 
+#### hq-b3q.11 explicit global removal checkpoint
+
+`bash domestique.sh --uninstall --global [--platform P] [--dry-run] [--force]`
+now removes only positively owned global native leaves, plus shared core
+leaves when the last eligible provider is removed. The seven provider sets
+are unchanged; no selector means the **persisted owned union**, not discovery.
+Only explicit `--global` enables removal. Bare/positional/`--local` uninstall
+still refuses as future `.7` work, as does purge. Targets, initialization,
+state-only, `--no-guest`, and unsupported modifiers are usage errors (exit 2)
+before writes. `--guest` remains a warning-only deprecated no-op. `update.sh`
+is still only an updater; it does not accept/forward uninstall.
+
+`global_uninstall` reuses `global_read_manifest`, `global_manifest`,
+`global_inventory`, `global_check_core_tree`, physical `global_path` checks,
+and the trusted embedded API-1 resolver. Raw manifest bytes must be NUL-free
+and LF-terminated before parsing (also enforced on ordinary global install).
+Every retained historical release needs all six valid recorded leaves.
+Unknown entries anywhere under the core, malformed/missing state, missing
+recorded leaves, changed core bytes, symlinks, unsafe ancestors or worktree
+destinations refuse the entire operation before writes (exit 1), even forced.
+Removal's `global_remove_path` checks bounded literal index leaf/ancestor
+objects via `local_untracked` when an exact destination is now in a worktree;
+it never scans projects, a registry or native profile directories. No bd,
+native client, network/API request, or project write is part of removal.
+
+Creation provenance and generated baselines remain distinct. A matching
+unowned file is never adopted, including when all state is missing. Absence
+of owned state, whether destinations exist or everything is absent, is an
+explicit non-success: nothing was adopted or removed. A selector containing
+no owned providers is a successful no-op only with otherwise valid state.
+Customized **selected** native metadata retains its whole provider, all its
+original valid records and assets, and required shared core. Other clean
+selected providers can be removed; retained edits cause exit 1 with a clear
+notice, also for a dry-run (“would retain WHOLE”). Unselected edited providers
+stay byte-identical, without copy, rebaseline or renderer refresh. No `--force`
+escape, backups, snapshots, content diagnostics or partial-provider format
+exists. Full user-maintained forks and host config files remain untouched.
+
+Dry-run performs the same full preflight without staging, journal creation or
+destination writes. A successful scoped removal changes only eligible native
+leaves and the canonical manifest/provider union; required shared core and
+other provider bytes remain unchanged. Global format 1 never writes
+`providers=none`: last-provider removal unlinks verified native assets,
+helper, active pointer, **all** owned release history and the manifest. It
+warns that project-local profiles stay in their projects and stop at required
+core checks until global core is explicitly restored. There is no registry,
+local repair, implicit reinstall or legacy fallback.
+
+**Containers and reinstall.** Format 1 does not persist directory creation
+provenance. Consequently no preexisting directory is deleted, including empty
+skill, role, release, bin, state and core containers. Descendant file ownership
+is not directory ownership. Only the new removal transaction's own temporary
+manifest directory is `rmdir`ed after becoming empty. No recursive root
+deletion is used. After complete removal, an ordinary install still refuses
+the empty unproven core root rather than adopting it. Stop writers, manually
+inspect and `rmdir` only the exact now-empty core containers bottom-up, then
+explicitly reinstall with the same `DOMESTIQUE_HOME`/HOME. Leave native and host
+configuration containers in place: a fresh install can create absent native
+leaves there, but will still refuse collisions. Restoring the same global root
+lets unchanged local loaders work again without project edits.
+
+**Interruption and metadata-only recovery.** All preflight precedes writes;
+each actual unlink revalidates physical ancestors, index status, regular-file
+type and baseline hash. `unlink` receives a single exact file, not a root or
+glob. Exclusive no-clobber creation publishes these reserved journals:
+
+* `state/pending`: format 1, `operation=global-uninstall`, core root, previous
+  manifest digest, remaining provider set (or `absent`, **not** a global
+  manifest provider value), ordered `remove=<key>:<baseline>` intentions and
+  a final manifest `remove` or `replace` intention.
+* `state/previous`: the old canonical manifest re-emitted from validated
+  metadata, never copied live native content.
+* `state/published`: initially empty, then `removed=<key>:<baseline>` only
+  after each successful exact unlink and absence check; the final manifest
+  removal is recorded likewise. A retained manifest uses
+  `replaced=core:state/global-manifest:<digest>` only after validating the
+  actual exact replacement file/type/hash, never merely `mv` success.
+
+Journal bytes/types/hashes are revalidated before append and immediately before
+each journal unlink against generated or previously validated in-memory metadata,
+never newly sampled live bytes. Changed or reappearing journals are left untouched
+with the remaining recovery markers; pending clears last. All required retained
+core leaves (helper, active, and every historical release's API/checksums/roles)
+must still match their API-validated provenance before manifest replacement,
+before journal cleanup, and again before clearing pending. Last-provider removal
+has no retained core to check. The last manifest is also checked before cleanup.
+Publication never moves a directory into a racing destination. A failed
+command reports nonzero `PARTIAL removal`; remaining manifest/previous records
+and journals are retained, not falsely presented as a fresh installation.
+Ordinary install and uninstall reruns with pending state fail closed.
+Stop all writers and manually compare exact leaf presence/digests with
+previous, planned and completed records; an intent is not a completed
+deletion or creation. Never recover an unknown destination merely because it
+matches generated bytes. Do not copy edited metadata into recovery files.
+An interruption between unlink and logging can leave an unrecorded completed
+deletion; damaged or incomplete journals require manual reconciliation, not
+inference or automated retry. Reconcile the exact transaction before removing
+its artifacts. This is bounded checked shell publication, **not** cross-root
+atomicity, power-loss durability, or a hostile-same-user-writer lock promise.
+
+Focused current-source coverage: `PYTHONDONTWRITEBYTECODE=1 python3
+test/global-uninstall.py`. Fixtures use physical temporary HOME/core and real
+local project attachments, actual helper/fence execution, whole-tree identity
+hashes and command-level failure/race injection; no native runtime acceptance
+is claimed. `.6` Beads initialization remains blocked; `.7` local uninstall/
+purge, `.8` live acceptance and `.9` full README remain future work.
+
 #### hq-b3q.5 public private-profile checkpoint
 
 This checkpoint supersedes the older CLI-status statements in `.3`/`.4`
@@ -652,9 +760,10 @@ the private local operation, never the legacy engine. Both scopes accept all
 seven provider sets. Selection adds to the recorded union; a bare rerun uses
 it, fresh state defaults to Claude, and retained `providers=none` creates
 nothing. `--guest` only warns; `--no-guest`, unsupported model/MCP/tool flags,
-malformed scope/target combinations and uninstall/purge
+malformed scope/target combinations and local uninstall/purge
 refuse before writes (updater: before fetch). `.6`/`.7` own those unfinished
 lifecycle operations; `.10` above defines the current Beads refusal grammar.
+`.11` above supersedes this checkpoint's earlier global-uninstall refusal.
 No implicit global installation or update occurs.
 Missing/old router helper requires an explicit `bash domestique.sh --global`
 with the same private-root environment.
@@ -729,8 +838,9 @@ publication; it is not a successful private installation and must not be
 committed. Cooperating-writer/revalidation limits from `.4` still apply:
 stop other writers; this is not hostile same-user race or power-loss atomicity.
 
-Current production coverage: `local-profiles.sh`, `local-preflight.sh`,
-`global.sh`, `private-core.sh`. Retired normal/guest/merge/uninstall behavior
+Current production coverage: `beads-guard.py`, `global-uninstall.py`,
+`local-profiles.sh`, `local-preflight.sh`, `global.sh`, `private-core.sh`.
+Retired normal/guest/merge/uninstall behavior
 is retained as explicitly labelled offline `b60feef` fixture coverage in
 `codex.sh`, `copilot.sh`, `guest.sh`, `upgrade.sh`, `uninstall.sh`, not claimed
 as successful production CLI acceptance. `.4` migration fixtures also use
@@ -1087,8 +1197,9 @@ successful creation; `baseline` is the current **embedded generated** digest,
 not a snapshot of live bytes. A baseline match without a `created` record
 never grants ownership. There are no native content snapshots, three-way
 merges, backups, conflict files, timestamps, or local registry in this scope.
-Edited native leaves refuse the entire operation, including `--force`,
+Edited native leaves refuse the entire install/update, including `--force`,
 with path/metadata-only diagnostics; they are neither copied nor overwritten.
+Global uninstall instead retains the whole edited provider as described in `.11`.
 
 For global records only, native leaves are HOME-relative with exact prefixes
 from the table (`.claude`, `.agents`/`.codex`, `.copilot`); Codex additionally
@@ -1176,8 +1287,9 @@ no ownership of the collision. Remove journal/stage artifacts only after
 reconciling that exact transaction, then retry. If a command failed before
 the journal was complete, or a crash interrupted command/log ordering, stop
 for manual ownership reconciliation rather than inferring success. Unknown
-destinations and user edits must remain untouched. No global uninstall or
-automated recovery command is provided at this checkpoint.
+destinations and user edits must remain untouched. The `.3` publication format
+has no automated recovery command; `.11` adds global uninstall with separate
+removal journals and the fail-closed recovery limits described above.
 
 An explicit install adds its selected providers to that scope's persisted
 union; a bare rerun uses that union. Scoped uninstall removes only requested
