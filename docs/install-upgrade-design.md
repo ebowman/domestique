@@ -651,7 +651,8 @@ historical offline fixtures.
 now removes only positively owned global native leaves, plus shared core
 leaves when the last eligible provider is removed. The seven provider sets
 are unchanged; no selector means the **persisted owned union**, not discovery.
-Only explicit `--global` enables removal. Bare/positional/`--local` uninstall
+At the .11 checkpoint only explicit `--global` enabled removal (superseded for
+local profiles by .12 below). Bare/positional/`--local` uninstall
 still refuses as future `.7` work, as does purge. Targets, initialization,
 state-only, `--no-guest`, and unsupported modifiers are usage errors (exit 2)
 before writes. `--guest` remains a warning-only deprecated no-op. `update.sh`
@@ -752,6 +753,115 @@ hashes and command-level failure/race injection; no native runtime acceptance
 is claimed. `.6` Beads initialization remains blocked; `.7` local uninstall/
 purge, `.8` live acceptance and `.9` full README remain future work.
 
+#### hq-b3q.12 local profile-only removal checkpoint
+
+`bash domestique.sh --uninstall --local TARGET [--platform P] [--dry-run]
+[--force]` removes only positively owned, unchanged local native roles and their
+validated routing receipts. Bare `--uninstall` and positional TARGET are this
+same local operation, never implicit global installation/removal or the retired
+normal/guest engine. All seven provider selectors work; selectorless removal
+uses the persisted union. `--guest` remains a deprecated warning-only alias;
+`--no-guest`, purge, and initialization/state-only combinations refuse before
+writes. `update.sh` remains update-only. The .10 unsupported initialization
+boundary is unchanged.
+
+**No global dependency.** `local_uninstall` uses the embedded strict local
+ownership reader, physical Git top-level/path/index checks and common-dir
+exclusion planner. The persisted canonical `core_root` is identity metadata:
+removal neither reads nor executes global assets and does not require a usable
+core, helper, active release, or Beads backend. Missing/incompatible global
+installations can be repaired separately. Removal never writes HOME, a global
+registry, the index, root policy, hooks, settings or `.gitignore`.
+
+**Retention is whole-provider.** Any selected customized native role retains
+that provider's entire role set, receipt, original created/baseline records and
+exclusions, with nonzero status even under force/dry-run. Eligible other
+providers can still be removed. Unselected customized metadata is usable but
+never becomes a new saved baseline. Comparisons use ephemeral hashes; live
+native contents are never copied into a backup, temporary file or journal.
+Unknown or byte-identical unowned leaves are not adopted. Tracked/index-only
+ancestor objects, symlinks, NUL/corrupt records, missing receipts, unknown
+private state, active legacy policy and ambiguous exclusion ownership refuse
+before writes. Unrelated files in native parent directories remain untouched.
+
+**Shared privacy and containers.** The .4 planner validates existing rules
+against the before-inventory, then derives the removal union from remaining
+current roles and all actual linked worktree owners. Other owners keep their
+exact native rule; same-path host collisions and unreadable/broken worktree
+state refuse. Missing/unknown/duplicate managed rules are not silently repaired.
+No `.domestique-private` or native parent directory has positive directory
+creation provenance for pruning. Native containers therefore remain untouched;
+no new directory ownership is recorded. The existing positively owned private
+attachment remains in place, with its already-proven private-tree exclusion.
+Linked worktrees can independently remove their last profiles: exact native
+patterns remain only while another worktree or retained provider needs them.
+
+Successful last-profile removal publishes a valid format-1 local manifest with
+`providers=none`, zero native `created`/`baseline` entries, and the same physical
+worktree, `core_root`, and Core API metadata. No adapters, receipts or journals
+remain. This is retained-after-removal attachment metadata, not Beads readiness,
+initialization or database ownership. Success reports **profiles removed;
+private attachment metadata retained** only after all selected eligible profiles
+are gone and retained state validates; a selected customized provider still
+causes nonzero status. No private-state tree or private-tree exclusion is
+automatically destroyed by .12; explicit integrated final-state cleanup belongs
+to .7. Do not manually remove this valid attachment as a normal reinstall step.
+
+A bare local install rerun with `providers=none` creates no agents. Repeated
+local uninstall validates the attachment and reports no owned profiles without
+changing metadata, even with a missing global core. Explicit provider reinstall
+reuses the valid attachment and requires a compatible global core, as before.
+An unknown preexisting `.domestique-private` is still never adopted.
+
+**Interruption is not successful removal.** All preflight precedes writes.
+Exact leaves are revalidated immediately before `unlink`; a metadata-only
+`pending` intent contains original manifest records and intended path/digest
+removals. `published` records actual completed unlinks/manifest creation, not
+planned deletion. Manifest replacement is a checked unlink plus exclusive
+creation, not a directory-interpreting move. The implementation rechecks all
+remaining native/receipt/manifest hashes, bounded private inventories, index
+objects, linked-worktree enumeration/common-directory identity and actual Git
+ignore effectiveness (including late host-policy changes) before state commit and
+before clearing each journal. Late changes preserve unknown bytes and fail
+partial. Each journal is independently revalidated immediately before unlink.
+Last-profile publication follows the same retained-manifest path as partial
+removal, never a zero-state/drop-exclusion phase. The original `pending` stays
+in the existing private root throughout manifest and exclusion publication and
+all risky validation. `published` is cleared only after retained
+manifest/receipts/exclusions validate; those checks run again before the exact
+last-minute validation and final unlink of `pending`. No after-the-fact pending
+recreation or exclusion-repair engine is needed. All local records, including
+original intent, previous provenance and completed-operation journals, live
+only in `<repo>/.domestique-private/`, never Git metadata or HOME.
+
+This is bounded revalidation, not an OS-atomic transaction or writer lock.
+Detected late changes fail nonzero with the existing in-root pending evidence;
+unknown bytes and changed shared excludes are never overwritten to repair them.
+An outside writer that destroys the original private exclusion (or a failed
+exclude write) can expose already-existing state. There is no promise of privacy
+against that concurrent destruction, no authorization to clobber foreign rules,
+and no out-of-root fallback storage. Stop writers and manually reconcile.
+
+Stop writers, retain available pending/published records, and compare original
+provenance, actual exact leaves and shared exclusions manually before retry.
+Never adopt a reappeared identical leaf, copy edited metadata into recovery, or
+discard unexplained recovery records. During interrupted publication, pending
+state makes install/default routing fail closed instead of silently choosing
+global routing.
+
+**Beads is not implemented by this checkpoint.** An unrelated host `.beads`
+database and its preexisting visibility are untouched; no database inspection,
+probe, initialization, retention ownership or purge is inferred. Unknown future
+Beads fields/recovery formats refuse cleanup pending .7. A valid
+`providers=none` state reports no owned profiles, not invented readiness or
+database ownership. .6 remains blocked, .7 retention/purge and .8 live native
+acceptance remain future work; .9 full documentation is separate.
+
+Current executable coverage adds `PYTHONDONTWRITEBYTECODE=1 python3
+test/local-uninstall.py`, including linked-worktree `check-ignore` visibility
+and explicitly triggered partial-unlink/journal/retained-state mutations.
+Fixtures isolate HOME/core and fake all native/Beads/network commands.
+
 #### hq-b3q.5 public private-profile checkpoint
 
 This checkpoint supersedes the older CLI-status statements in `.3`/`.4`
@@ -763,7 +873,8 @@ nothing. `--guest` only warns; `--no-guest`, unsupported model/MCP/tool flags,
 malformed scope/target combinations and local uninstall/purge
 refuse before writes (updater: before fetch). `.6`/`.7` own those unfinished
 lifecycle operations; `.10` above defines the current Beads refusal grammar.
-`.11` above supersedes this checkpoint's earlier global-uninstall refusal.
+`.11` above supersedes this checkpoint's earlier global-uninstall refusal;
+`.12` supersedes its local profile-uninstall refusal, not Beads purge.
 No implicit global installation or update occurs.
 Missing/old router helper requires an explicit `bash domestique.sh --global`
 with the same private-root environment.

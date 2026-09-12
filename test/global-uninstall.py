@@ -560,7 +560,6 @@ for boundary_name, leaf, kind in core_faults:
 # Invalid grammar remains status 2 before writes, including all .10 combinations.
 with fixture():
     for args in (
-        ("--uninstall",), ("--uninstall", W), ("--uninstall", "--local", W),
         ("--uninstall", "--global", W), ("--uninstall", "--global", "--local", W),
         ("--uninstall", "--global", "--with-beads"),
         ("--uninstall", "--global", "--purge-beads"),
@@ -574,6 +573,11 @@ with fixture():
         before = snapshot(W)
         p = run("/bin/bash", DOM, *args)
         check(p.returncode == 2 and snapshot(W) == before, ("invalid grammar prewrite", args))
+    for args in (("--uninstall",), ("--uninstall", W), ("--uninstall", "--local", W)):
+        before = snapshot(W)
+        p = run("/bin/bash", DOM, *args)
+        check(p.returncode == 1 and "not a Git worktree" in p.stderr and
+              snapshot(W) == before, ("local default operational preflight", args))
     refusal()  # genuinely absent scope is a documented non-success, too
     install("claude")
     p = remove("--guest")

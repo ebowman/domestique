@@ -408,9 +408,17 @@ with tempfile.TemporaryDirectory() as temp:
                      ["--local"], ["--local", target, target], ["--platform="],
                      ["--platform", "unknown"], ["--model", "x"], ["--tools", "x"],
                      ["--mcp", "x"], [""], ["--no-guest"], ["--with-beads"],
-                     ["--state-only"], ["--uninstall"], ["--purge-beads"]):
+                     ["--state-only"], ["--uninstall", "--with-beads"], ["--purge-beads"]):
             result = refuse("bash", script, *args, *extra, roots=(target, CORE, HOME))
             check(result.returncode == 2 and "source =" not in result.stdout, "usage before fetch")
+        if script == UP:
+            result = refuse("bash", UP, "--uninstall", *extra, roots=(target, CORE, HOME))
+            check(result.returncode == 2, "updater remains update-only")
+        else:
+            result = refuse("bash", DOM, "--uninstall", "--local", target,
+                            roots=(target, CORE, HOME))
+            check(result.returncode == 1 and "no owned local profiles" in result.stderr,
+                  "local uninstall without ownership is operational refusal")
     for args in (["--source="], ["--source", "--dry-run"], ["--source", ""]):
         result = refuse("bash", UP, *args, roots=(target, CORE, HOME))
         check(result.returncode == 2 and "source =" not in result.stdout, "malformed source before fetch")

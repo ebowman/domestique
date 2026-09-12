@@ -27,7 +27,8 @@ Local requires an existing Git top-level and compatible global core; no
 implicit global writes. Beads 1.1.2 --stealth changes broad Git policy/root
 .gitignore; no supported skip-Git-policy switch or certified backend exists.
 Installing bd or adding skip flags does not solve this. This wrapper only updates;
-use domestique.sh --uninstall --global for owned-only global removal.
+use domestique.sh --uninstall --global for owned-only global removal, or
+domestique.sh --uninstall --local TARGET for profile-only local removal.
 No model, MCP, or tool options are accepted; customize native metadata locally.
 EOF
 }

@@ -1961,7 +1961,12 @@ local_manifest_read() {
       2) [ "$line" = scope=local ] || break;;
       3) [ "$line" = "worktree_root=$root" ] || break;;
       4) case "$line" in core_root=/*) M_CORE="${line#core_root=}";; *) break;; esac
-         local_path "$M_CORE" "$M_CORE" || return 1;;
+         if [ "$purpose" = removal ]; then
+           # Identity metadata, not a dependency on a surviving global install.
+           # Do not stat/read/execute anything at the persisted core root.
+           case "$M_CORE" in /|/*/|*//*|*/./*|*/../*|*/.|*/..|*[=$'\001'-$'\037'$'\177']*)
+             local_fail "noncanonical persisted core identity"; return 1;; esac
+         else local_path "$M_CORE" "$M_CORE" || return 1; fi;;
       5) [ "$line" = core_api=1 ] || break;;
       6) case "$line" in providers=*) M_SET="${line#providers=}";; *) break;; esac
          local_set_valid "$M_SET" || return 1;;
@@ -2000,7 +2005,7 @@ local_manifest_read() {
   for ((n=0; n<${#M_KEYS[@]}; n++)); do
     path="$root/${M_KEYS[n]#*:}"
     local_path "$path" "$root" && local_untracked "$root" "${M_KEYS[n]#*:}" || return 1
-    [ -f "$path" ] && { [ "$purpose" = runtime ] || [ "$(global_hash < "$path")" = "${M_BASE[n]}" ]; } ||
+    [ -f "$path" ] && { [ "$purpose" = runtime ] || [ "$purpose" = removal ] || [ "$(global_hash < "$path")" = "${M_BASE[n]}" ]; } ||
       { local_fail "missing or edited owned native leaf: $path"; return 1; }
   done
   # State-tree ownership is bounded too. Unknown recovery/Beads formats are
@@ -2405,6 +2410,37 @@ local_exclude_plan() {
     fi
     proposed+=("$pattern")
   done
+  if [ "${L_EXCLUDE_OPERATION:-install}" = removal ]; then
+    for pattern in ${L_OWNED_PATTERNS[@]+"${L_OWNED_PATTERNS[@]}"}; do
+      local_contains "$pattern" ${existing[@]+"${existing[@]}"} ||
+        { local_fail "missing exact shared exclusion provenance for removal"; return 1; }
+    done
+    # Existing rules were authorized against the BEFORE inventory above.
+    # Derive the AFTER union independently; never keep a rule just because it
+    # used to be owned in this worktree.
+    proposed=()
+    for wt in "${worktrees[@]}"; do
+      local_manifest_read "$wt" removal || return 1
+      if [ "$wt" = "$target" ]; then
+        if ! local_contains '/.domestique-private/' ${proposed[@]+"${proposed[@]}"}; then
+          proposed+=('/.domestique-private/')
+        fi
+        for rel in ${L_WANT[@]+"${L_WANT[@]}"}; do
+          pattern="$(local_pattern "$rel")"
+          local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
+        done
+      else
+        if [ -e "$wt/.domestique-private" ]; then
+          local_contains '/.domestique-private/' ${proposed[@]+"${proposed[@]}"} ||
+            proposed+=('/.domestique-private/')
+        fi
+        for key in ${M_KEYS[@]+"${M_KEYS[@]}"}; do
+          pattern="$(local_pattern "${key#*:}")"
+          local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
+        done
+      fi
+    done
+  else
   # Keep all other attachments private, even when their exact patterns differ.
   for pattern in ${L_OWNED_PATTERNS[@]+"${L_OWNED_PATTERNS[@]}"}; do
     local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
@@ -2413,9 +2449,10 @@ local_exclude_plan() {
     pattern="$(local_pattern "$rel")"
     local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
   done
+  fi
   for wt in "${worktrees[@]}"; do
     local_manifest_read "$wt" "${L_MANIFEST_PURPOSE:-install}" || return 1
-    for pattern in "${proposed[@]}"; do
+    for pattern in ${proposed[@]+"${proposed[@]}"}; do
       # Proposed patterns can only originate in fixed inventories above.
       rel=""
       [ "$pattern" != '/.domestique-private/' ] || rel=.domestique-private
@@ -2436,9 +2473,11 @@ local_exclude_plan() {
     done
   done
   L_ROOT="$oldroot"; L_COMMON="$common"
-  L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${begin}"$'\n'
-  for pattern in "${proposed[@]}"; do L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${pattern}"$'\n'; done
-  L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${end}"$'\n'
+  if [ "${#proposed[@]}" -gt 0 ]; then
+    L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${begin}"$'\n'
+    for pattern in "${proposed[@]}"; do L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${pattern}"$'\n'; done
+    L_EXCLUDE_AFTER="${L_EXCLUDE_AFTER}${end}"$'\n'
+  fi
 }
 # local_preflight TARGET PROVIDERS [check|migrate]
 # L_WANT is the selected exact native inventory (union with existing records).
@@ -2537,6 +2576,276 @@ local_publish_file() {
     [ -f "$dest" ] && [ "$(global_hash < "$dest")" = "$digest" ] ||
     { local_fail "unverified published leaf: $dest"; return 1; }
 }
+
+# Removal uses only the embedded ownership reader, never local_core or an
+# installed helper. U_HASH is ephemeral live comparison evidence; only original
+# manifest records and completed operation digests are serialized.
+local_remove_check() {
+  local path="$1" digest="$2" root="$3"
+  local_path "$path" "$root" && local_untracked "$root" "${path#"$root"/}" || return 1
+  if [ "$digest" = absent ]; then
+    [ ! -e "$path" ] && [ ! -L "$path" ]
+  else
+    [ -f "$path" ] && [ "$(global_hash < "$path")" = "$digest" ]
+  fi || { local_fail "removal evidence changed: $path"; return 1; }
+}
+local_remove_new() {
+  local path="$1" text="$2"
+  local_remove_check "$path" absent "$L_ROOT" || return 1
+  (set -C; printf '%s' "$text" > "$path") || return 1
+  local_remove_check "$path" "$(printf '%s' "$text" | global_hash)" "$L_ROOT"
+}
+local_remove_log() {
+  local record="$1"
+  local_remove_check "$U_STATE/published" "$U_LOG_HASH" "$L_ROOT" || return 1
+  printf '%s\n' "$record" >> "$U_STATE/published" || return 1
+  U_LOG="${U_LOG}${record}"$'\n'
+  U_LOG_HASH="$(printf '%s' "$U_LOG" | global_hash)"
+  local_remove_check "$U_STATE/published" "$U_LOG_HASH" "$L_ROOT"
+}
+local_remove_private() {
+  local path="$1" root="$2" rel="${1#"$2"/}"
+  local_ignore_effective "$root" "$rel" "$(local_pattern "$rel")" &&
+    git -C "$root" check-ignore -q --no-index -- "$rel" ||
+    { local_fail "required removal/retention exclusion is no longer effective: $path"; return 1; }
+}
+local_remove_validate() {
+  local i wt path listing common="$L_COMMON"
+  listing="$(local_worktree_list "$L_ROOT")" || return 1
+  [ "$listing" = "$U_LIST" ] || { local_fail "linked worktree accounting changed"; return 1; }
+  for ((i=0; i<${#U_PATHS[@]}; i++)); do
+    local_remove_check "${U_PATHS[i]}" "${U_HASH[i]}" "${U_ROOTS[i]}" || return 1
+    if [ "${U_HASH[i]}" != absent ]; then
+      local_remove_private "${U_PATHS[i]}" "${U_ROOTS[i]}" || return 1
+    fi
+  done
+  for ((i=0; i<${#U_DIRS[@]}; i++)); do
+    path="${U_DIRS[i]}"
+    local_path "$path" "${U_DIR_ROOTS[i]}" || return 1
+    if [ "${U_DIR_PRESENT[i]}" = 1 ]; then
+      [ -d "$path" ] || { local_fail "private container changed"; return 1; }
+    else
+      [ ! -e "$path" ] || { local_fail "unknown private container appeared"; return 1; }
+    fi
+  done
+  for wt in "${L_WORKTREES[@]}"; do
+    local_common "$wt" || return 1
+    [ "$L_COMMON" = "$common" ] ||
+      { local_fail "linked worktree common directory changed"; return 1; }
+    local_path "$wt/.domestique-private" "$wt" &&
+      local_untracked "$wt" .domestique-private || return 1
+    [ -d "$wt/.domestique-private" ] || continue
+    find "$wt/.domestique-private" -mindepth 1 -print0 | (
+      while IFS= read -r -d '' path; do
+        local_path "$path" "$wt" || exit 1
+        if [ "$path" = "$wt/.domestique-private/routing" ]; then
+          [ -d "$path" ] || exit 1
+        elif [ "$wt" = "$L_ROOT" ] && [ "$path" = "$U_STATE/pending" ]; then
+          local_remove_check "$path" "$U_PENDING_HASH" "$wt" || exit 1
+        elif [ "$wt" = "$L_ROOT" ] && [ "$path" = "$U_STATE/published" ]; then
+          local_remove_check "$path" "$U_LOG_HASH" "$wt" || exit 1
+        else
+          local_contains "$path" "${U_PATHS[@]}" ||
+            { local_fail "unknown private removal entry: $path"; exit 1; }
+        fi
+      done
+    ) || return 1
+  done
+  local_path "$L_EXCLUDE" "$L_COMMON" || return 1
+  [ -f "$L_EXCLUDE" ] && [ "$(global_hash < "$L_EXCLUDE")" = "$U_EXCLUDE_HASH" ] ||
+    { local_fail "shared exclusion changed during removal"; return 1; }
+  if [ "$U_WRITING" = 1 ]; then
+    local_remove_check "$U_STATE/pending" "$U_PENDING_HASH" "$L_ROOT" &&
+      local_remove_check "$U_STATE/published" "$U_LOG_HASH" "$L_ROOT" || return 1
+    if [ "$U_PENDING_HASH" != absent ]; then local_remove_private "$U_STATE/pending" "$L_ROOT" || return 1; fi
+    if [ "$U_LOG_HASH" != absent ]; then local_remove_private "$U_STATE/published" "$L_ROOT" || return 1; fi
+  fi
+}
+local_remove_exclude() {
+  local text="$1"
+  local_path "$L_EXCLUDE" "$L_COMMON" || return 1
+  [ -f "$L_EXCLUDE" ] && [ "$(global_hash < "$L_EXCLUDE")" = "$U_EXCLUDE_HASH" ] ||
+    { local_fail "shared exclusion changed before commit"; return 1; }
+  # No disk copy of live host rules. A failed checked write is a PARTIAL
+  # transaction, not an atomicity claim; retain intent for manual reconciliation.
+  printf '%s' "$text" > "$L_EXCLUDE" || return 1
+  U_EXCLUDE_HASH="$(printf '%s' "$text" | global_hash)"
+  local_path "$L_EXCLUDE" "$L_COMMON" &&
+    [ -f "$L_EXCLUDE" ] && [ "$(global_hash < "$L_EXCLUDE")" = "$U_EXCLUDE_HASH" ]
+}
+local_uninstall() (
+  local L_MANIFEST_PURPOSE=removal L_EXCLUDE_OPERATION=removal
+  local key provider path wt i j selected retained="" removing="" oldset core
+  local oldmanifest newmanifest oldhash newhash plan final_exclude
+  local keys=() created=() bases=() remove_paths=() remove_hashes=()
+  local U_PATHS=() U_HASH=() U_ROOTS=() L_WANT=() L_INVENTORY=()
+  local U_DIRS=() U_DIR_ROOTS=() U_DIR_PRESENT=()
+  local U_SET=none U_STATE U_LIST U_LOG="" U_LOG_HASH=absent U_PENDING_HASH=absent
+  local U_EXCLUDE_HASH U_WRITING=0
+  local L_REMOVE=() L_REMOVE_HASH=() L_LEGACY=()
+  [ "$DRY_RUN" = 0 ] || G_READONLY=1
+  local_root "$TARGET_DIR" || exit 1
+  U_STATE="$L_ROOT/.domestique-private"
+  while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
+  local_manifest_read "$L_ROOT" removal && local_legacy "$L_ROOT" check || exit 1
+  [ -f "$U_STATE/manifest" ] ||
+    { local_fail "no owned local profiles; no adoption or Beads cleanup"; exit 1; }
+  keys=(${M_KEYS[@]+"${M_KEYS[@]}"}); created=(${M_CREATED[@]+"${M_CREATED[@]}"}); bases=(${M_BASE[@]+"${M_BASE[@]}"})
+  oldset="$M_SET"; core="$M_CORE"; selected="${PLATFORM_ARG:-$M_SET}"
+  oldmanifest="$(printf 'format=1\nscope=local\nworktree_root=%s\ncore_root=%s\ncore_api=1\nproviders=%s\n' "$L_ROOT" "$core" "$oldset"
+    for ((i=0; i<${#keys[@]}; i++)); do
+      printf 'created=%s:%s\nbaseline=%s:%s\n' "${keys[i]}" "${created[i]}" "${keys[i]}" "${bases[i]}"
+    done)"$'\n'
+  oldhash="$(printf '%s' "$oldmanifest" | global_hash)"
+  local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1
+  for provider in claude codex copilot; do
+    local_selected "$oldset" "$provider" || continue
+    [ -f "$U_STATE/routing/$provider.receipt" ] ||
+      { local_fail "missing owned provider receipt"; exit 1; }
+    if local_selected "$selected" "$provider"; then
+      for ((i=0; i<${#keys[@]}; i++)); do
+        [ "${keys[i]%%:*}" = "$provider" ] || continue
+        if [ "$(global_hash < "$L_ROOT/${keys[i]#*:}")" != "${bases[i]}" ]; then
+          retained="$retained $provider"; break
+        fi
+      done
+      if ! local_contains "$provider" $retained; then
+        removing="$removing $provider"
+      else
+        printf 'domestique local: retain WHOLE edited provider %s (including --force/dry-run); original metadata/exclusions unchanged\n' "$provider" >&2
+      fi
+    fi
+  done
+  G_C=0; G_X=0; G_P=0
+  for provider in claude codex copilot; do
+    local_selected "$oldset" "$provider" || continue
+    if local_contains "$provider" $removing; then
+      for ((i=0; i<${#keys[@]}; i++)); do
+        [ "${keys[i]%%:*}" = "$provider" ] || continue
+        remove_paths+=("$L_ROOT/${keys[i]#*:}"); remove_hashes+=("${bases[i]}")
+      done
+      path="$U_STATE/routing/$provider.receipt"
+      remove_paths+=("$path"); remove_hashes+=("$(global_hash < "$path")")
+    else global_select "$provider"; fi
+  done
+  if [ "$G_C$G_X$G_P" != 000 ]; then global_set_name; U_SET="$G_SET"; fi
+  for key in ${keys[@]+"${keys[@]}"}; do
+    local_contains "${key%%:*}" $removing || L_WANT+=("${key#*:}")
+  done
+  local_exclude_plan || exit 1
+  final_exclude="$L_EXCLUDE_AFTER"; U_EXCLUDE_HASH="$L_EXCLUDE_BEFORE"
+  # A removal never establishes previously missing privacy authority.
+  [ -n "$U_EXCLUDE_HASH" ] || { local_fail "missing shared exclude provenance"; exit 1; }
+  U_LIST="$(local_worktree_list "$L_ROOT")" || exit 1
+  for wt in "${L_WORKTREES[@]}"; do
+    local_manifest_read "$wt" removal && local_legacy "$wt" check || exit 1
+    for key in .domestique-private .domestique-private/routing; do
+      U_DIRS+=("$wt/$key"); U_DIR_ROOTS+=("$wt")
+      if [ -d "$wt/$key" ]; then U_DIR_PRESENT+=(1); else U_DIR_PRESENT+=(0); fi
+    done
+    for key in "${L_INVENTORY[@]}"; do
+      path="$wt/${key#*:}"
+      local_path "$path" "$wt" && local_untracked "$wt" "${key#*:}" || exit 1
+      if [ -e "$path" ]; then
+        local_contains "$key" ${M_KEYS[@]+"${M_KEYS[@]}"} ||
+          { local_fail "unknown native destination; identical bytes are not ownership"; exit 1; }
+        local_text_file "$path" 1 || exit 1
+        U_HASH+=("$(global_hash < "$path")")
+      else U_HASH+=(absent); fi
+      U_PATHS+=("$path"); U_ROOTS+=("$wt")
+    done
+    for key in manifest routing/claude.receipt routing/codex.receipt routing/copilot.receipt; do
+      path="$wt/.domestique-private/$key"
+      U_PATHS+=("$path"); U_ROOTS+=("$wt")
+      if [ -f "$path" ]; then U_HASH+=("$(global_hash < "$path")")
+      else U_HASH+=(absent); fi
+    done
+    for provider in claude codex copilot; do
+      if local_selected "$M_SET" "$provider"; then
+        [ -f "$wt/.domestique-private/routing/$provider.receipt" ] ||
+          { local_fail "missing linked-worktree receipt"; exit 1; }
+      fi
+    done
+  done
+  local_remove_validate || exit 1
+  for ((i=0; i<${#remove_paths[@]}; i++)); do
+    local_remove_check "${remove_paths[i]}" "${remove_hashes[i]}" "$L_ROOT" || exit 1
+  done
+  if [ -z "$removing" ]; then
+    if [ "$oldset" = none ]; then
+      printf 'domestique local: no owned local profiles; private attachment metadata retained; Beads untouched\n'
+    else
+      printf 'domestique local: no eligible selected profiles removed\n'
+    fi
+    [ -z "$retained" ]; exit
+  fi
+  newmanifest="$(printf 'format=1\nscope=local\nworktree_root=%s\ncore_root=%s\ncore_api=1\nproviders=%s\n' "$L_ROOT" "$core" "$U_SET"
+    for ((i=0; i<${#keys[@]}; i++)); do
+      local_contains "${keys[i]%%:*}" $removing && continue
+      printf 'created=%s:%s\nbaseline=%s:%s\n' "${keys[i]}" "${created[i]}" "${keys[i]}" "${bases[i]}"
+    done)"$'\n'
+  newhash="$(printf '%s' "$newmanifest" | global_hash)"
+  plan="$(printf 'format=1\noperation=local-uninstall\nprevious=%s\nremaining=%s\n' "$oldhash" "$newhash"
+    printf '%s' "$oldmanifest"
+    for ((i=0; i<${#remove_paths[@]}; i++)); do
+      printf 'remove=%s:%s\n' "${remove_paths[i]#"$L_ROOT"/}" "${remove_hashes[i]}"
+    done)"$'\n'
+  U_PENDING_HASH="$(printf '%s' "$plan" | global_hash)"
+  U_LOG_HASH="$(printf '' | global_hash)"
+  printf 'domestique local: %sremove providers:%s; remaining=%s; Beads untouched; unproven empty containers retained\n' \
+    "$([ "$DRY_RUN" = 0 ] || printf 'would ')" "$removing" "$U_SET"
+  if [ "$DRY_RUN" = 1 ]; then [ -z "$retained" ]; exit; fi
+  umask 077
+  # Keep the owned attachment and its proven private-tree rule even at none.
+  # Pending is the original marker throughout every risky publication phase.
+  U_WRITING=1
+  trap 'rc=$?; if [ "$U_WRITING" = 1 ]; then
+    local_fail "PARTIAL removal; retain in-root private pending/published, compare intent/completed hashes against exact leaves and exclusions; no automated retry"
+    [ "$rc" -ne 0 ] || rc=1
+  fi; exit "$rc"' EXIT
+  local_remove_new "$U_STATE/pending" "$plan" &&
+    local_remove_new "$U_STATE/published" "" || exit 1
+  for ((i=0; i<${#remove_paths[@]}; i++)); do
+    local_remove_check "$U_STATE/pending" "$U_PENDING_HASH" "$L_ROOT" &&
+      local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" &&
+      local_remove_check "${remove_paths[i]}" "${remove_hashes[i]}" "$L_ROOT" || exit 1
+    unlink "${remove_paths[i]}" || exit 1
+    # Record the actual unlink, not intent, even if a writer recreates the leaf.
+    for ((j=0; j<${#U_PATHS[@]}; j++)); do
+      [ "${U_PATHS[j]}" != "${remove_paths[i]}" ] || U_HASH[j]=absent
+    done
+    local_remove_log "removed=${remove_paths[i]#"$L_ROOT"/}:${remove_hashes[i]}" || exit 1
+    local_remove_check "${remove_paths[i]}" absent "$L_ROOT" || exit 1
+  done
+  local_remove_validate || exit 1
+  local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1
+  unlink "$U_STATE/manifest" || exit 1
+  for ((j=0; j<${#U_PATHS[@]}; j++)); do
+    [ "${U_PATHS[j]}" != "$U_STATE/manifest" ] || U_HASH[j]=absent
+  done
+  local_remove_log "removed=.domestique-private/manifest:$oldhash" || exit 1
+  local_remove_check "$U_STATE/manifest" absent "$L_ROOT" || exit 1
+  local_remove_validate || exit 1
+  local_remove_new "$U_STATE/manifest" "$newmanifest" || exit 1
+  for ((j=0; j<${#U_PATHS[@]}; j++)); do
+    [ "${U_PATHS[j]}" != "$U_STATE/manifest" ] || U_HASH[j]="$newhash"
+  done
+  local_remove_log "created=.domestique-private/manifest:$newhash" || exit 1
+  local_remove_validate || exit 1
+  local_remove_exclude "$final_exclude" || exit 1
+  local_remove_validate || exit 1
+  # Revalidate EACH journal immediately before its exact unlink, including
+  # all retained native/receipt/manifest and shared-worktree evidence.
+  local_remove_check "$U_STATE/published" "$U_LOG_HASH" "$L_ROOT" || exit 1
+  unlink "$U_STATE/published" || exit 1
+  U_LOG_HASH=absent
+  local_remove_validate || exit 1
+  local_remove_check "$U_STATE/pending" "$U_PENDING_HASH" "$L_ROOT" || exit 1
+  unlink "$U_STATE/pending" || exit 1
+  U_WRITING=0
+  [ -z "$retained" ] || exit 1
+  printf 'domestique local: profiles removed; private attachment metadata retained\n'
+)
 
 local_install() (
   local selection=none key path provider role digest j n found stage state changed=0
@@ -2673,18 +2982,19 @@ Usage: domestique.sh --global [options]
        domestique.sh [TARGET] [options]  (same private local operation; default .)
 
 --global installs private user-native skills/roles and the shared API-1 core.
---local requires an existing physical Git top-level and compatible global
-core. It creates only exact provider-qualified native local roles plus private
+--local installation requires an existing physical Git top-level and compatible
+global core. It creates only exact provider-qualified native local roles plus private
 metadata/exclusions; never home, root policy, settings, skills, or Beads.
 
   --platform P  claude, codex, copilot, both, claude-copilot, codex-copilot, all
-                Additive union; default Claude, then persisted union.
+                Install: additive union; default Claude, then persisted union.
   --dry-run     Full preflight without destination writes.
   --force       Never overrides edits, unknown ownership, or unsafe paths.
-  --uninstall   With explicit --global only: remove unchanged owned selected
-                providers (default persisted union). Edited providers retained
-                whole; nonzero even in dry-run. Last removal disables local
-                profiles until core restored; project files are never touched.
+  --uninstall   Remove unchanged positively owned selected providers (default
+                persisted union). Bare/positional/--local TARGET is profile-only
+                local removal, even without a usable global core. Explicit
+                --global removes global assets only, never project files.
+                Edited providers retained WHOLE; nonzero even force/dry-run.
   --guest       Deprecated warning-only no-op. --no-guest is rejected.
   --with-beads  Explicit --local TARGET only; initialization is UNSUPPORTED.
   --state-only  Requires --local TARGET --with-beads; conflicts with --platform.
@@ -2692,14 +3002,21 @@ metadata/exclusions; never home, root policy, settings, skills, or Beads.
   --help, -h    Show help.
 
 Edited owned local native tools/MCP metadata is usable after native reload/
-trust/core-protocol confirmation, but automatic refresh refuses untouched
-even with force. No secrets/backups/merges; full prompt forks stay user-owned.
-Missing/old helper: explicitly run bash domestique.sh --global first.
+trust/core-protocol confirmation, but automatic refresh refuses and leaves edits
+untouched even with force. No secrets/backups/merges; full prompt forks stay user-owned.
+Missing/old helper: repair with bash domestique.sh --global before installation
+or use; local profile uninstall does not read or require global assets.
 Beads 1.1.2 --stealth writes broad Git policy and may rewrite root .gitignore;
 no supported skip-Git-policy switch or certified private backend exists.
 Installing bd or adding skip flags does not solve this. No bd probes run.
-Local uninstall/purge refuses early; no legacy fallback. No model/MCP/tool flags.
-Global removal leaves unproven empty directories; review manually before reinstall.
+Purge and uninstall with initialization flags refuse early; Beads retention/purge
+is future work. Host .beads is untouched. No legacy fallback/model/MCP/tool flags.
+Local removal retains a valid providers=none attachment after the last profile,
+with its existing private-tree exclusion. Bare reinstall creates no adapters;
+explicit --platform reuses that attachment and requires a compatible global core.
+Unproven native containers stay untouched; final private-state cleanup is future
+work. Interrupted removal fails closed; retain pending/published only in the
+repository's .domestique-private and reconcile exact leaves/exclusions manually.
 EOF
 }
 
@@ -2866,8 +3183,8 @@ done
 [ "$PURGE_BEADS" = 0 ] ||
   { echo "Local purge is not implemented; global purge is invalid; no legacy fallback" >&2; exit 2; }
 [ "$UNINSTALL" = 0 ] || {
-  [ "$GLOBAL$LOCAL$TARGET_EXPLICIT$WITH_BEADS$STATE_ONLY" = 10000 ] ||
-    { echo "Uninstall requires explicit --global without target/initialization; local uninstall is future work, no legacy fallback" >&2; exit 2; }
+  [ "$WITH_BEADS$STATE_ONLY" = 00 ] ||
+    { echo "Uninstall conflicts with initialization/state-only; profile removal only, no legacy fallback" >&2; exit 2; }
 }
 [ "$STATE_ONLY" = 0 ] || {
   [ "$LOCAL$WITH_BEADS$GLOBAL$PLATFORM_EXPLICIT" = 1100 ] ||
@@ -2899,7 +3216,7 @@ if [ "$GLOBAL" = 1 ]; then
 fi
 TARGET_DIR="${TARGET_DIR:-.}"
 [ "$GUEST" = 0 ] || echo "Warning: --guest is a deprecated no-op in private local scope" >&2
-local_install
+if [ "$UNINSTALL" = 1 ]; then local_uninstall; else local_install; fi
 exit 0
 
 case "${PLATFORM_ARG:-claude}" in
