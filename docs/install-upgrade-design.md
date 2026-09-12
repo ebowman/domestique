@@ -16,9 +16,9 @@ for exact formats/recovery. `main` and draft PR #11 do not contain this preview.
 | --- | --- |
 | Shared core and global definitions | .2/.3 implemented: immutable six-file Core API 1 releases and standalone helper; global-first, no project writes |
 | Private local safety/profiles | .4/.5 implemented: physical Git root, exact ownership/exclusions, qualified roles/receipts, runtime routing separate from database eligibility |
-| Beads operations | .10 implemented fail-closed guard; **every current case stops**, including decompose and goal; .6 safe private initialization **blocked** |
+| Beads operations | .6 qualified Darwin arm64 / observed 1.1.2 CGO private initializer and controlled dispatcher implemented; unowned/failed/unsupported cases stop. .10's always-refusing status is superseded |
 | Removal | .11 global and .12 local profile-only implemented; .7 database retention/purge and integrated final cleanup **open** |
-| Native evidence | .13 limited discovery/skill metadata reload; .14 disposable Beads init/CRUD/separation observed, direct DB UUID query blocked. Claude skills and all roles blocked; full role/tool/MCP execution acceptance .8 **open** |
+| Native evidence | .6 actual production init/wrapper fixture and .14 historical init/CRUD/identity controls; direct SQL UUID query unsupported. .13 limited skill discovery; Claude skills/all roles and full role/tool/MCP acceptance .8 remain **open** |
 | Documentation | .9 approved **now** against implemented preview and .13 evidence, explicitly deferring blocked full .8; not a release-complete claim |
 | Old plans | Parent-reconciled **deferred**, not completed/closed/reparented; see final disposition table |
 
@@ -587,7 +587,228 @@ below, including the two composite spellings; legacy selection is unchanged.
 The updater validates global scope/options before fetching, forwards no `.`
 target, and does not apply after a failed global preview.
 
-#### hq-b3q.10 Beads operation boundary checkpoint (.6 still blocked)
+#### hq-b3q.6 qualified private initialization and controlled operations (current)
+
+This implementation supersedes the always-refusing **production** status in
+.10 and the later historical checkpoints below. It does not change .14's
+historical experiment results, certify other native versions, or complete .8
+role/model/MCP execution. All code remains embedded in `domestique.sh`;
+`bin/resolve-core` embeds its own bridge and imports no checkout/test files.
+Core API 1 and the six-file immutable role release inventory remain intact.
+The helper capability marker is now `beads_guard_api=2`.
+
+**Qualification and dependencies.** Only observed Darwin arm64 / Beads 1.1.2
+CGO embedded is enabled, with exact binary SHA-256
+`cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42`.
+The source pin remains `gastownhall/beads@20e493e569c922d1253bdeff068c5e56c94957fb`.
+Installed Python 3.9+ stdlib and `/usr/bin/sandbox-exec` are required for Beads
+only; ordinary core/profile loads have no Python dependency. Apple's Python/Git
+setup launchers are not an installer fallback. No package installation occurs.
+Python uses `-I -S -B` to disable site startup hooks and bytecode-cache writes.
+The exact observed user-owned Homebrew Cellar parent mode 0775 is accepted for
+the digest-pinned executable; other unsafe writable ancestors refuse. This
+retains the existing no-hostile-writer/concurrency guarantee boundary.
+Fresh qualification uses only private temporary staging, OS positive-write and
+outside-read/write/network denial probes, and native help/version. It records
+canonical executable and Git paths/digests; later invocations require those
+same bytes, not PATH replacement or automatic requalification.
+
+**CLI and publication.** Explicit `--local TARGET --with-beads --state-only`
+creates no providers on a fresh attachment. Existing provider records,
+receipts and edited profiles remain wholly untouched. Explicit combined
+Beads/profile requests preflight target, core/helper, ownership, all selected
+profiles, legacy authority and all actual linked-worktree exclusion collisions
+before writes. Existing host `.beads` refuses, including empty or byte-identical
+directories; no native query is used to decide adoption. An existing Git info
+directory is required for Beads publication. Invalid flag combinations and
+purge refuse before writes/fetch; the updater forwards valid requests and does
+not apply any failed preview. Dry-run has no project/global/index/exclude writes
+and no native DB calls.
+State-only and unselected providers in combined requests preserve valid original
+native-record/receipt ordering, creation hashes and baseline hashes. The exact
+projected manifest and generated-or-retained receipt set is validated before
+initialization; only legitimately refreshed providers get generated ordering.
+State-only
+uses legacy **check**, not migration: it refuses active legacy authority
+without deleting even otherwise-eligible legacy profiles. Colon-bearing Beads
+roots (Git ceiling delimiter) and Git executable directories (PATH delimiter)
+refuse rather than misrouting discovery.
+
+After preflight, the controller exclusively claims any new private state root
+and the empty final `.beads` directory (no `exist_ok`). Process-local device/inode
+proof plus empty-directory checks distinguish these reservations from adoption.
+It revalidates every actual shared worktree and exact proposed exclusion, then
+protects the owned private tree and only the known native artifact paths/subtree,
+before writing any journals/context or executing native init. New selected
+provider files are not prematurely hidden. Existing host `.beads`, late claim
+collisions and newly populated reservations refuse without covering foreign
+paths. No invalid placeholder metadata is precreated.
+
+The protected `published` journal records the actual checked exclusion path/hash
+and completed directory reservations. `beads-attempt` is failed-by-default:
+`format=1`, `beads_status=failed`, `attempt=<hex>`,
+`beads_reservation=.beads:<device>:<inode>`. Neither reservation is successful
+native creation, readiness or future purge authority. The bridge rechecks the
+exact empty DB reservation, creates the private context, initializes directly at the final
+DB path, verifies metadata/schema/physical engine, then queries ping and where.
+Only after those proofs are successful is the full ready suffix emitted and
+published in the local manifest. Zero-exit bad metadata, partial init or bad
+readiness leaves nonzero failed attempt/journal evidence, no ready manifest or
+successful `beads_created` records. No DB copies, rollback, automatic purge,
+reinit or post-hoc directory ownership inference occurs. Partial known native
+artifacts and attempt/context/journals remain protected even on init/readiness
+failure. Unknown unallowlisted native artifacts gain neither ownership nor new
+exclusions; manual reconciliation and avoiding commits remain necessary. An
+interruption before protection may leave only empty claimed directories; an
+interrupted exclusion write requires checking the exact actual exclusion bytes.
+Stop writers; never infer successful creation from a protective reservation.
+
+**Process boundary.** Native CWD is exactly
+`<physical-project>/.domestique-private/beads-context/run`, Git ceiling is its
+parent, and absolute `BEADS_DIR` is `<physical-project>/.beads`. HOME, XDG
+config/state/cache, tmp and empty Git hooks/templates are context-owned.
+Both Git config selectors point to a generated empty `beads-context/gitconfig`,
+never to real HOME configuration.
+The allowlist environment and pinned init flags reuse .14's source-verified
+semantics (including explicit empty remote and `no-git-ops: true`).
+There are no inherited tokens, Git selectors, alternate DB/config selectors,
+proxies, OTel endpoints, real HOME config or credentials. Native `--sandbox`
+is auto-push control only. Actual default-deny OS policy permits runtime reads
+and DB/context reads/writes, no network or Keychain/mach IPC, no external Dolt,
+and only the dedicated export directory when export was requested. Native has
+no write grant to installer journals, manifests, routing, index, host policies,
+global installation or common excludes. Processes/groups are bounded and
+reaped, including after timeout. Native's mode-0777 `.dolt` JSON selectors are
+accepted only inside owned mode-0700 enclosing private trees, with their exact
+safe schemas and immutable fingerprints checked; no permissions are repaired.
+
+**Bounded local format 1 extension.** The original six headers and native
+created/baseline pairs stay ordered. Optional Beads records follow them, in
+this exact order (no unknown-key escape):
+
+```
+beads_path=.beads
+beads_path_created=by-init:<32 lowercase hex attempt>
+beads_status=ready
+beads_executable=<canonical qualified path>
+beads_sha256=<64 lowercase hex>
+beads_version=1.1.2
+beads_platform=Darwin-arm64
+beads_backend=dolt-embedded-cgo
+beads_context=.domestique-private/beads-context
+beads_prefix=dm<12 lowercase hex>
+beads_uuid=<canonical UUID>
+beads_readiness=init-ping-where-v1
+beads_selectors_sha256=<64 lowercase hex>
+beads_git=<canonical installed Git path>
+beads_git_sha256=<64 lowercase hex>
+beads_created=<known relative leaf/subtree>:<initial SHA-256>
+```
+
+`beads_created` repeats exactly in this order: `.beads/.gitignore`,
+`.beads/.local_version`, `.beads/README.md`, `.beads/config.yaml`,
+`.beads/embeddeddolt`, `.beads/interactions.jsonl`, `.beads/last-touched`,
+`.beads/metadata.json`, `.domestique-private/beads-context`,
+`.domestique-private/exports`. File hashes are SHA-256 of bytes; subtree hashes
+use sorted relative names, NUL framing, `d` directory or `f` plus binary file
+digest. These are initial unchanged-only future purge baselines, not runtime DB
+freshness. Pinned `last_touched.go` reads empty as no default and writes the
+explicit issue ID; its leaf is exclusively precreated before publishing ready,
+never inferred from a later unknown artifact. `retained` parses with the same
+readiness/ownership checks but is not currently emitted. `failed` is explicit
+in the attempt journal and never eligible for runtime/rerun. Duplicate, missing,
+NUL, unknown, unordered or unsupported state refuses in every consumer.
+
+Metadata is exactly the pinned five-field embedded schema. Engine root contains
+the stable prefix database and `.lock`; required physical `.dolt/noms/manifest`
+exists. Engine config is empty and repo_state is main with empty remotes,
+backups and branches. Private Dolt global config is empty. Immutable selector
+fingerprinting includes metadata, config, local version, README/gitignore,
+engine config/repo_state and private Dolt config. Context routing directories
+remain empty; generated empty Git config is fingerprinted too.
+Unexpected configs/redirects/.env/server paths, symlinks,
+hardlinks, foreign ownership and indexed paths refuse before invocation.
+All normal operations preserve original Beads manifest records. Readiness is
+native ping query + canonical where, **not** info's human-text “direct” line or
+an invented SQL/UUID protocol. Native identity mismatch refusal is the pinned
+write guard proven by .14; routine code never mutates a user's UUID to test it.
+
+**Installed operation API.** `beads-guard CORE PHYSICAL_PROJECT LITERAL_RELEASE`
+is structural/read-only (including dependency fingerprints), not a native
+query. `beads CORE PHYSICAL_PROJECT LITERAL_RELEASE COMMAND [ARGV...]` validates
+the grammar before native readiness and executes only approved ready/show/list,
+epic/task create, update/claim, close, dep add/remove, remember and fixed-path
+export. No raw bd/global discovery fallback, shell eval, arbitrary global flags,
+path/config override, SQL/auth/remote/setup/doctor/import/server or exec exists.
+Option values are individual argv data, including flag-looking descriptions;
+`--` permits flag-looking positional titles at the wrapper boundary. Pinned
+`create.go:98` rejects such native positional titles even after `--`, so the
+bridge sends the validated title as one literal `--title=<value>` argv element.
+This was verified against the actual production wrapper with a title containing
+both `--db` and “permission denied”; no option/path interpretation or false
+denial classification occurs. Export writes only
+`.domestique-private/exports/issues.jsonl` (optional include-memories), including
+its native atomic temporary write, never source/global files. All native
+provider fences and shared workflow roles require this dispatcher and literal
+retained binding for every operation in every fresh shell. Definitions and
+native profile routing remain read-only and independent of mutable DB hashes.
+Native role discovery, reload/trust, tool capability and model/MCP acceptance
+remain separate unverified gates.
+Native stdout is operation data, not a denial-substring blacklist: issue text
+such as “permission denied” is valid. Native stderr denials still stop.
+For Beads attachments, final journal removals revalidate exact effective
+exclusion bytes as well as paths/types/hashes; loss retains pending recovery,
+not an eligible ready attachment. Later publication failure does not erase
+already-proven DB creation; creation provenance and attachment completion
+remain separate.
+
+**Removal boundary.** Any Beads-carrying local attachment refuses uninstall
+before mutation until .7 implements retention/purge. Plain profile-only .12
+removal is unchanged. Global uninstall never writes projects; removing the
+core makes its dispatcher unavailable and database use stops. Changed binary,
+context, identity, unsupported version or failed state requires manual review/
+requalification, never editing selectors to bypass a guard.
+
+**Validation entry points:** `test/beads-private.py` is explicitly synthetic;
+it substitutes a fake binary digest only into a disposable installer, with no
+production environment bypass. `test/beads-production.py --run` executes the
+actual new production initializer and installed dispatcher in fresh temporary
+HOME/core/A/B/linked-W fixtures with the installed qualified binary, plus a
+mixed-provider ordering fixture C. Each native process uses production's OS sandbox.
+Setup Git uses the test sandbox; installer/dispatcher controllers use the
+allowlisted temporary environment. Darwin refuses nested default-deny sandbox
+application, so the test does not weaken it or pretend nested execution passed.
+The current native production run passed **79 checked controller commands**:
+fresh state-only init and read-only dry-run/rerun in A, B and linked W; epic/task
+creation (including the explicit-title case), dependency add/remove and ready
+unblocking, update/claim, show/list, close, remember, fixed-path export, and
+pre-invocation UUID-mismatch refusal with no rejected issue. All **121 protected
+entries** (including 15 host-policy/settings/data leaves, HOME/core, indexes,
+Git configs and linked admin files) remained unchanged. Only the expected
+managed exact exclusions changed; unrelated visibility and each exclusion's
+host prefix remained unchanged. All three queues persisted independently.
+C reversed both valid Claude role pairs and receipt roles, then passed combined
+Copilot+Beads dry-run and actual initialization while preserving Claude files,
+receipt bytes, creation/baseline history and global state.
+These are controller-command counts, not a fabricated native subprocess count.
+The .14 71-call native identity controls remain distinct historical evidence.
+
+Current validation: **790** synthetic Beads protocol/lifecycle checks, including
+partial init, readiness failure, zero-exit invalid metadata, exclusive/late
+claim collisions, protected callback failure, actual Git visibility for every
+produced attempt/context/native file, and failed linked-worktree protection;
+current core **117**, global install **316**, local profiles **1134**, local
+preflight **366**, updated missing/unowned Beads guards **1697**, local removal
+**1364**, global removal **3173**. Offline native-context **31** and
+native-discovery **45** remain prior evidence, not current rerun counts; their
+shared harness was unchanged. Source and emitted helper pass Bash 3.2
+syntax and warning-level ShellCheck; Python AST and `git diff --check` pass.
+Use `python3 -I -B` for isolated test invocations: `-I` alone ignores
+`PYTHONDONTWRITEBYTECODE`. No bytecode artifacts remain.
+No real project Beads operations, tool installation, commits/pushes, or native
+role/model/auth/MCP workloads were performed.
+
+#### hq-b3q.10 Beads operation boundary checkpoint (historical; superseded by .6 above)
 
 This checkpoint supersedes `.5`'s generic Beads CLI refusal, **not** its
 profile installation/routing contract. Both the actual installer and updater
@@ -1869,7 +2090,7 @@ an explicit user decision. In particular, an already existing host
 `.beads/`, even if it looks initialized, is unowned and is neither hidden nor
 adopted.
 
-#### Future Beads lifecycle acceptance (.6 blocked; .7 open, not current parser format)
+#### Historical proposed Beads lifecycle acceptance (superseded for .6; .7 open)
 
 Everything in this subsection is future acceptance, including state-only
 success, Beads manifest fields, retained database ownership and purge. The
@@ -1949,8 +2170,9 @@ worktree fixture where applicable), later work must demonstrate:
 This is the retained full acceptance matrix, **not a completed checklist**.
 Current offline coverage and the strictly bounded .13 native metadata
 observations are recorded separately above. Role execution, MCP/tool/trust,
-model/goal sessions and actual database workflows remain unverified; .8 is
-open and .6 blocks database-dependent criteria.
+model/goal sessions and agent-driven database workflows remain unverified; .8
+is open. The qualified native initializer and wrapper evidence above does not
+constitute native agent execution acceptance.
 
 ### Old-plan disposition (parent-approved deferral)
 
@@ -1962,13 +2184,13 @@ untouched, not merged or pushed.
 
 | Deferred historical work | Retained private-plan mapping / current status |
 | --- | --- |
-| hq-2su.3 guest preflight | hq-b3q.4 done; .6 private Beads initialization blocked |
+| hq-2su.3 guest preflight | hq-b3q.4 done; .6 private Beads initialization implemented for the qualified artifact/platform |
 | hq-2su.4 uninstall | .11 global / .12 local profile-only done; .7 database purge/integrated cleanup open |
 | hq-2su.5 policy/discovery | .2/.5 done; .13 limited native evidence; .8 full execution open |
 | hq-2su.6 acceptance | .8 **OPEN**, not completed by offline tests or .13 discovery |
 | hq-2su.7 documentation | current .9, approved now using implemented preview + .13 evidence |
 | hq-e7f missing-mode safety | .4 fail-closed legacy classification; absent/corrupt mode never permits normal writes |
-| hq-4oh.15 setup/init | no `bd setup`; .6 initialization remains blocked, not solved by four flags |
+| hq-4oh.15 setup/init | no `bd setup`; .6 uses the qualified private execution context and sandbox, not four flags alone |
 
 Old normal/guest dual-mode prescriptions are retired; do not restore
 `--no-guest`, unsafe init/rollback or force-overwrite paths. Approval explicitly

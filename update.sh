@@ -26,16 +26,19 @@ Always previews first; ANY failed preview prevents apply.
   --dry-run     Preview only.
   --force       Does not override edited/unknown private native assets.
   --guest       Deprecated warning-only no-op; --no-guest is invalid.
-  --with-beads  Explicit --local TARGET only; currently unsupported (exit 1).
+  --with-beads  Explicit --local TARGET only; qualified private embedded DB init.
   --state-only  Requires --local TARGET --with-beads; no --platform.
-                Refuses before source fetch/copy, preview or installation.
+                No new profiles; preserves existing edited profiles.
   --help, -h    Help.
 Local requires an existing Git top-level and compatible global core; no
-implicit global writes. Beads 1.1.2 --stealth changes broad Git policy/root
-.gitignore; no supported skip-Git-policy switch or certified backend exists.
-Installing bd or adding skip flags does not solve this. ALL workflow database
-guards STOP, including decompose/goal; existing host .beads is never adopted
-just because it looks ready. No unsafe init/rollback, bd setup, or force bypass.
+implicit global writes. Beads requires the observed Darwin arm64 Beads 1.1.2
+CGO embedded artifact, existing Python 3.9+ and macOS sandbox-exec. Other versions,
+platforms/backends refuse before project writes. Dry-run has no DB calls or
+destination writes. Native operations use a private non-Git context and actual
+OS sandbox; --sandbox alone only disables auto-push. Existing host .beads is
+never adopted. Every workflow operation requires the installed controlled
+resolve-core beads dispatcher with literal core/project/release bindings.
+No unsafe init/rollback, setup, arbitrary flags or force bypass.
 Definitions/routing can load; full native role/tool/MCP execution is unverified.
 No implicit client/plugin/auth/environment/MCP setup. This wrapper only updates;
 use domestique.sh --uninstall --global for owned-only global removal, or
@@ -127,10 +130,6 @@ case "$PLATFORM" in
   ""|claude|codex|copilot|both|all|claude-copilot|codex-copilot) : ;;
   *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, copilot, both, or all)" >&2; exit 2 ;;
 esac
-if [ "$WITH_BEADS" = 1 ]; then
-  echo "domestique Beads: initialization unsupported; no certified private backend currently exists. Beads 1.1.2 --stealth adds broad common-dir exclusions and may rewrite/delete root .gitignore; no supported skip-Git-policy switch. --skip-agents/--skip-hooks/--non-interactive do not solve this. No bd command, source fetch/copy, preview or installation writes performed (.6 blocked)." >&2
-  exit 1
-fi
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
@@ -176,6 +175,8 @@ FORCE_ARGS=()
 [ "$GUEST" -eq 1 ] && FORCE_ARGS+=(--guest)
 [ "$NO_GUEST" -eq 1 ] && FORCE_ARGS+=(--no-guest)
 [ -n "$PLATFORM" ] && FORCE_ARGS+=(--platform "$PLATFORM")
+[ "$WITH_BEADS" = 1 ] && FORCE_ARGS+=(--with-beads)
+[ "$STATE_ONLY" = 1 ] && FORCE_ARGS+=(--state-only)
 
 echo
 echo "--- Preview (dry run) ---"

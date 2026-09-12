@@ -1,4 +1,4 @@
-"""Current unsupported backend boundary; isolated metadata fixtures, never bd.
+"""Current missing/unowned backend boundary; isolated metadata fixtures, never bd.
 
 Synthetic ownership/failed records are rejection fixtures, NOT a safe backend.
 Execute emitted Markdown/TOML fences separately to prove load != database use.
@@ -42,15 +42,18 @@ def succeeds(*args, **kwargs):
     return p
 
 
-def refuses(*args, status=1, diagnostic=None, **kwargs):
+def refuses(*args, status=1, diagnostic=None, updater=False, fetch=False, **kwargs):
     before = tree()
     p = run(*args, **kwargs)
     check(p.returncode != 0 if status is None else p.returncode == status,
           (args, p.returncode, p.stderr))
-    check(p.stdout == "", ("refusal stdout", p.stdout))
+    check("SECRET" not in p.stdout if updater else p.stdout == "", ("refusal stdout", p.stdout))
     check(bool(p.stderr) and "SECRET" not in p.stderr, "metadata-only diagnostic")
     if diagnostic:
         check(diagnostic in p.stderr, (diagnostic, p.stderr))
+    if fetch:
+        check(LOG.is_file(), "synthetic fetch attempted; never a native/network workload")
+        LOG.unlink()
     check(before == tree(), ("whole fixture byte/mode/mtime identity", args))
     check(not LOG.exists(), "zero forbidden calls, even ignored failures")
     return p
@@ -98,8 +101,10 @@ with tempfile.TemporaryDirectory() as temp:
                PATH=f"{forbidden}:{os.environ['PATH']}")
     ENV.pop("XDG_STATE_HOME", None)
     empty = repo("empty")
-    # Refusal is before core lookup, target creation, bd lookup/probe, fetch,
-    # copying local source, preview/apply, profile/none-manifest installation.
+    # Valid requests now reach preflight; missing core/target still refuses
+    # before native qualification or project writes. Updater source acquisition
+    # is permitted for valid grammar, but a failed preview never applies.
+    (forbidden / "cp").unlink()
     for script in (DOM, UP):
         sources = [()] if script == DOM else [
             ("--source", DOM), ("--source", "https://invalid.invalid/never"),
@@ -108,8 +113,11 @@ with tempfile.TemporaryDirectory() as temp:
             for target in (empty, W / "absent-target"):
                 for mode in ((), ("--state-only",), ("--platform", "all")):
                     for dry in ((), ("--dry-run",)):
+                        remote = script == UP and source[1] == "https://invalid.invalid/never"
+                        absent = script == UP and source[1] == W / "absent-source"
                         refuses("bash", script, "--local", target, "--with-beads",
-                                *mode, *dry, *source, diagnostic="no certified private backend")
+                                *mode, *dry, *source, status=4 if remote or absent else 1,
+                                updater=script == UP, fetch=remote)
         for args in (
             ("--with-beads",), (empty, "--with-beads"),
             ("--state-only",), ("--local", empty, "--state-only"),
@@ -125,7 +133,6 @@ with tempfile.TemporaryDirectory() as temp:
             refuses("bash", script, *args, status=2)
     check(not CORE.exists() and list(HOME.iterdir()) == [], "no implicit global install")
     # cp is permitted ONLY for ordinary real profile/core fixture installation.
-    (forbidden / "cp").unlink()
     succeeds("bash", DOM, "--global", "--platform", "all")
     HELPER = CORE / "bin/resolve-core"
     RELEASE = (CORE / "active").read_text().strip().split("=")[1]
@@ -221,6 +228,8 @@ with tempfile.TemporaryDirectory() as temp:
         check(len(blocks) == 3, "separate executable load/route/guard")
         for block in blocks:
             succeeds("bash", "-n", "-c", block)
+            check(not re.search(r"(?m)^\s*(?:command\s+)?bd\s", block),
+                  "every native fence avoids unscoped bd")
         before = tree()
         succeeds("bash", "-c", blocks[0], "--", RELEASE, cwd=normal)
         check(before == tree() and not LOG.exists(), "emitted loader no bd/writes")
@@ -245,4 +254,4 @@ with tempfile.TemporaryDirectory() as temp:
         HELPER.write_bytes(helper_bytes)
     check(not LOG.exists(), "zero bd/network/native calls throughout")
 
-print(f"beads-guard current unsupported backend: {COUNT} passed")
+print(f"beads-guard current missing/unowned backend: {COUNT} passed")

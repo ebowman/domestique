@@ -598,9 +598,9 @@ retained DOMESTIQUE_BOUND_RELEASE. This includes decompose-only planning
 (creating an epic/beads mutates the database), goal, claim, discovered work,
 remember, landing and export. Recheck before subsequent Beads operations.
 Global-only routing does NOT bypass project database eligibility.
-No current private Beads backend is certified: a refusal means STOP Beads
-operations, not install bd, probe its version/help/where/info/ping, initialize,
-run setup, repair, or fall back to an existing host database. Even nominally
+Only the qualified private embedded bridge may perform database operations:
+a refusal means STOP, not install bd, probe it, initialize, run setup, repair,
+or fall back to an existing host database. Even nominally
 read-only bd commands can write engine/metrics/migration state. Never call bd
 to load definitions or preflight. Missing/old guard capability requires an
 explicit global update, not skipping the guard. Source-only work and native
@@ -609,7 +609,8 @@ Reviewers must not call bd at all; review supplied bead criteria/evidence
 without opening or writing the private database.
 
 Use beads as the plan of record. Ordinary work handles one ready bead only:
-validate the requested bead/tools/epic where relevant, use `bd ready` scoped
+validate the requested bead/tools/epic where relevant, use the adapter's
+controlled `beads CORE PROJECT RELEASE ready --parent EPIC --json` operation scoped
 to that epic when one was supplied, and do not call an epic complete while any
 descendant is blocked, open, or in_progress. Before branch changes require a
 clean tree. Work only on a dedicated non-default branch.
@@ -726,7 +727,9 @@ changed, validation run, discovered beads, and blockers. Do not select a model
 or persist model/session choices.
 Before any Beads operation use the adapter's separate project eligibility
 guard with the parent's literal release; failure stops that operation.
-Never improvise bd setup/init or probe bd to establish eligibility.
+Every actual operation uses the adapter's installed controlled dispatcher with
+literal core/project/parent-release arguments, including claim and discovered
+work. Never invoke raw bd or improvise setup/init/probes to establish eligibility.
 DOM_EOF
 }
 
@@ -759,6 +762,531 @@ state, arbitrary repositories, push, or merge.
 DOM_EOF
 }
 
+# Self-contained stdlib bridge. No checkout imports, inherited native environment,
+# shell evaluation, alternate engine, or database discovery fallback.
+local_beads_python() {
+  command -v python3 >/dev/null 2>&1 ||
+    { local_fail "Beads requires existing Python 3 (stdlib); ordinary core loading does not"; return 1; }
+  [ "$(command -v python3)" != /usr/bin/python3 ] ||
+    { local_fail "Beads needs an existing Python 3.9+ interpreter, not Apple's setup launcher"; return 1; }
+  python3 -I -S -B - "$@" <<'DOM_BEADS_PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+
+PIN = "cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42"
+LEAVES = (".gitignore", ".local_version", "README.md", "config.yaml",
+          "embeddeddolt", "interactions.jsonl", "last-touched", "metadata.json")
+CONTEXT = ".domestique-private/beads-context"
+EXPORT = ".domestique-private/exports"
+FIELDS = ("beads_path", "beads_path_created", "beads_status", "beads_executable",
+          "beads_sha256", "beads_version", "beads_platform", "beads_backend",
+          "beads_context", "beads_prefix", "beads_uuid", "beads_readiness",
+          "beads_selectors_sha256", "beads_git", "beads_git_sha256")
+
+class Refusal(Exception):
+    pass
+
+def need(ok, why):
+    if not ok:
+        raise Refusal(why)
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def safe(path, boundary=None, executable=False):
+    need(path.is_absolute() and str(path) == str(path.resolve()),
+         "nonphysical path; manual recovery required")
+    for p in (path, *path.parents):
+        if not p.exists():
+            continue
+        s = p.lstat()
+        need(not stat.S_ISLNK(s.st_mode) and
+             (stat.S_ISREG(s.st_mode) or stat.S_ISDIR(s.st_mode)),
+             "symlink or unsupported object")
+        need(s.st_uid in (0, os.getuid()), "foreign owner")
+        need(not s.st_mode & 0o022 or
+             (executable and p == Path("/opt/homebrew/Cellar") and
+              s.st_uid == os.getuid() and stat.S_IMODE(s.st_mode) == 0o775) or
+             (boundary is not None and p == path and p.is_file() and
+              p.parent.name == ".dolt" and
+              p.name in ("config.json", "repo_state.json", "config_global.json") and
+              s.st_uid == os.getuid() and stat.S_IMODE(boundary.stat().st_mode) == 0o700) or
+             (s.st_uid == 0 and stat.S_ISDIR(s.st_mode) and s.st_mode & stat.S_ISVTX),
+             "unsafe writable path")
+        if boundary and (p == boundary or boundary in p.parents):
+            need(s.st_uid == os.getuid() and os.access(p, os.R_OK), "unowned private path")
+            need(not stat.S_ISREG(s.st_mode) or s.st_nlink == 1, "hard-linked private file")
+
+def tree(path):
+    safe(path, path)
+    need(path.is_dir(), "missing owned subtree")
+    for p in path.rglob("*"):
+        safe(p, path)
+    return sorted(path.rglob("*"))
+
+def hash_tree(path):
+    h = hashlib.sha256()
+    for p in tree(path):
+        h.update(str(p.relative_to(path)).encode() + b"\0")
+        h.update(b"d\0" if p.is_dir() else b"f\0" + bytes.fromhex(digest(p)))
+    return h.hexdigest()
+
+def decode(text):
+    def pairs(items):
+        obj = {}
+        for k, v in items:
+            need(k not in obj, "duplicate JSON field")
+            obj[k] = v
+        return obj
+    need("\0" not in text, "NUL in JSON")
+    def constant(_):
+        raise Refusal("nonstandard JSON constant")
+    return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
+
+def environment(context, beads, git):
+    return {
+        "HOME": str(context / "home"),
+        "XDG_CONFIG_HOME": str(context / "home/.config"),
+        "XDG_STATE_HOME": str(context / "home/.local/state"),
+        "XDG_CACHE_HOME": str(context / "home/.cache"),
+        "TMPDIR": str(context / "tmp"),
+        "PATH": f"{git.parent}:/usr/bin:/bin:/usr/sbin:/sbin",
+        "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "TERM": "dumb",
+        "NO_COLOR": "1", "OPENSSL_CONF": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": str(context / "gitconfig"),
+        "GIT_CONFIG_GLOBAL": str(context / "gitconfig"), "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": str(context / "empty"),
+        "GIT_TEMPLATE_DIR": str(context / "empty"),
+        "GIT_CEILING_DIRECTORIES": str(context),
+        "BEADS_DIR": str(beads), "BD_DISABLE_METRICS": "1",
+        "BD_DOLT_MODE": "embedded", "BD_DOLT_SHARED_SERVER": "false",
+        "BD_BACKUP_ENABLED": "false", "BD_EXPORT_AUTO": "false", "BD_NO_HOOKS": "1",
+    }
+
+def policy(context, beads, binary, git, exports=None):
+    reads = [context, beads, binary, git, Path(sys.executable).resolve(),
+             Path("/System"), Path("/usr/bin"), Path("/usr/lib"),
+             Path("/usr/libexec"), Path("/usr/share"), Path("/usr/sbin"),
+             Path("/bin"), Path("/sbin"), Path("/dev"), Path("/opt/homebrew/Cellar"),
+             Path("/opt/homebrew/lib"), Path("/Library/Developer"),
+             Path("/Applications/Xcode.app/Contents/Developer"),
+             Path("/private/etc/localtime"), Path("/private/etc/passwd"),
+             Path("/private/var/db/dyld")]
+    lines = ["(version 1)", "(deny default)",
+             "(allow process-exec process-fork signal sysctl-read)",
+             "(allow file-read-metadata)", '(allow file-read* (literal "/"))',
+             '(allow file-write-data (literal "/dev/null"))',
+             '(deny process-exec (regex #"/dolt$"))']
+    for p in reads:
+        lines.append(f"(allow file-read* (subpath {json.dumps(str(p))}))")
+    for p in (context, beads, exports):
+        if p is not None:
+            lines.append(f"(allow file-read* file-write* (subpath {json.dumps(str(p))}))")
+    return "\n".join(lines)
+
+def process(argv, context, beads, binary, git, exports=None, expected=0):
+    env = environment(context, beads, git)
+    proc = subprocess.Popen(
+        ["/usr/bin/sandbox-exec", "-p", policy(context, beads, binary, git, exports),
+         *map(str, argv)], cwd=context / "run", env=env, text=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=60)
+        need(proc.returncode == expected, "native process refused; retain failed evidence; "
+             "no unscoped repair or retry")
+        need(not re.search(r"operation not permitted|permission denied|sandbox.*denied",
+                           err, re.I), "native sandbox denial")
+        if expected == 128:
+            need(not out and "not a git repository" in err, "private Git discovery did not refuse")
+        return out
+    finally:
+        proc.poll()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            if proc.poll() is None:
+                raise
+        proc.communicate(timeout=5)
+
+def prepare(context):
+    context.mkdir(mode=0o700)
+    (context / "gitconfig").open("x").close()
+    for name in ("run", "empty", "tmp", "home/.config", "home/.local/state", "home/.cache"):
+        (context / name).mkdir(parents=True, mode=0o700)
+
+def claim(path):
+    safe(path, path)
+    s = path.stat()
+    need(path.is_dir() and not list(path.iterdir()), "reservation is not an empty directory")
+    return f"{s.st_dev}:{s.st_ino}"
+
+def qualify():
+    need(sys.version_info >= (3, 9), "Beads requires existing Python 3.9+ stdlib")
+    need(platform.system() == "Darwin" and platform.machine() == "arm64",
+         "unsupported platform; only observed Darwin arm64 is qualified")
+    need(Path("/usr/bin/sandbox-exec").is_file(), "existing OS sandbox-exec required")
+    found = shutil.which("bd")
+    need(found is not None, "existing qualified Beads 1.1.2 executable required")
+    binary = Path(found).resolve()
+    safe(binary, executable=True)
+    need(digest(binary) == PIN, "unqualified binary/version/backend; only the observed "
+         "Beads 1.1.2 CGO embedded artifact is certified; manual requalification required")
+    git = shutil.which("git")
+    need(git is not None, "existing Git required")
+    git = Path(git).resolve()
+    if git == Path("/usr/bin/git"):
+        git = Path("/Library/Developer/CommandLineTools/usr/bin/git")
+    safe(git, executable=True)
+    need(git.is_file() and os.access(git, os.X_OK), "installed Git (not setup launcher) required")
+    need(":" not in str(git.parent), "Git executable directory cannot contain a PATH separator")
+    with tempfile.TemporaryDirectory(prefix="domestique-beads-qualification-",
+                                     dir="/private/tmp") as temp:
+        work = Path(temp).resolve()
+        context = work / "context"
+        prepare(context)
+        # Validate an actual OS policy before any native command. Outside read,
+        # write and network must fail with EPERM, not arbitrary process failure.
+        sentinel = work / "denied"
+        sentinel.write_text("disposable qualification sentinel\n")
+        probe = (
+            "import pathlib,socket,sys\n"
+            "pathlib.Path(sys.argv[1]).write_text('private')\n"
+            "for mode in ('r','a'):\n"
+            " try:\n  with open(sys.argv[2],mode): pass\n"
+            " except PermissionError: pass\n"
+            " else: raise RuntimeError('sandbox unavailable')\n"
+            "with socket.socket() as s:\n"
+            " try: s.connect(('127.0.0.1',9))\n"
+            " except PermissionError: pass\n"
+            " else: raise RuntimeError('network permitted')\n")
+        process([Path(sys.executable).resolve(), "-I", "-S", "-B", "-c", probe,
+                 context / "tmp/probe", sentinel], context, work / "db", binary, git)
+        process([git, "rev-parse", "--show-toplevel"], context, work / "db", binary, git,
+                expected=128)
+        version = process([binary, "--sandbox", "--version"],
+                          context, work / "db", binary, git)
+        need(re.fullmatch(r"bd version 1\.1\.2(?: \([^\n]*\))?\n", version) is not None,
+             "unsupported version output")
+        help_text = process([binary, "--sandbox", "init", "--help"],
+                            context, work / "db", binary, git)
+        for flag in ("--stealth", "--skip-agents", "--skip-hooks", "--non-interactive",
+                     "--prefix", "--remote", "--sandbox"):
+            need(flag in help_text, "missing required init capability")
+    return str(binary), PIN, str(git), digest(git)
+
+def records(text):
+    need(text.endswith("\n") and "\0" not in text, "malformed Beads records")
+    lines = text.splitlines()
+    need(len(lines) >= len(FIELDS), "incomplete Beads records")
+    values = {}
+    for key, line in zip(FIELDS, lines):
+        need(line.startswith(key + "="), "unordered/unknown/duplicate Beads field")
+        values[key] = line[len(key) + 1:]
+    owned = {}
+    for line in lines[len(FIELDS):]:
+        need(line.startswith("beads_created="), "unknown Beads field")
+        rel, sep, sha = line[len("beads_created="):].rpartition(":")
+        need(sep and rel not in owned and re.fullmatch("[0-9a-f]{64}", sha),
+             "invalid Beads creation record")
+        owned[rel] = sha
+    expected = [".beads/" + x for x in LEAVES] + [CONTEXT, EXPORT]
+    need(list(owned) == expected, "unknown/missing/unordered created artifact")
+    need(values["beads_path"] == ".beads" and values["beads_context"] == CONTEXT,
+         "noncanonical Beads target/context")
+    need(re.fullmatch("by-init:[0-9a-f]{32}", values["beads_path_created"]),
+         "invalid attempt provenance")
+    need(values["beads_status"] in ("ready", "retained"), "failed state; manual recovery required")
+    need(values["beads_version"] == "1.1.2" and values["beads_platform"] == "Darwin-arm64"
+         and values["beads_backend"] == "dolt-embedded-cgo"
+         and values["beads_readiness"] == "init-ping-where-v1", "unsupported qualification")
+    need(re.fullmatch("dm[0-9a-f]{12}", values["beads_prefix"]), "invalid stable prefix")
+    need(str(uuid.UUID(values["beads_uuid"])) == values["beads_uuid"], "invalid UUID")
+    for key in ("beads_sha256", "beads_selectors_sha256", "beads_git_sha256"):
+        need(re.fullmatch("[0-9a-f]{64}", values[key]), "invalid fingerprint")
+    for key in ("beads_executable", "beads_git"):
+        p = Path(values[key])
+        need(p.is_absolute() and str(p) == values[key] and ".." not in p.parts and
+             len(p.parts) > 1, "noncanonical executable identity")
+        if key == "beads_git":
+            need(":" not in str(p.parent), "unsafe Git executable PATH")
+    return values, owned
+
+def selectors(root, prefix):
+    context, db = root / CONTEXT, root / ".beads"
+    need(all(stat.S_IMODE(p.stat().st_mode) == 0o700
+             for p in (context, db, root / EXPORT)), "private native container mode changed")
+    # No dot-env/config routing, redirects, alternate DBs, symlinks or unknown
+    # top-level artifacts. Mutable engine bytes are NOT compared to init hashes.
+    need({p.name for p in db.iterdir()} == set(LEAVES), "unknown/missing native artifact")
+    need(all((db / name).is_file() for name in LEAVES if name != "embeddeddolt"),
+         "native leaf type changed")
+    tree(db)
+    need((db / "config.yaml").read_bytes() == b"no-git-ops: true\n",
+         "unsupported native configuration")
+    need((db / ".local_version").read_text().strip() == "1.1.2", "native version drift")
+    metadata = decode((db / "metadata.json").read_text())
+    need(type(metadata) is dict and set(metadata) ==
+         {"database", "backend", "dolt_mode", "dolt_database", "project_id"},
+         "unsupported metadata schema")
+    need(metadata == {"database": "dolt", "backend": "dolt", "dolt_mode": "embedded",
+                      "dolt_database": prefix, "project_id": metadata["project_id"]},
+         "metadata target/backend mismatch")
+    need(type(metadata["project_id"]) is str and
+         str(uuid.UUID(metadata["project_id"])) == metadata["project_id"], "invalid native UUID")
+    engine = db / "embeddeddolt"
+    need({p.name for p in engine.iterdir()} == {prefix, ".lock"} and
+         (engine / ".lock").is_file(), "unexpected embedded database")
+    need((engine / prefix / ".dolt/noms/manifest").is_file(), "missing initialized embedded engine")
+    context_files = []
+    for p in tree(context):
+        rel = str(p.relative_to(context))
+        if p.is_file():
+            if rel == "gitconfig":
+                need(p.read_bytes() == b"", "private Git configuration is not empty")
+            else:
+                need(rel == "home/.dolt/config_global.json", "unexpected context file/configuration")
+                need(decode(p.read_text()) == {}, "unsupported private Dolt configuration")
+            context_files.append(p)
+        else:
+            need(rel in ("run", "empty", "tmp", "home", "home/.config", "home/.cache",
+                         "home/.local", "home/.local/state", "home/.dolt"),
+                 "unexpected context directory")
+    for name in ("run", "empty", "tmp", "home/.config", "home/.cache", "home/.local/state"):
+        need((context / name).is_dir() and not list((context / name).iterdir()),
+             "private runtime context is not empty")
+    files = [db / "metadata.json", db / "config.yaml", db / ".local_version",
+             db / ".gitignore", db / "README.md", *context_files]
+    for p in tree(engine):
+        if p.is_file():
+            need(p.name != ".env" and ".git" not in p.parts and
+                 p.suffix not in (".yaml", ".yml"), "unsupported engine configuration")
+            if p.name in ("config.json", "repo_state.json"):
+                obj = decode(p.read_text())
+                expected = {} if p.name == "config.json" else {
+                    "head": "refs/heads/main", "remotes": {}, "backups": {}, "branches": {}}
+                need(p.parent == engine / prefix / ".dolt" and obj == expected,
+                     "unsupported engine selector JSON")
+                files.append(p)
+    exports = root / EXPORT
+    for p in tree(exports):
+        need(p.name == "issues.jsonl" and p.parent == exports and p.is_file(),
+             "unknown export artifact")
+    h = hashlib.sha256()
+    for p in sorted(files):
+        h.update(str(p.relative_to(root)).encode() + b"\0" + p.read_bytes() + b"\0")
+    return metadata["project_id"], h.hexdigest()
+
+def validate(root, text, runtime=False):
+    need(":" not in str(root), "project path cannot contain a Git ceiling separator")
+    values, owned = records(text)
+    safe(root / ".beads", root)
+    identity, sha = selectors(root, values["beads_prefix"])
+    need(identity == values["beads_uuid"], "workspace identity mismatch; no database invocation")
+    need(sha == values["beads_selectors_sha256"], "immutable selector/context changed")
+    if runtime:
+        need(platform.system() == "Darwin" and platform.machine() == "arm64",
+             "unsupported runtime platform")
+        need(Path("/usr/bin/sandbox-exec").is_file(), "OS sandbox unavailable")
+        for key, sha_key in (("beads_executable", "beads_sha256"), ("beads_git", "beads_git_sha256")):
+            p = Path(values[key])
+            safe(p, executable=True)
+            need(p.is_file() and os.access(p, os.X_OK) and digest(p) == values[sha_key],
+                 "changed/missing qualified executable; explicit manual requalification required")
+        need(values["beads_sha256"] == PIN, "unqualified native artifact/backend")
+    return values
+
+def native(root, values, args, export=False):
+    binary, git = Path(values["beads_executable"]), Path(values["beads_git"])
+    return process([binary, "--sandbox", *args], root / CONTEXT, root / ".beads",
+                   binary, git, root / EXPORT if export else None)
+
+def readiness(root, values):
+    ping = decode(native(root, values, ["ping", "--json"]))
+    need(type(ping) is dict and ping.get("status") == "ok" and
+         all(type(ping.get(k)) is int and ping[k] >= 0
+             for k in ("resolve_ms", "store_ms", "query_ms", "total_ms")),
+         "native query not ready")
+    where = decode(native(root, values, ["where", "--json"]))
+    need(type(where) is dict and where.get("path") == str(root / ".beads") and
+         where.get("database_path") == str(root / ".beads/embeddeddolt") and
+         where.get("prefix") == values["beads_prefix"], "native canonical target mismatch")
+
+def grammar(args, root, prefix):
+    need(bool(args), "expected an approved operation")
+    cmd, rest = args[0], list(args[1:])
+    specs = {
+        "ready": (0, {"--json": None, "--parent": "id"}),
+        "list": (0, {"--json": None, "--all": None, "--parent": "id", "--status": "status"}),
+        "show": (1, {"--json": None}),
+        "create": (1, {"--json": None, "--type": "type", "--description": "text",
+                       "--parent": "id", "--deps": "deps", "--priority": "priority"}),
+        "update": (1, {"--json": None, "--status": "status", "--claim": None,
+                       "--description": "text", "--title": "text", "--priority": "priority"}),
+        "close": (1, {"--json": None, "--reason": "text"}),
+        "remember": (1, {"--key": "key"}),
+        "export": (0, {"--include-memories": None}),
+    }
+    if cmd == "dep":
+        need(bool(rest) and rest.pop(0) in ("add", "remove"), "unsupported dependency command")
+        count, flags = 2, {"--json": None}
+        if args[1] == "add":
+            flags["--type"] = "dependency"
+    else:
+        need(cmd in specs, "unsupported operation; no unscoped fallback")
+        count, flags = specs[cmd]
+    positional, seen, i = [], set(), 0
+    def value(kind, val):
+        need("\0" not in val and bool(val), "empty/invalid argument")
+        if kind == "id":
+            need(re.fullmatch(re.escape(prefix) + r"-[a-z0-9]+(?:\.[0-9]+)*", val),
+                 "foreign or malformed issue ID")
+        elif kind == "deps":
+            for item in val.split(","):
+                value("id", item.removeprefix("discovered-from:"))
+        elif kind == "status":
+            need(val in ("open", "in_progress", "closed", "blocked", "deferred"), "invalid status")
+        elif kind == "type":
+            need(val in ("epic", "task"), "uncertified issue type")
+        elif kind == "priority":
+            need(val in ("0", "1", "2", "3", "4"), "invalid priority")
+        elif kind == "dependency":
+            need(val in ("blocks", "parent-child", "discovered-from"), "uncertified dependency type")
+        elif kind == "key":
+            need(re.fullmatch(r"[a-zA-Z0-9_.-]+", val), "invalid memory key")
+    # Flags consume exactly one value, including flag-looking title/description
+    # text. No substring blacklist, shell splitting or user global flags.
+    result = [cmd] + ([args[1]] if cmd == "dep" else [])
+    while i < len(rest):
+        arg = rest[i]
+        if arg == "--":
+            positional.extend(rest[i + 1:])
+            break
+        elif arg in flags:
+            need(arg not in seen, "duplicate option")
+            seen.add(arg)
+            result.append(arg)
+            kind = flags[arg]
+            if kind is not None:
+                i += 1
+                need(i < len(rest), "missing option value")
+                value(kind, rest[i])
+                result.append(rest[i])
+        else:
+            need(not arg.startswith("-") and len(positional) < count, "unsupported option/argument")
+            positional.append(arg)
+        i += 1
+    need(len(positional) == count, "wrong positional argument count")
+    for arg in positional:
+        value("text" if cmd in ("create", "remember") else "id", arg)
+    # End-of-options protects positional data too, never evaluate it.
+    if cmd == "export":
+        result += ["--output", str(root / EXPORT / "issues.jsonl")]
+    if cmd == "create":
+        # Pinned create.go:98 rejects dash-leading POSITIONAL titles even
+        # following --. Its explicit --title form accepts the same literal
+        # data. This is one argv element, never shell or global-option parsing.
+        result.append("--title=" + positional[0])
+    elif positional:
+        result += ["--", *positional]
+    return result
+
+def main():
+    need(sys.version_info >= (3, 9), "Beads requires existing Python 3.9+ stdlib")
+    action, *args = sys.argv[1:]
+    if action == "qualify":
+        need(not args, "qualification takes no options")
+        print("\n".join(qualify()))
+        return
+    root = Path(args[0])
+    safe(root, root)
+    if action == "claim":
+        need(len(args) == 1, "invalid directory claim")
+        root.mkdir(mode=0o700)  # exclusive; no presence-based adoption
+        print(claim(root))
+        return
+    if action == "check-claim":
+        need(len(args) == 2 and claim(root) == args[1], "changed directory reservation")
+        return
+    if action == "init":
+        need(len(args) == 6, "invalid initializer binding")
+        reservation = args.pop()
+        binary, sha, git, git_sha = args[1:]
+        need(sha == PIN and digest(Path(binary)) == sha and digest(Path(git)) == git_sha,
+             "qualification changed before initialization")
+        need(claim(root / ".beads") == reservation, "changed empty database reservation")
+        attempt = uuid.uuid4().hex
+        state = root / ".domestique-private"
+        evidence = state / "beads-attempt"
+        with evidence.open("x") as f:
+            f.write(f"format=1\nbeads_status=failed\nattempt={attempt}\n"
+                    f"beads_reservation=.beads:{reservation}\n")
+        prepare(root / CONTEXT)
+        (root / EXPORT).mkdir(mode=0o700)
+        process([git, "rev-parse", "--show-toplevel"], root / CONTEXT, root / ".beads",
+                Path(binary), Path(git), expected=128)
+        values = dict(zip(FIELDS, (
+            ".beads", "by-init:" + attempt, "ready", binary, sha, "1.1.2",
+            "Darwin-arm64", "dolt-embedded-cgo", CONTEXT, "dm" + attempt[:12],
+            "", "init-ping-where-v1", "", git, git_sha)))
+        native(root, values, ["init", "--stealth", "--skip-agents", "--skip-hooks",
+                             "--non-interactive", "--prefix", values["beads_prefix"], "--remote="])
+        # Pinned last_touched.go reads an empty file as no default issue. Claim
+        # this known mutable leaf now, not by adopting post-command presence.
+        (root / ".beads/last-touched").open("x").close()
+        identity, selector_sha = selectors(root, values["beads_prefix"])
+        values["beads_uuid"], values["beads_selectors_sha256"] = identity, selector_sha
+        readiness(root, values)
+        need(selectors(root, values["beads_prefix"]) == (identity, selector_sha),
+             "readiness changed selectors")
+        for key in FIELDS:
+            print(f"{key}={values[key]}")
+        for rel in [".beads/" + x for x in LEAVES] + [CONTEXT, EXPORT]:
+            p = root / rel
+            print(f"beads_created={rel}:{hash_tree(p) if p.is_dir() else digest(p)}")
+        return
+    text = args[1]
+    values = validate(root, text, action in ("guard", "run"))
+    if action == "run":
+        approved = grammar(args[2:], root, values["beads_prefix"])
+        readiness(root, values)
+        validate(root, text, True)
+        out = native(root, values, approved, approved[0] == "export")
+        validate(root, text, True)
+        print(out, end="")
+    else:
+        need(action in ("validate", "guard"), "unknown bridge operation")
+
+try:
+    main()
+except Refusal as exc:
+    print("domestique Beads: " + str(exc) + "; stop writers and inspect private metadata manually; "
+          "no automatic retry/adoption", file=sys.stderr)
+    sys.exit(1)
+except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
+    # Never print raw native output/config/argv (including secret-like text).
+    print("domestique Beads: qualification, ownership, context, identity or operation refused; "
+          "stop, retain private attempt/journals and inspect manually; no automatic retry/adoption. "
+          "Requires observed Darwin arm64 Beads 1.1.2 CGO artifact, Python 3 and OS sandbox. "
+          "Changed binary/context requires explicit manual requalification.", file=sys.stderr)
+    sys.exit(1)
+DOM_BEADS_PY
+}
+
 # Emit the API-1 global-core-owned resolver installed later by hq-b3q.3 at
 # <private-root>/bin/resolve-core. It is outside immutable role releases.
 # CLI: resolve-core bind ROOT ROLE [RELEASE] prints the validated release;
@@ -768,14 +1296,15 @@ emit_private_core_resolver() {
 #!/usr/bin/env bash
 set -euo pipefail
 # router_api=1 (standalone, read-only; native discovery is NOT shell validation)
-# beads_guard_api=1 (metadata-only eligibility; no certified backend)
+# beads_guard_api=2 (structural read-only eligibility; certified private bridge)
 DOM_EOF
   # Share the byte/ownership/path grammar with installer preflight. No sourcing
   # installed metadata, native config, or the installer at runtime.
   declare -f global_fail global_hash global_stat global_path global_digest_valid \
     local_fail local_path local_text_file local_root local_untracked \
     local_inventory local_selected local_set_valid local_contains local_manifest_read \
-    local_route local_beads_fail local_beads_guard
+    local_route local_beads_fail local_beads_guard local_beads_python local_beads_run \
+    local_beads_paths
   cat <<'DOM_EOF'
 domestique_core_sha256() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" | awk '{print $1}'
@@ -846,9 +1375,10 @@ case "${1:-}" in
   router-api) [ "$#" = 1 ] || exit 2; printf 'router_api=1\n';;
   route) shift; local_route "$@";;
   beads-guard) shift; local_beads_guard "$@";;
+  beads) shift; local_beads_run "$@";;
   bind) [ "$#" -ge 3 ] && [ "$#" -le 4 ] || { domestique_core_fail "usage: resolve-core bind ROOT ROLE [RELEASE]"; exit 2; }; shift; domestique_core_bind "$@" ;;
   read) [ "$#" -eq 4 ] || { domestique_core_fail "usage: resolve-core read ROOT ROLE RELEASE"; exit 2; }; domestique_core_read_role "$2" "$3" "$4" ;;
-  *) domestique_core_fail "usage: resolve-core {bind|read|route|beads-guard}; beads-guard CORE WORKTREE RELEASE (update global installation if capability is missing)" || exit 2 ;;
+  *) domestique_core_fail "usage: resolve-core {bind|read|route|beads-guard|beads}; beads[-guard] CORE WORKTREE RELEASE (update global installation if capability is missing)" || exit 2 ;;
 esac
 DOM_EOF
 }
@@ -947,7 +1477,7 @@ Missing/old helper means explicitly update the global installation.
 \`\`\`bash
 release="\${1:?missing retained release}"
 if [ ! -r ${helper} ] || [ -L ${helper} ] ||
-   ! grep -qxF '# beads_guard_api=1 (metadata-only eligibility; no certified backend)' ${helper}; then
+   ! grep -qxF '# beads_guard_api=2 (structural read-only eligibility; certified private bridge)' ${helper}; then
   printf '%s\n' 'domestique Beads: missing/old guard; run bash update.sh --global with the same DOMESTIQUE_HOME, then reload; no database operation' >&2
   exit 1
 fi
@@ -955,6 +1485,20 @@ worktree=\$(git rev-parse --show-toplevel) || exit
 worktree=\$(cd "\$worktree" && pwd -P) || exit
 bash ${helper} beads-guard ${qroot} "\$worktree" "\$release" || exit
 \`\`\`
+Every actual database operation MUST use this installed helper's \`beads\`
+dispatcher, never raw bd, aliases, global discovery or inherited selectors.
+For each fresh Bash tool invocation supply the retained literal release and
+physical project as explicit arguments, followed by the approved operation argv:
+\`bash ${helper} beads ${qroot} '<physical-project>' '<literal-bound-release>' ready --json\`.
+Replace those two quoted fields with the actual retained literals, never sample
+active. The same prefix is required for show/list/create/update/close/dep
+add/remove/remember/export. Pass text as single quoted argv values (or properly
+escaped equivalent); use -- before positional flag-looking titles. Only epic/task
+creation is supported. No reopen/setup/init/SQL/remote/auth/path override is
+permitted. Unsupported grammar means STOP, not an unscoped workaround.
+Export takes only optional --include-memories; its output is fixed to the owned
+private exports/issues.jsonl, never staged or committed. Runtime queries occur
+only when an explicit workflow requests an operation, never on definition load.
 DOM_EOF
   cat <<'DOM_EOF'
 Route tokens validate filesystem provenance, NOT the whole native schema,
@@ -1946,10 +2490,16 @@ local_manifest_read() {
   local LC_ALL=C
   local root="$1" file="$1/.domestique-private/manifest" purpose="${2:-install}"
   local line="" n=0 key value digest previous="" path item allowed provider id roles
-  M_KEYS=(); M_CREATED=(); M_BASE=(); M_SET=none; M_CORE=""
+  local projection="${3:-}"
+  M_KEYS=(); M_CREATED=(); M_BASE=(); M_SET=none; M_CORE=""; M_BEADS=""
   local_path "$root/.domestique-private" "$root" || return 1
   local_untracked "$root" .domestique-private || return 1
-  [ -e "$root/.domestique-private" ] || return 0
+  [ -e "$root/.domestique-private" ] || [ -n "$projection" ] || return 0
+  if [ "$purpose" = reservation ] && [ -z "$projection" ] && [ "$root" = "${L_RESERVE_ROOT:-}" ] && [ -n "${L_STATE_CLAIM:-}" ]; then
+    local_beads_python check-claim "$root/.domestique-private" "$L_STATE_CLAIM" || return 1
+    return 0
+  fi
+  [ -z "$projection" ] || file="$projection/manifest"
   local_path "$file" "$root" || return 1
   [ -f "$file" ] || { local_fail "missing local manifest: $file"; return 1; }
   local_text_file "$file" || return 1
@@ -1971,6 +2521,13 @@ local_manifest_read() {
       6) case "$line" in providers=*) M_SET="${line#providers=}";; *) break;; esac
          local_set_valid "$M_SET" || return 1;;
       *)
+        case "$line" in
+          beads_path=*|beads_path_created=*|beads_status=*|beads_executable=*|beads_sha256=*|beads_version=*|beads_platform=*|beads_backend=*|beads_context=*|beads_prefix=*|beads_uuid=*|beads_readiness=*|beads_selectors_sha256=*|beads_git=*|beads_git_sha256=*|beads_created=*)
+            [ -z "$previous" ] || break
+            M_BEADS="${M_BEADS}${line}"$'\n'
+            continue;;
+        esac
+        [ -z "$M_BEADS" ] || break
         key="${line%%=*}"; value="${line#*=}"; digest="${value##*:}"; value="${value%:*}"
         global_digest_valid "$digest" || break
         local_contains "$value" "${L_INVENTORY[@]}" || break
@@ -1994,7 +2551,14 @@ local_manifest_read() {
     for ((n=0; n<${#M_KEYS[@]}; n++)); do
       printf 'created=%s:%s\nbaseline=%s:%s\n' "${M_KEYS[n]}" "${M_CREATED[n]}" "${M_KEYS[n]}" "${M_BASE[n]}"
     done
+    printf '%s' "$M_BEADS"
   ) || { local_fail "noncanonical local manifest bytes: $file"; return 1; }
+  if [ -n "$M_BEADS" ]; then
+    [ "$purpose" != removal ] ||
+      { local_fail "Beads attachment removal/retention is not implemented; all records retained untouched"; return 1; }
+    local_untracked "$root" .beads &&
+      local_beads_python validate "$root" "$M_BEADS" || return 1
+  fi
   for provider in claude codex copilot; do
     if local_selected "$M_SET" "$provider"; then
       allowed=0
@@ -2004,13 +2568,42 @@ local_manifest_read() {
   done
   for ((n=0; n<${#M_KEYS[@]}; n++)); do
     path="$root/${M_KEYS[n]#*:}"
+    if [ -n "$projection" ] && [ -f "$projection/${M_KEYS[n]#*:}" ]; then
+      path="$projection/${M_KEYS[n]#*:}"
+    fi
     local_path "$path" "$root" && local_untracked "$root" "${M_KEYS[n]#*:}" || return 1
-    [ -f "$path" ] && { [ "$purpose" = runtime ] || [ "$purpose" = removal ] || [ "$(global_hash < "$path")" = "${M_BASE[n]}" ]; } ||
+    [ -f "$path" ] && {
+      [ "$purpose" = runtime ] || [ "$purpose" = removal ] || [ "${STATE_ONLY:-0}" = 1 ] ||
+      { [ "${WITH_BEADS:-0}" = 1 ] && {
+          [ "$root" != "${L_REFRESH_ROOT:-}" ] ||
+            ! local_selected "${L_REFRESH_SELECTION:-none}" "${M_KEYS[n]%%:*}"
+        }; } ||
+      [ "$(global_hash < "$path")" = "${M_BASE[n]}" ]
+    } ||
       { local_fail "missing or edited owned native leaf: $path"; return 1; }
   done
+  if [ -n "$projection" ]; then
+    for provider in claude codex copilot; do
+      local_selected "$M_SET" "$provider" || continue
+      path="$projection/routing/$provider.receipt"
+      [ -f "$path" ] || path="$root/.domestique-private/routing/$provider.receipt"
+      roles=""
+      for item in ${M_KEYS[@]+"${M_KEYS[@]}"}; do
+        [ "${item%%:*}" = "$provider" ] || continue
+        id="${item##*/}"; roles="${roles}role=${id%%.*}"$'\n'
+      done
+      cmp -s "$path" <(printf 'format=1\nworktree_root=%s\nprovider=%s\ncore_root=%s\ncore_api=1\n%s' "$root" "$provider" "$M_CORE" "$roles") ||
+        { local_fail "invalid projected routing receipt: $path"; return 1; }
+    done
+    return 0
+  fi
   # State-tree ownership is bounded too. Unknown recovery/Beads formats are
   # deliberately refused until their consumer defines and validates them.
-  find "$root/.domestique-private" -mindepth 1 -print0 | (
+  # Native's three .dolt JSON selectors have mode 0777 even with umask 077.
+  # The Python validator checks their owners/hashes and enclosing 0700 tree;
+  # do not apply portable native-profile leaf modes to that certified subtree.
+  find "$root/.domestique-private" -mindepth 1 \
+    -path "$root/.domestique-private/beads-context" -print0 -prune -o -print0 | (
   while IFS= read -r -d '' path; do
     local_path "$path" "$root" || return 1
     case "$path" in
@@ -2018,6 +2611,13 @@ local_manifest_read() {
       "$root/.domestique-private/pending"|"$root/.domestique-private/published")
         [ "$purpose" = publication ] && [ -f "$path" ] ||
           { local_fail "PARTIAL publication retained: $path"; return 1; };;
+      "$root/.domestique-private/beads-attempt")
+        [ "$purpose" = publication ] && [ -n "$M_BEADS" ] && [ -f "$path" ] ||
+          { local_fail "failed native attempt; manual recovery required"; return 1; }
+        value="$(printf '%s' "$M_BEADS" | sed -n 's/^beads_path_created=by-init://p')"
+        cmp -s "$path" <(printf 'format=1\nbeads_status=failed\nattempt=%s\nbeads_reservation=.beads:%s\n' "$value" "${L_DB_CLAIM:-}") || return 1;;
+      "$root/.domestique-private/beads-context"|"$root/.domestique-private/beads-context/"*|"$root/.domestique-private/exports"|"$root/.domestique-private/exports/"*)
+        [ -n "$M_BEADS" ] || { local_fail "unowned native context/export"; return 1; };;
       "$root/.domestique-private/routing") [ -d "$path" ] || return 1;;
       "$root/.domestique-private/routing/"*.receipt)
         provider="${path##*/}"; provider="${provider%.receipt}"
@@ -2095,12 +2695,11 @@ local_route() (
     { local_fail "bound profile/receipt changed; reload and reconfirm native trust, no fallback"; exit 1; }
   printf '%s\n' "$token"
 )
-# Operation boundary only, never called by bind/read/route or installation.
-# No bd execution (even queries can initialize engines/metrics). Format 1 has
-# no Beads ownership records yet; .6 must supply a real certified backend
-# before this guard can acquire any successful readiness path.
+# Structural operation boundary only, never called by bind/read/route.
+# No native execution here (even queries can initialize engines/metrics).
+# Only the explicit controlled dispatcher can query an owned qualified DB.
 local_beads_fail() {
-  printf 'domestique Beads: %s; %s; database use stopped. Inspect path/ownership metadata manually, retain recovery evidence; do not run bd setup/init/probes. No certified private backend is currently available (.6 blocked).\n' "$1" "$2" >&2
+  printf 'domestique Beads: %s; %s; database use stopped. Retain recovery evidence; no unscoped setup/init/probes or adoption.\n' "$1" "$2" >&2
   return 1
 }
 local_beads_guard() (
@@ -2138,12 +2737,28 @@ local_beads_guard() (
     local_beads_fail invalid-private 'local manifest core identity mismatch'
     exit 1
   }
-  if [ -e "$target/.beads" ]; then
-    local_beads_fail host-unowned 'existing .beads is not proven private ownership; current format cannot certify Beads state'
+  if [ -n "$M_BEADS" ]; then
+    local_beads_python guard "$target" "$M_BEADS"
+  elif [ -e "$target/.beads" ]; then
+    local_beads_fail host-unowned 'existing .beads has no private creation provenance; initialization never adopts host databases'
   else
     local_beads_fail missing 'no project .beads; native profiles or providers=none do not establish database eligibility'
   fi
 )
+local_beads_run() (
+  [ "$#" -ge 4 ] || { local_beads_fail usage 'beads CORE PHYSICAL_PROJECT LITERAL_RELEASE COMMAND [ARGV]'; exit 2; }
+  local core="$1" target="$2" release="$3" key
+  shift 3
+  local_beads_guard "$core" "$target" "$release" || exit 1
+  L_INVENTORY=()
+  while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
+  local_manifest_read "$target" runtime || exit 1
+  local_beads_python run "$target" "$M_BEADS" "$@"
+)
+local_beads_paths() {
+  printf '%s\n' .beads/.gitignore .beads/.local_version .beads/README.md \
+    .beads/config.yaml .beads/embeddeddolt .beads/interactions.jsonl .beads/last-touched .beads/metadata.json
+}
 local_legacy_inventory() {
   case "$1" in
     claude) printf '%s\n' .claude/agents/implementer.md .claude/agents/reviewer.md .claude/commands/decompose.md .claude/commands/goal.md CLAUDE.md CLAUDE.local.md;;
@@ -2346,6 +2961,10 @@ local_exclude_plan() {
   local begin='# BEGIN domestique private (format=1)' end='# END domestique private' inside=0 seen=0 legacy_seen=0
   local_common "$target" || return 1
   common="$L_COMMON"; L_EXCLUDE="$common/info/exclude"
+  if [ "${WITH_BEADS:-0}" = 1 ]; then
+    [ -d "$common/info" ] ||
+      { local_fail "Beads requires an existing Git info directory; resolve repository setup separately"; return 1; }
+  fi
   L_EXCLUDE_BEFORE=""; L_EXCLUDE_AFTER=""
   if [ -e "$L_EXCLUDE" ]; then
     [ -f "$L_EXCLUDE" ] || { local_fail "not an exclude file: $L_EXCLUDE"; return 1; }
@@ -2401,6 +3020,9 @@ local_exclude_plan() {
     local_manifest_read "$wt" "${L_MANIFEST_PURPOSE:-install}" || return 1
     if [ -e "$wt/.domestique-private" ]; then L_OWNED_PATTERNS+=('/.domestique-private/'); fi
     for key in ${M_KEYS[@]+"${M_KEYS[@]}"}; do L_OWNED_PATTERNS+=("$(local_pattern "${key#*:}")"); done
+    if [ -n "$M_BEADS" ]; then
+      while IFS= read -r rel; do L_OWNED_PATTERNS+=("$(local_pattern "$rel")"); done < <(local_beads_paths)
+    fi
   done
   for pattern in ${existing[@]+"${existing[@]}"}; do
     local_contains "$pattern" ${L_OWNED_PATTERNS[@]+"${L_OWNED_PATTERNS[@]}"} ||
@@ -2459,7 +3081,19 @@ local_exclude_plan() {
       for key in "${L_INVENTORY[@]}"; do
         [ "$pattern" != "$(local_pattern "${key#*:}")" ] || rel="${key#*:}"
       done
+      while IFS= read -r key; do
+        [ "$pattern" != "$(local_pattern "$key")" ] || rel="$key"
+      done < <(local_beads_paths)
       [ -n "$rel" ] || { local_fail "unsupported shared pattern: $L_EXCLUDE"; return 1; }
+      case "$rel" in .beads/*)
+        local_path "$wt/.beads" "$wt" && local_untracked "$wt" .beads || return 1
+        if [ -e "$wt/.beads" ] && [ -z "$M_BEADS" ]; then
+          [ "${L_MANIFEST_PURPOSE:-install}" = reservation ] &&
+            [ "$wt" = "${L_RESERVE_ROOT:-}" ] && [ -n "${L_DB_CLAIM:-}" ] &&
+            local_beads_python check-claim "$wt/.beads" "$L_DB_CLAIM" ||
+            { local_fail "shared exclusion collides with unowned host .beads; no adoption"; return 1; }
+        fi;;
+      esac
       local_path "$wt/$rel" "$wt" && local_untracked "$wt" "$rel" || return 1
       local_ignore_effective "$wt" "$rel" "$pattern" || return 1
       if [ -e "$wt/$rel" ]; then
@@ -2467,6 +3101,7 @@ local_exclude_plan() {
         if [ "$rel" = .domestique-private ]; then found=1
         else
           for key in ${M_KEYS[@]+"${M_KEYS[@]}"}; do [ "${key#*:}" != "$rel" ] || found=1; done
+          case "$rel" in .beads/*) [ -z "$M_BEADS" ] || found=1;; esac
         fi
         [ "$found" = 1 ] || { local_fail "shared exclude would hide host destination: $wt/$rel"; return 1; }
       fi
@@ -2487,8 +3122,10 @@ local_preflight() {
   L_WANT=(); L_REMOVE=(); L_REMOVE_HASH=(); L_LEGACY=(); L_INVENTORY=()
   case "$migration" in check|migrate) ;; *) local_fail "explicit check or migrate required: $target"; return 1;; esac
   local_set_valid "$selection" && local_root "$target" && local_core || return 1
+  L_REFRESH_ROOT="$L_ROOT"; L_REFRESH_SELECTION="$selection"; L_HAS_BEADS=0
   while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
   local_manifest_read "$L_ROOT" "${L_MANIFEST_PURPOSE:-install}" || return 1
+  [ -z "$M_BEADS" ] || L_HAS_BEADS=1
   [ -z "$M_CORE" ] || [ "$M_CORE" = "$L_CORE" ] ||
     { local_fail "local core identity mismatch: $L_ROOT/.domestique-private/manifest"; return 1; }
   for key in "${L_INVENTORY[@]}"; do
@@ -2500,6 +3137,19 @@ local_preflight() {
       L_WANT+=("${key#*:}")
     fi
   done
+  if [ "${WITH_BEADS:-0}" = 1 ] || [ -n "$M_BEADS" ]; then
+    case "$L_ROOT" in *:*)
+      local_fail "Beads project paths cannot contain the Git ceiling list separator ':'"; return 1;;
+    esac
+    local_path "$L_ROOT/.beads" "$L_ROOT" && local_untracked "$L_ROOT" .beads || return 1
+    if [ -e "$L_ROOT/.beads" ] && [ -z "$M_BEADS" ]; then
+      [ "${L_MANIFEST_PURPOSE:-install}" = reservation ] &&
+        [ "$L_ROOT" = "${L_RESERVE_ROOT:-}" ] && [ -n "${L_DB_CLAIM:-}" ] &&
+        local_beads_python check-claim "$L_ROOT/.beads" "$L_DB_CLAIM" ||
+        { local_fail "unowned host .beads; refusing before any write or native query"; return 1; }
+    fi
+    while IFS= read -r key; do L_WANT+=("$key"); done < <(local_beads_paths)
+  fi
   local_legacy "$L_ROOT" "$migration" && local_exclude_plan
 }
 # Apply primitives deliberately rerun the ENTIRE preflight, not just a cached
@@ -2514,14 +3164,17 @@ local_exclude_apply() (
   [ -f "$L_ROOT/.domestique-private/manifest" ] ||
     { local_fail "install and record actual native/state ownership before exclude apply: $L_ROOT/.domestique-private/manifest"; exit 1; }
   for p in ${L_WANT[@]+"${L_WANT[@]}"}; do
-    [ -f "$L_ROOT/$p" ] || { local_fail "unpublished planned leaf: $L_ROOT/$p"; exit 1; }
+    if [ "$p" = .beads/embeddeddolt ]; then [ -d "$L_ROOT/$p" ] || exit 1
+    else [ -f "$L_ROOT/$p" ] || { local_fail "unpublished planned leaf: $L_ROOT/$p"; exit 1; }; fi
   done
   if [ -f "$L_EXCLUDE" ] && cmp -s "$L_EXCLUDE" <(printf '%s' "$L_EXCLUDE_AFTER"); then exit 0; fi
   # No lock claims that worktree enumeration is exhaustive forever. Revalidate
   # immediately before writing and refuse concurrent exclude changes.
   local_preflight "$target" "$selection" "$migration" || exit 1
   umask 077
-  stage="$(mktemp "$L_COMMON/info/.domestique-exclude.XXXXXX")" || exit 1
+  if [ "${WITH_BEADS:-0}" = 1 ] || [ "${L_HAS_BEADS:-0}" = 1 ]; then
+    stage="$(mktemp "$L_ROOT/.domestique-private/.exclude.XXXXXX")" || exit 1
+  else stage="$(mktemp "$L_COMMON/info/.domestique-exclude.XXXXXX")" || exit 1; fi
   trap 'rm -f "$stage"' EXIT
   printf '%s' "$L_EXCLUDE_AFTER" > "$stage" || { local_fail "PARTIAL exclude stage: $stage"; exit 1; }
   local_path "$L_EXCLUDE" "$L_COMMON" || exit 1
@@ -2851,17 +3504,37 @@ local_install() (
   local selection=none key path provider role digest j n found stage state changed=0
   local keys=() created=() bases=() oldkeys=() oldbases=() oldcreated=()
   local oldmanifest="" oldreceipts=()
+  local oldbeads="" qualification="" beads_args=() newbeads="" attempt_hash=""
+  local pending_hash="" published_text=$'format=1\n'
+  # Process-local exclusive reservations, never persisted runtime/purge authority.
+  local L_RESERVE_ROOT="" L_STATE_CLAIM="" L_DB_CLAIM=""
   local L_MANIFEST_PURPOSE=install
+  local install_mode=migrate
+  [ "${STATE_ONLY:-0}" = 0 ] || install_mode=check
   umask 077
   local_root "$TARGET_DIR" && local_core || exit 1
   L_INVENTORY=()
   while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
-  local_manifest_read "$L_ROOT" || exit 1
-  if [ "$PLATFORM_EXPLICIT" = 1 ]; then selection="$PLATFORM_ARG"
+  if [ "${WITH_BEADS:-0}" = 1 ]; then local_manifest_read "$L_ROOT" runtime || exit 1
+  else local_manifest_read "$L_ROOT" || exit 1; fi
+  if [ "${STATE_ONLY:-0}" = 1 ]; then selection=none
+  elif [ "$PLATFORM_EXPLICIT" = 1 ]; then selection="$PLATFORM_ARG"
   elif [ -e "$L_ROOT/.domestique-private" ]; then selection="$M_SET"
   else selection=claude; fi
-  local_preflight "$L_ROOT" "$selection" migrate || exit 1
+  local_preflight "$L_ROOT" "$selection" "$install_mode" || exit 1
   local_manifest_read "$L_ROOT" || exit 1
+  oldbeads="$M_BEADS"
+  if [ "${WITH_BEADS:-0}" = 1 ]; then
+    grep -qxF '# beads_guard_api=2 (structural read-only eligibility; certified private bridge)' "$L_CORE/bin/resolve-core" ||
+      { local_fail "missing Beads helper capability; explicitly update global installation"; exit 1; }
+    if [ -n "$oldbeads" ]; then
+      local_beads_python guard "$L_ROOT" "$oldbeads" || exit 1
+    else
+      qualification="$(local_beads_python qualify)" || exit 1
+      while IFS= read -r key; do beads_args+=("$key"); done <<< "$qualification"
+      [ "${#beads_args[@]}" = 4 ] || exit 1
+    fi
+  fi
   oldkeys=(${M_KEYS[@]+"${M_KEYS[@]}"}); oldbases=(${M_BASE[@]+"${M_BASE[@]}"}); oldcreated=(${M_CREATED[@]+"${M_CREATED[@]}"})
   if [ -f "$L_ROOT/.domestique-private/manifest" ]; then
     oldmanifest="$(global_hash < "$L_ROOT/.domestique-private/manifest")"
@@ -2870,15 +3543,35 @@ local_install() (
   [ "$M_SET" = none ] || global_select "$M_SET"
   [ "$selection" = none ] || global_select "$selection"
   if [ "$G_C$G_X$G_P" = 000 ]; then
-    printf 'domestique local: providers=none retained; no adapters created\n'
-    exit 0
+    G_SET=none
+    if [ "${WITH_BEADS:-0}" = 0 ]; then
+      printf 'domestique local: providers=none retained; no adapters created\n'
+      exit 0
+    fi
+  else
+    global_set_name
   fi
-  global_set_name
   stage="$(mktemp -d)"
   trap 'rm -rf "$stage"' EXIT
+  stage="$(cd "$stage" && pwd -P)" || exit 1
+  if [ "${STATE_ONLY:-0}" = 1 ]; then
+    keys=(${oldkeys[@]+"${oldkeys[@]}"})
+    created=(${oldcreated[@]+"${oldcreated[@]}"})
+    bases=(${oldbases[@]+"${oldbases[@]}"})
+  elif [ "${WITH_BEADS:-0}" = 1 ]; then
+    # Preserve the validated order of unselected pairs AND their receipt.
+    for ((j=0; j<${#oldkeys[@]}; j++)); do
+      local_selected "$selection" "${oldkeys[j]%%:*}" && continue
+      keys+=("${oldkeys[j]}"); created+=("${oldcreated[j]}"); bases+=("${oldbases[j]}")
+    done
+  fi
   for key in "${L_INVENTORY[@]}"; do
+    [ "${STATE_ONLY:-0}" = 0 ] || continue
     provider="${key%%:*}"
     local_selected "$G_SET" "$provider" || continue
+    if [ "${WITH_BEADS:-0}" = 1 ] && ! local_selected "$selection" "$provider"; then
+      continue
+    fi
     path="${key#*:}"
     case "$path" in *-implementer.*) role=implementer;; *) role=reviewer;; esac
     mkdir -p "$stage/${path%/*}"
@@ -2898,9 +3591,12 @@ local_install() (
     for ((j=0; j<${#keys[@]}; j++)); do
       printf 'created=%s:%s\nbaseline=%s:%s\n' "${keys[j]}" "${created[j]}" "${keys[j]}" "${bases[j]}"
     done
+    printf '%s' "$oldbeads"
   } > "$stage/manifest"
   mkdir "$stage/routing"
   for provider in claude codex copilot; do
+    [ "${STATE_ONLY:-0}" = 0 ] || continue
+    if [ "${WITH_BEADS:-0}" = 1 ] && ! local_selected "$selection" "$provider"; then continue; fi
     local_selected "$G_SET" "$provider" || continue
     path="$L_ROOT/.domestique-private/routing/$provider.receipt"
     digest=""
@@ -2915,29 +3611,75 @@ local_install() (
     } > "$stage/routing/$provider.receipt"
     cmp -s "$stage/routing/$provider.receipt" "$L_ROOT/.domestique-private/routing/$provider.receipt" || changed=1
   done
+  # Validate the very metadata/receipt set to be published, not a separately
+  # canonicalized approximation. No project/native writes precede this check.
+  local_manifest_read "$L_ROOT" install "$stage" || exit 1
   cmp -s "$stage/manifest" "$L_ROOT/.domestique-private/manifest" || changed=1
   [ "${#L_REMOVE[@]}" = 0 ] || changed=1
+  if [ "${WITH_BEADS:-0}" = 1 ] && [ -z "$oldbeads" ]; then changed=1; fi
   if [ "$DRY_RUN" = 1 ]; then
     printf 'domestique local: preview providers=%s (pristine native roles only)\n' "$G_SET"
     exit 0
   fi
   if [ "$changed" = 0 ]; then
-    local_exclude_apply "$L_ROOT" "$selection" 0 migrate || exit 1
+    local_exclude_apply "$L_ROOT" "$selection" 0 "$install_mode" || exit 1
     printf 'domestique local: already up to date\n'
     exit 0
   fi
   # All destinations/shared-worktree exclusions were preflighted before any
   # write. Migration retains its original provenance and exact legacy rules.
-  local_migrate "$L_ROOT" "$selection" || exit 1
-  local_preflight "$L_ROOT" "$selection" migrate || exit 1
+  if [ "$install_mode" = migrate ]; then local_migrate "$L_ROOT" "$selection" || exit 1; fi
+  local_preflight "$L_ROOT" "$selection" "$install_mode" || exit 1
   state="$L_ROOT/.domestique-private"
-  if [ ! -e "$state" ]; then mkdir "$state" || exit 1; fi
+  if [ "${WITH_BEADS:-0}" = 1 ] && [ -z "$oldbeads" ]; then
+    trap 'rc=$?; local_fail "PARTIAL initialization reservation/publication; inspect exact local paths and exclusions; no readiness, adoption or automatic retry"; rm -rf "$stage"; [ "$rc" -ne 0 ] || rc=1; exit "$rc"' EXIT
+    L_RESERVE_ROOT="$L_ROOT"
+    if [ ! -e "$state" ]; then
+      L_STATE_CLAIM="$(local_beads_python claim "$state")" || exit 1
+    fi
+    L_DB_CLAIM="$(local_beads_python claim "$L_ROOT/.beads")" || exit 1
+    # Revalidate all actual linked worktrees AFTER exclusive empty claims.
+    # Protect only existing roles, the owned private tree, and bounded known
+    # native reservations. New provider leaves have not yet been created.
+    L_MANIFEST_PURPOSE=reservation
+    local_preflight "$L_ROOT" none "$install_mode" || exit 1
+    local_path "$L_EXCLUDE" "$L_COMMON" || exit 1
+    if [ -e "$L_EXCLUDE" ]; then
+      local_remove_check "$L_EXCLUDE" "$L_EXCLUDE_BEFORE" "$L_COMMON" || exit 1
+      printf '%s' "$L_EXCLUDE_AFTER" > "$L_EXCLUDE" || exit 1
+    else
+      [ -z "$L_EXCLUDE_BEFORE" ] || exit 1
+      (set -C; printf '%s' "$L_EXCLUDE_AFTER" > "$L_EXCLUDE") || exit 1
+    fi
+    local_remove_check "$L_EXCLUDE" "$(printf '%s' "$L_EXCLUDE_AFTER" | global_hash)" "$L_COMMON" || exit 1
+    digest="$(global_hash < "$L_EXCLUDE")"
+    published_text="${published_text}protected-exclude=$L_EXCLUDE:$digest"$'\n'
+    published_text="${published_text}reserved=.beads:$L_DB_CLAIM"$'\n'
+    if [ -n "$L_STATE_CLAIM" ]; then
+      published_text="${published_text}reserved=.domestique-private:$L_STATE_CLAIM"$'\n'
+    fi
+    # Only now may private journals/context be written. Reservations certify
+    # protection, not native creation, readiness, or future purge ownership.
+    L_RESERVE_ROOT=""; L_STATE_CLAIM=""; L_MANIFEST_PURPOSE=install
+  elif [ ! -e "$state" ]; then mkdir "$state" || exit 1; fi
   # Exclusive journal claim; contains generated metadata only, never live bytes.
   (set -C; cat "$stage/manifest" > "$state/pending") ||
     { local_fail "PARTIAL journal claim: $state"; exit 1; }
-  trap 'local_fail "PARTIAL publication; retain pending/published metadata in $state; manual reconciliation required"; rm -rf "$stage"' EXIT
-  (set -C; printf 'format=1\n' > "$state/published") || exit 1
+  pending_hash="$(global_hash < "$stage/manifest")"
+  local_remove_check "$state/pending" "$pending_hash" "$L_ROOT" || exit 1
+  trap 'rc=$?; local_fail "PARTIAL publication; retain pending/published metadata in $state; manual reconciliation required"; rm -rf "$stage"; [ "$rc" -ne 0 ] || rc=1; exit "$rc"' EXIT
+  (set -C; printf '%s' "$published_text" > "$state/published") || exit 1
+  local_remove_check "$state/published" "$(printf '%s' "$published_text" | global_hash)" "$L_ROOT" || exit 1
+  if [ "${WITH_BEADS:-0}" = 1 ] && [ -z "$oldbeads" ]; then
+    # The bridge checks the exact empty-directory reservation before init;
+    # failed evidence never asserts successful native creation.
+    newbeads="$(local_beads_python init "$L_ROOT" "${beads_args[@]}" "$L_DB_CLAIM")" || exit 1
+    printf '%s\n' "$newbeads" >> "$stage/manifest"
+    attempt_hash="$(global_hash < "$state/beads-attempt")"
+  fi
   for ((j=0; j<${#keys[@]}; j++)); do
+    [ "${STATE_ONLY:-0}" = 0 ] || continue
+    if [ "${WITH_BEADS:-0}" = 1 ] && ! local_selected "$selection" "${keys[j]%%:*}"; then continue; fi
     key="${keys[j]}"; path="$L_ROOT/${key#*:}"; found=-1
     local_path "$path" "$L_ROOT" && local_untracked "$L_ROOT" "${key#*:}" || exit 1
     for ((n=0; n<${#oldkeys[@]}; n++)); do [ "${oldkeys[n]}" != "$key" ] || found="$n"; done
@@ -2945,17 +3687,23 @@ local_install() (
       [ ! -e "$path" ] || exit 1
       mkdir -p "${path%/*}" || exit 1
       local_publish_file "$stage/${key#*:}" "$path" "${bases[j]}" || exit 1
+      local_remove_check "$state/published" "$(printf '%s' "$published_text" | global_hash)" "$L_ROOT" || exit 1
       printf 'created=%s:%s\n' "$key" "${bases[j]}" >> "$state/published"
+      published_text="${published_text}created=$key:${bases[j]}"$'\n'
     else
       [ -f "$path" ] && [ "$(global_hash < "$path")" = "${oldbases[found]}" ] || exit 1
       if [ "${bases[j]}" != "${oldbases[found]}" ]; then
         local_publish_file "$stage/${key#*:}" "$path" "${bases[j]}" "${oldbases[found]}" || exit 1
+        local_remove_check "$state/published" "$(printf '%s' "$published_text" | global_hash)" "$L_ROOT" || exit 1
         printf 'refreshed=%s:%s\n' "$key" "${bases[j]}" >> "$state/published"
+        published_text="${published_text}refreshed=$key:${bases[j]}"$'\n'
       fi
     fi
   done
   local_path "$state/routing" "$L_ROOT" || exit 1
-  [ -d "$state/routing" ] || mkdir "$state/routing" || exit 1
+  if [ "${STATE_ONLY:-0}" = 0 ]; then
+    [ -d "$state/routing" ] || mkdir "$state/routing" || exit 1
+  fi
   j=0
   for provider in claude codex copilot; do
     [ -f "$stage/routing/$provider.receipt" ] || continue
@@ -2969,8 +3717,28 @@ local_install() (
   # Only this publication subprocess can admit its journals during the .4
   # exact shared exclusion revalidation. Runtime/normal reruns always refuse.
   L_MANIFEST_PURPOSE=publication
-  local_exclude_apply "$L_ROOT" "$selection" 0 migrate || exit 1
-  rm "$state/pending" "$state/published" || exit 1
+  local_exclude_apply "$L_ROOT" "$selection" 0 "$install_mode" || exit 1
+  if [ -n "$attempt_hash" ]; then
+    local_remove_check "$state/beads-attempt" "$attempt_hash" "$L_ROOT" || exit 1
+    unlink "$state/beads-attempt" || exit 1
+  fi
+  local_preflight "$L_ROOT" "$selection" "$install_mode" || exit 1
+  if [ "${WITH_BEADS:-0}" = 1 ] || [ "${L_HAS_BEADS:-0}" = 1 ]; then
+    local_path "$L_EXCLUDE" "$L_COMMON" &&
+      cmp -s "$L_EXCLUDE" <(printf '%s' "$L_EXCLUDE_AFTER") ||
+      { local_fail "PARTIAL publication: exact Beads privacy changed before journal removal"; exit 1; }
+  fi
+  local_remove_check "$state/pending" "$pending_hash" "$L_ROOT" &&
+    local_remove_check "$state/published" "$(printf '%s' "$published_text" | global_hash)" "$L_ROOT" || exit 1
+  unlink "$state/published" || exit 1
+  local_preflight "$L_ROOT" "$selection" "$install_mode" || exit 1
+  if [ "${WITH_BEADS:-0}" = 1 ] || [ "${L_HAS_BEADS:-0}" = 1 ]; then
+    local_path "$L_EXCLUDE" "$L_COMMON" &&
+      cmp -s "$L_EXCLUDE" <(printf '%s' "$L_EXCLUDE_AFTER") ||
+      { local_fail "PARTIAL publication: exact Beads privacy changed before final journal removal"; exit 1; }
+  fi
+  local_remove_check "$state/pending" "$pending_hash" "$L_ROOT" || exit 1
+  unlink "$state/pending" || exit 1
   trap 'rm -rf "$stage"' EXIT
   printf 'domestique local: installed providers=%s; reload native roles and confirm trust/read/shell before delegation\n' "$G_SET"
 )
@@ -2982,15 +3750,18 @@ Usage: domestique.sh --global [options]
        domestique.sh [TARGET] [options]  (same private local operation; default .)
 
 IMPLEMENTED PREVIEW: definitions/profile lifecycle, NOT end-to-end readiness.
-Private Beads initialization is unsupported; ALL database guards STOP, including
-decompose and goal. Full native role/tool/MCP execution is not verified.
+Qualified private Beads initialization is supported with explicit
+--local TARGET --with-beads [--state-only]. Verified private Beads operations
+use the installed wrapper; missing/unowned/failed/unqualified state must STOP.
+Full native role/tool/MCP execution is not verified.
 
 --global installs private user-native skills/roles and the shared API-1 core.
 One-time setup from this checkout: bash ./domestique.sh --global --platform copilot
 Global never touches projects or implicitly sets up clients/plugins/auth/MCP.
 --local installation requires an existing physical Git top-level and compatible
-global core. It creates only exact provider-qualified native local roles plus private
-metadata/exclusions; never home, root policy, settings, skills, or Beads.
+global core. Ordinary profile installation creates exact provider-qualified native
+local roles plus private metadata/exclusions; never home, root policy, settings,
+or skills. It does not initialize Beads unless explicitly requested with --with-beads.
 
   --platform P  claude, codex, copilot, both, claude-copilot, codex-copilot, all
                 both = Claude+Codex; all = all three; other pairs as named.
@@ -3003,9 +3774,9 @@ metadata/exclusions; never home, root policy, settings, skills, or Beads.
                 --global removes global assets only, never project files.
                 Edited providers retained WHOLE; nonzero even force/dry-run.
   --guest       Deprecated warning-only no-op. --no-guest is rejected.
-  --with-beads  Explicit --local TARGET only; initialization is UNSUPPORTED.
+  --with-beads  Explicit --local TARGET only; qualified private embedded DB init.
   --state-only  Requires --local TARGET --with-beads; conflicts with --platform.
-                Valid requests fail operationally BEFORE any writes.
+                No new PROJECT adapters/local profiles; preserves existing edited profiles.
   --purge-beads Unsupported; refuses (exit 2), even with uninstall/force.
   --help, -h    Show help.
 
@@ -3014,13 +3785,21 @@ trust/core-protocol confirmation, but automatic refresh refuses and leaves edits
 untouched even with force. No secrets/backups/merges; full prompt forks stay user-owned.
 Missing/old helper: repair with bash ./domestique.sh --global from this checkout
 before installation or use; local profile uninstall does not require global assets.
-Beads 1.1.2 --stealth writes broad Git policy and may rewrite root .gitignore;
-no supported skip-Git-policy switch or certified private backend exists.
-Installing bd or adding skip flags does not solve this. No bd probes run.
-Existing host .beads is never adopted just because it looks ready. No unsafe
-init/rollback, bd setup, or force bypass. Definition loading/routing is separate.
-Purge and uninstall with initialization flags refuse early; Beads retention/purge
-is future work. Host .beads is untouched. No legacy fallback/model/MCP/tool flags.
+Beads is limited to the exact digest-pinned Darwin arm64 Beads 1.1.2 CGO embedded
+artifact, existing Python 3.9+ and macOS sandbox-exec; not every 1.1.2 build qualifies.
+Other versions/backends/platforms
+refuse before project writes; no tools are installed. A private non-Git context,
+strict environment and actual OS sandbox protect native operations; native
+--sandbox alone only controls auto-push. Qualification help/version uses private
+TEMP staging. Dry-run has no DB calls or destination writes.
+Existing host .beads is never adopted. No unsafe init/rollback/setup or force
+bypass. Loading/routing/structural guards remain read-only and never call bd.
+All workflow operations require installed resolve-core beads CORE PROJECT RELEASE
+with literal bindings. No raw bd fallback; export has a fixed private path.
+Purge and uninstall with initialization flags refuse early; Beads attachment
+uninstall/purge remains unsupported pending .7. ANY Beads attachment refuses
+local uninstall before mutation.
+Host .beads is untouched. No legacy fallback/model/MCP/tool flags.
 Local removal retains a valid providers=none attachment after the last profile,
 with its existing private-tree exclusion. Bare reinstall creates no adapters;
 explicit --platform reuses that attachment and requires a compatible global core.
@@ -3035,7 +3814,7 @@ Preview updates: bash ./update.sh --source ./domestique.sh --global
 Default remote updater source is main, NOT this preview; draft #11 lacks it too.
 Native .13: Codex 0.154.0/Copilot 1.0.83 global skills and metadata reload observed;
 Claude 2.1.268 skills and ALL roles blocked, not evidence of product role absence.
-Versions observed only, not minimum support. .6 blocked; .7 DB cleanup/.8 execution open.
+Versions observed only, not minimum support. .6 limited; .7 DB cleanup/.8 execution open.
 EOF
 }
 
@@ -3108,10 +3887,6 @@ done
   { echo "Empty --platform" >&2; exit 2; }
 case "${PLATFORM_ARG:-claude}" in claude|codex|copilot|both|claude-copilot|codex-copilot|all) ;;
   *) echo "Invalid --platform" >&2; exit 2;; esac
-if [ "$WITH_BEADS" = 1 ]; then
-  echo "domestique Beads: initialization unsupported; no certified private backend currently exists. Beads 1.1.2 --stealth adds broad common-dir exclusions and may rewrite/delete root .gitignore; no supported skip-Git-policy switch. --skip-agents/--skip-hooks/--non-interactive do not solve this. No bd command or installation writes performed (.6 blocked)." >&2
-  exit 1
-fi
 if [ "$GLOBAL" = 1 ]; then
   [ "$LOCAL" = 0 ] && [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$WITH_BEADS" = 0 ] &&
     [ "$PURGE_BEADS" = 0 ] && [ "$NO_GUEST" = 0 ] ||

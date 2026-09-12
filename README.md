@@ -7,13 +7,12 @@ record is [Beads](https://github.com/steveyegge/beads).
 
 > **IMPLEMENTED PREVIEW — not end-to-end ready.** Shared core, global
 > definitions, optional private local profiles, routing guards, and
-> profile-only removal are implemented on `epic/hq-b3q`. **Private Beads
-> initialization is unsupported; all workflow database guards STOP**, including
-> decompose/epic creation, goal, claim, discovered work and landing/export.
-> There is no certified safe, owned backend. An existing host `.beads/` cannot
-> be adopted merely because it looks ready. You can load definitions and
-> validate profile routes today; that is not permission to create or mutate
-> Beads. Full native role execution and tool/MCP access are not verified.
+> profile-only removal are implemented on `epic/hq-b3q`. **Private Beads init
+> and controlled operations now have a narrowly qualified Darwin arm64 path**
+> for the observed Beads 1.1.2 CGO embedded artifact. Other versions/backends
+> and platforms refuse; existing host `.beads/` is never adopted. Definition
+> loading and routing remain read-only. Full native role execution and
+> tool/MCP access are still not verified.
 >
 > Limited native evidence: **Codex 0.154.0** and **Copilot 1.0.83** global
 > skills were observed in two repositories, including fresh-process skill
@@ -22,14 +21,14 @@ record is [Beads](https://github.com/steveyegge/beads).
 > versions observed, not minimum supported versions or claims that the
 > products lack roles. See [native evidence](#native-evidence-and-validation).
 
-Beads **1.1.2** with `--stealth --skip-agents --skip-hooks --non-interactive`
-still adds broad shared Git exclusions and can rewrite/delete root
-`.gitignore`. The four flags do not make initialization private. Do not run
-unsafe init and then roll it back, use `--force` to bypass ownership, or run
-`bd setup`. Even apparent database reads can start an engine and write state;
-loading/preflight does not call `bd`. Initialization remains blocked (.6),
-database purge/integrated cleanup is open (.7), and full native execution
-acceptance is open (.8).
+Those four native init flags alone are **not isolation**: from a Git root
+they can change broad Git policy. The implemented path instead uses a private
+non-Git CWD, an absolute final DB target, a constructed environment, a pinned
+executable, and an actual default-deny OS sandbox. Native `--sandbox` only
+disables auto-push. No host-root init/rollback, configuration repair, force
+bypass, DB copying, or provider setup is performed. Even database reads can
+write engine state; loading/routing/structural guards never invoke Beads.
+Database retention/purge (.7) and full native execution acceptance (.8) remain open.
 
 ## Setup: global first
 
@@ -106,20 +105,83 @@ does not apply after **any** failed preview. Scope/selection semantics match
 the installer; it is update-only, not an uninstall wrapper. There are no
 installer/updater model, MCP or tool configuration flags.
 
-`--local TARGET --with-beads` (optionally `--state-only`, with no `--platform`
-for state-only) is recognized but **returns operational exit 1 before any
-writes**, even with dry-run or a combined profile request. The updater also
-refuses before source fetch/copy. Bare/global Beads requests, invalid
-combinations and `--purge-beads` are usage errors (exit 2). No readiness or
-ownership record is fabricated. Use `bash ./domestique.sh --help` and
-`bash ./update.sh --help` for current visible help.
+### Optional private task database
+
+After installing/updating the global core from this checkout:
+
+```sh
+# DB only: no local agents or workflow body copies
+bash ./domestique.sh --local /absolute/project --with-beads --state-only
+# Or explicitly request profiles and the DB together
+bash ./domestique.sh --local /absolute/project --with-beads --platform copilot
+```
+
+State-only starts with `providers=none` and preserves existing profiles,
+receipts and customized native bytes unchanged. Combined requests preflight
+all destinations before writing; automatic refresh of edited profiles still
+refuses, even with force. Missing global helper capability requires an explicit
+global update, never an implicit installation.
+State-only also preserves valid original record ordering and refuses active
+legacy profiles rather than silently migrating/removing them.
+
+Qualification requires **Darwin arm64, existing Python 3.9+ (stdlib), existing
+macOS sandbox-exec, Git, and the observed Beads 1.1.2 CGO embedded binary**
+(SHA-256 `cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42`).
+No installer/replacement or assumption about 1.2.2 is made. Qualification
+help/version and OS denial probes run only in private temporary staging.
+Dry-run performs no project/global/index/exclude writes or native DB calls.
+Unsupported contexts/dependencies refuse before project writes.
+Beads project paths cannot contain `:` (Git's ceiling-list separator).
+The stdlib controller uses `-I -S -B`: no user/global site startup hooks or
+bytecode-cache writes. Empty Git configuration is generated inside the context.
+
+The DB is created directly at `.beads/`; all lifecycle/context/export state
+is under `.domestique-private/`. The process runs from
+`.domestique-private/beads-context/run` with private HOME/XDG/tmp, no inherited
+tokens, Git selectors, proxies, telemetry endpoints or native configuration.
+OS policy denies network and writes outside the owned DB/context (plus the
+dedicated export directory for export). No broad `.beads/` exclusion is added:
+only known owned leaves/subtrees, with shared-worktree collision accounting.
+Unknown existing DBs, failed attempts, symlinks, tracked state, configuration
+redirects and identity changes refuse without adoption, reinit or purge.
+
+Every actual operation uses the installed `bin/resolve-core beads CORE PROJECT
+RELEASE COMMAND ...` dispatcher, with **literal** bound core/project/release
+arguments in each fresh shell. Approved operations are ready/show/list,
+epic/task create, update/claim, close, dep add/remove, remember and export;
+the dispatcher validates the exact argv grammar, pins executable/UUID/backend
+and immutable selectors, then checks native ping/where under the sandbox.
+Mutable engine bytes do not need to match their initial purge baseline.
+Export accepts only optional `--include-memories` and writes
+`.domestique-private/exports/issues.jsonl`. No raw `bd` fallback or arbitrary
+global/path/config/remote/SQL/setup flags are allowed. Definition loading
+alone grants no mutation authority; role trust/capability checks still apply.
+
+Changed executable/context requires explicit manual requalification, not
+editing a manifest to suppress a guard. Failed native init/readiness leaves a
+failed attempt, never successful Beads creation records. A later publication
+interruption may retain verified DB ownership alongside pending journals; it
+still cannot qualify for database use. Stop writers, retain journals and
+reconcile exact paths manually. Before journals/context or native execution,
+exclusive empty-directory reservations and all shared-worktree collisions are
+checked, then the owned private tree and exact known native paths are protected.
+Reservations/attempt proof are not readiness, successful creation or purge
+authority. Unknown native artifacts receive no ownership or new exclusions:
+keep them out of commits and reconcile manually; do not adopt or retry.
+Do not stage or commit private artifacts.
+**Local uninstall of any Beads attachment currently refuses before mutation**;
+.7 owns retention/purge. Global uninstall never touches project state, but a
+removed core makes the dispatcher unavailable.
+
+The updater forwards both flags and never applies a failed preview. Invalid
+bare/global Beads, state-only without explicit local+Beads, platform+state-only,
+uninstall+init, and purge requests refuse before writes/fetch.
 
 ## Workflow definitions and intended invocation
 
-These names match the current emitters. **The database-backed workflow below
-is future intent, usable only after a safe backend is available**; the
-present guard stops it. A table entry is not proof of discovery in a blocked
-native client.
+These names match the current emitters. The qualified database bridge is
+implemented, but **full native role execution remains unverified**. A table
+entry is not proof of discovery or trust in a blocked native client.
 
 | Client | Load ordinary definition | Decompose significant work | Explicit unattended epic |
 | --- | --- | --- | --- |
@@ -348,8 +410,9 @@ not silent shadowing. Missing/corrupt mode or ownership never means normal
 fallback. Broad historical excludes require manual ownership accounting;
 force never authorizes index, `.gitignore` or host-policy edits.
 Preserve retained legacy evidence privately; do not force-add it or commit
-personal state. Export of an existing eligible private Beads database is
-**future work only**, not a present workaround for the blocked backend.
+personal state. Export of an eligible private Beads database is supported only
+through the qualified wrapper and its approved private export destination;
+this does not authorize adoption of an existing unowned database.
 
 ## Native evidence and validation
 
@@ -400,6 +463,25 @@ denied network/Keychain access and bounded subprocess lifetimes isolate the
 probe. No model, auth, native MCP, trust setup or Beads commands are invoked.
 See the checkpoint for exact interfaces, limits and counts.
 
+Private Beads has separate, narrowly qualified evidence. Run the new synthetic
+protocol/ownership suite or opt in to actual production native fixtures:
+
+```sh
+python3 -I -B test/beads-private.py
+python3 -I -B test/beads-production.py --run
+```
+
+The latter uses fresh temporary HOME/core and two repositories plus a linked
+worktree, the real production initializer, and the emitted standalone
+dispatcher. It exercises required CRUD/dependencies/remember/export,
+state-only/rerun, immutable identity refusal and host/Git/global privacy.
+Every native operation uses production's OS sandbox; setup Git uses the test
+sandbox. Installer/dispatcher controllers use the allowlisted fixture
+environment (nested default-deny sandbox application is refused on this OS).
+It does not access user databases or execute native agent/model/MCP workloads.
+The historical `.14` experiment remains separate evidence, not a substitute
+for this production test or proof of untested platforms.
+
 ## Current authority and history
 
 [Install/upgrade design](docs/install-upgrade-design.md) separates current
@@ -411,7 +493,7 @@ reparented, `hq-2su` and its unfinished `.3`–`.7`, `hq-e7f`, and `hq-4oh.15`.
 Completed `hq-2su.1/.2` remain closed history; commits `2896937`/`58f4d29`
 are reused. Draft #11 remains untouched, unmerged and unpushed.
 The [mapping and approved deferral](docs/install-upgrade-design.md#old-plan-disposition-parent-approved-deferral)
-retain .6 initialization blocked, .7 database cleanup open, and .8 full
+retain .6's limited qualification boundary, .7 database cleanup open, and .8 full
 acceptance open. This .9 documentation describes implemented preview behavior
 and limited .13 evidence now; it does not declare old criteria fulfilled or
 the release complete.
