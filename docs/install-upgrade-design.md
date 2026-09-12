@@ -18,7 +18,7 @@ for exact formats/recovery. `main` and draft PR #11 do not contain this preview.
 | Private local safety/profiles | .4/.5 implemented: physical Git root, exact ownership/exclusions, qualified roles/receipts, runtime routing separate from database eligibility |
 | Beads operations | .10 implemented fail-closed guard; **every current case stops**, including decompose and goal; .6 safe private initialization **blocked** |
 | Removal | .11 global and .12 local profile-only implemented; .7 database retention/purge and integrated final cleanup **open** |
-| Native evidence | .13 limited discovery/skill metadata reload observed; exact counts below. Claude skills and all roles blocked; full role/tool/MCP execution acceptance .8 **open** |
+| Native evidence | .13 limited discovery/skill metadata reload; .14 disposable Beads init/CRUD/separation observed, direct DB UUID query blocked. Claude skills and all roles blocked; full role/tool/MCP execution acceptance .8 **open** |
 | Documentation | .9 approved **now** against implemented preview and .13 evidence, explicitly deferring blocked full .8; not a release-complete claim |
 | Old plans | Parent-reconciled **deferred**, not completed/closed/reparented; see final disposition table |
 
@@ -26,7 +26,8 @@ Within the private section, checkpoint accounts record what existed **at that
 checkpoint**. Their older “future” statements are superseded by this table and
 later implemented checkpoints, not competing active instructions. Future Beads
 formats/acceptance are expressly labelled and are not accepted by current
-parsers. No successful private database backend or end-to-end workflow is claimed.
+parsers. No certified production private database backend or end-to-end workflow
+is claimed; .14's successful database operations are disposable test evidence only.
 
 ## Historical problem (normal/guest installer)
 
@@ -994,6 +995,178 @@ access or enforcement, explicit-goal/model-session rules, live core updates,
 or actual Beads goal/decompose work. .6 private Beads initialization remains
 blocked by upstream privacy, .7 database retention/purge remains future work,
 and those execution/trust criteria of .8 remain open.
+
+#### hq-b3q.14 native Beads private-context experiment (TEST ONLY; .6 blocked)
+
+**Executed on macOS, 2026-09-12; not a user initialization recipe.**
+`test/beads-native-context.py` imports the existing native-discovery stdlib
+environment, sandbox runtime-read policy, bounded process-group runner and
+isolation probes without modifying that helper. No agents, models, auth, MCP,
+installer, real-project Beads commands, Git commits, pushes, or external Dolt
+servers were invoked. Production `.10` guard/initializer refusal is unchanged.
+The script defaults to `STATIC_ONLY`/exit 2 without native execution or fixtures.
+
+Reproduction commands (only the harness creates/addresses disposable fixtures):
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 test/beads-native-context.py --run
+PYTHONDONTWRITEBYTECODE=1 python3 test/beads-native-context-tests.py
+PYTHONDONTWRITEBYTECODE=1 python3 test/native-discovery-tests.py
+```
+
+**Observed pin and mechanism.** Installed `/opt/homebrew/bin/bd` resolves to
+`/opt/homebrew/Cellar/beads/1.1.2/bin/beads`, reporting
+`bd version 1.1.2 (Homebrew)`. Reports include binary SHA-256 (not a claim
+of reproducible binary/source equivalence); the final 07:21:50 UTC trial
+recorded `cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42`.
+Public read-only source reviewed:
+`gastownhall/beads@20e493e569c922d1253bdeff068c5e56c94957fb`,
+especially `cmd/bd/init.go` (559–583, 681–737, 1114–1223),
+`init_stealth.go`, `doctor/gitignore.go`, `ping.go`, `info.go`,
+`context_cmd.go`, `export.go`, `sql.go`, and `main.go` (1439–1474).
+
+Each fresh physical fixture repo **R** has its own
+`P=R/.domestique-private/beads-context`, `CWD=P/run`,
+`BEADS_DIR=R/.beads` (initially absent), and
+`GIT_CEILING_DIRECTORIES=P`. Real Git returns exit 128 / “not a git repository”
+from each private CWD and correctly discovers R from each host root.
+Two independent repos A/B and W, an orphan linked worktree of A, are prepared
+with sanitized Git configs/empty templates/hooks, without a commit.
+Every actual native command, including version/help, runs from the private
+non-Git CWD; **no mixed-context recovery was needed for the required operations**.
+This does not certify unexecuted commands such as `context` (help only).
+
+The native init argv is exactly the pinned executable plus:
+`--sandbox init --stealth --skip-agents --skip-hooks --non-interactive
+--prefix fx{a,b,w} --remote=`.
+The explicit empty remote opts out of Git-origin remote inference in the
+pinned source. Native `--sandbox` disables auto-push; it is **not OS security**.
+The database is created directly at its final fixture path, without a
+Git shim, temporary database relocation, copy, rollback, or lock deletion.
+
+Environment is constructed, not inherited: HOME, XDG config/state/cache,
+TMPDIR, empty Git hooks/templates and a bin containing only resolved tool
+symlinks are inside P. Runtime PATH adds only system executable directories.
+The reused helper also sets fixture CODEX_HOME/DOMESTIQUE_HOME, locale/terminal,
+no-color/no-bytecode and `OPENSSL_CONF=/dev/null`. Git uses
+`GIT_CONFIG_NOSYSTEM=1`, GLOBAL/SYSTEM `/dev/null`, no terminal prompts and
+one process-only `core.hooksPath` override. Beads controls are:
+`BD_DISABLE_METRICS=1`, `BD_DOLT_MODE=embedded`,
+`BD_DOLT_SHARED_SERVER=false`, `BD_BACKUP_ENABLED=false`,
+`BD_EXPORT_AUTO=false`, `BD_NO_HOOKS=1`.
+No inherited auth, telemetry, proxy, BEADS_DB/BD_DB or Git directory overrides
+are passed; no user configuration is copied. In particular, the external-server
+forcing BEADS_DOLT_SHARED_SERVER/SERVER_MODE variables and OTel export variables
+are absent. No reliance on `OTEL_SDK_DISABLED`.
+
+**OS isolation and privacy evidence.** Default-deny macOS sandbox-exec allows
+runtime reads and fixture reads, no network or mach/Keychain IPC grants.
+Native writes are limited to that repo's P and `.beads` (plus `/dev/null`);
+the generic helper's broad fixture-write grant is replaced, not retained.
+External `/dolt` execution is explicitly denied. Before any native bd call,
+positive private writes and negative outside-fixture read/write, host Git
+config/index/exclude/hooks/policy/HOME-sentinel writes, and network bind/connect
+probes actually run. Only **PermissionError**, not arbitrary process failure or
+connection refusal, satisfies a negative probe. W additionally probes its
+`.git` pointer and A's linked-worktree admin index/HEAD.
+Git writes are allowed only during fixture setup; subsequent host Git probes
+use the narrow native sandbox. Every child is bounded to 60 seconds, the native
+phase to 480 seconds, with exact child process-group kill/reap on exit/timeout.
+Only known fixture trees are cleaned; orphan cleanup errors fail the report.
+
+Before/after snapshots cover **69 protected entries**, file bytes, modes,
+index/config/info-exclude/hooks and linked common/admin paths, root policies
+and a fake external HOME sentinel. A's `.gitignore` includes the exact
+`# Beads / Dolt files (added by bd init)` section the pinned initializer would
+otherwise remove. It remained byte-identical. `git check-ignore` for
+`unknown.db` / `.claude/settings.local.json` stayed `[0,1]` in A and `[1,1]`
+in B/W (0=ignored, 1=visible). **No protected changes** were observed.
+No exclusions were installed: native's “invisible”/“exclude configured”
+success prose is misleading after its explicit non-Git skip.
+
+**Actual outcomes:** the completed trial ran **71 native Beads processes**:
+67 exit 0, three expected identity refusals exit 1, and one expected unsupported
+SQL diagnostic exit 1. Structured proof counts are **8 PASS, 1 BLOCKED,
+0 FAILED; overall exit 2**. SQL introspection remains honestly BLOCKED but is
+**no longer a feasibility blocker**; this is still not production acceptance.
+
+* PASS native init, readiness (as narrowly defined in the report), required
+  operations, separation, **IDENTITY_BINDING**, host privacy, sandbox, cleanup.
+* All three real metadata files say `backend=dolt`, `dolt_mode=embedded`,
+  database names `fxa/fxb/fxw`, and distinct valid `project_id` UUIDs.
+  Physical `.beads/embeddeddolt/<database>/.dolt/{config.json,repo_state.json,
+  noms/manifest,...}` files exist; no redirect or server-mode directory/artifacts.
+  Metadata's legacy `database: "dolt"` is **not** the physical engine path.
+  `where --json` confirms the physical `.beads`/embedded path and explicit prefix.
+* Six `ping --json` invocations actually query the stores, before and after
+  operations in separate fresh processes. Ping is status/timings, **not identity**.
+  Per repo, actual create produces an epic and two bounded tasks; show verifies
+  parent-child/blocking edges, ready excludes then includes the dependent task,
+  update/show verifies in_progress, and close persists. Remember persists one
+  dummy memory. Explicit private JSONL exports contain exactly three issue
+  records and one `_type: "memory"` record each. Final fresh `list --all --json`
+  queries find each repo's own three IDs and none from the other two queues,
+  including W versus its common-dir owner A.
+* **PASS IDENTITY_BINDING, independently repeatable in A/B/W:** after normal
+  init/CRUD/export, the harness preserves each known generated `metadata.json`'s
+  bytes in memory and changes **only `project_id`** to a different valid UUID.
+  One uniquely titled disposable `create` per fixture, through the same verified
+  sandbox/controller/environment, returns nonzero with the pinned
+  `main.go:1439–1474` diagnostic: `Error: workspace identity mismatch detected`,
+  `metadata.json project_id: <replacement>`, and
+  `database _project_id: <original>`. The last field reports the original UUID
+  despite the changed metadata field, proving database binding beyond distinct
+  metadata UUIDs. Arbitrary nonzero, an unrelated version/mode error, missing or
+  wrong original UUID, or a successful write cannot pass. Reports retain only
+  controlled refusal fields, not raw recovery advice. Original metadata bytes
+  are restored in `finally`, even on failure; a fresh native `list --all --json`
+  must then contain exactly the expected three IDs and no rejected title.
+  All three actual controls passed restoration and absence checks.
+* **BLOCKED optional direct database UUID query:** actual
+  `--sandbox sql "SELECT value FROM metadata WHERE \`key\` = '_project_id'" --json`
+  returns exit 1, empty stdout, and
+  `Error: 'bd sql' is not yet supported in embedded mode`.
+  This is explicitly refused by pinned `sql.go`, not a GetRepoContext/CWD error;
+  no host-root/server fallback was attempted. There is **no direct SQL result**;
+  database identity binding is instead proven by the negative controls above.
+  Direct `config get _project_id` returned empty in the earlier independent
+  review and is not identity evidence (not added to this harness). Pinned
+  main.go can skip native validation when the DB key is missing; such a skipped
+  check/successful write **fails** this control, never counts as identity proof.
+
+Warnings retained: missing repository/clone fingerprints, unconfigured
+`beads.role`, and five missing Git hooks. No suggested Git config/hook/setup
+repair was run. Unknown warnings and any surfaced permission denial block.
+`info --json` actually emits human text (“Mode: direct”) here despite its
+help/source JSON branch; the harness records this diagnostic-only protocol
+limitation rather than interpreting it as engine/identity proof. Early harness
+trials failed on that JSON assumption and on treating exported memory records
+as issues; both parsers were corrected against actual output/pinned types, not
+by accepting arbitrary process failure. Kernel denial audit logs are **not**
+collected: silent attempted denials are not disproved by unchanged snapshots.
+
+**Review gate for .6:** this establishes feasibility of the bounded non-Git
+context for tested init/CRUD, not a certified initializer. A future wrapper
+still needs independent review, exact executable/platform/version certification,
+owned physical private-context paths and process-only environment, explicit
+stable prefix/audit identity policy, no host config/role fixes, strict readiness
+and DB-identity evidence under known initialization, a pinned target and approved
+commands, partial-init failure handling without destructive
+rollback, and exact exclusion/manifest ownership (including context artifacts).
+UUID mutation here is a **disposable-test negative control only**, never a
+routine identity check or recovery recipe for an existing user database.
+It must not reuse stealth's broad ignores or treat help flags/exit 0/direct mode
+as readiness. No production ownership/readiness format was added here.
+Production `.6` stays disabled until its own implementation and independent
+review; its parent adjudicates this evidence after independent review.
+Other platforms/versions, existing databases, concurrency, production removal,
+and role/model/MCP workflows remain unexecuted and uncertified.
+
+Validation: **31 pure offline guard/protocol tests (the original 16 unchanged,
+plus 15 classification/restoration/failure/cleanup tests) and the unchanged
+helper's 45 tests pass**. Synthetic helper tests are not native identity proof.
+Python AST/syntax and `git diff --check` pass. No new framework,
+package/tool installation, production edits, or full installer-suite run.
 
 #### hq-b3q.5 public private-profile checkpoint (historical status; feature implemented)
 
