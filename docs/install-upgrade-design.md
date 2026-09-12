@@ -862,6 +862,102 @@ test/local-uninstall.py`, including linked-worktree `check-ignore` visibility
 and explicitly triggered partial-unlink/journal/retained-state mutations.
 Fixtures isolate HOME/core and fake all native/Beads/network commands.
 
+#### hq-b3q.13 isolated native discovery checkpoint (bounded part of .8)
+
+**Observed 2026-09-12 on macOS arm64; not native execution acceptance.**
+`test/native-discovery.py` uses the current installer, not historical fixtures
+or mocked clients. Reproduce from the repository root:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 test/native-discovery.py --run
+PYTHONDONTWRITEBYTECODE=1 python3 -W error test/native-discovery-tests.py
+```
+
+The first command emits JSON: `NATIVE_DISCOVERY_OBSERVED` means an actual
+native metadata response with checked IDs, enabled state and source paths;
+`BLOCKED` names an unavailable/unsafe interface or runtime refusal;
+`ASSERTION_FAILURE` is a regression or malformed response; `STATIC_ONLY`
+is installer/filesystem/schema/isolation evidence, **not** native discovery.
+Exit **0** means no blocked or failed discovery components, **1** means
+assertion/harness failure, **2** means blocked/incomplete native coverage.
+Malformed RPC envelopes/results or skill field types, and successful but
+empty/whitespace-only `--version` output, produce component-labelled
+`ASSERTION_FAILURE` records and exit 1, not tracebacks or discovery success.
+RPC diagnostics name the method/shape or native error code without echoing
+raw response/error-message/stderr contents; malformed stdio paths retain
+bounded process-group cleanup.
+Without `--run`, nothing native runs: `STATIC_ONLY`, exit 2. Missing clients
+are never installed, and missing/failed isolation stops before native startup.
+
+**Isolation.** Executable symlinks are resolved before replacing HOME.
+Physical temporary HOME, XDG config/state/cache, CODEX_HOME, native directories,
+private core and independent Git top-level fixtures A/B are disposed at exit.
+The environment is constructed from an allowlist, not copied: no inherited
+tokens, provider settings, proxies or shell startup variables; PATH contains
+system tools and isolated links to the resolved Node/Git. Git uses no global
+or system config, no host templates/hooks; OpenSSL uses `/dev/null` rather
+than host configuration. The macOS-only `sandbox-exec` policy defaults to deny,
+grants no network or Mach/Keychain IPC, and permits file-content reads only
+for fixtures and specified installed runtimes/packages (plus source reads
+for the installer alone). File metadata reads are permitted. Writes are
+confined to fixtures, with `/dev/null` as the only sink exception.
+Before native calls, a harmless probe verifies an inside write, denied
+outside-sentinel read/write, and denied loopback bind/connect. No auth,
+inference, MCP, trust/registration, ACP startup, Beads or model prompts are
+invoked. All commands have 30-second deadlines (installer: 120 seconds);
+finite stdio servers must answer initialize/list, then their exact process
+groups are killed/reaped, including on errors (cleanup deadline: 5 seconds).
+
+Actual installed entrypoints below use `$ORIGINAL_HOME` for the pre-isolation
+home; these are executable locations, not configuration read locations:
+
+| Client/version | Resolved entrypoint | Native result / precise limit |
+| --- | --- | --- |
+| Claude Code **2.1.268** | `$ORIGINAL_HOME/.local/share/claude/versions/2.1.268` | **BLOCKED** roles and skills. `--help` then `agents --help` describes **“Manage background agents”**; `--json` prints active sessions, not configured roles. No non-model skill listing advertised. The session view was not launched; older assumptions about `claude agents` do not apply to this installation. |
+| Codex CLI **0.154.0** | `$ORIGINAL_HOME/.nvm/versions/node/v22.22.0/lib/node_modules/@openai/codex/bin/codex.js` (resolved from `/opt/homebrew/bin/codex`) | **OBSERVED** skills via `app-server --listen stdio://`: real `initialize`, `initialized`, `skills/list` (`cwds`, `forceReload=true`), and `config/read`. `app-server --help` and `generate-json-schema --help/--out` were inspected first; generated schemas gate the adapter. **BLOCKED** roles: stable schema has no role-list method; `config/read` returns `config.agents=null` in A and B, before and after local setup. This is not evidence that `.codex/agents` is unsupported or ignored by a model session. |
+| GitHub Copilot CLI **1.0.83** | `$ORIGINAL_HOME/.nvm/versions/node/v22.22.0/lib/node_modules/@github/copilot/npm-loader.js` | **OBSERVED** skills via `skill list --json`, after inspecting `skill --help` and `skill list --help`; no authenticated startup required. **BLOCKED** roles: top-level help offers `--agent` selection, not a non-model role-list command. ACP initialization would not establish discovery and was not attempted. |
+
+The JavaScript launchers used resolved Node
+`/opt/homebrew/Cellar/node/26.7.0/bin/node`. Native help/version also ran only
+inside the fixtures/sandbox. Copilot's unpacked builtin cache and Codex's
+system-skill sources were under temporary HOME, never the real session store.
+
+**A/B and reload evidence.** Current `--global --platform all` leaves both
+initial Git snapshots unchanged. Codex natively lists `domestique-codex`,
+`domestique-codex-decompose`, `domestique-codex-goal`, scope `user`, from
+`$HOME/.agents/skills/<ID>/SKILL.md` in both repos. Copilot lists all three
+`domestique-copilot{,-decompose,-goal}` from `personal-copilot` and all three
+Codex-qualified skills from `personal-agents`, without duplicate names.
+After `--local A --platform all`, fresh processes in both repos still list
+those global skills. All six qualified local role files exist only in A
+(`STATIC_ONLY`); **native local-role visibility in A, absence in B and global
+role coexistence remain BLOCKED for all three clients**, not inferred from
+files, routing receipts, config nulls or skill discovery.
+
+A final fixture-only edit changes the ordinary Codex/Copilot skill descriptions
+to `Fixture metadata reload hq-b3q.13.`. Fresh native processes report exactly
+that description in both repos. This proves skill-metadata reload, not live
+shared-core updates or role capability reload. Before/after project snapshots
+cover help/schema and every discovery invocation, including failures; this
+run recorded **no native project writes** in A or B, and local installation
+left B unchanged. Future native cache differences are returned as explicit
+relative paths, not silently excluded.
+
+Final run: **12 native skill observations, 8 blocked records, 0 assertion
+failures, 22 static-only records; exit 2**. Blocked records are Claude
+roles/skills, Copilot roles, and six Codex role checks across A/B and three
+stages. **45 offline harness tests passed** (synthetic protocol/classification,
+timeouts, EOF/errors, cleanup, environment and source checks; not native
+proof). Python AST, Bash 3.2 syntax and warning-level installer ShellCheck
+passed. No renderer changes or full product-suite rerun were needed.
+
+The executable guard/resolver tests remain **OFFLINE**, separate from these
+native metadata observations. Nothing here verifies role execution, tool/MCP
+access or enforcement, explicit-goal/model-session rules, live core updates,
+or actual Beads goal/decompose work. .6 private Beads initialization remains
+blocked by upstream privacy, .7 database retention/purge remains future work,
+and those execution/trust criteria of .8 remain open.
+
 #### hq-b3q.5 public private-profile checkpoint
 
 This checkpoint supersedes the older CLI-status statements in `.3`/`.4`
