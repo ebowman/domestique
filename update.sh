@@ -12,9 +12,16 @@ Usage: update.sh --global [options]
        update.sh --local TARGET [options]
        update.sh [TARGET] [options]  (private local; default .)
 
-Fetches $DEFAULT_SOURCE, or --source PATH/URL (DOMESTIQUE_UPDATE_SOURCE).
+IMPLEMENTED PREVIEW: definitions/profile lifecycle, NOT end-to-end readiness.
+Default source is main, NOT this preview; draft #11 lacks these changes too.
+Use this checkout until published:
+  bash ./update.sh --source ./domestique.sh --global
+  bash ./update.sh --source ./domestique.sh --local /absolute/project
+Fetches $DEFAULT_SOURCE unless overridden.
 Always previews first; ANY failed preview prevents apply.
+  --source PATH/URL  Override source (also DOMESTIQUE_UPDATE_SOURCE).
   --platform P  claude, codex, copilot, both, claude-copilot, codex-copilot, all
+                both = Claude+Codex; all = all three; other pairs as named.
                 Additive union, reused when omitted; fresh default Claude.
   --dry-run     Preview only.
   --force       Does not override edited/unknown private native assets.
@@ -26,59 +33,20 @@ Always previews first; ANY failed preview prevents apply.
 Local requires an existing Git top-level and compatible global core; no
 implicit global writes. Beads 1.1.2 --stealth changes broad Git policy/root
 .gitignore; no supported skip-Git-policy switch or certified backend exists.
-Installing bd or adding skip flags does not solve this. This wrapper only updates;
+Installing bd or adding skip flags does not solve this. ALL workflow database
+guards STOP, including decompose/goal; existing host .beads is never adopted
+just because it looks ready. No unsafe init/rollback, bd setup, or force bypass.
+Definitions/routing can load; full native role/tool/MCP execution is unverified.
+No implicit client/plugin/auth/environment/MCP setup. This wrapper only updates;
 use domestique.sh --uninstall --global for owned-only global removal, or
 domestique.sh --uninstall --local TARGET for profile-only local removal.
+Removal retains edited selected providers whole, nonzero even force. No live
+backups/merges. Local last-profile removal retains providers=none/private exclusion.
+Global final removal leaves unproven empty containers; see README safe manual
+empty-core reconciliation before reinstall. Beads purge/integrated cleanup is open.
 No model, MCP, or tool options are accepted; customize native metadata locally.
-EOF
-}
-
-legacy_usage() {
-  cat <<EOF
-Usage: update.sh [TARGET_DIR] [options]
-       update.sh --global [options]
-
---global updates private native user defaults and the API-1 core, with no
-target argument or repository writes. A failed global preview never applies.
-Global --guest is a deprecated no-op; --no-guest is invalid. --local,
-state-only and migration are not implemented yet. This wrapper only updates;
-use domestique.sh --uninstall --global for owned-only global removal.
-Global unknown or edited native assets refuse, even with --force.
-Legacy bare/positional operation below remains project-only.
-
-Fetches the latest domestique.sh (default source:
-  $DEFAULT_SOURCE
-) and runs it against TARGET_DIR (default: current directory), reusing the
-existing 3-way-merge install/upgrade logic. Safe to run periodically:
-  1. Runs a --dry-run pass first and prints what would change.
-  2. Unless --dry-run was passed to this updater, applies for real.
-
-Options:
-  --source <path|url>  Override the source domestique.sh (local file path or
-                        URL). Also settable via DOMESTIQUE_UPDATE_SOURCE.
-  --dry-run            Only show the preview; do not apply.
-  --force              Pass through to domestique.sh (discard local edits,
-                        take upstream verbatim; see domestique.sh --help).
-  --platform <value>   Pass through the install platform: claude, codex,
-                        copilot, both, or all (global also: claude-copilot,
-                        codex-copilot). When omitted, domestique.sh reuses its persisted
-                        platform set (or defaults to Claude on a first run).
-  --guest              Pass through to domestique.sh. Claude uses
-                        CLAUDE.local.md; Codex uses skills-only guest mode and
-                        leaves root AGENTS files untouched. Prior guest mode
-                        is sticky through provider-owned state, so repeat
-                        updates normally do not need this flag.
-  --no-guest           Pass through to domestique.sh: convert an existing
-                        guest install back to normal (see domestique.sh
-                        --help for what is and isn't auto-migrated).
-  --help, -h           Show this help.
-
-Exit codes (propagated from the underlying domestique.sh run):
-  0  everything applied cleanly (or already up to date — a clean no-op).
-  1  operational refusal (e.g. missing target dir).
-  2  invocation error (bad options passed to the underlying script).
-  3  one or more files ended in conflict/error during merge — needs a human.
-  4  could not obtain a valid domestique.sh from the given source.
+Edited metadata requires native reload/trust/core-protocol confirmation; automatic
+refresh refuses untouched, even force. Global core updates do not rewrite locals.
 EOF
 }
 

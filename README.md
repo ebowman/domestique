@@ -1,620 +1,420 @@
 # domestique
 
-A Claude Code and Codex config for a **multi-model orchestration workflow**: an
-**orchestrator** session that designs the work and adjudicates, an
-**implementer** subagent that executes, and a **reviewer** subagent that
-independently verifies — with the plan of record tracked in
-[beads](https://github.com/steveyegge/beads). The orchestrator runs on a
-strong planning model. Claude installs pin the implementer and reviewer to
-Sonnet and Opus; Codex installs pin them to `gpt-5.6-terra` at medium effort
-and `gpt-5.6` at high effort. See the three agent subsections below for what
-each one does and why.
+Private orchestration definitions for **Claude Code, Codex CLI, and GitHub
+Copilot CLI**: an orchestrator plans bounded work, an implementer executes it,
+and a fresh reviewer independently checks the result. The intended plan of
+record is [Beads](https://github.com/steveyegge/beads).
 
-The point of the split is to spend model capability where it pays off.
-Delegating both implementation *and* verification keeps the orchestrator's
-context lean, which keeps it a good adjudicator — and the reviewer's
-independence means the implementer's "done, tests pass" is checked, not
-trusted.
-
-## The loop
-
-The topology has three steps, at three different frequencies — that's the
-whole loop:
-
-> After setting your session's orchestrator model, start with one of these
-> platform-native invocations:
+> **IMPLEMENTED PREVIEW — not end-to-end ready.** Shared core, global
+> definitions, optional private local profiles, routing guards, and
+> profile-only removal are implemented on `epic/hq-b3q`. **Private Beads
+> initialization is unsupported; all workflow database guards STOP**, including
+> decompose/epic creation, goal, claim, discovered work and landing/export.
+> There is no certified safe, owned backend. An existing host `.beads/` cannot
+> be adopted merely because it looks ready. You can load definitions and
+> validate profile routes today; that is not permission to create or mutate
+> Beads. Full native role execution and tool/MCP access are not verified.
 >
-> - Claude Code: `/decompose <significant task or milestone>`
-> - Codex: `$domestique-decompose <significant task or milestone>`
->
-> * determines an overall architecture
-> * breaks work into Task beads, under an Epic, including detailed design
->   instructions and inter-task dependencies
->
-> repeat this prompt: **"dispatch next ready bead"**, at which point the
-> orchestrator:
-> * claims the bead for implementation
-> * dispatches the bead to the implementer agent and waits for its return
->   notes, and inspects any new side-task beads it nominates
-> * if satisfied, dispatches the bead to the reviewer, in a fresh context
-> * when the reviewer returns, assesses its feedback and declares PASS
->   (closing the bead) or FAIL/NEEDS-WORK (sending it back to the implementer)
->
-> When all tasks in an epic are complete, tell the orchestrator to
-> **"land the plane"** and it will:
-> * file any loose discovered work as beads
-> * run the final quality gates
-> * follow Claude's installed session-close policy, or in Codex report
->   proposed handoff commands and obey the active commit/sync/push authority
+> Limited native evidence: **Codex 0.154.0** and **Copilot 1.0.83** global
+> skills were observed in two repositories, including fresh-process skill
+> metadata reload. **Claude 2.1.268 skill discovery and all three clients'
+> role discovery remain blocked** in the bounded offline harness. These are
+> versions observed, not minimum supported versions or claims that the
+> products lack roles. See [native evidence](#native-evidence-and-validation).
 
-The three agents behind that topology — each pinned to the model tier that
-matches what it's for:
+Beads **1.1.2** with `--stealth --skip-agents --skip-hooks --non-interactive`
+still adds broad shared Git exclusions and can rewrite/delete root
+`.gitignore`. The four flags do not make initialization private. Do not run
+unsafe init and then roll it back, use `--force` to bypass ownership, or run
+`bd setup`. Even apparent database reads can start an engine and write state;
+loading/preflight does not call `bd`. Initialization remains blocked (.6),
+database purge/integrated cleanup is open (.7), and full native execution
+acceptance is open (.8).
 
-### Orchestrator
+## Setup: global first
 
-Your main Claude Code or Codex session, on a strong planning model. Decomposes goals
-into beads, claims and dispatches one bead at a time, adjudicates the
-reviewer's verdict against the implementer's report, and decides what's next.
-Writes code itself only for trivial one-liners — it's reserved for the
-judgment-heavy work, where mistakes are expensive.
-
-### Implementer
-
-The `implementer` subagent, on a fast, efficient model. Receives one bounded task,
-claims it and marks it in progress, does exactly that, runs the tests/linter,
-and returns a terse summary. It does **not** close its own bead — the
-orchestrator closes beads after the reviewer passes them.
-
-### Reviewer
-
-The `reviewer` subagent, on a strong, independent model. In a *fresh context*
-(no anchoring on the implementer's story), it inspects the real `git diff`,
-reads the changed files, runs the tests itself, and returns a PASS / FAIL /
-NEEDS-WORK verdict judged against the bead's done-criteria — a stronger,
-non-peer check than the implementer. It reviews only — it never edits code or
-touches bead state. In Codex, the orchestrator fingerprints tracked and staged
-changes plus bead state before and after review; any reviewer-introduced delta
-is a failed review and an immediate stop.
-
-Each subagent has a platform-native model pin: Claude frontmatter uses
-`model: sonnet` and `model: opus`; Codex TOML uses `gpt-5.6-terra` with
-`model_reasoning_effort = "medium"` and `gpt-5.6` with
-`model_reasoning_effort = "high"`. The agents are the first-class objects —
-the model tier is just the capability each one runs on. If a pinned Codex
-model is unavailable to your account, Codex reports the affected role and
-model. Edit that role's TOML, or remove its `model` and
-`model_reasoning_effort` keys to inherit the parent; domestique never silently
-substitutes one role's model for another.
-
-By default, the orchestrator stops and checks in with you between beads — it
-won't drain the queue unattended unless you tell it to (see
-[unattended epic mode](#unattended-epic-mode), below).
-
-**Per Epic:**
-
-```
-   you ─▶ decompose ─▶ ┌──────────────────────────────────────────────┐
-                        │  ORCHESTRATOR (main session)                 │
-                        │  architecture · design · deps · beads        │
-                        └──────────────────────────────────────────────┘
-```
-
-**Per Task:**
-
-```
-   you ─▶ "dispatch" ─▶ ┌──────────────────────────────────────────────┐
-                        │  ORCHESTRATOR (main session)                 │
-                        │  bd ready · delegate · adjudicate            │
-                        └──┬──────────────▲───────────────▲────────────┘
-              one task     │              │ summary       │ PASS / FAIL
-             (bead id)     ▼              │               │ verdict
-                        ┌──────────────────┴──┐   ┌────────┴─────────────┐
-                        │ implementer          │   │ reviewer             │
-                        │ do task · test ·     │   │ fresh context ·      │
-                        │ report back          │   │ diff · tests · judge │
-                        └──────────────────────┘   └──────────────────────┘
-```
-
-**On Epic Completion:**
-
-```
-   you ─▶ "land the plane" ─▶ ┌───────────────────────────────────────┐
-                              │  final gates · file loose work ·      │
-                              │  policy/authority-aware handoff       │
-                              └───────────────────────────────────────┘
-```
-
-## Setup
-
-**About beads.** [beads](https://github.com/steveyegge/beads) is the
-dependency-aware issue tracker that holds domestique's plan of record —
-epics, tasks, and the dependencies between them. Its `bd` binary needs to be
-installed on your machine *before* you set anything up here: see the beads
-README for full install instructions, or if you're on macOS or Linux with
-Homebrew, `brew install beads` works well. The steps below (and the
-installer's `--with-beads` flag) only *initialize* beads inside a given
-repo — they assume `bd` is already installed.
-
-Three things make this work. The first installs — or upgrades — the config with
-one idempotent command; the other two are how you start each session.
-
-### 1. Install (or upgrade) the config in your repo
-
-**One idempotent command does both.** Run it in a repo to install; run it
-again anytime to upgrade — it installs what's missing and safely
-3-way-merges any files you've edited locally instead of overwriting them
-(see [Upgrading](#upgrading)). Select the client explicitly for a new Codex
-or dual-client install; omitting `--platform` on a brand-new install preserves
-the original Claude-only default:
+Use the **checked-out current preview script**, once per user, selecting the
+client you actually use:
 
 ```sh
-# Claude Code (the backward-compatible default)
-curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --with-beads
-
-# Codex only
-curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform codex --with-beads
-
-# Both clients in the same repo
-curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform both --with-beads
+bash ./domestique.sh --global --platform copilot
 ```
 
-Or clone once and reuse across machines (recommended):
+This installs personal native skills/roles and the shared private core. It
+does not touch any project. It does not install clients/plugins, configure
+authentication/environment, register or execute MCP servers, or approve trust.
+All templates are embedded; the installer itself needs no network.
+
+**Publication boundary:** `main` and historical draft PR **#11 do not contain
+these private-global/local changes**. Do not substitute a `curl .../main`
+installer for this checkout. This preview is not a completed release.
+Commands here are usage examples, not examples executed against a real HOME.
+
+Both scopes accept exactly seven `--platform` selectors:
+
+| Selector | Providers |
+| --- | --- |
+| `claude` | Claude |
+| `codex` | Codex |
+| `copilot` | Copilot |
+| `both` | Claude + Codex (not all three) |
+| `claude-copilot` | Claude + Copilot |
+| `codex-copilot` | Codex + Copilot |
+| `all` | All three |
+
+Explicit install selection adds to that scope's persisted union; omission
+reuses it. A fresh selector-less install defaults to Claude, not auto-detected
+clients. **Bare invocation and positional targets remain private LOCAL**
+(`.` by default), never an implicit global install. `--guest` is a deprecated
+warning-only no-op; `--no-guest` is refused. Normal/guest dual-mode behavior
+and three-way merging are historical, not current installation options.
+
+### Optional project profiles
+
+Only add a local profile when a role's tools/MCP metadata really needs to
+differ from what the native client already inherits from the project:
 
 ```sh
-git clone https://github.com/ebowman/domestique.git ~/.local/share/domestique
-ln -sf ~/.local/share/domestique/domestique.sh ~/.local/bin/domestique.sh
-alias dom="$HOME/.local/bin/domestique.sh"          # add to ~/.zshrc or ~/.bashrc
-alias dom-guest="$HOME/.local/bin/domestique.sh --guest"  # guest installs (see below)
-# then, in any repo:
-dom --platform codex --with-beads
+bash ./domestique.sh --local /absolute/project --platform copilot
 ```
 
-The platform projections are deliberately separate:
+The target must already be an exact **physical Git worktree top-level**, not
+a subdirectory or symlinked destination. Local setup requires an installed,
+compatible global core and never installs/updates it implicitly. It creates
+only qualified local role files, receipts, private ownership metadata and
+exact private exclusions: no local skills, core body copies, root instruction
+policy, settings, index, hooks, `.gitignore` or Beads.
 
-- **Claude Code:** `CLAUDE.md` policy block,
-  `.claude/agents/{implementer,reviewer}.md`, and
-  `.claude/commands/{decompose,goal}.md`.
-- **Codex:** a policy block in an existing root `AGENTS.override.md`, or in
-  `AGENTS.md` when no override exists; custom agents at
-  `.codex/agents/{implementer,reviewer}.toml`; and namespaced repo skills at
-  `.agents/skills/domestique*/`. The goal skill's `agents/openai.yaml`
-  disables implicit invocation, so only an explicit `$domestique-goal`
-  authorizes unattended work.
+`--dry-run` performs preflight without destination writes. Tracked (including
+index-only), unknown, corrupt, unsafe or symlinked state refuses even with
+`--force`. Identical bytes alone never prove ownership.
 
-An explicit platform install adds that projection to domestique's persisted
-platform set. Later runs without `--platform` update the recorded set rather
-than guessing from installed binaries or arbitrary project files. A legacy
-provider state tree with no platform record implies that provider. `--platform codex`
-in a fresh repo creates no `.claude/` artifacts; use `--platform both` when
-you intentionally want both clients.
+### Updates from this checkout
 
-**Installing locally, per project, makes the agents yours to extend.** Since
-the config lands in your own repo rather than some shared global location,
-you're free to customize it: add MCP tools to an agent's frontmatter, adjust
-its prompt, or retune its `model:` pin. Re-running the installer to pick up
-upstream changes preserves those local edits via the 3-way merge described
-above — see [Upgrading](#upgrading) for the mechanics.
-
-### 2. Set the orchestrator session's model
-
-In Claude Code, Fable and Opus both work well as the orchestrator:
-
-```
-/model fable
-```
-
-(`/model opus` works too.) In Codex, select the main session model with its
-normal model control. Subagents remain pinned independently in their TOML
-files. Local edits to either platform's agent files survive upgrades through
-the same three-way merge path.
-
-### 3. Make sure beads is initialized in this repo
-
-This assumes `bd` is already installed (see "About beads", above). If you
-installed with `--with-beads`, `bd` was on your PATH, and it supports the
-required safe flags, this repo-level initialization is already done. Otherwise
-domestique warns and skips it. In normal mode, domestique initializes beads
-without allowing `bd init` to install agent files or hooks, then runs the
-recipe for each selected client. Equivalent manual setup is:
+Until published, always specify the local source:
 
 ```sh
-bd init --skip-agents --skip-hooks --non-interactive
-bd setup claude   # Claude projection
-bd setup codex    # Codex projection; run both recipes for --platform both
+bash ./update.sh --source ./domestique.sh --global
+bash ./update.sh --source ./domestique.sh --local /absolute/project
+# Preview only:
+bash ./update.sh --source ./domestique.sh --global --dry-run
 ```
 
-Guest mode is stricter: it uses
-`bd init --stealth --skip-agents --skip-hooks --non-interactive` and
-intentionally skips all provider setup recipes, because those recipes may
-modify host instructions, hooks, or tracked files. If the installed `bd` does
-not support the safe init flags, domestique skips initialization with a
-warning instead of weakening guest isolation.
+The updater defaults to remote **main**, not this preview. `--source PATH/URL`
+or `DOMESTIQUE_UPDATE_SOURCE` overrides that default. It previews first and
+does not apply after **any** failed preview. Scope/selection semantics match
+the installer; it is update-only, not an uninstall wrapper. There are no
+installer/updater model, MCP or tool configuration flags.
 
-**Verify it's wired up:** `bd ready` returns tasks (beads is live), and asking
-the orchestrator to "dispatch next ready bead" spawns the `implementer`
-subagent to do the work and the `reviewer` subagent to check it — rather than
-the orchestrator editing or verifying files itself.
+`--local TARGET --with-beads` (optionally `--state-only`, with no `--platform`
+for state-only) is recognized but **returns operational exit 1 before any
+writes**, even with dry-run or a combined profile request. The updater also
+refuses before source fetch/copy. Bare/global Beads requests, invalid
+combinations and `--purge-beads` are usage errors (exit 2). No readiness or
+ownership record is fabricated. Use `bash ./domestique.sh --help` and
+`bash ./update.sh --help` for current visible help.
 
-## Using domestique in a repo you don't own
+## Workflow definitions and intended invocation
 
-Working in someone else's repo (a client project, a coworker's service) but
-still want the loop? Pass `--guest`:
+These names match the current emitters. **The database-backed workflow below
+is future intent, usable only after a safe backend is available**; the
+present guard stops it. A table entry is not proof of discovery in a blocked
+native client.
+
+| Client | Load ordinary definition | Decompose significant work | Explicit unattended epic |
+| --- | --- | --- | --- |
+| Claude | `/domestique-claude` | `/domestique-claude-decompose <task>` | `/domestique-claude-goal <epic-id>` |
+| Codex | `$domestique-codex` | `$domestique-codex-decompose <task>` | `$domestique-codex-goal <epic-id>` |
+| Copilot | `/domestique-copilot` | `/domestique-copilot-decompose <task>` | `/domestique-copilot-goal <epic-id>` |
+
+Natural-language planning/base requests are allowed (for example, “use
+Copilot Domestique to discuss this plan”); they do not authorize database
+creation or unattended work. Copilot's emitted skills disable implicit model
+invocation, so do not assume automatic skill discovery/loading from that
+wording. Only an explicit **same-provider qualified goal trigger** authorizes
+unattended dispatch. Copilot's native `/goal` alias and `/autopilot` are **not
+Domestique authorization**. Loading goal text, vague intent, or another
+provider's syntax is not authorization either. Current private goal names
+differ from legacy `/goal` and `$domestique-goal`.
+
+The intended loop is **one implementer, wait, then one fresh reviewer**,
+never concurrent implementation/review. The orchestrator adjudicates the
+real diff and review, not just the implementer's report; only the orchestrator
+closes a passed bead. “Independent” means a separate fresh context, not a
+guaranteed stronger model or different vendor. Reviewers never call `bd`,
+including reads; they use supplied criteria/evidence. Ordinary work checks
+in between beads. Explicit goal authority is limited to one epic, a dedicated
+non-default branch and at most 15 closures; ambiguity, regression, repeated
+review/infrastructure failure and other core stop conditions return control.
+Source commits require user authorization. **Never push, merge, or commit
+private state/personal configuration.**
+
+## Where definitions live
+
+The exact core-root expression is
+`${DOMESTIQUE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/domestique}`.
+Use the same environment for later global updates/recovery. Roots must be
+absolute, canonical, nonsymlinked and safe for the invoking user.
+
+```text
+<core-root>/
+  releases/r-<sha256>/API
+  releases/r-<sha256>/SHA256SUMS
+  releases/r-<sha256>/roles/{orchestrator,implementer,reviewer,goal}.md
+  bin/resolve-core
+  active
+  state/global-manifest
+```
+
+Each immutable **Core API 1** release has exactly six files: API, checksums
+and four role bodies. The standalone helper is outside releases. It verifies
+the release and all role digests; a new workflow binds one release, then
+passes that literal binding to delegated roles instead of resampling `active`.
+Routing and database guards are separate from loading. Missing/incompatible
+core stops without embedded-policy or broader-role fallback.
+
+For the following paths, `{implementer,reviewer}` means the two role files,
+and `{,-decompose,-goal}` means the three skills:
+
+| Provider | Global native skills | Global native agents |
+| --- | --- | --- |
+| Claude | `$HOME/.claude/skills/domestique-claude{,-decompose,-goal}/SKILL.md` | `$HOME/.claude/agents/domestique-claude-{implementer,reviewer}.md` |
+| Codex | `$HOME/.agents/skills/domestique-codex{,-decompose,-goal}/SKILL.md` | `$HOME/.codex/agents/domestique-codex-{implementer,reviewer}.toml` |
+| Copilot | `$HOME/.copilot/skills/domestique-copilot{,-decompose,-goal}/SKILL.md` | `$HOME/.copilot/agents/domestique-copilot-{implementer,reviewer}.agent.md` |
+
+Codex goal also owns `agents/openai.yaml` under its skill directory, with
+implicit invocation disabled.
+
+| Provider | Optional project-local native agents |
+| --- | --- |
+| Claude | `.claude/agents/domestique-claude-local-{implementer,reviewer}.md` |
+| Codex | `.codex/agents/domestique-codex-local-{implementer,reviewer}.toml` |
+| Copilot | `.github/agents/domestique-copilot-local-{implementer,reviewer}.agent.md` |
+
+The exact native ID is the qualified filename stem, without `.md`, `.toml`
+or `.agent.md`. Each project owns `.domestique-private/manifest` and
+`.domestique-private/routing/<provider>.receipt` at its physical root.
+No local registry, receipt or lease is written in HOME/core/Git metadata.
+
+Routing binds implementer/reviewer independently: explicit global-only is a
+deliberate choice, never recovery. Otherwise local receipt/adapter evidence
+requires that exact local role. Broken required receipts, changed bound
+profiles, missing/colliding discovery or denied trust/capability **STOP**;
+they never silently fall back to global or broader tools. File/receipt
+validation is not native discovery proof.
+
+### Local tools/MCP metadata, not prompt copies
+
+Adapters are **complete native configurations**, not merged fields or a
+portable `extends` mechanism. Edit only provider-supported metadata while
+preserving the **exact emitted `name` and entire stable loader body** (Codex:
+the whole `developer_instructions` value). The following are **snippets for
+existing local implementers, not replacement files**:
+
+Claude frontmatter, above the preserved Markdown loader:
+
+```yaml
+name: domestique-claude-local-implementer
+tools: Read, Write, Edit, Bash, Glob, Grep
+```
+
+Copilot frontmatter, above the preserved Markdown loader:
+
+```yaml
+name: domestique-copilot-local-implementer
+tools: ["read", "search", "execute", "edit"]
+```
+
+Codex top-level metadata, above the preserved exact `name` and
+`developer_instructions` loader value (inline TOML keeps the loader at
+top-level rather than accidentally placing it inside an MCP table):
+
+```toml
+mcp_servers = { docs = { url = "https://docs.example.invalid/mcp" } }
+```
+
+The URL is a nonworking placeholder, not a service to run. Preserve
+`name = "domestique-codex-local-implementer"` and the existing top-level
+fields. For real edits consult the recorded official
+[Claude subagent](https://code.claude.com/docs/en/sub-agents)
+(`tools`, `mcpServers`),
+[Codex subagent](https://developers.openai.com/codex/subagents/)
+(`mcp_servers`), and
+[Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+(`tools`, `mcp-servers`) references for your installed version. There is no
+universal `tools`/MCP schema or automatic validator here.
+
+MCP **registration/authentication and tool allowlists are separate**. A tools
+list cannot register a server, authenticate it, grant trust or make an
+unavailable tool usable. No automatic execution or trust approval is implied.
+Do not put secrets in these examples, receipts, logs, backups or Beads.
+
+Owned edited metadata is allowed by runtime provenance checks, but requires
+fresh native confirmation of exact role ID, no collision, trust, read/shell
+capability and the active core protocol before delegation. Use the client's
+reload/new-process boundary; **no hot-swap guarantee** exists. The current
+native evidence does not verify role capability reload.
+
+**Installer refresh refuses edited native files untouched, even with force.**
+It never copies live edited metadata into snapshots, logs, `.bak` or `.new`
+files. Compatible global core updates do not rewrite local configs. A full
+prompt fork is user-maintained, outside shared-core upgrades, never silently
+relinked, and cannot qualify for core delegation after removing the protocol.
+
+### Models are native defaults or explicit session choices
+
+Current private emitters have **no model pins**: Claude retains native
+Anthropic defaults, Codex native OpenAI defaults, and Copilot inherits native
+personal subagent/parent selection with no Domestique pin. Historical Sonnet,
+Opus and `gpt-5.6`/Terra file pins are not current private defaults.
+
+An optional request such as “for this session only, use Terra for implementer
+and Astra for reviewer” is a **session role choice**, not a portable model ID
+or support claim. Confirm exact available native model/effort identifiers,
+state the mapping before dispatch, and use supported per-call/session controls.
+Never persist the request in agent files, settings, Beads or memory.
+Copilot `/subagents` personal settings are persistent, not an ephemeral way to
+make that request. If an explicitly requested choice is unavailable, stop
+without substitution; an incomplete vendor restriction needs clarification.
+Native precedence still applies. Copilot itself may fall back: Domestique's
+instruction is not hard vendor/billing enforcement. Avoid Auto when vendor
+selection matters.
+
+## Uninstall and recovery
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --guest
+bash ./domestique.sh --uninstall --global --dry-run
+bash ./domestique.sh --uninstall --global --platform copilot
+bash ./domestique.sh --uninstall --global
+bash ./domestique.sh --uninstall --local /absolute/project
 ```
 
-Or, with the clone-once setup from [Setup](#1-install-or-upgrade-the-config-in-your-repo),
-use the `dom-guest` alias in any repo:
+Without a selector removal uses that scope's persisted union. Only unchanged,
+positively owned selected leaves are removed. An edited selected provider is
+retained **whole**, with nonzero status even under force/dry-run; other clean
+selected providers may be removed. No live backup/rename/snapshot is made.
+Unknown, tracked, corrupt or symlinked state refuses rather than adopting,
+repairing or falling back to the old normal installer.
+
+**Global:** never crawls or edits projects. Final-provider removal removes
+owned core files and release history but leaves unproven empty containers,
+including the core root. Reinstall deliberately refuses that root without a
+valid manifest, even if empty. Stop writers, inspect the exact now-empty core
+containers and manually `rmdir` them bottom-up (release `roles/`, release
+directories, `releases/`, `bin/`, `state/`, then the core root as applicable).
+Use only exact inspected empty paths, never a broad root `rm -rf`, glob cleanup
+or secret-bearing backup. Leave native/host containers alone. Explicitly
+reinstall to the same root afterward; unchanged local loaders can then use it.
+See the [full recovery specification](docs/install-upgrade-design.md#implemented-global-format-preflight-and-recovery).
+
+**Local:** profile-only removal works even with a missing/unusable global
+core. Last-provider removal retains a valid `providers=none` manifest and
+its private-tree exclusion; a bare install rerun creates no agents.
+Explicit `--platform` reinstall reuses that attachment with a compatible
+global core. Do not delete the valid attachment as a normal reinstall step.
+Host `.beads/` and its visibility remain untouched. Database ownership,
+retention/purge and integrated final cleanup are not implemented;
+`--purge-beads` is unsupported.
+
+**Interruptions:** stop writers, retain `pending`/`published` and available
+provenance, and manually reconcile exact paths/digests and exclusion ownership
+before retry. Intent is not proof of completed creation/removal. Global
+journals live in core `state/`; all local recovery stays only in the project's
+`.domestique-private/`, protected by its owned private exclusion, never in a
+Git-common-dir sidecar. Pending state refuses ordinary reruns/default routing.
+Do not copy edited metadata into recovery or discard unexplained journals.
+Bounded shell revalidation is not cross-root atomicity, power-loss durability
+or protection against a hostile concurrent same-user writer.
+
+### Shared worktrees and legacy migration
+
+Private `info/exclude` rules are the exact owned native leaves and
+`/.domestique-private/`, accounted across every actual linked worktree.
+They never hide whole provider trees or unknown/preexisting patterns.
+Foreign rules outside managed blocks are preserved, not adopted. Missing or
+unreadable worktrees, same-path host collisions, unproven managed rules and
+host ignore negations can refuse the whole operation. No shared exclusion
+scheme protects future host files at the same path; stop writers and recheck
+after worktree/state changes. Concurrent destruction of exclusions can expose
+state and is not repaired by overwriting foreign rules.
+
+Legacy migration begins with inventory and a **dry-run plan**, through an
+explicit private invocation such as
+`bash ./domestique.sh --local /absolute/project --platform copilot --dry-run`.
+Only positively created, unchanged, untracked legacy leaves qualify for
+automatic removal. Active legacy root policy, modified/adopted assets and
+normal/mixed installs without whole-leaf proof require manual reconciliation,
+not silent shadowing. Missing/corrupt mode or ownership never means normal
+fallback. Broad historical excludes require manual ownership accounting;
+force never authorizes index, `.gitignore` or host-policy edits.
+Preserve retained legacy evidence privately; do not force-add it or commit
+personal state. Export of an existing eligible private Beads database is
+**future work only**, not a present workaround for the blocked backend.
+
+## Native evidence and validation
+
+The [.13 checkpoint](docs/install-upgrade-design.md#hq-b3q13-isolated-native-discovery-checkpoint-bounded-part-of-8)
+records the actual 2026-09-12 evidence: **12 native skill observations,
+8 blocked records, 0 assertion failures, 22 static-only records; exit 2**.
+All six local role files existed only in fixture A, but native local-role
+visibility in A, absence in B and global-role coexistence remain blocked for
+all clients. Skill description reload is not live core or role/MCP execution.
+**45 offline harness unit tests** passed; they are synthetic validation, not
+native acceptance.
+
+Contributor commands from the repository root (Bash/Git, ordinary filesystem
+utilities and Python 3.11+ for `tomllib`; no added test framework):
 
 ```sh
-dom-guest
+bash test/private-core.sh
+bash test/global.sh
+bash test/local-preflight.sh
+bash test/local-profiles.sh
+PYTHONDONTWRITEBYTECODE=1 python3 test/global-uninstall.py
+PYTHONDONTWRITEBYTECODE=1 python3 test/local-uninstall.py
+PYTHONDONTWRITEBYTECODE=1 python3 test/beads-guard.py
+PYTHONDONTWRITEBYTECODE=1 python3 -W error test/native-discovery-tests.py
+bash -n domestique.sh update.sh
+shellcheck --severity=warning domestique.sh update.sh
+git diff --check
 ```
 
-**What it guarantees.** Nothing domestique creates lands in the repo's
-tracked history. Guest mode never edits `.gitignore`; it writes a managed
-block in
-`<git-common-dir>/info/exclude`, the local never-committed sibling of
-`.gitignore`. Resolving the Git common directory makes the same guarantee in
-a worktree. A fresh guest install in a previously clean repository, including
-one using the safe `--with-beads` path, leaves `git status` clean.
+Current suites use isolated fixtures; executable guards are offline evidence.
+The five shell suites `test/{upgrade,guest,uninstall,codex,copilot}.sh` use
+the pinned **b60feef OFFLINE historical installer** via
+`test/historical-fixture.sh`. They test retired formats/behavior, not current
+production CLI acceptance. Migration fixtures also use that historical source.
 
-The two clients achieve that isolation differently:
-
-- **Claude guest:** the policy goes into `CLAUDE.local.md`; tracked
-  `CLAUDE.md` is never read, changed, or backed up. Claude agents, commands,
-  and state are excluded by the compatibility entries `CLAUDE.local.md` and
-  `.claude/`; this legacy broad `.claude/` entry can also hide pre-existing
-  untracked content below that directory. `.beads/` is excluded only when domestique
-  created it through the safe guest initialization path.
-- **Codex guest:** both `AGENTS.md` and `AGENTS.override.md` are always left
-  byte-untouched. Codex has no additive local project-instruction file, and
-  creating an override would shadow the host's `AGENTS.md`. Domestique
-  therefore installs only the two custom agents and the namespaced skills,
-  excluded at their exact paths, with provider state under
-  `.codex/.domestique`. Start each new Codex session with `$domestique`.
-  Operational skills are self-contained; the base skill can also match
-  “dispatch next ready bead” and “land the plane.” This is functional guest
-  support, not a claim that Codex automatically loads domestique policy at
-  session startup.
-
-Codex guest excludes are intentionally narrow: domestique does not hide an entire
-pre-existing `.agents/` or `.codex/` tree, and it does not newly hide a path
-that was already untracked before installation. It also does not add broad
-`*.new` or backup-suffix patterns. A tracked collision cannot
-be hidden by `info/exclude`; domestique reports it instead of claiming a
-clean install. If the target is not a Git repository, the exclude step is
-skipped with a warning and the remaining guest install can proceed.
-
-Examples:
+Opt-in native metadata harness:
 
 ```sh
-dom --guest                         # Claude guest (legacy default)
-dom --guest --platform codex        # Codex skills-only guest
-dom --guest --platform both         # both local projections
-dom --guest --platform codex --with-beads
+PYTHONDONTWRITEBYTECODE=1 python3 test/native-discovery.py --run
 ```
 
-**Sticky mode and platform selection.** Guest mode is recorded separately in
-each installed provider's state (`.claude/.domestique` and/or
-`.codex/.domestique`). Re-running without `--guest` or `--no-guest` respects
-that state, as does `update.sh`. The persisted platform set likewise makes a
-selector-less rerun update the already installed provider set. Pass
-`--no-guest` to convert deliberately; Claude prints guidance for folding any
-`CLAUDE.local.md` customization into `CLAUDE.md`, while Codex begins managing
-the active root AGENTS file. Nothing is auto-migrated. Passing `--guest` and
-`--no-guest` together remains a usage error.
+The observed/expected current result is **exit 2 (blocked)**, not 0/full-ready.
+Without `--run`, it makes no native calls and returns STATIC_ONLY/exit 2.
+It uses only existing installed tools and macOS `sandbox-exec`; unavailable
+clients/isolation stop rather than installing tools or weakening isolation.
+Temporary physical HOME/XDG/core and two Git roots, an allowlisted environment,
+denied network/Keychain access and bounded subprocess lifetimes isolate the
+probe. No model, auth, native MCP, trust setup or Beads commands are invoked.
+See the checkpoint for exact interfaces, limits and counts.
 
-## Unattended epic mode
+## Current authority and history
 
-Claude uses `/decompose` and `/goal <epic-id>`; Codex uses
-`$domestique-decompose` and `$domestique-goal <epic-id>`. The goal workflow
-drains one beads epic to
-completion by repeatedly running the implementer → reviewer loop **without
-stopping between beads**. The platform's explicit goal invocation is the
-only thing that lifts the default check-in-between-beads rule (see
-[The loop](#the-loop), above), and only within strict bounds. The Codex goal
-skill cannot be invoked implicitly.
+[Install/upgrade design](docs/install-upgrade-design.md) separates current
+implemented behavior from historical normal/guest design and blocked future
+acceptance. Historical PRDs remain references, not competing setup directions.
 
-**Authorization is scoped and temporary.** A goal invocation is
-the sole thing that authorizes continuous, unattended dispatch — and only
-across that epic's beads. It expires the instant the epic completes or any
-stop condition fires, and it never carries over to another epic or a later
-session.
-
-**Safety comes from branch isolation and the same invariants, held harder.**
-Before touching anything, the orchestrator creates or switches to a dedicated epic
-branch (e.g. `epic/<epic-id>`) and never commits to the default branch for
-the rest of the run — it never merges or pushes that branch either; that's
-yours to do (see below). Within the run, the core invariants still hold:
-one bead in flight at a time, one commit per bead (never batched), and never
-close a bead the reviewer didn't pass. A hard ceiling stops the run after 15
-beads closed in one go, even if the epic isn't finished, as a runaway-loop
-backstop rather than a target.
-
-**Stop conditions halt the loop immediately** and hand control back to you:
-a bead failing review twice, any full-suite regression, a decision needing
-operator input (spec ambiguity, scope change, unsettled UX/semantics), anything
-requiring a push, a config change, or touching files outside the project, or
-two consecutive infrastructure/API errors. On completion, on hitting the
-ceiling, or on any stop condition, the orchestrator runs the full test suite once more,
-summarizes beads closed and commits made, land-the-planes as usual, and
-reports anything needing push/merge authority as a proposed command for you
-to run — never executing it itself.
-
-```
-# Claude Code
-/decompose Add rate limiting to the public API
-/goal <epic-id>
-
-# Codex
-$domestique-decompose Add rate limiting to the public API
-$domestique-goal <epic-id>
-```
-
-When goal execution stops — completion, ceiling, or a stop condition — review the
-epic branch's diffs and commit history, then merge the epic branch into main
-by hand, or explicitly ask your coding client to do it.
-
-## Safety & idempotency
-
-- **Your project instructions survive.** In normal mode, everything outside
-  the managed block in `CLAUDE.md`, `AGENTS.md`, or `AGENTS.override.md` is
-  preserved byte-for-byte. Codex guest mode never touches either AGENTS file.
-- **Backups.** Policy files are backed up before modification, including
-  under `--force`; plain managed files follow the documented merge/force
-  rules.
-- **Run it twice** and the second run makes no changes (and creates no new
-  backup).
-- **`--dry-run`** computes and prints the full plan while touching nothing.
-
-## Installer usage
-
-```
-domestique.sh [TARGET_DIR] [options]
-
-Options:
-  --platform P   Select claude, codex, or both. A new selector-less install
-                 defaults to claude; later selector-less runs use persisted
-                 selection.
-  --dry-run      Print planned changes; touch nothing.
-  --with-beads   Initialize beads with agent/hook writes disabled. Normal
-                 mode then runs setup recipes for selected providers; guest
-                 mode skips provider setup to preserve isolation.
-  --force        Overwrite differing managed plain files instead of merging;
-                 policy files are still backed up before modification.
-  --guest        Install local-only state for a repo you don't own. Claude
-                 uses CLAUDE.local.md; Codex uses skills only and leaves both
-                 AGENTS files untouched.
-  --no-guest     Convert an existing guest install back to normal. Mutually
-                 exclusive with --guest.
-  --uninstall    Remove everything domestique installed (see "Uninstalling",
-                 below). Add --platform for a scoped uninstall; omit it to
-                 scan all managed providers.
-  --purge-beads  Only valid with --uninstall: also remove TARGET_DIR/.beads.
-  --help, -h     Show this help.
-```
-
-Run `domestique.sh --help` for the full option reference, including exact
-behavior notes for each flag.
-
-The installer is a single self-contained Bash script with every Claude and
-Codex template embedded — no network access is needed beyond fetching the
-script itself.
-
-## Uninstalling
-
-```sh
-dom --uninstall path/to/repo            # remove all managed providers
-dom --uninstall --platform codex path/to/repo  # remove only Codex
-dom --uninstall --dry-run path/to/repo  # preview only
-dom --uninstall --purge-beads path/to/repo   # also remove .beads/
-```
-
-(`dom` is the alias from [Setup](#1-install-or-upgrade-the-config-in-your-repo),
-above; substitute your own `domestique.sh` invocation and TARGET_DIR as
-needed — TARGET_DIR defaults to the current directory.)
-
-`--uninstall` removes exactly what domestique installed, and nothing else.
-Without `--platform`, it scans both provider inventories. With a platform it
-removes only that projection, updates the persisted platform set, and
-regenerates the shared guest-exclude union for anything still installed.
-Claude ownership covers its four `.claude/` files and policy destinations;
-Codex ownership covers the two `.codex/agents` files, three namespaced
-`SKILL.md` leaves plus goal metadata, and any managed normal-mode AGENTS block.
-Provider state is removed only for the selected projection. `.beads/` is
-never removed unless you pass `--purge-beads`.
-
-Parent directories such as `.claude/agents`, `.codex/agents`, and
-`.agents/skills` are pruned only when empty. A Codex uninstall never removes
-an entire user-owned `.codex/` or `.agents/` tree.
-
-**Safety-compared, not blindly deleted.** Each managed Claude or Codex plain
-file is compared against its provider's recorded base snapshot (or the
-pristine emitted content if no snapshot exists) before removal. Domestique
-first requires ownership evidence: that provider's state tree or a managed
-policy marker. A fixed inventory pathname alone is never enough. Untouched files are deleted
-outright; files you've hand-edited are kept, renamed to
-`<file>.uninstalled.<timestamp>`, unless you pass `--force`. This removal
-applies only to paths domestique created; an adopted, pre-existing Codex file
-is left at its original path. For policy files, a managed block that was never modified is
-stripped with no backup (the file is deleted outright if stripping it leaves
-nothing behind); a modified block is backed up to `<file>.bak.<timestamp>`
-first.
-
-**Marker-sanity refusals.** If a Claude or Codex policy file's managed-block markers are
-duplicated, mismatched, or in the wrong order, `--uninstall` refuses to touch
-that file — it's reported under `Conflicted`, the run exits `3`, and the file
-is left byte-untouched. Other files still get uninstalled normally; only the
-corrupt one is skipped.
-
-**The round-trip guarantee.** For the common case — a `--guest` install into
-an otherwise-clean repo, with nothing touched by hand afterward, followed
-immediately by `--uninstall` — every installed file is deleted outright, the
-exclude block is fully stripped back out, and the repo returns to
-byte-for-byte clean `git status`, for Claude, Codex, or both. Safe guest
-`--with-beads` never runs provider setup recipes, but `.beads/` is deliberately
-preserved on uninstall and becomes visible again unless `--purge-beads` is
-also passed. If you modified an installed file first,
-that file is deliberately preserved instead of deleted (renamed to
-`<file>.uninstalled.<timestamp>`), so it will show up as untracked in
-`git status` afterward — this is by design (see "Safety-compared, not
-blindly deleted", above), not a broken round trip. Real output from a
-Claude `--guest` install immediately followed by `--uninstall` in a fresh
-scratch repo (Codex reports its own agent, skill, and state paths instead):
-
-```
-$ domestique.sh --guest .
-domestique: installing into . (platforms=claude)
-domestique: platform=claude mode=guest policy=CLAUDE.local.md
-
-Summary:
-  Created:
-    - ./CLAUDE.local.md
-    - ./.claude/agents/implementer.md
-    - ./.claude/agents/reviewer.md
-    - ./.claude/commands/decompose.md
-    - ./.claude/commands/goal.md
-  Updated:
-    - ./.git/info/exclude (managed block)
-Done.
-
-$ git status
-On branch main
-nothing to commit, working tree clean
-
-$ domestique.sh --uninstall .
-domestique: uninstalling from . (platform=all)
-
-Summary (uninstall):
-  Removed:
-    - ./.claude/agents/implementer.md
-    - ./.claude/agents/reviewer.md
-    - ./.claude/commands/decompose.md
-    - ./.claude/commands/goal.md
-    - ./CLAUDE.local.md
-    - ./.git/info/exclude (managed block)
-    - ./.claude/.domestique
-Done.
-
-$ git status
-On branch main
-nothing to commit, working tree clean
-```
-
-and `.claude/` no longer exists at all. A scoped Codex uninstall leaves the
-Claude projection and its exclusion entries intact, and vice versa.
-
-## Upgrading
-
-Re-running the installer 3-way-merges your local edits against upstream
-changes instead of overwriting them.
-
-**How it works.** Every install/upgrade records a provider-specific base
-snapshot: `.claude/.domestique/` for Claude and `.codex/.domestique/` for
-Codex. Each holds pristine copies of what was last installed, managed policy
-block bodies, the persisted platform set, and a manifest of the provider's
-actual owned inventory. The next time you run the installer, it does a
-**3-way merge** (`git merge-file`) between your current file (yours), that
-snapshot (base), and the newly emitted content (upstream).
-If your edits and upstream's changes don't overlap, the merge is clean: your
-edits and the new upstream content are both applied, and the snapshot
-advances so the next upgrade merges from here.
-
-**On conflict.** If the same lines changed on both sides, the merge can't
-reconcile them automatically. In that case domestique:
-- leaves your live file (e.g. `implementer.md`, or `CLAUDE.md`) **untouched**,
-- writes the merge result, conflict markers and all, to `<file>.new` (for
-  `CLAUDE.md` this is `CLAUDE.md.new`; an AGENTS policy conflict follows the
-  same naming rule),
-- backs up your current file to `<file>.bak.<timestamp>`,
-- and exits **3** so scripts/CI notice.
-
-To resolve: open `<file>.new`, reconcile the conflict blocks by hand, copy
-the result over the live file, then delete the `.new`. Re-run the installer
-once you're done to refresh the snapshot. The conflicts use `diff3` style,
-so each block has four parts — `<<<<<<<` your version, `|||||||` the
-original base, `=======`, and `>>>>>>>` the incoming upstream version;
-delete the markers and the sections you don't want.
-
-**Policy-file specifics.** Only the managed block (between the
-`<!-- BEGIN domestique (managed) -->` / `<!-- END domestique -->` markers) is
-ever merged or replaced. This applies to `CLAUDE.md`, `CLAUDE.local.md`, and
-the active normal-mode `AGENTS.md` or `AGENTS.override.md`. Everything outside
-the markers is preserved byte-for-byte. Codex guest mode is the exception by
-design: it never reads or writes either root AGENTS file.
-
-**`--force` and `--dry-run`.** `--force` skips the merge entirely and takes
-upstream verbatim, discarding local edits to that file (policy files are still
-backed up first). `--dry-run` computes and prints the full plan —
-including what a merge or conflict would do — without writing anything.
-
-**First upgrade of a legacy install.** The 3-way merge needs a base snapshot
-to diff against. If a managed file or policy block predates the snapshot
-feature (no provider-state base entry for it
-yet) and differs from what domestique would emit, that first upgrade
-**adopts** it instead of overwriting it: domestique seeds the base snapshot
-from the pristine emitted content and leaves your live file **untouched** —
-no `.bak` is written, because nothing was changed. It reports the file under
-an "Adopted" heading as *"local edits preserved; re-run to merge upstream"*.
-This is default behavior, not a flag — there's nothing to opt into.
-
-That means an existing, customized install (say, an `implementer.md`, Codex
-agent TOML, or skill with local changes) is brought under management on the very next
-`domestique.sh` run without losing anything: nothing merges and nothing is
-overwritten on the adoption run itself. Run the installer again afterward
-and upstream changes merge normally against the newly-seeded base — your
-edits are kept, upstream's changes are applied, and if the same lines
-changed on both sides you get an ordinary conflict: `<file>.new` written,
-`.bak` taken, the live file left untouched, and exit `3`, exactly as
-described above. Adoption never silently loses local edits, and it never
-silently drops upstream changes either — a conflict is always surfaced,
-never swallowed.
-
-`.claude/.domestique/` and `.codex/.domestique/` are domestique's own
-provider bookkeeping. Normal installs may track them as part of the project;
-guest installs exclude only the relevant provider state locally.
-
-## Updating from GitHub
-
-`update.sh` is a thin wrapper that fetches the latest `domestique.sh` and
-runs it through the same merge path above:
-
-```sh
-./update.sh                       # update current directory
-./update.sh path/to/repo          # update a specific target
-./update.sh --dry-run             # preview only, applies nothing
-./update.sh --force               # discard local edits, take upstream verbatim
-./update.sh --platform codex      # explicitly update/add the Codex projection
-./update.sh --platform both       # update/add both projections
-./update.sh --source ./domestique.sh   # use a local file instead of GitHub
-```
-
-The source defaults to the `main` branch on GitHub and can be overridden with
-`--source <path|url>` or the `DOMESTIQUE_UPDATE_SOURCE` env var. It's safe to
-run on a schedule (e.g. cron or a periodic CI job): `update.sh` forwards an
-explicit `--platform`, while a selector-less update relies on the target's
-persisted platform set (a provider state tree without a platform marker
-implies that provider). It always previews with
-`--dry-run` first, then applies, and exits:
-- `0` — applied cleanly, or already up to date.
-- `3` — one or more files hit a merge conflict; check the `.new`/`.bak`
-  files and resolve by hand as described above.
-- `4` — couldn't fetch or validate the source `domestique.sh`; nothing was
-  touched.
-
-## Testing the installer itself
-
-The self-contained suites cover install/upgrade merges, guest mode, Codex,
-mixed-platform state, Beads routing, and uninstall. They require only a shell
-and `git` (plus any suite-specific fake command fixtures):
-
-```sh
-bash test/upgrade.sh     # 12 scenarios: fresh install, merges, conflicts, adopt
-bash test/guest.sh       # 14 scenarios: --guest, sticky mode, --no-guest, worktrees
-bash test/uninstall.sh   # 23 scenarios: --uninstall, --purge-beads, round-trip, marker refusals
-bash test/codex.sh       # 16 scenarios: Codex, platforms, guest, Beads, updater, uninstall
-```
+Parent-approved reconciliation has **deferred**, not completed/closed or
+reparented, `hq-2su` and its unfinished `.3`–`.7`, `hq-e7f`, and `hq-4oh.15`.
+Completed `hq-2su.1/.2` remain closed history; commits `2896937`/`58f4d29`
+are reused. Draft #11 remains untouched, unmerged and unpushed.
+The [mapping and approved deferral](docs/install-upgrade-design.md#old-plan-disposition-parent-approved-deferral)
+retain .6 initialization blocked, .7 database cleanup open, and .8 full
+acceptance open. This .9 documentation describes implemented preview behavior
+and limited .13 evidence now; it does not declare old criteria fulfilled or
+the release complete.
 
 ## License
 

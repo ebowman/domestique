@@ -2981,12 +2981,19 @@ Usage: domestique.sh --global [options]
        domestique.sh --local TARGET [options]
        domestique.sh [TARGET] [options]  (same private local operation; default .)
 
+IMPLEMENTED PREVIEW: definitions/profile lifecycle, NOT end-to-end readiness.
+Private Beads initialization is unsupported; ALL database guards STOP, including
+decompose and goal. Full native role/tool/MCP execution is not verified.
+
 --global installs private user-native skills/roles and the shared API-1 core.
+One-time setup from this checkout: bash ./domestique.sh --global --platform copilot
+Global never touches projects or implicitly sets up clients/plugins/auth/MCP.
 --local installation requires an existing physical Git top-level and compatible
 global core. It creates only exact provider-qualified native local roles plus private
 metadata/exclusions; never home, root policy, settings, skills, or Beads.
 
   --platform P  claude, codex, copilot, both, claude-copilot, codex-copilot, all
+                both = Claude+Codex; all = all three; other pairs as named.
                 Install: additive union; default Claude, then persisted union.
   --dry-run     Full preflight without destination writes.
   --force       Never overrides edits, unknown ownership, or unsafe paths.
@@ -2999,133 +3006,36 @@ metadata/exclusions; never home, root policy, settings, skills, or Beads.
   --with-beads  Explicit --local TARGET only; initialization is UNSUPPORTED.
   --state-only  Requires --local TARGET --with-beads; conflicts with --platform.
                 Valid requests fail operationally BEFORE any writes.
+  --purge-beads Unsupported; refuses (exit 2), even with uninstall/force.
   --help, -h    Show help.
 
 Edited owned local native tools/MCP metadata is usable after native reload/
 trust/core-protocol confirmation, but automatic refresh refuses and leaves edits
 untouched even with force. No secrets/backups/merges; full prompt forks stay user-owned.
-Missing/old helper: repair with bash domestique.sh --global before installation
-or use; local profile uninstall does not read or require global assets.
+Missing/old helper: repair with bash ./domestique.sh --global from this checkout
+before installation or use; local profile uninstall does not require global assets.
 Beads 1.1.2 --stealth writes broad Git policy and may rewrite root .gitignore;
 no supported skip-Git-policy switch or certified private backend exists.
 Installing bd or adding skip flags does not solve this. No bd probes run.
+Existing host .beads is never adopted just because it looks ready. No unsafe
+init/rollback, bd setup, or force bypass. Definition loading/routing is separate.
 Purge and uninstall with initialization flags refuse early; Beads retention/purge
 is future work. Host .beads is untouched. No legacy fallback/model/MCP/tool flags.
 Local removal retains a valid providers=none attachment after the last profile,
 with its existing private-tree exclusion. Bare reinstall creates no adapters;
 explicit --platform reuses that attachment and requires a compatible global core.
 Unproven native containers stay untouched; final private-state cleanup is future
-work. Interrupted removal fails closed; retain pending/published only in the
+work. Interrupted local removal fails closed; retain pending/published only in the
 repository's .domestique-private and reconcile exact leaves/exclusions manually.
-EOF
-}
-
-legacy_usage() {
-  cat <<'EOF'
-Usage: domestique.sh [TARGET_DIR] [options]
-       domestique.sh --global [--platform P] [--dry-run] [--force] [--guest]
-
-Explicit --global installs private native user skills/agents and the shared
-API-1 core; no target or repository writes. Default Claude; additive persisted
-provider union. Also accepts claude-copilot and codex-copilot. --guest is a
-deprecated no-op here. Unknown or edited native assets refuse even --force.
---with-beads, --purge-beads, --no-guest and targets are invalid with --global.
-Global uninstall uses the private owned-only path; local uninstall/purge is future work.
-Without --global, the legacy project behavior below is unchanged (never an
-implicit home installation).
-
-Installs domestique orchestration config into TARGET_DIR (default: current
-directory). Claude is the compatibility default; Codex and Copilot use native surfaces:
-  CLAUDE.md                        orchestration policy (in a managed block)
-  .claude/agents/implementer.md    implementer subagent
-  .claude/agents/reviewer.md       reviewer subagent
-  .claude/commands/decompose.md    /decompose command
-  .claude/commands/goal.md         /goal command
-  AGENTS.md or AGENTS.override.md  Codex policy (normal mode, managed block)
-  .codex/agents/*.toml             Codex implementer and reviewer
-  .agents/skills/domestique*/      Codex workflow skills
-  .github/agents/domestique-*.agent.md       Copilot custom agents
-  .github/skills/domestique*/SKILL.md        Copilot workflow skills
-  .github/copilot-instructions.md             Copilot policy (normal mode)
-
-Options:
-  --platform <p> Select claude, codex, copilot, both, or all. A fresh selector-less install
-                 remains Claude-only. Explicit installs add to the persisted
-                 provider set; later selector-less runs update that set.
-  --dry-run      Print planned changes; touch nothing.
-  --with-beads   If `bd` is on PATH, initialize with safe skip flags when
-                 needed. Normal mode runs setup only for selected providers;
-                 guest mode uses --stealth and never runs provider setup.
-  --force        Overwrite differing provider files without a .bak backup.
-                 Managed policy files are always backed up before change.
-  --guest        Use personal/guest mode. Claude routes policy to
-                 CLAUDE.local.md; Codex leaves both root AGENTS files
-                 untouched and bootstraps through `$domestique` skills.
-  --no-guest     Convert an existing guest install back to normal: removes
-                 the sticky guest-mode marker and prints by-hand conversion
-                 guidance where needed, removes stale guest excludes, and
-                 installs the normal policy destination. A no-op note if the
-                 target isn't a guest install. Mutually exclusive with
-                 --guest (passing both is a usage error).
-  --uninstall    Remove everything domestique installed from TARGET_DIR, and
-                 only that. With --platform it removes only the selected
-                 projection; without it, it scans both. Modified owned files
-                 are kept as <file>.uninstalled.<timestamp> unless --force.
-                 Managed policy/exclude blocks and provider state are removed,
-                 and only empty owned directories are pruned. Never touches
-                 .beads/ (see --purge-beads). Combinable only with
-                 --platform, --dry-run, --force, --purge-beads, and TARGET_DIR;
-                 combining with --guest, --no-guest, or --with-beads is a
-                 usage error.
-  --purge-beads  Only valid with --uninstall: also `rm -rf` TARGET_DIR/.beads.
-                 Without --uninstall this is a usage error.
-  --help, -h     Show this help.
-
-Behavior:
-  * Existing provider files that differ are backed up to <file>.bak.<timestamp>
-    before overwriting (unless --force). Identical files are left untouched.
-  * CLAUDE.md: created if absent; if it has the managed markers only the
-    content between them is replaced; otherwise the block is appended and all
-    existing content is preserved verbatim. Always backed up before change.
-  * --guest: for installing into a repo you don't own, for personal use only.
-    The managed policy block is written to CLAUDE.local.md instead of
-    CLAUDE.md. A tracked CLAUDE.md is never read, modified, or backed up in
-    this mode. If CLAUDE.md already carries a non-guest domestique install,
-    a warning is printed and CLAUDE.md is left untouched. Everything guest
-    mode creates is also kept out of `git status`: a managed block is added
-    to <git-common-dir>/info/exclude (resolved via `git rev-parse
-    --git-common-dir`, so this works correctly from a worktree too) listing
-    provider-local entries. Claude keeps its legacy `CLAUDE.local.md` and
-    broad `.claude/` entries; Codex lists only exact domestique-owned leaves
-    and state. `.beads/` is added only when domestique's safe guest
-    initialization created it; broad backup and `.new` suffix patterns
-    are never added. Pre-existing visible Codex paths remain visible across
-    reruns and scoped uninstall. If an owned path is already tracked, a
-    warning is printed (an exclude can't hide it). `.gitignore` itself
-    is never read, written, or otherwise touched by guest mode. A non-git target
-    directory prints a warning and skips the exclude step entirely (guest
-    install of the rest still proceeds). Net effect: a --guest install
-    followed by --uninstall returns the host repo to byte-for-byte clean
-    git status, provided nothing installed was modified by hand (modified
-    files are preserved as <file>.uninstalled.<timestamp> and show up as
-    untracked) and no preserved `.beads/` workspace remains (use
-    --purge-beads to remove one).
-  * Guest mode is sticky per provider: a guest install writes a mode marker
-    in that provider's domestique state. A later plain re-run detects it and
-    stays in guest mode instead of silently un-guesting the install; pass
-    --no-guest to convert
-    back to normal on purpose.
-  * Running twice in a row makes no changes on the second run.
-  * Pre-existing install with no provider snapshot yet
-    and a differing file: ADOPTED, not overwritten — local edits are left in
-    place and the base snapshot is seeded from the pristine emitted content
-    (not the edited file) so the next run 3-way-merges in upstream changes
-    while keeping the edits. Use --force to overwrite verbatim instead.
-
-Periodic updates:
-  Use update.sh to fetch the latest domestique.sh from GitHub and re-run it
-  against a target directory via this same merge path (see
-  docs/install-upgrade-design.md §5). Run `./update.sh --help` for details.
+Global recovery journals remain only in core state/; see the recovery specification.
+Global final removal leaves unproven empty core containers; before reinstall,
+stop writers, inspect and rmdir only exact empty core containers bottom-up.
+Never broad-delete roots or copy edited metadata. See README recovery guidance.
+Preview updates: bash ./update.sh --source ./domestique.sh --global
+Default remote updater source is main, NOT this preview; draft #11 lacks it too.
+Native .13: Codex 0.154.0/Copilot 1.0.83 global skills and metadata reload observed;
+Claude 2.1.268 skills and ALL roles blocked, not evidence of product role absence.
+Versions observed only, not minimum support. .6 blocked; .7 DB cleanup/.8 execution open.
 EOF
 }
 

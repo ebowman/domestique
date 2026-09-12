@@ -1,6 +1,34 @@
-# Install/upgrade design: 3-way merge for local edits
+# Install/upgrade design: current private preview and historical contracts
 
-## Problem
+## Reading this document
+
+**Current authority is the implemented private preview on `epic/hq-b3q`,
+not the historical normal/guest installer.** The original Problem, sections
+1–7 and their residual-risk notes below describe historical three-way merge,
+normal/guest and purge behavior. They are retained for design/migration
+reference, **not current setup, force, initialization or removal instructions**.
+Historical PRDs likewise remain historical. Start with the
+[README](../README.md) for current usage and the
+[private contract](#current-private-globallocal-contract-hq-b3q-implemented-preview-with-blocked-work)
+for exact formats/recovery. `main` and draft PR #11 do not contain this preview.
+
+| Area | Current authority / status |
+| --- | --- |
+| Shared core and global definitions | .2/.3 implemented: immutable six-file Core API 1 releases and standalone helper; global-first, no project writes |
+| Private local safety/profiles | .4/.5 implemented: physical Git root, exact ownership/exclusions, qualified roles/receipts, runtime routing separate from database eligibility |
+| Beads operations | .10 implemented fail-closed guard; **every current case stops**, including decompose and goal; .6 safe private initialization **blocked** |
+| Removal | .11 global and .12 local profile-only implemented; .7 database retention/purge and integrated final cleanup **open** |
+| Native evidence | .13 limited discovery/skill metadata reload observed; exact counts below. Claude skills and all roles blocked; full role/tool/MCP execution acceptance .8 **open** |
+| Documentation | .9 approved **now** against implemented preview and .13 evidence, explicitly deferring blocked full .8; not a release-complete claim |
+| Old plans | Parent-reconciled **deferred**, not completed/closed/reparented; see final disposition table |
+
+Within the private section, checkpoint accounts record what existed **at that
+checkpoint**. Their older “future” statements are superseded by this table and
+later implemented checkpoints, not competing active instructions. Future Beads
+formats/acceptance are expressly labelled and are not accepted by current
+parsers. No successful private database backend or end-to-end workflow is claimed.
+
+## Historical problem (normal/guest installer)
 
 `install_plain` today: missing → write; differs → backup `.bak.<ts>` + overwrite
 (unless `--force`); identical → skip. `install_claude_md` today: managed-block
@@ -517,7 +545,7 @@ its exact exclude entries.
 
 ---
 
-## Residual risks and resolved decisions
+## Historical residual risks and resolved decisions
 
 - `--force` remains discard-local-and-take-upstream; there is no separate
   force-merge mode.
@@ -538,16 +566,15 @@ its exact exclude entries.
 
 ---
 
-## Future private global/local contract (hq-b3q; not current installer behavior)
+## Current private global/local contract (hq-b3q; implemented preview with blocked work)
 
-**Status and boundary.** This section is the approved-direction design for the
-private-only replacement, to be implemented on `epic/hq-b3q` from
-`58f4d29` (which includes the reviewed Copilot payload commit `2896937`).
-It does not describe the legacy implementation above as if it had already
-changed. `main` remains unchanged; this plan neither merges/pushes draft PR
-#11 nor rewrites completed history. “Private” is the sole ownership mode in
-this contract: global and local are distribution scopes, not normal versus
-guest modes.
+**Status and boundary.** The private-only replacement is implemented in this
+checkout for core/global/local profile lifecycle, with the blocked/open
+boundaries in the authority table above. It builds on `58f4d29` (including
+reviewed Copilot payload commit `2896937`). `main` and draft PR #11 do not
+contain these changes; neither is merged/pushed or rewritten here. “Private”
+is the sole ownership mode: global and local are distribution scopes, not
+normal versus guest modes. The old dual-mode prescriptions are retired.
 
 **Historical hq-b3q.3 CLI checkpoint (superseded by .5/.10/.11 below):**
 only explicit `--global` install/update was
@@ -606,8 +633,11 @@ resolve-core beads-guard CORE PHYSICAL_WORKTREE REQUIRED_RELEASE
 Its capability declaration is the exact line
 `# beads_guard_api=1 (metadata-only eligibility; no certified backend)`.
 Wrappers check it before invoking the operation; missing/old helper stops
-with an explicit `bash update.sh --global` remedy using the same
-`DOMESTIQUE_HOME`, then reload. This does not silently update anything.
+with an explicit `bash update.sh --global` diagnostic using the same
+`DOMESTIQUE_HOME`, then reload. **For this unpublished preview, use
+`bash ./update.sh --source ./domestique.sh --global` from this checkout**:
+the updater's default remote source is main, not this preview. The diagnostic
+does not silently update anything.
 The guard receives the parent's **literal release**, never samples `active`,
 validates the bound release and exact physical Git root, checks state paths
 and index-only objects/ancestors, and uses the existing strict private
@@ -646,6 +676,9 @@ test/beads-guard.py`, alongside all four current suites and the clearly
 historical offline fixtures.
 
 #### hq-b3q.11 explicit global removal checkpoint
+
+Historical checkpoint account of the implemented global removal feature;
+its then-future local removal statements are superseded by .12.
 
 `bash domestique.sh --uninstall --global [--platform P] [--dry-run] [--force]`
 now removes only positively owned global native leaves, plus shared core
@@ -922,6 +955,10 @@ The JavaScript launchers used resolved Node
 inside the fixtures/sandbox. Copilot's unpacked builtin cache and Codex's
 system-skill sources were under temporary HOME, never the real session store.
 
+These versions are observations, not minimum support requirements or evidence
+that the products lack roles. The blocked classifications concern only the
+safe non-model interfaces available to this harness.
+
 **A/B and reload evidence.** Current `--global --platform all` leaves both
 initial Git snapshots unchanged. Codex natively lists `domestique-codex`,
 `domestique-codex-decompose`, `domestique-codex-goal`, scope `user`, from
@@ -958,7 +995,7 @@ or actual Beads goal/decompose work. .6 private Beads initialization remains
 blocked by upstream privacy, .7 database retention/purge remains future work,
 and those execution/trust criteria of .8 remain open.
 
-#### hq-b3q.5 public private-profile checkpoint
+#### hq-b3q.5 public private-profile checkpoint (historical status; feature implemented)
 
 This checkpoint supersedes the older CLI-status statements in `.3`/`.4`
 below. `--local TARGET`, old positional `TARGET`, and bare `.` now all use
@@ -1046,13 +1083,14 @@ committed. Cooperating-writer/revalidation limits from `.4` still apply:
 stop other writers; this is not hostile same-user race or power-loss atomicity.
 
 Current production coverage: `beads-guard.py`, `global-uninstall.py`,
-`local-profiles.sh`, `local-preflight.sh`, `global.sh`, `private-core.sh`.
+`local-uninstall.py`, `local-profiles.sh`, `local-preflight.sh`, `global.sh`,
+`private-core.sh`; `native-discovery-tests.py` adds 45 offline harness tests.
 Retired normal/guest/merge/uninstall behavior
 is retained as explicitly labelled offline `b60feef` fixture coverage in
 `codex.sh`, `copilot.sh`, `guest.sh`, `upgrade.sh`, `uninstall.sh`, not claimed
 as successful production CLI acceptance. `.4` migration fixtures also use
-that historical installer. Full README and native-version evidence remain
-`.9` and `.8` work respectively.
+that historical installer. .9 now documents this implemented preview; .13
+records limited native-version evidence, not full .8 execution acceptance.
 
 #### hq-b3q.4 internal local safety checkpoint (historical pre-.5 status)
 
@@ -1226,33 +1264,30 @@ local CLI discovery is asserted.
   for this private contract; it does not select a legacy destination or alter
   scope. `--no-guest`, and `--guest --no-guest`, are rejected before any
   filesystem access. There is no guest-to-normal conversion.
-* `--local TARGET --with-beads --state-only` is the one explicit
-  state-only spelling: it initializes or records only the private Beads
-  attachment and installs no adapters. It rejects `--platform`, profile/role,
-  MCP, tool, or model modifiers as irrelevant. Without `--state-only`,
-  `--with-beads` is valid only with an explicit local adapter/profile request
-  and means “also request project-state initialization”; ordinary explicit
-  local setup may create the default implementer+reviewer profiles. A bare
-  local rerun does not install adapters merely to initialize tasks.
-  `--with-beads` with `--global` is a usage error. It never runs `bd setup`.
-  No model-selection installer flags are added.
-* `--dry-run` performs all scope, ownership, core-compatibility, and merge
-  decisions without writes. `--force` may resolve a positively owned,
-  untracked, non-symlinked file merge only; it never overrides tracked,
-  unknown, customized, ambiguous, or legacy-authority protections. The
+* `--local TARGET --with-beads --state-only` is the one recognized
+  state-only spelling; it conflicts with `--platform`. All valid explicit
+  local initialization requests, with or without state-only, currently
+  **exit 1 before any writes**, including dry-run and combined profile setup.
+  No attachment or ready/failed record is fabricated. Bare/positional or
+  global `--with-beads` is a usage error. No bd command runs. Model, MCP,
+  tool, role and profile modifiers are not accepted.
+* `--dry-run` performs scope, ownership and core-compatibility preflight
+  without destination writes. Current private refresh has **no merge path**.
+  `--force` never overrides edits, tracked/unknown ownership, unsafe paths,
+  ambiguity or legacy authority. The
   updater accepts and forwards the same explicit scope and selector. An
   updater invocation without a scope remains local compatibility behavior
   (`TARGET`, or `.`), never global.
 * `--uninstall --global` removes only positively owned global assets.
   `--uninstall --local TARGET` removes only that worktree’s positively owned
   attachment; old positional/bare uninstall remains local compatibility
-  behavior. `--purge-beads` is local-only and may remove only positively
-  owned untracked project Beads state after the safeguards below. Global
+  behavior. `--purge-beads` is currently unsupported (exit 2); the future
+  database safeguards below confer no present deletion authority. Global
   uninstall never finds, crawls, or deletes local profiles/state.
 * The parser rejects, before any write, conflicting scopes/targets,
   `--uninstall --with-beads`, `--purge-beads` without `--uninstall`, every
-  global purge, state-only outside `--local TARGET --with-beads`, and role or
-  profile modifiers that are invalid for the selected providers or operation.
+  purge, state-only outside `--local TARGET --with-beads`, and all unsupported
+  role/profile/model/MCP/tool modifiers.
 
 ### Private root, core, and native assets
 
@@ -1304,7 +1339,7 @@ Every adapter body contains the literal shell-quoted absolute core root and
 calls `bash <private-root>/bin/resolve-core`, rather than
 describing an abstract resolver. This API-1 helper is a global-core-owned
 asset outside immutable role releases and is not a selectable provider. Its
-only interface is `resolve-core bind ROOT ROLE [RELEASE]`, which writes the
+core-loading interface is `resolve-core bind ROOT ROLE [RELEASE]`, which writes the
 validated release identity alone to stdout, and `resolve-core read ROOT ROLE
 RELEASE`, which writes the validated named role bytes alone to stdout. `ROLE`
 is allowlisted and `RELEASE`, when supplied, prevents any `active` read.
@@ -1326,8 +1361,10 @@ workflow context and supply it to every subsequent skill and delegated load.
 All wrappers load orchestrator policy; goal also loads goal at the same binding.
 Missing helper, unreadable bound resources, or incompatible helper/role API
 stops, never executing arbitrary paths or embedded old policy. `.3` installs
-or stages this helper with core compatibility checks, not as a role/provider;
-this task does not install it.
+or stages this helper with core compatibility checks, not as a role/provider.
+The same helper also provides `.5`'s `router-api`/`route` and `.10`'s
+`beads-guard` interfaces specified above; these do not change Core API 1 or
+the immutable six-file release inventory.
 
 Global install owns only manifest-listed leaves at these provider-native
 locations:
@@ -1387,7 +1424,8 @@ keys are `format`, `scope=global`,
 `core_root` (absolute), `core_api=1`, `providers`, repeated `created`, and
 repeated `baseline=<provider>:<native-relative-leaf>:<sha256>`; its
 `providers` is either one of those seven sets or the literal `none`, which is
-valid only for state-only or retained-after-removal state. Native
+currently valid for retained-after-removal state (successful state-only
+initialization is blocked). Native
 relative leaves are relative only to that provider's bounded native root
 shown in the tables; they must be normalized, nonempty, and contain neither
 `..` nor a symlink. Root fields (`core_root`, `worktree_root`) are absolute canonical paths; `beads_path` and `beads_created` are project-relative as defined below.
@@ -1501,17 +1539,18 @@ removal journals and the fail-closed recovery limits described above.
 An explicit install adds its selected providers to that scope's persisted
 union; a bare rerun uses that union. Scoped uninstall removes only requested
 providers from its own scope, leaving every other provider and the other
-scope unaffected. A local `providers=none` bare rerun is state-only and
-installs no adapter. Missing state defaults only to a fresh requested install
+scope unaffected. A local `providers=none` bare rerun validates retained
+attachment metadata and installs no adapter; it is not Beads initialization.
+Missing state defaults only to a fresh requested install
 when every destination is absent. Missing, corrupt, conflicting, or
 out-of-root state with an existing destination is an error; known legacy
 names enter the explicit legacy classification path, and unknown files do
 not. Neither case scans executables, guesses provenance, or repairs state.
-The installer may add the exact `.domestique-private/` tree and exact
-positively proven-owned `.beads/` subtrees to the worktree's private exclude
-mechanism only after linked-worktree accounting proves they belong to that
-worktree. This positive ownership exception does not permit excluding whole
-provider directories, `.beads/` wholesale, or any unknown/host state.
+The installer may add the exact `.domestique-private/` tree and owned native
+leaves to the private exclude mechanism only after linked-worktree accounting
+proves ownership. Exact positively owned `.beads/` subtree exclusion remains
+future blocked work. Neither permits excluding whole provider directories,
+`.beads/` wholesale, or any unknown/host state.
 
 ### Loading, routing, and local capability metadata
 
@@ -1554,14 +1593,15 @@ and the user supplies no explicit local choice, that invocation is
 indistinguishable from never-installed and may map global-only. No central
 registry claims to remember otherwise.
 
-| Provider | Bounded emitted native fields | Core declaration location / source fact | Reload and trust |
+| Provider | Native metadata fields (emitters are minimal) | Core declaration location / source fact | Reload and trust |
 | --- | --- | --- | --- |
 | Claude | documented agent `name`, `description`, `tools`, `mcpServers`; Markdown body | body instruction declares `core_root`, API, role, and resolver; [subagents](https://code.claude.com/docs/en/sub-agents), [skills](https://code.claude.com/docs/en/skills) | restart/reload as documented; project/server trust must be confirmed |
 | Codex | documented agent TOML fields and `mcp_servers` only | `developer_instructions` prompt-body value contains the declaration/resolver, not a new TOML key; [subagents](https://developers.openai.com/codex/subagents/), [skills](https://developers.openai.com/codex/skills/) | start/reload a new session and confirm native trust/capability |
 | Copilot | documented agent frontmatter `name`, `description`, `tools`, `mcp-servers`; Markdown body | body instruction declares the protocol; [CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | documented reload/discovery plus project/server trust confirmation |
 
-No version threshold is asserted here; later `.8` tests actual supported
-versions. Domestique scaffolds only this metadata, accepts no arbitrary MCP
+No version threshold is asserted here; .13 records limited observed versions
+and .8 full native execution remains open. Domestique emits minimal adapters,
+accepts no arbitrary MCP
 or secret CLI input, and does not implement a YAML/TOML parser or universal
 MCP interface. User edits remain native configuration. An unsupported
 scaffold/config request is explicitly unsupported; preflight does not claim
@@ -1602,10 +1642,11 @@ separate: a `tools` list cannot make an undeclared or unavailable server
 accessible, widen permission, autoapprove trust, execute/install a server, or
 authenticate it. Credentials remain in native runtime auth/environment and
 are never emitted, snapshotted, logged, or put in Beads. Requests for a field
-outside this bounded supported provider/version table are reported by
-Domestique preflight as unsupported (with provider, field, and detected
-version if available), not presented as native schema validation and not
-silently dropped or broadened. New-scope generated cores and adapters contain no credentials. If an owned
+outside these native fields must be checked against the installed client's
+documentation. The installer rejects unsupported CLI modifiers; it does not
+detect native versions or parse/validate arbitrary edited YAML/TOML schemas.
+Missing native confirmation stops delegation rather than silently broadening
+tools. New-scope generated cores and adapters contain no credentials. If an owned
 native adapter differs byte-for-byte from its recorded pristine baseline,
 Domestique leaves that adapter wholly untouched, including with `--force`,
 and stops automatic refresh for it with metadata-only/manual-migration
@@ -1636,14 +1677,17 @@ legacy leaves may be safely cleaned up. Tracked, customized, unknown,
 ambiguous, absent-marker, corrupt-marker, or conflicting legacy policy is a
 blocker with a manual recovery diagnostic; it is never an adoption fallback.
 An active incompatible old normal policy is not reported as “migrated.”
-Retained modified files/backups/state remain private/excluded recovery
-evidence after uninstall. Removing global core warns that linked local
+Current removal retains edited providers in place without making backups;
+historical recovery evidence must be manually accounted for, never copied or
+silently exposed. Removing global core warns that linked local
 adapters will stop on their required-core check; it does not repair them by
 fallback.
 
 Global definition installation and project Beads initialization are distinct.
-Loading a skill creates neither a database nor Git artifact. On explicit
-local `--with-beads`, existing project state is first classified. The only
+Loading a skill creates neither a database nor Git artifact. Current explicit
+local `--with-beads` refuses before inspection/writes as specified in .10;
+the runtime guard separately classifies eligibility without reading database
+contents or invoking bd. The only
 Beads location this contract uses is the literal repo-relative `.beads/`
 (`beads_path=.beads` in the local manifest); it does not auto-discover an
 arbitrary Beads storage location or assume a resolver/environment route.
@@ -1651,6 +1695,15 @@ Tracked, shared, unknown, symlinked, or otherwise unsafe `.beads/` stops for
 an explicit user decision. In particular, an already existing host
 `.beads/`, even if it looks initialized, is unowned and is neither hidden nor
 adopted.
+
+#### Future Beads lifecycle acceptance (.6 blocked; .7 open, not current parser format)
+
+Everything in this subsection is future acceptance, including state-only
+success, Beads manifest fields, retained database ownership and purge. The
+current parser rejects these fields; do not create them manually or treat an
+existing host database as owned. No eligible private export exists today;
+future export still requires explicit authorization and proven eligibility,
+never force-adding or committing private/personal state.
 
 **Future `.6` contract, blocked:** for an absent eligible `.beads/`, a
 supported backend must first be proven to preserve exact private Git policy,
@@ -1720,21 +1773,32 @@ worktree fixture where applicable), later work must demonstrate:
 | Owned adapter edited with an inline-secret sentinel | divergence leaves the live adapter byte-identical and emits no backup, conflict, `.new`, log, or serialized copy containing the sentinel |
 | Scoped uninstall/purge | only positively owned untracked selected leaves are removed; retained recovery/Beads protections and other scope remain |
 
-These are bounded offline/smoke procedures for hq-b3q.8; no live native
-runtime check, build, or runtime-version success is claimed by this document.
+This is the retained full acceptance matrix, **not a completed checklist**.
+Current offline coverage and the strictly bounded .13 native metadata
+observations are recorded separately above. Role execution, MCP/tool/trust,
+model/goal sessions and actual database workflows remain unverified; .8 is
+open and .6 blocks database-dependent criteria.
 
-### Old-plan disposition (requires parent approval before bead changes)
+### Old-plan disposition (parent-approved deferral)
 
-`hq-2su.3` (Copilot guest isolation), `hq-2su.4` (mixed uninstall),
-`hq-2su.5` (policy/command discovery), `hq-2su.6` (lifecycle/runtime
-acceptance), and `hq-2su.7` (Copilot documentation) are **not closed or
-reparented here**. Their normal/guest dual-mode acceptance is intentionally
-retired; their retained criteria map respectively to hq-b3q.4/.6 (private
-preflight/Beads), .7 (ownership-safe scoped removal), .2/.5 (native routing),
-.8 (offline plus real-runtime evidence), and .9 (post-evidence docs).
-`hq-e7f` is carried forward as “corrupt/absent mode never falls back to normal
-writes,” now implemented by rejecting legacy ambiguity. `hq-4oh.15` is
-carried forward as “no `bd setup`; safe project initialization only,” rather
-than as a guest exception. User approval covers the implementation direction,
-not silent alteration of these historical beads or claims that their old work
-completed.
+The parent has already reconciled **hq-2su and unfinished .3–.7, hq-e7f and
+hq-4oh.15 as DEFERRED**, not completed/closed or reparented. No bead queries or
+mutations are part of this documentation change. Completed `hq-2su.1/.2`
+remain closed history; commits `2896937`/`58f4d29` are reused. Draft #11 is
+untouched, not merged or pushed.
+
+| Deferred historical work | Retained private-plan mapping / current status |
+| --- | --- |
+| hq-2su.3 guest preflight | hq-b3q.4 done; .6 private Beads initialization blocked |
+| hq-2su.4 uninstall | .11 global / .12 local profile-only done; .7 database purge/integrated cleanup open |
+| hq-2su.5 policy/discovery | .2/.5 done; .13 limited native evidence; .8 full execution open |
+| hq-2su.6 acceptance | .8 **OPEN**, not completed by offline tests or .13 discovery |
+| hq-2su.7 documentation | current .9, approved now using implemented preview + .13 evidence |
+| hq-e7f missing-mode safety | .4 fail-closed legacy classification; absent/corrupt mode never permits normal writes |
+| hq-4oh.15 setup/init | no `bd setup`; .6 initialization remains blocked, not solved by four flags |
+
+Old normal/guest dual-mode prescriptions are retired; do not restore
+`--no-guest`, unsafe init/rollback or force-overwrite paths. Approval explicitly
+defers blocked full .8 rather than holding .9 behind it or presenting the old
+plan as ready. This records disposition, **not fulfillment of all old criteria
+or release completion**.
