@@ -32,6 +32,7 @@ def main():
         work = Path(temp).resolve()
         tools = N.resolve_tools()
         env = N.isolated_env(work, tools)
+        env["GIT_CEILING_DIRECTORIES"] = str(work.parent)
         (work / "bin/bd").symlink_to("/opt/homebrew/Cellar/beads/1.1.2/bin/beads")
         (work / "bin/python3").symlink_to(Path(sys.executable).resolve())
         env.update(SECRET="SECRET-ENV", BD_DB="SECRET-ROUTE", BEADS_DB="SECRET-ROUTE",
@@ -147,7 +148,13 @@ def main():
             assert queues[repo.name] == {epic["id"], first["id"], second["id"]}
             assert manifest.read_text() == text, "DB mutation rewrote provenance baseline"
             run(["bash", helper, "beads-guard", core, repo, release])
-            run([*dom, "--uninstall", "--local", repo], ok=False)
+            run([*dom, "--uninstall", "--local", repo])
+            assert manifest.read_text() == text.replace("beads_status=ready\n", "beads_status=retained\n")
+            before = N.snapshot(work)
+            run([*dom, "--uninstall", "--local", repo, "--purge-beads", "--force"], ok=False)
+            assert before == N.snapshot(work), "used database purge refusal wrote fixture"
+            run([*dom, "--local", repo, "--with-beads", "--state-only"])
+            assert manifest.read_text() == text, "reactivation changed original provenance"
             metadata = repo / ".beads/metadata.json"
             original = metadata.read_bytes()
             data = json.loads(original)

@@ -28,7 +28,8 @@ executable, and an actual default-deny OS sandbox. Native `--sandbox` only
 disables auto-push. No host-root init/rollback, configuration repair, force
 bypass, DB copying, or provider setup is performed. Even database reads can
 write engine state; loading/routing/structural guards never invoke Beads.
-Database retention/purge (.7) and full native execution acceptance (.8) remain open.
+Database retention/unchanged-only purge (.7) is implemented; full native execution
+acceptance (.8) remains open.
 
 ## Setup: global first
 
@@ -169,13 +170,15 @@ Reservations/attempt proof are not readiness, successful creation or purge
 authority. Unknown native artifacts receive no ownership or new exclusions:
 keep them out of commits and reconcile manually; do not adopt or retry.
 Do not stage or commit private artifacts.
-**Local uninstall of any Beads attachment currently refuses before mutation**;
-.7 owns retention/purge. Global uninstall never touches project state, but a
-removed core makes the dispatcher unavailable.
+Local uninstall retains successfully owned Beads state by default (see below).
+Global uninstall never touches project state, but a removed core makes the
+dispatcher unavailable. Filesystem retention/purge needs neither that core nor
+the qualified `bd` executable.
 
 The updater forwards both flags and never applies a failed preview. Invalid
 bare/global Beads, state-only without explicit local+Beads, platform+state-only,
-uninstall+init, and purge requests refuse before writes/fetch.
+uninstall+init, and global/non-uninstall purge requests refuse before writes.
+The updater remains update-only and rejects all uninstall/purge requests before fetch.
 
 ## Workflow definitions and intended invocation
 
@@ -369,14 +372,43 @@ or secret-bearing backup. Leave native/host containers alone. Explicitly
 reinstall to the same root afterward; unchanged local loaders can then use it.
 See the [full recovery specification](docs/install-upgrade-design.md#implemented-global-format-preflight-and-recovery).
 
-**Local:** profile-only removal works even with a missing/unusable global
+**Local:** removal works even with a missing/unusable global
 core. Last-provider removal retains a valid `providers=none` manifest and
 its private-tree exclusion; a bare install rerun creates no agents.
 Explicit `--platform` reinstall reuses that attachment with a compatible
 global core. Do not delete the valid attachment as a normal reinstall step.
-Host `.beads/` and its visibility remain untouched. Database ownership,
-retention/purge and integrated final cleanup are not implemented;
-`--purge-beads` is unsupported.
+Host `.beads/` and its visibility remain untouched. For a successfully initialized
+owned database, ordinary removal preserves every DB/context/export byte and all
+original ordered Beads identity, attempt and creation hashes. Last-provider
+removal changes only `beads_status=ready` to `retained`, including an already-none
+attachment. Repeated retention is read-only. Explicit `--with-beads` reactivation
+requires a successful qualified query before `ready`; it never rebaselines a used DB.
+
+```bash
+bash ./domestique.sh --uninstall --local /absolute/project --purge-beads --dry-run
+bash ./domestique.sh --uninstall --local /absolute/project --purge-beads
+```
+
+Purge requires successful ownership, **no remaining provider** (including any
+unselected or customized provider), and unchanged **initial** hashes for all eight
+recorded `.beads` artifacts, private context and exports. Any changed/missing/extra,
+tracked, hard-linked, symlinked, foreign or malformed state refuses before any
+profile or DB removal, even with `--force`. Failed/pending attempts never qualify.
+Git directory/index routing overrides refuse rather than proving ownership
+against another index; unset them explicitly before retrying.
+Purge/dry-run never launches or queries `bd`: even a query can change the baseline.
+Only validated recorded leaves and bottom-up empty subtrees are removed; metadata
+is last. The proven by-init empty `.beads` container is then removed. Successful
+purge clears Beads fields only after deletion, retaining the valid private
+`providers=none` manifest and its exclusion for reuse.
+
+**Stop raw/older writers first.** Current wrappers, profile changes and cleanup
+cooperate through an exclusive nonblocking `flock` on existing owned
+`.beads/metadata.json`, held through child reaping/deletion. Busy or
+changed-generation metadata refuses. Native `native.lock` is initialization-only,
+not a writer lock. This is not a process census or an atomicity promise against
+raw/older/hostile writers. Shared exclusions account for every linked worktree:
+only no-longer-needed owned rules disappear, never other worktree or host privacy.
 
 **Interruptions:** stop writers, retain `pending`/`published` and available
 provenance, and manually reconcile exact paths/digests and exclusion ownership
@@ -429,17 +461,28 @@ Contributor commands from the repository root (Bash/Git, ordinary filesystem
 utilities and Python 3.11+ for `tomllib`; no added test framework):
 
 ```sh
+(
+mkdir -p .test-private
+chmod 700 .test-private
+export TMPDIR="$PWD/.test-private" GIT_CEILING_DIRECTORIES="$PWD/.test-private"
 bash test/private-core.sh
 bash test/global.sh
 bash test/local-preflight.sh
 bash test/local-profiles.sh
 PYTHONDONTWRITEBYTECODE=1 python3 test/global-uninstall.py
 PYTHONDONTWRITEBYTECODE=1 python3 test/local-uninstall.py
+PYTHONDONTWRITEBYTECODE=1 python3 test/beads-private.py
+PYTHONDONTWRITEBYTECODE=1 python3 test/beads-cleanup.py
+# Opt-in pinned native cleanup fixture (no AI/auth/MCP):
+PYTHONDONTWRITEBYTECODE=1 python3 test/beads-cleanup.py --native
+PYTHONDONTWRITEBYTECODE=1 python3 test/beads-production.py --run
 PYTHONDONTWRITEBYTECODE=1 python3 test/beads-guard.py
 PYTHONDONTWRITEBYTECODE=1 python3 -W error test/native-discovery-tests.py
 bash -n domestique.sh update.sh
 shellcheck --severity=warning domestique.sh update.sh
 git diff --check
+rmdir "$TMPDIR"
+)
 ```
 
 Current suites use isolated fixtures; executable guards are offline evidence.
@@ -493,7 +536,7 @@ reparented, `hq-2su` and its unfinished `.3`–`.7`, `hq-e7f`, and `hq-4oh.15`.
 Completed `hq-2su.1/.2` remain closed history; commits `2896937`/`58f4d29`
 are reused. Draft #11 remains untouched, unmerged and unpushed.
 The [mapping and approved deferral](docs/install-upgrade-design.md#old-plan-disposition-parent-approved-deferral)
-retain .6's limited qualification boundary, .7 database cleanup open, and .8 full
+retain .6's limited qualification boundary, .7 unchanged-only cleanup, and .8 full
 acceptance open. This .9 documentation describes implemented preview behavior
 and limited .13 evidence now; it does not declare old criteria fulfilled or
 the release complete.

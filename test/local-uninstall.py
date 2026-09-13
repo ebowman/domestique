@@ -64,9 +64,9 @@ def repo(name, selection="all"):
     return p
 
 
-def remove(p, *args, status=0, script=DOM, spelling="explicit", **kwargs):
+def remove(p, *args, status=0, script=None, spelling="explicit", **kwargs):
     scope = ["--local", p] if spelling == "explicit" else [p] if spelling == "positional" else []
-    result = run("/bin/bash", script, "--uninstall", *scope, *args,
+    result = run("/bin/bash", script or DOM, "--uninstall", *scope, *args,
                  cwd=p if spelling == "bare" else W, **kwargs)
     check(result.returncode == status,
           (p.name, args, result.returncode, result.stdout, result.stderr))
@@ -129,6 +129,12 @@ def fault_script(name, anchor, insertion, after=True):
 
 W = Path(tempfile.mkdtemp(prefix="domestique-local-remove-")).resolve()
 try:
+    # Bash keeps a byte offset into its script while a long operation runs.
+    # Freeze the exact current source so concurrent development cannot splice
+    # a later parser/dispatch block into an already-running test invocation.
+    source = DOM.read_bytes()
+    DOM = W / "domestique.sh"
+    DOM.write_bytes(source)
     HOME, CORE, LOG = W / "home", W / "core", W / "forbidden-log"
     for name in ("home", "tmp", "forbidden"):
         (W / name).mkdir()
@@ -366,7 +372,8 @@ try:
     alias = W / "alias"
     alias.symlink_to(empty, target_is_directory=True)
     refuse(alias, reason="symlink component")
-    for args in (("--purge-beads",), ("--with-beads",), ("--state-only",),
+    refuse(empty, "--purge-beads", reason="no owned local profiles")
+    for args in (("--with-beads",), ("--state-only",),
                  ("--no-guest",), ("--global",), ("--platform", "none")):
         refuse(empty, *args, status=2)
     state = empty / ".domestique-private"
@@ -451,29 +458,30 @@ try:
 
     # Transaction faults: actual unlink failure, late tracked/reappeared leaf,
     # retained role/receipt/manifest changes before commit and EACH cleanup.
+    before_manifest = '  local_remove_validate || exit 1\n  if [ "$PURGE_BEADS" = 1 ]; then'
     cases = {
-        "unlink-failure": ('  for ((i=0; i<${#remove_paths[@]}; i++)); do\n    local_remove_check "$U_STATE/pending"',
+        "unlink-failure": ('  local_remove_new "$U_STATE/pending" "$plan" &&\n    local_remove_new "$U_STATE/published" "" || exit 1',
                            '  unlink() {\n    if [ "$i" = 1 ]; then\n'
                            '      printf "unlink-called\\n" > "$FAULT_UNLINK"\n'
-                           '      return 73\n    fi\n    command unlink "$@"\n  }', False),
+                           '      return 73\n    fi\n    command unlink "$@"\n  }', True),
         "reappear": ('    unlink "${remove_paths[i]}" || exit 1',
                      '  if [ "$i" = 0 ]; then printf "SECRET-REAPPEARED\\n" > "${remove_paths[i]}"; fi', True),
         "tracked-late": ('    unlink "${remove_paths[i]}" || exit 1',
                          '  if [ "$i" = 0 ]; then git -C "$L_ROOT" add -f -- .claude/agents/domestique-claude-local-reviewer.md; fi', True),
-        "manifest": ('  local_remove_validate || exit 1\n  local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1',
+        "manifest": (before_manifest,
                      '  printf "SECRET-MANIFEST\\n" >> "$U_STATE/manifest"', False),
-        "retained-role": ('  local_remove_validate || exit 1\n  local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1',
+        "retained-role": (before_manifest,
                           '  printf "SECRET-RETAINED\\n" >> "$L_ROOT/.codex/agents/domestique-codex-local-reviewer.toml"', False),
-        "receipt": ('  local_remove_validate || exit 1\n  local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1',
+        "receipt": (before_manifest,
                     '  printf "SECRET-RECEIPT\\n" >> "$U_STATE/routing/codex.receipt"', False),
-        "published": ('  local_remove_check "$U_STATE/published" "$U_LOG_HASH" "$L_ROOT" || exit 1',
+        "published": ('  local_remove_check "$U_STATE/published" "$U_LOG_HASH" "$L_ROOT" || exit 1\n  unlink "$U_STATE/published" || exit 1',
                       '  printf "SECRET-JOURNAL\\n" >> "$U_STATE/published"', False),
         "pending": ('  unlink "$U_STATE/published" || exit 1',
                     '  printf "SECRET-JOURNAL\\n" >> "$U_STATE/pending"', True),
         "pending-type": ('  unlink "$U_STATE/published" || exit 1',
                          '  unlink "$U_STATE/pending"\n  mkdir "$U_STATE/pending"\n'
                          '  printf "SECRET-UNKNOWN-TYPE\\n" > "$U_STATE/pending/host"', True),
-        "manifest-type": ('  local_remove_validate || exit 1\n  local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1',
+        "manifest-type": (before_manifest,
                           '  unlink "$U_STATE/manifest"\n  mkdir "$U_STATE/manifest"\n'
                           '  printf "SECRET-UNKNOWN-TYPE\\n" > "$U_STATE/manifest/host"', False),
         "cleanup-retained": ('  unlink "$U_STATE/published" || exit 1',
@@ -482,7 +490,7 @@ try:
                          '  printf "SECRET-REAPPEARED\\n" > "$U_STATE/manifest"', True),
         "exclude": ('  local_remove_exclude "$final_exclude" || exit 1',
                     '  printf "# host changed\\n" >> "$L_EXCLUDE"', False),
-        "ignore-policy": ('  local_remove_validate || exit 1\n  local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1',
+        "ignore-policy": (before_manifest,
                           '  printf "!/.codex/agents/domestique-codex-local-reviewer.toml\\n" > "$L_ROOT/.gitignore"', False),
     }
     for name, (anchor, insertion, after) in cases.items():

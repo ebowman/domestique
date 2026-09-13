@@ -79,8 +79,8 @@ def help_tests():
                       "Verified private Beads operations use the installed wrapper" in text,
                       "help distinguishes supported operations from failed guards")
                 check("never call bd" in text and
-                      "uninstall/purge remains unsupported pending .7" in text,
-                      "help preserves pure loading and pending cleanup limits")
+                      "Stop raw/older Beads writers before cleanup" in text,
+                      "help preserves pure loading and cooperative cleanup limits")
 
 
 def unit_tests():
@@ -125,6 +125,25 @@ def unit_tests():
     reject(NS["decode"], '{"a":"\0"}')
     reject(NS["decode"], '{"a":NaN}')
     reject(NS["records"], "beads_status=ready\n")
+    values = (".beads", "by-init:" + "0" * 32, "ready", "/qualified/bd", NS["PIN"],
+              "1.1.2", "Darwin-arm64", "dolt-embedded-cgo", NS["CONTEXT"], "dm" + "0" * 12,
+              "00000000-0000-0000-0000-000000000000", "init-ping-where-v1",
+              "0" * 64, "/qualified/git", "0" * 64)
+    proof = "".join(f"{key}={value}\n" for key, value in zip(NS["FIELDS"], values))
+    proof += "".join(f"beads_created={rel}:{'0' * 64}\n" for rel in
+                     [".beads/" + leaf for leaf in NS["LEAVES"]] + [NS["CONTEXT"], NS["EXPORT"]])
+    check(NS["records"](proof)[0]["beads_status"] == "ready", "complete schema without executable access")
+    for key in ("beads_executable", "beads_git"):
+        reject(NS["records"], proof.replace(f"{key}=/", f"{key}=//"))
+    reject(NS["records"], proof.replace("beads_prefix=dm0", "beads_prefix=dm1"))
+    with tempfile.TemporaryDirectory(prefix="domestique-missing-gate-") as temp:
+        gate_root = Path(temp).resolve()
+        (gate_root / ".beads").mkdir(mode=0o700)
+        (gate_root / ".beads/metadata.json").write_text("{}")
+        with patch.object(NS["os"], "fstat", side_effect=OSError("missing parent fd")), \
+             patch.object(NS["os"], "open") as opened:
+            reject(NS["locked_metadata"], gate_root)
+            check(not opened.called, "missing parent fd cannot become a self-owned descriptor")
     check("--title=--db" in grammar(["create", "--", "--db"], root, prefix),
           "native explicit title form, not pinned positional-title rejection")
     for system, machine in (("Linux", "aarch64"), ("Darwin", "x86_64"), ("Windows", "arm64")):
@@ -164,7 +183,8 @@ if args == ["--help"]:
     sys.exit()
 assert db.is_dir()
 if cmd == "init":
-    assert not list(db.iterdir()), "initializer did not exclusively claim empty dir"
+    assert {p.name for p in db.iterdir()} == {"config.yaml"}, "unexpected reserved target entries"
+    assert (db/"config.yaml").read_bytes() == b"no-git-ops: true\n"
     if db.parent.name in ("partial", "partialunknown"):
         if db.parent.name == "partialunknown":
             (db/"unknown-host-file").write_text("synthetic unknown")
@@ -192,6 +212,9 @@ if cmd == "init":
         (db/"metadata.json").write_text("{")
     sys.exit()
 metadata = json.loads((db/"metadata.json").read_text())
+if not (db.parent/".domestique-private/pending").exists():
+    held, current = os.fstat(8), (db/"metadata.json").stat()
+    assert (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino), "native child lost gate"
 prefix = metadata["dolt_database"]
 with (db/"interactions.jsonl").open("a") as f:
     f.write(json.dumps([cmd, *args])+"\n")

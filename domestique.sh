@@ -771,6 +771,7 @@ local_beads_python() {
     { local_fail "Beads needs an existing Python 3.9+ interpreter, not Apple's setup launcher"; return 1; }
   python3 -I -S -B - "$@" <<'DOM_BEADS_PY'
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -896,12 +897,14 @@ def policy(context, beads, binary, git, exports=None):
             lines.append(f"(allow file-read* file-write* (subpath {json.dumps(str(p))}))")
     return "\n".join(lines)
 
-def process(argv, context, beads, binary, git, exports=None, expected=0):
+def process(argv, context, beads, binary, git, exports=None, expected=0, coordinated=False):
     env = environment(context, beads, git)
     proc = subprocess.Popen(
         ["/usr/bin/sandbox-exec", "-p", policy(context, beads, binary, git, exports),
          *map(str, argv)], cwd=context / "run", env=env, text=True,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        # A surviving native leader must keep the gate if its wrapper is killed.
+        pass_fds=(8,) if coordinated else (),
         start_new_session=True)
     try:
         out, err = proc.communicate(timeout=60)
@@ -955,10 +958,15 @@ def qualify():
     need(git.is_file() and os.access(git, os.X_OK), "installed Git (not setup launcher) required")
     need(":" not in str(git.parent), "Git executable directory cannot contain a PATH separator")
     with tempfile.TemporaryDirectory(prefix="domestique-beads-qualification-",
-                                     dir="/private/tmp") as temp:
+                                     dir=os.environ.get("TMPDIR", os.getcwd())) as temp:
         work = Path(temp).resolve()
         context = work / "context"
         prepare(context)
+        # Native FindBeadsDir ignores an empty explicit target and walks parents.
+        # Generated configuration binds help/version even when TMPDIR is inside
+        # a project. This disposable target has no database or ownership claim.
+        (work / "db").mkdir(mode=0o700)
+        (work / "db/config.yaml").write_text("no-git-ops: true\n")
         # Validate an actual OS policy before any native command. Outside read,
         # write and network must fail with EPERM, not arbitrary process failure.
         sentinel = work / "denied"
@@ -1014,13 +1022,16 @@ def records(text):
     need(values["beads_version"] == "1.1.2" and values["beads_platform"] == "Darwin-arm64"
          and values["beads_backend"] == "dolt-embedded-cgo"
          and values["beads_readiness"] == "init-ping-where-v1", "unsupported qualification")
+    need(values["beads_sha256"] == PIN, "unqualified creation provenance")
     need(re.fullmatch("dm[0-9a-f]{12}", values["beads_prefix"]), "invalid stable prefix")
+    need(values["beads_prefix"] == "dm" + values["beads_path_created"][8:20],
+         "attempt/prefix provenance mismatch")
     need(str(uuid.UUID(values["beads_uuid"])) == values["beads_uuid"], "invalid UUID")
     for key in ("beads_sha256", "beads_selectors_sha256", "beads_git_sha256"):
         need(re.fullmatch("[0-9a-f]{64}", values[key]), "invalid fingerprint")
     for key in ("beads_executable", "beads_git"):
         p = Path(values[key])
-        need(p.is_absolute() and str(p) == values[key] and ".." not in p.parts and
+        need(p.anchor == "/" and str(p) == values[key] and ".." not in p.parts and
              len(p.parts) > 1, "noncanonical executable identity")
         if key == "beads_git":
             need(":" not in str(p.parent), "unsafe Git executable PATH")
@@ -1110,18 +1121,133 @@ def validate(root, text, runtime=False):
         need(values["beads_sha256"] == PIN, "unqualified native artifact/backend")
     return values
 
-def native(root, values, args, export=False):
+def locked_metadata(root):
+    metadata = root / ".beads/metadata.json"
+    safe(metadata, root)
+    # The shell owns fd 8's open file description for the entire operation.
+    # Open a separate no-follow descriptor to verify its current generation.
+    held = os.fstat(8)
+    fd = os.open(metadata, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        current = os.fstat(fd)
+        need(stat.S_ISREG(held.st_mode) and held.st_nlink == 1 and
+             held.st_uid == os.getuid() and
+             (current.st_dev, current.st_ino) == (held.st_dev, held.st_ino) ==
+             (metadata.stat().st_dev, metadata.stat().st_ino),
+             "changed metadata lock generation")
+        fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(fd)
+
+def gate(root, text):
+    locked_metadata(root)
+    state = root / ".domestique-private"
+    for name in ("pending", "published", "beads-attempt"):
+        need(not os.path.lexists(state / name), "pending private operation")
+    manifest = state / "manifest"
+    safe(manifest, root)
+    actual = manifest.read_text()
+    need("\0" not in actual and
+         "".join(line + "\n" for line in actual.splitlines()
+                 if line.startswith("beads_")) == text,
+         "changed manifest after coordination gate")
+
+def purge_inventory(root, text):
+    validate(root, text)
+    _, owned = records(text)
+    inventory = []
+    for rel, expected in owned.items():
+        path = root / rel
+        need((hash_tree(path) if path.is_dir() else digest(path)) == expected,
+             "changed initial Beads artifact; retain, never force purge")
+        paths = tree(path) + [path] if path.is_dir() else [path]
+        for p in paths:
+            safe(p, root / rel if path.is_dir() else root)
+            s = p.lstat()
+            inventory.append((p, s.st_dev, s.st_ino, s.st_mode,
+                              None if p.is_dir() else digest(p)))
+    # Children before parents; immutable coordination metadata is always last.
+    inventory.sort(key=lambda item: (-len(item[0].parts), str(item[0])))
+    metadata = root / ".beads/metadata.json"
+    inventory.sort(key=lambda item: item[0] == metadata)
+    return inventory
+
+def purge(root, text, args):
+    pending_sha, log_sha, manifest_sha, exclude, exclude_sha = args
+    state = root / ".domestique-private"
+    inventory = purge_inventory(root, text)
+    db = root / ".beads"
+    db_identity = db.stat().st_dev, db.stat().st_ino
+    log = (state / "published").read_text()
+    def evidence():
+        for path, sha in ((state / "pending", pending_sha), (state / "published", log_sha),
+                          (state / "manifest", manifest_sha), (Path(exclude), exclude_sha)):
+            safe(path, root if root in path.parents else None)
+            need(path.is_file() and digest(path) == sha, "purge journal/manifest/exclusion changed")
+        metadata = root / ".beads/metadata.json"
+        safe(metadata, root)
+        held, current = os.fstat(8), metadata.stat()
+        need((held.st_dev, held.st_ino) == (current.st_dev, current.st_ino) and
+             held.st_nlink == 1, "changed purge metadata generation")
+        fcntl.flock(8, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        tracked = subprocess.check_output(
+            ["git", "-C", str(root), "ls-files", "-z", "--cached"], stdin=subprocess.DEVNULL)
+        for entry in tracked.split(b"\0"):
+            for rel in (b".beads", b".domestique-private"):
+                need(not entry or not (entry == rel or entry.startswith(rel + b"/")
+                     or rel.startswith(entry + b"/")), "tracked purge state")
+    evidence()
+    for p, dev, ino, mode, sha in inventory:
+        evidence()
+        boundary = root / ".beads" if root / ".beads" in p.parents else root / CONTEXT
+        if p == root / EXPORT or root / EXPORT in p.parents:
+            boundary = root / EXPORT
+        safe(p, boundary)
+        s = p.lstat()
+        need((s.st_dev, s.st_ino, s.st_mode) == (dev, ino, mode), "changed purge path generation")
+        if sha is None:
+            need(not list(p.iterdir()), "unknown subtree entry appeared during purge")
+            p.rmdir()
+        else:
+            need(digest(p) == sha, "changed purge leaf")
+            p.unlink()
+        # Journal actual completed removal, not predeclared success.
+        safe(state / "published", root)
+        need(digest(state / "published") == log_sha, "purge journal changed after unlink")
+        record = f"removed={p.relative_to(root)}:{sha or 'empty-directory'}\n"
+        with (state / "published").open("a") as out:
+            out.write(record)
+        log += record
+        log_sha = hashlib.sha256(log.encode()).hexdigest()
+        need(not os.path.lexists(p), "removed purge path reappeared")
+    for rel in records(text)[1]:
+        need(not os.path.lexists(root / rel), "purged artifact reappeared")
+    safe(db, root)
+    need((db.stat().st_dev, db.stat().st_ino) == db_identity, "database root generation changed")
+    need(not list(db.iterdir()), "unknown database entry appeared")
+    db.rmdir()  # records() requires by-init provenance, never a presence claim.
+    need(not os.path.lexists(db), "database root reappeared")
+    safe(state / "published", root)
+    need(digest(state / "published") == log_sha, "purge journal changed after rmdir")
+    record = "removed=.beads:empty-directory\n"
+    with (state / "published").open("a") as out:
+        out.write(record)
+    print(log + record, end="")
+
+def native(root, values, args, export=False, coordinated=False):
+    if coordinated:
+        locked_metadata(root)
     binary, git = Path(values["beads_executable"]), Path(values["beads_git"])
     return process([binary, "--sandbox", *args], root / CONTEXT, root / ".beads",
-                   binary, git, root / EXPORT if export else None)
+                   binary, git, root / EXPORT if export else None, coordinated=coordinated)
 
-def readiness(root, values):
-    ping = decode(native(root, values, ["ping", "--json"]))
+def readiness(root, values, coordinated=False):
+    ping = decode(native(root, values, ["ping", "--json"], coordinated=coordinated))
     need(type(ping) is dict and ping.get("status") == "ok" and
          all(type(ping.get(k)) is int and ping[k] >= 0
              for k in ("resolve_ms", "store_ms", "query_ms", "total_ms")),
          "native query not ready")
-    where = decode(native(root, values, ["where", "--json"]))
+    where = decode(native(root, values, ["where", "--json"], coordinated=coordinated))
     need(type(where) is dict and where.get("path") == str(root / ".beads") and
          where.get("database_path") == str(root / ".beads/embeddeddolt") and
          where.get("prefix") == values["beads_prefix"], "native canonical target mismatch")
@@ -1243,6 +1369,10 @@ def main():
             ".beads", "by-init:" + attempt, "ready", binary, sha, "1.1.2",
             "Darwin-arm64", "dolt-embedded-cgo", CONTEXT, "dm" + attempt[:12],
             "", "init-ping-where-v1", "", git, git_sha)))
+        # Pin native's directory discovery to this exclusively claimed target.
+        # An empty BEADS_DIR is otherwise ignored in favour of ancestor state.
+        with (root / ".beads/config.yaml").open("x") as config:
+            config.write("no-git-ops: true\n")
         native(root, values, ["init", "--stealth", "--skip-agents", "--skip-hooks",
                              "--non-interactive", "--prefix", values["beads_prefix"], "--remote="])
         # Pinned last_touched.go reads an empty file as no default issue. Claim
@@ -1260,12 +1390,40 @@ def main():
             print(f"beads_created={rel}:{hash_tree(p) if p.is_dir() else digest(p)}")
         return
     text = args[1]
-    values = validate(root, text, action in ("guard", "run"))
+    if action == "gate":
+        gate(root, text)
+        validate(root, text)
+        return
+    if action == "purge-check":
+        gate(root, text)
+        purge_inventory(root, text)
+        return
+    if action == "purge-recheck":
+        locked_metadata(root)
+        purge_inventory(root, text)
+        return
+    if action == "locked-validate":
+        locked_metadata(root)
+        validate(root, text)
+        return
+    if action == "purge":
+        purge(root, text, args[2:])
+        return
+    if action in ("run", "query"):
+        gate(root, text)
+    values = validate(root, text, action in ("guard", "run", "query"))
+    if action == "query":
+        readiness(root, values, coordinated=True)
+        locked_metadata(root)
+        validate(root, text, True)
+        return
     if action == "run":
         approved = grammar(args[2:], root, values["beads_prefix"])
-        readiness(root, values)
+        readiness(root, values, coordinated=True)
+        locked_metadata(root)
         validate(root, text, True)
-        out = native(root, values, approved, approved[0] == "export")
+        out = native(root, values, approved, approved[0] == "export", coordinated=True)
+        locked_metadata(root)
         validate(root, text, True)
         print(out, end="")
     else:
@@ -1287,6 +1445,17 @@ except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
 DOM_BEADS_PY
 }
 
+local_beads_lock() {
+  [ -n "$M_BEADS" ] || return 0
+  if [ "${L_BEADS_LOCK_ROOT:-}" != "$1" ]; then
+    local_path "$1/.beads/metadata.json" "$1" &&
+      local_untracked "$1" .beads || return 1
+    exec 8< "$1/.beads/metadata.json" || return 1
+  fi
+  local_beads_python gate "$1" "$M_BEADS" || return 1
+  L_BEADS_LOCK_ROOT="$1"
+}
+
 # Emit the API-1 global-core-owned resolver installed later by hq-b3q.3 at
 # <private-root>/bin/resolve-core. It is outside immutable role releases.
 # CLI: resolve-core bind ROOT ROLE [RELEASE] prints the validated release;
@@ -1304,7 +1473,7 @@ DOM_EOF
     local_fail local_path local_text_file local_root local_untracked \
     local_inventory local_selected local_set_valid local_contains local_manifest_read \
     local_route local_beads_fail local_beads_guard local_beads_python local_beads_run \
-    local_beads_paths
+    local_beads_paths local_beads_lock
   cat <<'DOM_EOF'
 domestique_core_sha256() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256 < "$1" | awk '{print $1}'
@@ -2403,6 +2572,8 @@ local_root() {
 local_untracked() (
   set -o pipefail
   local root="$1" candidate="$2" exact=0
+  [ -z "${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_COMMON_DIR+x}${GIT_INDEX_FILE+x}" ] ||
+    { local_fail "unset Git directory/index routing overrides before proving actual ownership"; return 1; }
   while :; do
     # The destination excludes its entire subtree. Ancestors only collide
     # when they are index OBJECTS, not directories with unrelated host leaves.
@@ -2554,8 +2725,6 @@ local_manifest_read() {
     printf '%s' "$M_BEADS"
   ) || { local_fail "noncanonical local manifest bytes: $file"; return 1; }
   if [ -n "$M_BEADS" ]; then
-    [ "$purpose" != removal ] ||
-      { local_fail "Beads attachment removal/retention is not implemented; all records retained untouched"; return 1; }
     local_untracked "$root" .beads &&
       local_beads_python validate "$root" "$M_BEADS" || return 1
   fi
@@ -2748,10 +2917,13 @@ local_beads_guard() (
 local_beads_run() (
   [ "$#" -ge 4 ] || { local_beads_fail usage 'beads CORE PHYSICAL_PROJECT LITERAL_RELEASE COMMAND [ARGV]'; exit 2; }
   local core="$1" target="$2" release="$3" key
+  local L_BEADS_LOCK_ROOT=""
   shift 3
   local_beads_guard "$core" "$target" "$release" || exit 1
   L_INVENTORY=()
   while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
+  local_manifest_read "$target" runtime || exit 1
+  local_beads_lock "$target" || exit 1
   local_manifest_read "$target" runtime || exit 1
   local_beads_python run "$target" "$M_BEADS" "$@"
 )
@@ -3061,6 +3233,12 @@ local_exclude_plan() {
           local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
         done
       fi
+      if [ -n "$M_BEADS" ] && { [ "$wt" != "$target" ] || [ "${PURGE_BEADS:-0}" = 0 ]; }; then
+        while IFS= read -r rel; do
+          pattern="$(local_pattern "$rel")"
+          local_contains "$pattern" ${proposed[@]+"${proposed[@]}"} || proposed+=("$pattern")
+        done < <(local_beads_paths)
+      fi
     done
   else
   # Keep all other attachments private, even when their exact patterns differ.
@@ -3288,8 +3466,32 @@ local_remove_validate() {
     local_path "$wt/.domestique-private" "$wt" &&
       local_untracked "$wt" .domestique-private || return 1
     [ -d "$wt/.domestique-private" ] || continue
+    for ((i=0; i<${#U_BEADS_ROOTS[@]}; i++)); do
+      [ "${U_BEADS_ROOTS[i]}" = "$wt" ] || continue
+      if [ "$wt" = "$L_ROOT" ] && [ "$U_PURGED" = 1 ]; then
+        for path in .beads .domestique-private/beads-context .domestique-private/exports; do
+          local_path "$wt/$path" "$wt" && local_untracked "$wt" "$path" &&
+            [ ! -e "$wt/$path" ] || return 1
+        done
+      else
+        local_untracked "$wt" .beads &&
+          local_beads_python validate "$wt" "${U_BEADS_TEXT[i]}" || return 1
+        if [ "$wt" = "$L_ROOT" ]; then
+          local_beads_python locked-validate "$wt" "${U_BEADS_TEXT[i]}" || return 1
+        fi
+        while IFS= read -r path; do
+          local_remove_private "$wt/$path" "$wt" || return 1
+        done < <(local_beads_paths)
+      fi
+    done
     find "$wt/.domestique-private" -mindepth 1 -print0 | (
       while IFS= read -r -d '' path; do
+        case "$path" in
+          "$wt/.domestique-private/beads-context"|"$wt/.domestique-private/beads-context/"*|"$wt/.domestique-private/exports"|"$wt/.domestique-private/exports/"*)
+            local_contains "$wt" ${U_BEADS_ROOTS[@]+"${U_BEADS_ROOTS[@]}"} &&
+              { [ "$wt" != "$L_ROOT" ] || [ "$U_PURGED" = 0 ]; } || exit 1
+            continue;;
+        esac
         local_path "$path" "$wt" || exit 1
         if [ "$path" = "$wt/.domestique-private/routing" ]; then
           [ -d "$path" ] || exit 1
@@ -3330,9 +3532,11 @@ local_uninstall() (
   local L_MANIFEST_PURPOSE=removal L_EXCLUDE_OPERATION=removal
   local key provider path wt i j selected retained="" removing="" oldset core
   local oldmanifest newmanifest oldhash newhash plan final_exclude
+  local oldbeads="" newbeads="" L_BEADS_LOCK_ROOT=""
   local keys=() created=() bases=() remove_paths=() remove_hashes=()
   local U_PATHS=() U_HASH=() U_ROOTS=() L_WANT=() L_INVENTORY=()
   local U_DIRS=() U_DIR_ROOTS=() U_DIR_PRESENT=()
+  local U_BEADS_ROOTS=() U_BEADS_TEXT=() U_PURGED=0
   local U_SET=none U_STATE U_LIST U_LOG="" U_LOG_HASH=absent U_PENDING_HASH=absent
   local U_EXCLUDE_HASH U_WRITING=0
   local L_REMOVE=() L_REMOVE_HASH=() L_LEGACY=()
@@ -3341,14 +3545,18 @@ local_uninstall() (
   U_STATE="$L_ROOT/.domestique-private"
   while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
   local_manifest_read "$L_ROOT" removal && local_legacy "$L_ROOT" check || exit 1
+  local_beads_lock "$L_ROOT" || exit 1
+  local_manifest_read "$L_ROOT" removal || exit 1
   [ -f "$U_STATE/manifest" ] ||
     { local_fail "no owned local profiles; no adoption or Beads cleanup"; exit 1; }
   keys=(${M_KEYS[@]+"${M_KEYS[@]}"}); created=(${M_CREATED[@]+"${M_CREATED[@]}"}); bases=(${M_BASE[@]+"${M_BASE[@]}"})
   oldset="$M_SET"; core="$M_CORE"; selected="${PLATFORM_ARG:-$M_SET}"
+  oldbeads="$M_BEADS"; newbeads="$M_BEADS"
   oldmanifest="$(printf 'format=1\nscope=local\nworktree_root=%s\ncore_root=%s\ncore_api=1\nproviders=%s\n' "$L_ROOT" "$core" "$oldset"
     for ((i=0; i<${#keys[@]}; i++)); do
       printf 'created=%s:%s\nbaseline=%s:%s\n' "${keys[i]}" "${created[i]}" "${keys[i]}" "${bases[i]}"
-    done)"$'\n'
+    done
+    printf '%s' "$oldbeads")"$'\n'
   oldhash="$(printf '%s' "$oldmanifest" | global_hash)"
   local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1
   for provider in claude codex copilot; do
@@ -3382,6 +3590,14 @@ local_uninstall() (
     else global_select "$provider"; fi
   done
   if [ "$G_C$G_X$G_P" != 000 ]; then global_set_name; U_SET="$G_SET"; fi
+  if [ "$PURGE_BEADS" = 1 ]; then
+    [ -n "$oldbeads" ] && [ "$U_SET" = none ] ||
+      { local_fail "purge requires successful Beads ownership and no remaining providers (including edited/unselected)"; exit 1; }
+    local_beads_python purge-check "$L_ROOT" "$oldbeads" || exit 1
+    newbeads=""
+  elif [ "$U_SET" = none ] && [ -n "$oldbeads" ]; then
+    newbeads="$(printf '%s' "$oldbeads" | sed 's/^beads_status=ready$/beads_status=retained/')"$'\n'
+  fi
   for key in ${keys[@]+"${keys[@]}"}; do
     local_contains "${key%%:*}" $removing || L_WANT+=("${key#*:}")
   done
@@ -3392,6 +3608,9 @@ local_uninstall() (
   U_LIST="$(local_worktree_list "$L_ROOT")" || exit 1
   for wt in "${L_WORKTREES[@]}"; do
     local_manifest_read "$wt" removal && local_legacy "$wt" check || exit 1
+    if [ -n "$M_BEADS" ]; then
+      U_BEADS_ROOTS+=("$wt"); U_BEADS_TEXT+=("$M_BEADS")
+    fi
     for key in .domestique-private .domestique-private/routing; do
       U_DIRS+=("$wt/$key"); U_DIR_ROOTS+=("$wt")
       if [ -d "$wt/$key" ]; then U_DIR_PRESENT+=(1); else U_DIR_PRESENT+=(0); fi
@@ -3424,7 +3643,7 @@ local_uninstall() (
   for ((i=0; i<${#remove_paths[@]}; i++)); do
     local_remove_check "${remove_paths[i]}" "${remove_hashes[i]}" "$L_ROOT" || exit 1
   done
-  if [ -z "$removing" ]; then
+  if [ -z "$removing" ] && [ "$newbeads" = "$oldbeads" ] && [ "$PURGE_BEADS" = 0 ]; then
     if [ "$oldset" = none ]; then
       printf 'domestique local: no owned local profiles; private attachment metadata retained; Beads untouched\n'
     else
@@ -3436,29 +3655,45 @@ local_uninstall() (
     for ((i=0; i<${#keys[@]}; i++)); do
       local_contains "${keys[i]%%:*}" $removing && continue
       printf 'created=%s:%s\nbaseline=%s:%s\n' "${keys[i]}" "${created[i]}" "${keys[i]}" "${bases[i]}"
-    done)"$'\n'
+    done
+    printf '%s' "$newbeads")"$'\n'
   newhash="$(printf '%s' "$newmanifest" | global_hash)"
   plan="$(printf 'format=1\noperation=local-uninstall\nprevious=%s\nremaining=%s\n' "$oldhash" "$newhash"
     printf '%s' "$oldmanifest"
     for ((i=0; i<${#remove_paths[@]}; i++)); do
       printf 'remove=%s:%s\n' "${remove_paths[i]#"$L_ROOT"/}" "${remove_hashes[i]}"
-    done)"$'\n'
+    done
+    if [ "$PURGE_BEADS" = 1 ]; then printf 'purge=initial-recorded-artifacts\n'; fi)"$'\n'
   U_PENDING_HASH="$(printf '%s' "$plan" | global_hash)"
   U_LOG_HASH="$(printf '' | global_hash)"
-  printf 'domestique local: %sremove providers:%s; remaining=%s; Beads untouched; unproven empty containers retained\n' \
-    "$([ "$DRY_RUN" = 0 ] || printf 'would ')" "$removing" "$U_SET"
+  printf 'domestique local: %sremove providers:%s; remaining=%s; Beads purge=%s; stop raw/older writers; unproven empty containers retained\n' \
+    "$([ "$DRY_RUN" = 0 ] || printf 'would ')" "$removing" "$U_SET" "$PURGE_BEADS"
   if [ "$DRY_RUN" = 1 ]; then [ -z "$retained" ]; exit; fi
   umask 077
+  if [ -n "$oldbeads" ]; then
+    local_beads_python gate "$L_ROOT" "$oldbeads" || exit 1
+    if [ "$PURGE_BEADS" = 1 ]; then
+      local_beads_python purge-check "$L_ROOT" "$oldbeads" || exit 1
+    fi
+  fi
   # Keep the owned attachment and its proven private-tree rule even at none.
   # Pending is the original marker throughout every risky publication phase.
   U_WRITING=1
   trap 'rc=$?; if [ "$U_WRITING" = 1 ]; then
+    if [ "$U_PENDING_HASH" = absent ] && [ ! -e "$U_STATE/pending" ] && [ ! -L "$U_STATE/pending" ]; then
+      local_remove_private "$U_STATE/manifest" "$L_ROOT" &&
+        local_remove_new "$U_STATE/pending" "$plan" || :
+    fi
     local_fail "PARTIAL removal; retain in-root private pending/published, compare intent/completed hashes against exact leaves and exclusions; no automated retry"
     [ "$rc" -ne 0 ] || rc=1
   fi; exit "$rc"' EXIT
   local_remove_new "$U_STATE/pending" "$plan" &&
     local_remove_new "$U_STATE/published" "" || exit 1
   for ((i=0; i<${#remove_paths[@]}; i++)); do
+    if [ -n "$oldbeads" ]; then local_remove_validate || exit 1; fi
+    if [ "$PURGE_BEADS" = 1 ]; then
+      local_beads_python purge-recheck "$L_ROOT" "$oldbeads" || exit 1
+    fi
     local_remove_check "$U_STATE/pending" "$U_PENDING_HASH" "$L_ROOT" &&
       local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" &&
       local_remove_check "${remove_paths[i]}" "${remove_hashes[i]}" "$L_ROOT" || exit 1
@@ -3471,6 +3706,14 @@ local_uninstall() (
     local_remove_check "${remove_paths[i]}" absent "$L_ROOT" || exit 1
   done
   local_remove_validate || exit 1
+  if [ "$PURGE_BEADS" = 1 ]; then
+    U_LOG="$(local_beads_python purge "$L_ROOT" "$oldbeads" "$U_PENDING_HASH" "$U_LOG_HASH" \
+      "$oldhash" "$L_EXCLUDE" "$U_EXCLUDE_HASH")"$'\n' || exit 1
+    U_LOG_HASH="$(printf '%s' "$U_LOG" | global_hash)"
+    local_remove_check "$U_STATE/published" "$U_LOG_HASH" "$L_ROOT" || exit 1
+    U_PURGED=1
+    local_remove_validate || exit 1
+  fi
   local_remove_check "$U_STATE/manifest" "$oldhash" "$L_ROOT" || exit 1
   unlink "$U_STATE/manifest" || exit 1
   for ((j=0; j<${#U_PATHS[@]}; j++)); do
@@ -3495,6 +3738,8 @@ local_uninstall() (
   local_remove_validate || exit 1
   local_remove_check "$U_STATE/pending" "$U_PENDING_HASH" "$L_ROOT" || exit 1
   unlink "$U_STATE/pending" || exit 1
+  U_PENDING_HASH=absent
+  local_remove_validate || exit 1
   U_WRITING=0
   [ -z "$retained" ] || exit 1
   printf 'domestique local: profiles removed; private attachment metadata retained\n'
@@ -3505,6 +3750,7 @@ local_install() (
   local keys=() created=() bases=() oldkeys=() oldbases=() oldcreated=()
   local oldmanifest="" oldreceipts=()
   local oldbeads="" qualification="" beads_args=() newbeads="" attempt_hash=""
+  local L_BEADS_LOCK_ROOT=""
   local pending_hash="" published_text=$'format=1\n'
   # Process-local exclusive reservations, never persisted runtime/purge authority.
   local L_RESERVE_ROOT="" L_STATE_CLAIM="" L_DB_CLAIM=""
@@ -3515,6 +3761,9 @@ local_install() (
   local_root "$TARGET_DIR" && local_core || exit 1
   L_INVENTORY=()
   while IFS= read -r key; do L_INVENTORY+=("$key"); done < <(local_inventory)
+  if [ "${WITH_BEADS:-0}" = 1 ]; then local_manifest_read "$L_ROOT" runtime || exit 1
+  else local_manifest_read "$L_ROOT" || exit 1; fi
+  local_beads_lock "$L_ROOT" || exit 1
   if [ "${WITH_BEADS:-0}" = 1 ]; then local_manifest_read "$L_ROOT" runtime || exit 1
   else local_manifest_read "$L_ROOT" || exit 1; fi
   if [ "${STATE_ONLY:-0}" = 1 ]; then selection=none
@@ -3529,6 +3778,10 @@ local_install() (
       { local_fail "missing Beads helper capability; explicitly update global installation"; exit 1; }
     if [ -n "$oldbeads" ]; then
       local_beads_python guard "$L_ROOT" "$oldbeads" || exit 1
+      if [ "$DRY_RUN" = 0 ] && printf '%s' "$oldbeads" | grep -qx 'beads_status=retained'; then
+        local_beads_python query "$L_ROOT" "$oldbeads" || exit 1
+        oldbeads="$(printf '%s' "$oldbeads" | sed 's/^beads_status=retained$/beads_status=ready/')"$'\n'
+      fi
     else
       qualification="$(local_beads_python qualify)" || exit 1
       while IFS= read -r key; do beads_args+=("$key"); done <<< "$qualification"
@@ -3769,7 +4022,7 @@ or skills. It does not initialize Beads unless explicitly requested with --with-
   --dry-run     Full preflight without destination writes.
   --force       Never overrides edits, unknown ownership, or unsafe paths.
   --uninstall   Remove unchanged positively owned selected providers (default
-                persisted union). Bare/positional/--local TARGET is profile-only
+                persisted union). Bare/positional/--local TARGET performs
                 local removal, even without a usable global core. Explicit
                 --global removes global assets only, never project files.
                 Edited providers retained WHOLE; nonzero even force/dry-run.
@@ -3777,14 +4030,16 @@ or skills. It does not initialize Beads unless explicitly requested with --with-
   --with-beads  Explicit --local TARGET only; qualified private embedded DB init.
   --state-only  Requires --local TARGET --with-beads; conflicts with --platform.
                 No new PROJECT adapters/local profiles; preserves existing edited profiles.
-  --purge-beads Unsupported; refuses (exit 2), even with uninstall/force.
+  --purge-beads Local --uninstall only. Removes positively owned Beads artifacts
+                only when ALL initial DB/context/export hashes are unchanged
+                and no providers remain. Never queries bd, even in dry-run.
   --help, -h    Show help.
 
 Edited owned local native tools/MCP metadata is usable after native reload/
 trust/core-protocol confirmation, but automatic refresh refuses and leaves edits
 untouched even with force. No secrets/backups/merges; full prompt forks stay user-owned.
 Missing/old helper: repair with bash ./domestique.sh --global from this checkout
-before installation or use; local profile uninstall does not require global assets.
+before installation or use; filesystem uninstall needs neither global assets nor bd.
 Beads is limited to the exact digest-pinned Darwin arm64 Beads 1.1.2 CGO embedded
 artifact, existing Python 3.9+ and macOS sandbox-exec; not every 1.1.2 build qualifies.
 Other versions/backends/platforms
@@ -3796,9 +4051,14 @@ Existing host .beads is never adopted. No unsafe init/rollback/setup or force
 bypass. Loading/routing/structural guards remain read-only and never call bd.
 All workflow operations require installed resolve-core beads CORE PROJECT RELEASE
 with literal bindings. No raw bd fallback; export has a fixed private path.
-Purge and uninstall with initialization flags refuse early; Beads attachment
-uninstall/purge remains unsupported pending .7. ANY Beads attachment refuses
-local uninstall before mutation.
+Uninstall with initialization flags and global purge refuse early.
+Ordinary uninstall retains Beads bytes and original ownership hashes; the last
+provider changes ready to retained. Explicit --with-beads reactivation queries
+the qualified engine before ready, never rebaselining initial hashes.
+Stop raw/older Beads writers before cleanup. Current wrapper operations and
+cleanup take an exclusive cooperative flock on existing owned metadata.json.
+Busy or changed-generation metadata refuses; native.lock is NOT a writer lock.
+This is not a process census or atomicity guarantee against raw writers.
 Host .beads is untouched. No legacy fallback/model/MCP/tool flags.
 Local removal retains a valid providers=none attachment after the last profile,
 with its existing private-tree exclusion. Bare reinstall creates no adapters;
@@ -3814,7 +4074,7 @@ Preview updates: bash ./update.sh --source ./domestique.sh --global
 Default remote updater source is main, NOT this preview; draft #11 lacks it too.
 Native .13: Codex 0.154.0/Copilot 1.0.83 global skills and metadata reload observed;
 Claude 2.1.268 skills and ALL roles blocked, not evidence of product role absence.
-Versions observed only, not minimum support. .6 limited; .7 DB cleanup/.8 execution open.
+Versions observed only, not minimum support. .6 limited; .8 native execution open.
 EOF
 }
 
@@ -3869,8 +4129,8 @@ while [ $# -gt 0 ]; do
 done
 [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
   { echo "Invalid target/options; --no-guest is unsupported" >&2; exit 2; }
-[ "$PURGE_BEADS" = 0 ] ||
-  { echo "Local purge is not implemented; global purge is invalid; no legacy fallback" >&2; exit 2; }
+[ "$PURGE_BEADS" = 0 ] || [ "$UNINSTALL$GLOBAL" = 10 ] ||
+  { echo "--purge-beads requires local --uninstall; global purge is invalid" >&2; exit 2; }
 [ "$UNINSTALL" = 0 ] || {
   [ "$WITH_BEADS$STATE_ONLY" = 00 ] ||
     { echo "Uninstall conflicts with initialization/state-only; profile removal only, no legacy fallback" >&2; exit 2; }

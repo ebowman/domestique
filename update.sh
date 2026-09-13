@@ -42,11 +42,14 @@ No unsafe init/rollback, setup, arbitrary flags or force bypass.
 Definitions/routing can load; full native role/tool/MCP execution is unverified.
 No implicit client/plugin/auth/environment/MCP setup. This wrapper only updates;
 use domestique.sh --uninstall --global for owned-only global removal, or
-domestique.sh --uninstall --local TARGET for profile-only local removal.
+domestique.sh --uninstall --local TARGET for local removal (Beads retained by default).
 Removal retains edited selected providers whole, nonzero even force. No live
 backups/merges. Local last-profile removal retains providers=none/private exclusion.
 Global final removal leaves unproven empty containers; see README safe manual
-empty-core reconciliation before reinstall. Beads purge/integrated cleanup is open.
+empty-core reconciliation before reinstall. Local --purge-beads requires all
+initial DB/context/export hashes unchanged and no remaining provider; stop raw
+writers first. Cleanup never queries bd and needs neither core nor bd. This
+updater remains update-only and accepts no uninstall/purge options.
 No model, MCP, or tool options are accepted; customize native metadata locally.
 Edited metadata requires native reload/trust/core-protocol confirmation; automatic
 refresh refuses untouched, even force. Global core updates do not rewrite locals.
