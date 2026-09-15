@@ -15,6 +15,557 @@ MARKER_END='<!-- END domestique -->'
 GITEXCLUDE_MARKER_BEGIN='# BEGIN domestique (managed)'
 GITEXCLUDE_MARKER_END='# END domestique'
 
+# Internal only: no installer dispatch reaches this function. The single
+# DOM_INSPECT_PY payload is extractable without sourcing/running this script.
+inspect_main() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' 'domestique inspect: Python 3.9+ runtime unavailable' >&2
+    return 1
+  fi
+  local inspect_rc=0
+  # Suppress even interpreter startup errors (which can contain private paths).
+  # -I excludes cwd/PYTHON*/user imports; -S excludes site; -B forbids bytecode.
+  command python3 -I -S -B - "$@" 2>/dev/null <<'DOM_INSPECT_PY' || inspect_rc=$?
+import sys
+
+if sys.version_info < (3, 9):
+    sys.exit(69)
+
+from dataclasses import dataclass, field, replace
+import errno
+import json
+import os
+from pathlib import Path
+import selectors
+import shutil
+import stat
+import subprocess
+import time
+from typing import Optional, Tuple
+
+
+# Collection boundary, not an installation detector or comparison engine.
+# Scanners must supply a trusted, finite exact allowlist, NOT manifest contents
+# as authority. read() accepts manifest references only within that allowlist.
+# Every declared path is required inventory: finish() diagnoses unread entries,
+# including paths that might be missing. An empty allowlist is an explicit empty
+# collection scope, not evidence of installation absence.
+# No enumeration, recursive traversal, config evaluation, or engine reads.
+# Consumers must use finish(), not provisional read() results, for reporting.
+# Metadata + a second bounded read catch observable changes, not hostile-writer
+# atomicity. Filesystem atime is deliberately outside the no-application-write
+# guarantee. Bytes stay in memory and are excluded from object representations.
+MAX_BYTES = 1024 * 1024
+MAX_ENTRIES = 256
+MAX_DEPTH = 16
+MAX_TOTAL_BYTES = 8 * MAX_BYTES
+MAX_PATH_BYTES = 4096
+MAX_ANCESTORS = 64
+GIT_SECONDS = 2.0
+
+
+def display(path):
+    """Escaped path only; never format native bytes or exception messages."""
+    return json.dumps(os.fspath(path), ensure_ascii=True)
+
+
+@dataclass(frozen=True)
+class Diagnostic:
+    scope: str
+    code: str
+    path: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class Limits:
+    file_bytes: int = MAX_BYTES
+    entries: int = MAX_ENTRIES
+    depth: int = MAX_DEPTH
+    total_bytes: int = MAX_TOTAL_BYTES
+
+    def valid(self):
+        return all(type(n) is int and 0 < n <= cap for n, cap in (
+            (self.file_bytes, MAX_BYTES), (self.entries, MAX_ENTRIES),
+            (self.depth, MAX_DEPTH), (self.total_bytes, MAX_TOTAL_BYTES)))
+
+
+def identity(s):
+    # atime is not evidence and reading must not itself invalidate a scan.
+    return (s.st_dev, s.st_ino, s.st_mode, s.st_nlink, s.st_size,
+            s.st_mtime_ns, s.st_ctime_ns)
+
+
+def stamp(path):
+    try:
+        return identity(os.lstat(path))
+    except FileNotFoundError:
+        return None
+
+
+@dataclass(frozen=True)
+class Context:
+    requested_directory: Optional[str]
+    resolved_directory: Optional[str]
+    context: str
+    scope: str
+    diagnostics: Tuple[Diagnostic, ...] = ()
+    _proof: tuple = field(default=(), repr=False)
+
+    def unchanged(self):
+        try:
+            return all(stamp(path) == value for path, value in self._proof)
+        except OSError:
+            return False
+
+
+def git_root(candidate):
+    """One read-only rev-parse; bounded pipe, deadline, and direct-child reap.
+
+    No generic supervisor, process-tree discovery, or native/version probes.
+    rev-parse cannot run hooks/filters; disable integrations defensively too.
+    Never pass caller Git/config/tracing/loader/proxy variables to Git.
+    """
+    executable = shutil.which("git")
+    if executable is None:
+        return False
+    env = {
+        "PATH": os.defpath, "HOME": os.devnull, "XDG_CONFIG_HOME": os.devnull,
+        "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_ATTR_NOSYSTEM": "1", "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
+        "GIT_CEILING_DIRECTORIES": str(candidate.parent),
+    }
+    args = [executable, "--no-pager", "--no-optional-locks",
+            "-c", "core.hooksPath=" + os.devnull,
+            "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+            "-c", "credential.helper=", "-c", "diff.external=",
+            "-c", "core.sshCommand=false", "-c", "protocol.allow=never",
+            "-C", str(candidate), "rev-parse", "--show-toplevel",
+            "--is-inside-work-tree"]
+    process = None
+    try:
+        process = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        end = time.monotonic() + GIT_SECONDS
+        output = bytearray()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while True:
+                left = end - time.monotonic()
+                if left <= 0 or not selector.select(left):
+                    return False
+                chunk = os.read(process.stdout.fileno(), MAX_PATH_BYTES + 32 - len(output))
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if len(output) >= MAX_PATH_BYTES + 32:
+                    return False
+        return (process.wait(timeout=max(0.001, end - time.monotonic())) == 0 and
+                bytes(output) == os.fsencode(candidate) + b"\ntrue\n")
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=1)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if process.stdout is not None:
+                process.stdout.close()
+
+
+def resolve_context(requested=None, *, ceiling=None):
+    """Physical requested alias allowed; only ancestor .git metadata is probed.
+
+    A ceiling can only narrow discovery (used by owned fixtures). No directory
+    listing or HOME inventory is involved. Depth exhaustion/errors are unknown,
+    not non-Git. Linked-worktree gitfiles are handed only to bounded rev-parse.
+    """
+    supplied = None
+    physical = None
+    proof = []
+
+    def result(kind, scope, code=None):
+        return Context(supplied, str(physical) if physical is not None else None,
+                       kind, scope, () if code is None else
+                       (Diagnostic("project", code),), tuple(proof))
+
+    try:
+        supplied = os.fspath(requested) if requested is not None else os.getcwd()
+        if (not isinstance(supplied, str) or not supplied or
+                len(os.fsencode(supplied)) > MAX_PATH_BYTES):
+            return result("invalid-target", "unresolved", "invalid-target")
+        target = Path(supplied)
+    except (OSError, ValueError):
+        return result("invalid-target", "unresolved", "invalid-target")
+    try:
+        # Python 3.9-3.12 report resolution loops as RuntimeError. Restrict that
+        # expected exception to this operation, not the rest of collection.
+        target = target.resolve(strict=True)
+    except (OSError, ValueError, RuntimeError):
+        return result("invalid-target", "unresolved", "invalid-target")
+    try:
+        s = target.stat()
+        if (not stat.S_ISDIR(s.st_mode) or not s.st_mode & 0o444 or
+                not s.st_mode & 0o111 or not os.access(target, os.R_OK | os.X_OK)):
+            return result("invalid-target", "unresolved", "invalid-target")
+        physical = target
+        proof.append((str(target), identity(s)))
+        # Retain only the caller's narrowing discovery ceiling, never GIT_DIR,
+        # GIT_WORK_TREE or config/environment capable of redirecting execution.
+        raw_ceiling = (os.fspath(ceiling) if ceiling is not None else
+                       os.environ.get("GIT_CEILING_DIRECTORIES", ""))
+        try:
+            ceiling_bytes = os.fsencode(raw_ceiling)
+        except UnicodeError:
+            return result("invalid-target", "unresolved", "root-discovery-unavailable")
+        if len(ceiling_bytes) > MAX_PATH_BYTES:
+            return result("invalid-target", "unresolved", "root-discovery-unavailable")
+        ceilings = {os.path.abspath(p) for p in raw_ceiling.split(os.pathsep) if p}
+        current = target
+        for _ in range(MAX_ANCESTORS):
+            marker = current / ".git"
+            info = stamp(marker)
+            proof.append((str(marker), info))
+            if info is not None:
+                mode = info[2]
+                if (stat.S_ISLNK(mode) or not (stat.S_ISDIR(mode) or stat.S_ISREG(mode))
+                        or not mode & 0o444 or
+                        (stat.S_ISDIR(mode) and not mode & 0o111) or
+                        (stat.S_ISREG(mode) and (info[3] != 1 or info[4] > MAX_PATH_BYTES))):
+                    return result("invalid-target", "unresolved", "unsafe-git-marker")
+                proof.append((str(current), stamp(current)))
+                if not git_root(current):
+                    return result("invalid-target", "unresolved", "root-discovery-unavailable")
+                physical = current
+                kind = ("linked-worktree" if stat.S_ISREG(mode) else
+                        "git-root" if current == target else "git-subdirectory")
+                resolved = result(kind, "worktree")
+                if not resolved.unchanged():
+                    return result("invalid-target", "unresolved", "inconsistent-evidence")
+                return resolved
+            if current.parent == current or str(current.parent) in ceilings:
+                resolved = result("non-git", "directory-only")
+                if not resolved.unchanged():
+                    return result("invalid-target", "unresolved", "inconsistent-evidence")
+                return resolved
+            current = current.parent
+        return result("invalid-target", "unresolved", "root-discovery-limit")
+    except OSError:
+        return result("invalid-target", "unresolved",
+                      "invalid-target" if physical is None else "root-discovery-unavailable")
+
+
+def path_error(path, limits):
+    if (not isinstance(path, str) or not path or len(path) > MAX_PATH_BYTES or
+            path.startswith("/") or path[1:2] == ":" or "\\" in path or
+            any(ord(c) < 32 or ord(c) == 127 for c in path)):
+        return "escaped-path"
+    parts = path.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return "escaped-path"
+    if len(parts) > limits.depth:
+        return "depth-limit"
+    # These are never textual inspection inputs, even in a caller allowlist.
+    if any(p.lower() in (".git", ".beads", ".dolt", "dolt") or
+           p.lower().endswith((".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm"))
+           for p in parts):
+        return "unsupported-input"
+    return None
+
+
+@dataclass(frozen=True)
+class Observation:
+    path: str
+    status: str
+    diagnostics: Tuple[Diagnostic, ...] = ()
+    data: Optional[bytes] = field(default=None, repr=False)
+    _proof: tuple = field(default=(), repr=False)
+    _bytes_read: int = field(default=0, repr=False, compare=False)
+
+    def text(self):
+        """Only readable UTF-8 observations have bytes; never repairs encoding."""
+        return self.data.decode("utf-8") if self.data is not None else None
+
+
+@dataclass(frozen=True)
+class Collection:
+    # consistent means all declared paths were observed in a stable scan, not
+    # that they were readable, installed, valid, or natively ready. Consumers
+    # must also consider each observation's status and diagnostics.
+    directory: str
+    observations: Tuple[Observation, ...]
+    diagnostics: Tuple[Diagnostic, ...]
+    consistent: bool
+
+
+class _Refusal(Exception):
+    pass
+
+
+def file_problem(s, directory=False):
+    mode = s.st_mode
+    if stat.S_ISLNK(mode):
+        return "unsafe-symlink"
+    if directory:
+        if not stat.S_ISDIR(mode):
+            return "unsafe-parent"
+        if not mode & 0o444 or not mode & 0o111:
+            return "unreadable-file"
+    else:
+        for check, reason in ((stat.S_ISDIR, "unsafe-directory"),
+                              (stat.S_ISFIFO, "unsafe-fifo"),
+                              (stat.S_ISSOCK, "unsafe-socket")):
+            if check(mode):
+                return reason
+        if not stat.S_ISREG(mode):
+            return "unsafe-nonregular"
+        if s.st_nlink != 1:
+            return "unsafe-hardlink"
+        if not mode & 0o444:
+            return "unreadable-file"
+    return None
+
+
+class Collector:
+    """Exact-path, descriptor-relative reader; finish seals and revalidates.
+
+    root must be an absolute physical anchor (Context.resolved_directory for
+    projects). Root aliases must be resolved intentionally by the context API;
+    no component inside this boundary is followed. Allowed paths are trusted
+    scanner declarations, not a parser result. Unknown entries are refused.
+    All distinct allowed paths are required, even optional-on-disk records:
+    read() must observe missing/unsafe inputs too. finish() never reads omitted
+    inventory on the caller's behalf or silently drops it. An empty declaration
+    intentionally requests no files; it still validates the root/context.
+    """
+    def __init__(self, root, allowed, *, scope="project", limits=Limits(), context=None):
+        self.root = os.fspath(root)
+        self.scope = scope
+        self.limits = limits
+        self.context = context
+        self._allowed = set()
+        self._observed = {}
+        self._diagnostics = []
+        self._total = 0
+        self._calls = 0
+        self._sealed = None
+        self._anchor = None
+        self._broken = False
+        if not limits.valid():
+            self._fail("invalid-limits")
+            return
+        if (not os.path.isabs(self.root) or
+                os.path.normpath(self.root) != self.root or
+                len(os.fsencode(self.root)) > MAX_PATH_BYTES or
+                len(Path(self.root).parts) > MAX_ANCESTORS):
+            self._fail("invalid-target")
+            return
+        if context is not None and (context.diagnostics or
+                                    context.resolved_directory != self.root):
+            self._fail("invalid-target")
+            return
+        for i, path in enumerate(allowed):
+            if i >= limits.entries:
+                self._fail("entry-limit")
+                break
+            problem = path_error(path, limits)
+            if problem:
+                self._fail(problem)
+                break
+            self._allowed.add(path)
+        if not self._broken:
+            self._anchor = self._observe(None, 0)
+            if self._anchor.status != "directory":
+                self._fail("invalid-target")
+
+    def _fail(self, code, path=None):
+        self._broken = True
+        diagnostic = Diagnostic(self.scope, code, path)
+        if diagnostic not in self._diagnostics:
+            self._diagnostics.append(diagnostic)
+
+    def _observe(self, path, budget):
+        budget = max(0, budget)
+        fds = []
+        proof = []
+        data = None
+        code = None
+        status = "unreadable"
+        in_inventory = False
+        bytes_read = 0
+        try:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            fd = os.open("/", flags | os.O_DIRECTORY)
+            fds.append(fd)
+            # Absolute ancestors are identity-only: unrelated activity in /tmp
+            # must not invalidate an owned scan. Inventory parents use full
+            # signatures, including membership-affecting mtime/ctime.
+            root_parts = Path(self.root).parts[1:]
+            for part in root_parts:
+                before = os.stat(part, dir_fd=fd, follow_symlinks=False)
+                problem = file_problem(before, directory=True)
+                if problem:
+                    raise _Refusal(problem)
+                child = os.open(part, flags | os.O_DIRECTORY, dir_fd=fd)
+                fds.append(child)
+                after = os.fstat(child)
+                if identity(before) != identity(after):
+                    raise _Refusal("inconsistent-evidence")
+                proof.append((before.st_dev, before.st_ino, before.st_mode))
+                fd = child
+            if path is None:
+                return Observation("", "directory", _proof=tuple(proof) +
+                                   (identity(os.fstat(fd)),))
+            in_inventory = True
+            for part in path.split("/")[:-1]:
+                proof.append(identity(os.fstat(fd)))
+                before = os.stat(part, dir_fd=fd, follow_symlinks=False)
+                problem = file_problem(before, directory=True)
+                if problem:
+                    raise _Refusal(problem)
+                child = os.open(part, flags | os.O_DIRECTORY, dir_fd=fd)
+                fds.append(child)
+                if identity(before) != identity(os.fstat(child)):
+                    raise _Refusal("inconsistent-evidence")
+                fd = child
+            proof.append(identity(os.fstat(fd)))
+            leaf = path.split("/")[-1]
+            before = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
+            proof.append(identity(before))
+            problem = file_problem(before)
+            if problem:
+                raise _Refusal(problem)
+            if before.st_size > self.limits.file_bytes:
+                raise _Refusal("input-too-large")
+            if before.st_size > budget:
+                raise _Refusal("byte-limit")
+            leaf_fd = os.open(leaf, flags, dir_fd=fd)
+            fds.append(leaf_fd)
+            if identity(os.fstat(leaf_fd)) != identity(before):
+                raise _Refusal("inconsistent-evidence")
+            chunks = []
+            remaining = min(self.limits.file_bytes, budget) + 1
+            while remaining:
+                chunk = os.read(leaf_fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                bytes_read += len(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            if (identity(os.fstat(leaf_fd)) != identity(before) or
+                    identity(os.stat(leaf, dir_fd=fd, follow_symlinks=False)) != identity(before)
+                    or len(data) != before.st_size):
+                raise _Refusal("inconsistent-evidence")
+            data.decode("utf-8", errors="strict")
+            status = "readable"
+        except FileNotFoundError:
+            if in_inventory:
+                status = "missing"
+            else:
+                code = "invalid-target"
+        except UnicodeError:
+            code = "invalid-encoding"
+            status = "corrupt"
+        except _Refusal as error:
+            code = error.args[0]  # Fixed internal code, never native exceptions.
+            status = ("inconsistent" if code == "inconsistent-evidence" else
+                      "unreadable" if code in ("unreadable-file", "input-too-large",
+                                               "byte-limit") else "unsafe")
+        except OSError as error:
+            code = ("unsafe-symlink" if error.errno == errno.ELOOP else
+                    "inconsistent-evidence" if error.errno == errno.ENOTDIR else
+                    "unreadable-file")
+            status = ("inconsistent" if code == "inconsistent-evidence" else
+                      "unsafe" if code == "unsafe-symlink" else "unreadable")
+        finally:
+            for fd in reversed(fds):
+                os.close(fd)
+        return Observation(path or "", status, () if code is None else
+                           (Diagnostic(self.scope, code, display(path) if path else None),),
+                           data if status == "readable" else None, tuple(proof), bytes_read)
+
+    def read(self, path):
+        if self._sealed is not None:
+            return Observation("", "unreadable", (Diagnostic(self.scope, "collection-sealed"),))
+        if self._broken:
+            return Observation("", "unreadable", tuple(self._diagnostics))
+        self._calls += 1
+        if self._calls > self.limits.entries:
+            self._fail("entry-limit")
+        problem = path_error(path, self.limits) or (
+            "not-allowlisted" if path not in self._allowed else None)
+        if problem:
+            self._fail(problem)
+        if self._broken:
+            return Observation("", "unreadable", tuple(self._diagnostics))
+        if path not in self._observed:
+            observed = self._observe(path, self.limits.total_bytes - self._total)
+            self._observed[path] = observed
+            self._total += observed._bytes_read
+            if any(d.code == "byte-limit" for d in observed.diagnostics):
+                self._fail("byte-limit")
+        return self._observed[path]
+
+    def finish(self):
+        if self._sealed is not None:
+            return self._sealed
+        for path in sorted(self._allowed.difference(self._observed)):
+            self._fail("unread-required-input", display(path))
+        changed = self.context is not None and not self.context.unchanged()
+        if self._anchor is not None and self._anchor != self._observe(None, 0):
+            changed = True
+        # A second full bounded read catches same-size/mtime-restored edits too.
+        remaining = self.limits.total_bytes
+        for path, before in self._observed.items():
+            after = self._observe(path, remaining)
+            remaining -= after._bytes_read
+            if before != after or before.status == "inconsistent":
+                changed = True
+        if changed:
+            self._fail("inconsistent-evidence")
+        observations = tuple(self._observed.values())
+        diagnostics = tuple(self._diagnostics) + tuple(
+            d for observation in observations for d in observation.diagnostics)
+        if self._broken:
+            observations = tuple(replace(o, status="inconsistent" if changed else "unreadable",
+                                         data=None) for o in observations)
+        self._sealed = Collection(self.root, observations, diagnostics, not self._broken)
+        return self._sealed
+
+
+def boundary_main(args):
+    # Temporary INTERNAL context smoke entrypoint, not the future public CLI.
+    if len(args) > 1:
+        print("domestique inspect: invalid-internal-request")
+        return 1
+    context = resolve_context(args[0] if args else None)
+    print("domestique inspect: scope=" + context.scope + "; context=" + context.context)
+    if context.resolved_directory is not None:
+        print("directory=" + display(context.resolved_directory))
+    for diagnostic in context.diagnostics:
+        print("project: " + diagnostic.code)
+    return 1 if context.diagnostics else 0
+
+
+if __name__ == "__main__":
+    # Expected filesystem/discovery failures are handled at their boundaries.
+    # Unexpected faults propagate (also when extracted as a library). The shell
+    # suppresses interpreter stderr/exception chains and reports nonzero status.
+    sys.exit(boundary_main(sys.argv[1:]))
+DOM_INSPECT_PY
+  if [ "$inspect_rc" -eq 69 ]; then
+    printf '%s\n' 'domestique inspect: Python 3.9+ runtime unavailable' >&2
+  elif [ "$inspect_rc" -ne 0 ]; then
+    printf '%s\n' 'domestique inspect: runtime-or-collection-failure' >&2
+  fi
+  [ "$inspect_rc" -eq 0 ]
+}
+
 # ---------------------------------------------------------------------------
 # Embedded source of truth (verbatim; edit here, nowhere else).
 # ---------------------------------------------------------------------------

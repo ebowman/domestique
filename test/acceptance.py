@@ -44,7 +44,7 @@ CURRENT = (
     "beads-native-context-tests.py", "acceptance-tests.py", "global-path-tests.py",
     "local-index-tests.py", "native-supervision-tests.py", "beads-fixture-tests.py",
     "beads-execution-tests.py",
-    "inspect-fixture-tests.py",
+    "inspect-fixture-tests.py", "inspect-tests.py",
 )
 HISTORICAL = ("codex.sh", "copilot.sh", "guest.sh", "uninstall.sh", "upgrade.sh")
 QUICK = ("private-core.sh", "native-discovery-tests.py", "beads-native-context-tests.py",
@@ -783,6 +783,8 @@ def validation(env, control=None):
         ast.parse(path.read_text(), filename=str(path))
     source = (ROOT / "domestique.sh").read_text()
     ast.parse(source.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0])
+    ast.parse(source.split("<<'DOM_INSPECT_PY' || inspect_rc=$?\n", 1)[1]
+              .split("\nDOM_INSPECT_PY", 1)[0])
     require(shutil.which("shellcheck", path=env["PATH"]), "ShellCheck missing; install outside this task")
     # Main owns fixture cleanup under the total deadline.
     helper = Path(env["TMPDIR"]) / "resolve-core"
@@ -804,7 +806,7 @@ def validation(env, control=None):
     out, err, rc = run(["git", "--no-pager", "diff", "--check"], env, 60)
     require(rc == 0, f"git diff --check: {out}{err}")
     return {"status": "PASS", "shell_files": len(shells), "emitted_helpers": 1,
-            "python_files": len(python_files), "embedded_python": 1,
+            "python_files": len(python_files), "embedded_python": 2,
             "shellcheck_warning_exceptions": 0}
 
 
