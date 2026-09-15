@@ -44,6 +44,7 @@ CURRENT = (
     "beads-native-context-tests.py", "acceptance-tests.py", "global-path-tests.py",
     "local-index-tests.py", "native-supervision-tests.py", "beads-fixture-tests.py",
     "beads-execution-tests.py",
+    "inspect-fixture-tests.py",
 )
 HISTORICAL = ("codex.sh", "copilot.sh", "guest.sh", "uninstall.sh", "upgrade.sh")
 QUICK = ("private-core.sh", "native-discovery-tests.py", "beads-native-context-tests.py",
