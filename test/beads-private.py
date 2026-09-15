@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -157,13 +156,12 @@ def unit_tests():
                     process=lambda argv, *a, **kw: "bd version 1.2.2 (synthetic)\n"), \
          patch.object(NS["shutil"], "which", return_value="/usr/bin/true"):
         reject(NS["qualify"])
-    child = Mock(pid=123, returncode=0)
-    child.communicate.return_value = ('{"title":"permission denied is issue text"}\n', "")
-    with patch.object(NS["subprocess"], "Popen", return_value=child), \
-         patch.object(NS["os"], "killpg"):
+    child = subprocess.CompletedProcess("<synthetic>", 0,
+                                        '{"title":"permission denied is issue text"}\n', "")
+    with patch.dict(NS, execute_child=Mock(return_value=child)):
         check(NS["process"](["/usr/bin/true"], root / "context", root / ".beads",
                             Path("/usr/bin/true"), Path("/usr/bin/git")) ==
-              child.communicate.return_value[0], "stdout is data, not a denial substring filter")
+              child.stdout, "stdout is data, not a denial substring filter")
 
 
 FAKE = r'''
@@ -251,22 +249,7 @@ def integration():
         env.pop("XDG_STATE_HOME", None)
 
         def run(*args, ok=True):
-            proc = subprocess.Popen(list(map(str, args)), cwd=work, env=env,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                    stdin=subprocess.DEVNULL, start_new_session=True)
-            try:
-                out, err = proc.communicate(timeout=600)
-                result = subprocess.CompletedProcess(args, proc.returncode, out, err)
-            finally:
-                proc.poll()
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    if proc.poll() is None:
-                        raise
-                proc.communicate(timeout=5)
+            result = NS["execute_child"](list(map(str, args)), cwd=work, env=env, timeout=600)
             check((result.returncode == 0) == ok, (args, result.stderr, result.stdout))
             check("SECRET" not in result.stdout + result.stderr, "no secret diagnostics")
             return result

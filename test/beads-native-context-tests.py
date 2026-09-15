@@ -14,6 +14,8 @@ SPEC = importlib.util.spec_from_file_location(
     "beads_context", Path(__file__).with_name("beads-native-context.py"))
 M = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(M)
+# Functional allowance matching native TIMEOUT, not a latency promise.
+FUNCTIONAL_TEST_TIMEOUT = 30
 
 
 class ContextTests(unittest.TestCase):
@@ -35,7 +37,7 @@ class ContextTests(unittest.TestCase):
     def test_optimized_python_refuses(self):
         result = subprocess.run(
             [sys.executable, "-O", str(Path(M.__file__)), "--run"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=FUNCTIONAL_TEST_TIMEOUT,
             env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"})
         self.assertEqual(result.returncode, 1)
         self.assertEqual(json.loads(result.stdout)["status"], "FAILED")
@@ -128,10 +130,10 @@ class ContextTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(AssertionError):
                 M.export_records(text)
 
-    def test_warning_classifier_blocks_unknown_warning(self):
+    def test_warning_classifier_fails_unknown_warning(self):
         self.assertEqual(M.warnings("warning: beads.role not configured (GH#2950).\n"),
                          ["warning: beads.role not configured (GH#2950)."])
-        with self.assertRaises(M.N.Blocked):
+        with self.assertRaises(AssertionError):
             M.warnings("Warning: could not save metadata")
         self.assertIsNotNone(M.DENIAL.search("operation not permitted"))
 
@@ -222,7 +224,7 @@ class ContextTests(unittest.TestCase):
                 self.assertEqual(modified, {**json.loads(original_bytes),
                                             "project_id": modified["project_id"]})
                 if write == "blocked":
-                    raise M.N.Blocked("synthetic timeout")
+                    raise subprocess.TimeoutExpired("synthetic", 1)
                 if write == "error":
                     return subprocess.CompletedProcess(argv, 1, "", "unrelated failure")
                 if write == "success":
@@ -265,18 +267,18 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(self.e.report["proofs"]["IDENTITY_BINDING"], "FAILED")
         self.assertNotIn("rejected_issue_absent", self.e.report["identity_controls"]["A"])
 
-    def test_identity_control_restores_and_queries_after_blocked_runner(self):
-        with self.assertRaises(M.N.Blocked):
+    def test_identity_control_restores_and_queries_after_timeout(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
             self.exercise_identity_control(write="blocked")
-        self.assertEqual(self.e.report["proofs"]["IDENTITY_BINDING"], "BLOCKED")
+        self.assertEqual(self.e.report["proofs"]["IDENTITY_BINDING"], "FAILED")
 
     def test_identity_control_list_failure_never_passes(self):
-        with self.assertRaises(M.N.Blocked):
+        with self.assertRaises(AssertionError):
             self.exercise_identity_control(query="error")
-        self.assertEqual(self.e.report["identity_controls"]["A"]["status"], "BLOCKED")
+        self.assertEqual(self.e.report["identity_controls"]["A"]["status"], "FAILED")
 
     def test_identity_control_successful_write_still_fails_when_list_blocked(self):
-        with self.assertRaises(M.N.Blocked):
+        with self.assertRaises(AssertionError):
             self.exercise_identity_control(write="success", query="error")
         self.assertEqual(self.e.report["proofs"]["IDENTITY_BINDING"], "FAILED")
         self.assertEqual(self.e.report["identity_controls"]["A"]["status"], "FAILED")

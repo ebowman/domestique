@@ -772,17 +772,21 @@ local_beads_python() {
   python3 -I -S -B - "$@" <<'DOM_BEADS_PY'
 import hashlib
 import fcntl
+import errno
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import selectors as io_selectors
 import shutil
 import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 
 PIN = "cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42"
@@ -897,34 +901,250 @@ def policy(context, beads, binary, git, exports=None):
             lines.append(f"(allow file-read* file-write* (subpath {json.dumps(str(p))}))")
     return "\n".join(lines)
 
-def process(argv, context, beads, binary, git, exports=None, expected=0, coordinated=False):
-    env = environment(context, beads, git)
-    proc = subprocess.Popen(
-        ["/usr/bin/sandbox-exec", "-p", policy(context, beads, binary, git, exports),
-         *map(str, argv)], cwd=context / "run", env=env, text=True,
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        # A surviving native leader must keep the gate if its wrapper is killed.
-        pass_fds=(8,) if coordinated else (),
-        start_new_session=True)
+# Keep failed live handles out of Popen's destructor/implicit reaper. This
+# short-lived bridge must stop after unproved cleanup, never launch a retry.
+_UNREAPED_CHILDREN = []
+_DARWIN_LISTPIDS = None
+
+def darwin_listpids():
+    """Bind only the PID-membership primitive; no process-state inspection."""
+    global _DARWIN_LISTPIDS
+    if _DARWIN_LISTPIDS is None:
+        try:
+            import ctypes
+            # SDK libproc.h: int(uint32_t, uint32_t, void *, int).
+            fn = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True).proc_listpids
+            fn.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
+            fn.restype = ctypes.c_int
+            need(ctypes.sizeof(ctypes.c_int) == 4, "unsupported Darwin PID size")
+            # Non-NULL, zero-size buffer fails before enumeration. Verify the
+            # syscall exists without collecting any membership or making a child.
+            probe = ctypes.c_int()
+            ctypes.set_errno(0)
+            size = fn(2, os.getpid(), ctypes.byref(probe), 0)
+            need(size == 0 and ctypes.get_errno() == errno.ENOMEM,
+                 "unsupported Darwin PID query")
+            _DARWIN_LISTPIDS = fn
+        except Exception:
+            raise Refusal("Beads requires working Darwin libproc proc_listpids") from None
+    return _DARWIN_LISTPIDS
+
+def darwin_group_pids(pgid):
+    """One group-filtered snapshot, with room for two PIDs; full means unknown.
+
+    XNU proc_info.c proc_listpids holds proc_list_lock across allproc AND
+    zombproc, filtering p_pgrpid directly (PROC_PGRP_ONLY=2). No PID/state
+    second pass that could elide a forking/exiting member. See design API notes.
+    """
+    import ctypes
+    need(type(pgid) is int and 0 < pgid <= 0x7fffffff, "invalid owned group")
+    fn = darwin_listpids()
+    pids = (ctypes.c_int * 2)(-1, -1)
+    ctypes.set_errno(0)
+    size = fn(2, pgid, pids, ctypes.sizeof(pids))
+    error = ctypes.get_errno()  # libproc translates syscall -1 to 0 + errno.
+    need(error == 0 and type(size) is int and
+         0 <= size < ctypes.sizeof(pids) and size % ctypes.sizeof(ctypes.c_int) == 0,
+         "Darwin group membership unproved")
+    result = tuple(pids[:size // ctypes.sizeof(ctypes.c_int)])
+    need(all(pid > 0 for pid in result), "invalid Darwin group membership")
+    return result
+
+def require_execution_support():
+    need(not _UNREAPED_CHILDREN, "previous child cleanup unproved")
+    need(all(hasattr(os, name) for name in (
+        "waitid", "WNOWAIT", "WEXITED", "WNOHANG", "P_PID", "CLD_EXITED",
+        "CLD_KILLED", "CLD_DUMPED", "set_blocking", "killpg")) and
+        hasattr(signal, "SIGCHLD"),
+        "Beads requires Python waitid(WNOWAIT) and nonblocking POSIX pipes")
+    need(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL and
+         threading.current_thread() is threading.main_thread() and
+         threading.active_count() == 1,
+         "Beads requires default SIGCHLD and a single-threaded exclusive child reaper")
+    # Probe the kernel flags without creating or reaping any child. Our own
+    # PID cannot be our child. Missing kernel support must precede init writes.
     try:
-        out, err = proc.communicate(timeout=60)
-        need(proc.returncode == expected, "native process refused; retain failed evidence; "
-             "no unscoped repair or retry")
-        need(not re.search(r"operation not permitted|permission denied|sandbox.*denied",
-                           err, re.I), "native sandbox denial")
-        if expected == 128:
-            need(not out and "not a git repository" in err, "private Git discovery did not refuse")
-        return out
-    finally:
-        proc.poll()
+        os.waitid(os.P_PID, os.getpid(), os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except OSError as exc:
+        need(exc.errno == errno.ECHILD, "Beads waitid(WNOWAIT) runtime unsupported")
+    except (NotImplementedError, ValueError):
+        raise Refusal("Beads waitid(WNOWAIT) runtime unsupported") from None
+    else:
+        raise Refusal("Beads exclusive child ownership probe failed")
+    if sys.platform == "darwin":
+        darwin_listpids()
+
+class ExecutionFailure(Refusal):
+    """Private evidence attributes; public str never contains argv or output."""
+    def __init__(self, reason, result, failure=None, cleanup=()):
+        super().__init__(reason)
+        self.result, self.failure, self.cleanup = result, failure, tuple(cleanup)
+        self.stdout, self.stderr = result.stdout, result.stderr
+        self.returncode = result.returncode
+
+def execute_child(argv, *, cwd, env, timeout=60, pass_fds=()):
+    """Retain the direct session leader through the LAST group signal.
+
+    Sole reaper in the isolated, single-threaded bridge; no checkout imports,
+    ps inspection or detached-descendant containment. Cleanup has one shared
+    five-second deadline, not five seconds per pipe/wait. Never signal after
+    ownership loss or after reaping, even when cleanup itself fails.
+    """
+    require_execution_support()
+    proc = subprocess.Popen(
+        argv, cwd=cwd, env=env, text=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        pass_fds=pass_fds, start_new_session=True)
+    streams = (proc.stdout, proc.stderr)
+    chunks = (bytearray(), bytearray())
+    selector = None
+    completed, lost, failure = None, False, None
+    cleanup = []
+    deadline = time.monotonic() + timeout
+
+    def observe():
+        nonlocal completed, lost
+        try:
+            need(not lost and proc.returncode is None, "child ownership lost")
+            require_execution_support()
+            status = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if status is not None:
+                need(status.si_pid == proc.pid and status.si_code in (
+                    os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED), "child identity lost")
+                code = status.si_status if status.si_code == os.CLD_EXITED else -status.si_status
+                need(completed is None or completed == code, "child status changed")
+                completed = code
+            else:
+                need(completed is None, "completed child disappeared")
+            return completed
+        except BaseException:
+            lost = True
+            raise
+
+    def drain(seconds):
+        if not selector.get_map():
+            time.sleep(seconds)
+            return
+        for key, _ in selector.select(seconds):
+            # One bounded read per ready pipe: neither a flooding stream nor
+            # simultaneous large stdout/stderr can starve the other/deadline.
+            try:
+                data = os.read(key.fd, 65536)
+            except BlockingIOError:
+                continue
+            if data:
+                chunks[key.data].extend(data)
+            else:
+                selector.unregister(key.fileobj)
+
+    try:
+        selector = io_selectors.DefaultSelector()
+        for index, stream in enumerate(streams):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, io_selectors.EVENT_READ, index)
+        while True:
+            if observe() is not None and not selector.get_map():
+                break
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired("<private child>", timeout)
+            drain(min(.02, left))
+    except BaseException as exc:
+        failure = exc
+
+    cleanup_deadline = time.monotonic() + 5
+    try:
+        observe()  # Mandatory fresh non-reaping ownership check before signal.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        except PermissionError:
-            if proc.poll() is None:
+        except PermissionError as exc:
+            # EPERM alone proves nothing. Only the exact positively completed,
+            # exclusively unreaped leader may be excluded from membership.
+            if sys.platform != "darwin" or exc.errno != errno.EPERM:
                 raise
-        proc.communicate(timeout=5)
+            try:
+                need(time.monotonic() < cleanup_deadline, "cleanup deadline exceeded")
+                need(observe() is not None, "leader still running")
+                need(time.monotonic() < cleanup_deadline, "cleanup deadline exceeded")
+                try:
+                    members = darwin_group_pids(proc.pid)
+                finally:
+                    observe()  # Lost/changed/reaped completion revokes the proof.
+                need(time.monotonic() < cleanup_deadline, "cleanup deadline exceeded")
+                need(members in ((), (proc.pid,)), "other group members remain")
+            except BaseException:
+                raise exc from None  # Preserve private original permission failure.
+    except BaseException as exc:
+        cleanup.append(exc)
+    # Irreversible boundary: no group signal or fallback below this line.
+    try:
+        while not lost:
+            done = observe() is not None
+            if done and (selector is None or not selector.get_map()):
+                break
+            left = cleanup_deadline - time.monotonic()
+            if left <= 0:
+                raise Refusal("child termination/output cleanup exceeded five seconds")
+            if selector is not None:
+                drain(min(.02, left))
+            else:
+                time.sleep(min(.02, left))
+    except BaseException as exc:
+        cleanup.append(exc)
+    if not lost and completed is not None:
+        try:
+            # waitid already proved completion; this wait cannot block on a
+            # live child and is strictly after the final signal attempt.
+            need(proc.wait(timeout=0) == completed, "child reap status changed")
+        except BaseException as exc:
+            cleanup.append(exc)
+    if proc.returncode is None:
+        _UNREAPED_CHILDREN.append(proc)
+    for resource in (selector, *streams):
+        if resource is not None:
+            try:
+                resource.close()
+            except BaseException as exc:
+                cleanup.append(exc)
+    raw = tuple(bytes(data) for data in chunks)
+    try:
+        # Decode only once, preserving split UTF-8 sequences and universal
+        # newlines exactly like Popen(text=True). Failure retains raw bytes.
+        out, err = (data.decode(stream.encoding, stream.errors)
+                    .replace("\r\n", "\n").replace("\r", "\n")
+                    for data, stream in zip(raw, streams))
+    except UnicodeError as exc:
+        out, err = raw
+        failure = failure or exc
+    result = subprocess.CompletedProcess("<private child>", completed, out, err)
+    if failure is not None or cleanup:
+        if isinstance(failure, subprocess.TimeoutExpired):
+            failure.output, failure.stderr = raw
+        reason = ("native execution timed out" if isinstance(failure, subprocess.TimeoutExpired)
+                  else "native execution failed" if failure else
+                  "native child exit status " + str(completed))
+        if cleanup:
+            reason += "; child cleanup unproved"
+        raise ExecutionFailure(reason, result, failure, cleanup) from None
+    return result
+
+def process(argv, context, beads, binary, git, exports=None, expected=0, coordinated=False):
+    result = execute_child(
+        ["/usr/bin/sandbox-exec", "-p", policy(context, beads, binary, git, exports),
+         *map(str, argv)], cwd=context / "run", env=environment(context, beads, git),
+        timeout=60,
+        # A surviving native leader must keep the gate if its wrapper is killed.
+        pass_fds=(8,) if coordinated else ())
+    need(result.returncode == expected, "native process refused; retain failed evidence; "
+         "no unscoped repair or retry")
+    need(not re.search(r"operation not permitted|permission denied|sandbox.*denied",
+                       result.stderr, re.I), "native sandbox denial")
+    if expected == 128:
+        need(not result.stdout and "not a git repository" in result.stderr,
+             "private Git discovery did not refuse")
+    return result.stdout
 
 def prepare(context):
     context.mkdir(mode=0o700)
@@ -940,6 +1160,7 @@ def claim(path):
 
 def qualify():
     need(sys.version_info >= (3, 9), "Beads requires existing Python 3.9+ stdlib")
+    require_execution_support()
     need(platform.system() == "Darwin" and platform.machine() == "arm64",
          "unsupported platform; only observed Darwin arm64 is qualified")
     need(Path("/usr/bin/sandbox-exec").is_file(), "existing OS sandbox-exec required")
@@ -1334,6 +1555,8 @@ def grammar(args, root, prefix):
 def main():
     need(sys.version_info >= (3, 9), "Beads requires existing Python 3.9+ stdlib")
     action, *args = sys.argv[1:]
+    if action in ("qualify", "claim", "init", "run", "query"):
+        require_execution_support()
     if action == "qualify":
         need(not args, "qualification takes no options")
         print("\n".join(qualify()))
@@ -1439,7 +1662,8 @@ except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
     # Never print raw native output/config/argv (including secret-like text).
     print("domestique Beads: qualification, ownership, context, identity or operation refused; "
           "stop, retain private attempt/journals and inspect manually; no automatic retry/adoption. "
-          "Requires observed Darwin arm64 Beads 1.1.2 CGO artifact, Python 3 and OS sandbox. "
+          "Requires observed Darwin arm64 Beads 1.1.2 CGO artifact, Python 3.9+ with "
+          "waitid(WNOWAIT), Darwin libproc, exclusive child reaping and OS sandbox. "
           "Changed binary/context requires explicit manual requalification.", file=sys.stderr)
     sys.exit(1)
 DOM_BEADS_PY
@@ -1469,7 +1693,7 @@ set -euo pipefail
 DOM_EOF
   # Share the byte/ownership/path grammar with installer preflight. No sourcing
   # installed metadata, native config, or the installer at runtime.
-  declare -f global_fail global_hash global_stat global_path global_digest_valid \
+  declare -f global_fail global_hash global_stat global_path_metadata global_path global_digest_valid \
     local_fail local_path local_text_file local_root local_untracked \
     local_inventory local_selected local_set_valid local_contains local_manifest_read \
     local_route local_beads_fail local_beads_guard local_beads_python local_beads_run \
@@ -1781,26 +2005,91 @@ global_hash() {
   else sha256sum; fi | awk '{print $1}'
 }
 global_stat() {
-  if [ "$(uname -s)" = Darwin ]; then stat -f '%u %Lp' "$1"
-  else stat -c '%u %a' "$1"; fi
+  # G_STAT_SYSTEM is local to ONE validation, never a cross-check cache.
+  if [ "$G_STAT_SYSTEM" = Darwin ]; then stat -f '%u %Mp%03Lp %d %i %N' "$@"
+  else stat -c '%u %a %d %i %n' -- "$@"; fi
+}
+
+# Caller-local arrays: exact existing ancestors in paths, fresh records in
+# metadata. Bound both argv bytes and count (also on Bash 3.2). An oversized
+# environment/exec failure is a refusal, not a fallback to stale attributes.
+global_path_metadata() {
+  local start=0 end bytes output line attributes name field value j
+  local -a chunk
+  metadata=()
+  while [ "$start" -lt "${#paths[@]}" ]; do
+    end="$start"; bytes=0; chunk=()
+    while [ "$end" -lt "${#paths[@]}" ] && [ "${#chunk[@]}" -lt 32 ]; do
+      [ "${#paths[end]}" -le 8192 ] || global_fail "path exceeds stat batch limit"
+      [ $((bytes + ${#paths[end]} + 1)) -le 8192 ] || break
+      chunk[${#chunk[@]}]="${paths[end]}"
+      bytes=$((bytes + ${#paths[end]} + 1)); end=$((end + 1))
+    done
+    [ "$end" -gt "$start" ] || global_fail "path exceeds stat batch limit"
+    # Sentinel preserves ALL newlines, including extra/partial output, and
+    # keeps command failure distinct from syntactically valid partial output.
+    # Bash variables cannot retain NUL. Map it to a forbidden path/number byte
+    # before capture so malformed output cannot become valid by losing bytes.
+    output="$(set -o pipefail; global_stat "${chunk[@]}" | LC_ALL=C tr '\000' '\001'
+      [ "$?" -eq 0 ] && printf '.')" || global_fail "cannot stat path batch"
+    [ "${output: -1}" = . ] || global_fail "incomplete stat batch"
+    output="${output%.}"
+    for ((j=start; j<end; j++)); do
+      case "$output" in *$'\n'*) ;; *) global_fail "incomplete stat batch";; esac
+      line="${output%%$'\n'*}"; output="${output#*$'\n'}"
+      name="$line"; attributes=""
+      for field in owner mode device inode; do
+        case "$name" in *" "*) ;; *) global_fail "malformed stat record";; esac
+        value="${name%% *}"; name="${name#* }"
+        case "$value" in ''|*[!0-9]*) global_fail "malformed stat $field";; esac
+        if [ "$field" = mode ]; then
+          case "$value" in *[!0-7]*) global_fail "malformed stat mode";; esac
+          [ "${#value}" -le 4 ] || global_fail "malformed stat mode"
+        fi
+        attributes="$attributes$value "
+      done
+      [ "$name" = "${paths[j]}" ] || global_fail "misaligned stat record"
+      metadata[j]="$attributes"
+    done
+    [ -z "$output" ] || global_fail "extra stat records"
+    start="$end"
+  done
 }
 
 # Walk only exact ancestors, never provider directory inventories. System
 # ancestors may be root-owned; writable shared ancestors must be sticky.
 global_path() {
-  local path="$1" boundary="$2" walk="" rest part info owner mode bits parent
+  local path="$1" boundary="$2" walk="" rest part info owner mode bits parent i=0
+  local G_STAT_SYSTEM LC_ALL=C
+  local -a paths metadata before missing
+  paths=(); metadata=(); before=(); missing=()
   case "$path" in /|/*/|*//*|*/./*|*/../*|*/.|*/..|*[=$'\001'-$'\037'$'\177']*)
     global_fail "noncanonical or non-data path";;
     /*) ;; *) global_fail "absolute paths required";; esac
+  # Inventory once, then bracket the original checks with fresh, associated
+  # metadata reads. Never reuse an inventory or attributes across validations.
   rest="${path#/}"
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"; walk="$walk/$part"
+    [ "$part" = "$rest" ] && rest="" || rest="${rest#*/}"
+    [ ! -L "$walk" ] || global_fail "symlinked path component: $walk"
+    if [ -e "$walk" ]; then paths[${#paths[@]}]="$walk"
+    else missing[${#missing[@]}]="$walk"; fi
+  done
+  G_STAT_SYSTEM="$(uname -s)" || global_fail "cannot identify stat platform"
+  global_path_metadata
+  before=("${metadata[@]}")
+  walk=""; rest="${path#/}"
   while [ -n "$rest" ]; do
     part="${rest%%/*}"; walk="$walk/$part"
     [ "$part" = "$rest" ] && rest="" || rest="${rest#*/}"
     [ ! -L "$walk" ] || global_fail "symlinked path component: $walk"
     if [ -e "$walk" ]; then
       [ -z "$rest" ] || [ -d "$walk" ] || global_fail "non-directory parent: $walk"
-      info="$(global_stat "$walk")" || global_fail "cannot stat path"
-      owner="${info%% *}"; mode="${info#* }"; bits=$((8#$mode))
+      [ "$i" -lt "${#paths[@]}" ] && [ "$walk" = "${paths[i]}" ] ||
+        global_fail "changed path inventory"
+      info="${metadata[i]}"; i=$((i + 1))
+      owner="${info%% *}"; mode="${info#* }"; mode="${mode%% *}"; bits=$((8#$mode))
       case "$walk/" in "$boundary/"*)
         [ "$owner" = "$G_UID" ] || global_fail "unowned path: $walk"
         [ $((bits & 022)) -eq 0 ] || global_fail "writable by others: $walk"
@@ -1828,6 +2117,16 @@ global_path() {
           global_fail "cannot create under parent: $parent"
       fi
     fi
+  done
+  [ "$i" -eq "${#paths[@]}" ] || global_fail "changed path inventory"
+  global_path_metadata
+  for ((i=0; i<${#paths[@]}; i++)); do
+    [ "${before[i]}" = "${metadata[i]}" ] && [ ! -L "${paths[i]}" ] ||
+      global_fail "changed path metadata"
+  done
+  for ((i=0; i<${#missing[@]}; i++)); do
+    [ ! -e "${missing[i]}" ] && [ ! -L "${missing[i]}" ] ||
+      global_fail "changed missing path inventory"
   done
 }
 global_no_repo() {
@@ -2571,25 +2870,47 @@ local_root() {
 }
 local_untracked() (
   set -o pipefail
-  local root="$1" candidate="$2" exact=0
+  shopt -u nocasematch
+  export LC_ALL=C
+  local root="$1" candidate="$2" outer
   [ -z "${GIT_DIR+x}${GIT_WORK_TREE+x}${GIT_COMMON_DIR+x}${GIT_INDEX_FILE+x}" ] ||
     { local_fail "unset Git directory/index routing overrides before proving actual ownership"; return 1; }
-  while :; do
-    # The destination excludes its entire subtree. Ancestors only collide
-    # when they are index OBJECTS, not directories with unrelated host leaves.
-    # NUL framing and literal pathspecs preserve arbitrary indexed filenames.
-    git -C "$root" ls-files -z -- ":(literal)$candidate" | (
-      local indexed=""
-      while IFS= read -r -d '' indexed; do
-        if [ "$exact" = 0 ] || [ "$indexed" = "$candidate" ]; then
-          local_fail "tracked/indexed destination or ancestor: $root/$candidate"
-          exit 1
-        fi
-      done
-      [ -z "$indexed" ]
-    ) || { local_fail "index validation failed: $root/$candidate"; return 1; }
-    case "$candidate" in */*) candidate="${candidate%/*}"; exact=1;; *) break;; esac
-  done
+  [ -z "${GIT_LITERAL_PATHSPECS+x}${GIT_GLOB_PATHSPECS+x}${GIT_NOGLOB_PATHSPECS+x}${GIT_ICASE_PATHSPECS+x}" ] ||
+    { local_fail "unset Git pathspec overrides before proving actual ownership"; return 1; }
+  # All local callers use canonical ASCII native/metadata inventory leaves.
+  # Global removal may supply other relative names, but always refuses a repo
+  # regardless. Fail closed rather than let Git normalize an internal spelling
+  # that our byte comparisons cannot reproduce (including Unicode composition).
+  case "$candidate" in
+    ''|/*|*/|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|*[!$'\040'-$'\176']*)
+      local_fail "noncanonical internal index candidate"; return 1;;
+  esac
+  outer="${candidate%%/*}"
+  # One FRESH query per call: destination/subtree and exact ancestor objects
+  # all lie under outer. Unrelated indexed siblings are not collisions.
+  # Explicit top/literal magic and refusal of environment overrides prevent
+  # pathspec/case rewriting. No index or filesystem state survives this call.
+  git -C "$root" ls-files -z -- ":(top,literal)$outer" | (
+    local indexed="" refused
+    while IFS= read -r -d '' indexed; do
+      # Opaque filenames (even LF/non-UTF8) are fine; empty, noncanonical,
+      # out-of-query records and unterminated tails are protocol failures.
+      case "$indexed" in
+        ''|/*|*/|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..) exit 1;;
+      esac
+      if [ "$indexed" != "$outer" ] && [[ "$indexed" != "$outer/"* ]]; then exit 1; fi
+      if [ "$indexed" = "$candidate" ] || [[ "$indexed" == "$candidate/"* ]] ||
+          [[ "$candidate" == "$indexed/"* ]]; then
+        # Name exact ancestor objects, but never disclose opaque descendants
+        # when the destination itself (including its subtree) is refused.
+        refused="$candidate"
+        [[ "$candidate" != "$indexed/"* ]] || refused="$indexed"
+        local_fail "tracked/indexed destination or ancestor: $root/$refused"
+        exit 1
+      fi
+    done
+    [ -z "$indexed" ]
+  ) || { local_fail "index validation failed: $root/$candidate"; return 1; }
 )
 local_core() {
   L_CORE="${DOMESTIQUE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/domestique}"
@@ -4042,6 +4363,14 @@ Missing/old helper: repair with bash ./domestique.sh --global from this checkout
 before installation or use; filesystem uninstall needs neither global assets nor bd.
 Beads is limited to the exact digest-pinned Darwin arm64 Beads 1.1.2 CGO embedded
 artifact, existing Python 3.9+ and macOS sandbox-exec; not every 1.1.2 build qualifies.
+Python/kernel waitid(WNOWAIT), Darwin libproc via stdlib ctypes,
+nonblocking POSIX pipes, default SIGCHLD and
+exclusive single-threaded child reaping are required. Missing capabilities refuse
+before Beads writes. Darwin EPERM requires a completed, still-unreaped leader
+revalidated around one exact-group PID query: empty or only that leader succeeds;
+other PIDs, full/error/ambiguous results or expired cleanup budget refuse.
+No per-process state reads, post-reap signals or detached containment. Ordinary core loads
+are unaffected.
 Other versions/backends/platforms
 refuse before project writes; no tools are installed. A private non-Git context,
 strict environment and actual OS sandbox protect native operations; native
@@ -4063,8 +4392,9 @@ Host .beads is untouched. No legacy fallback/model/MCP/tool flags.
 Local removal retains a valid providers=none attachment after the last profile,
 with its existing private-tree exclusion. Bare reinstall creates no adapters;
 explicit --platform reuses that attachment and requires a compatible global core.
-Unproven native containers stay untouched; final private-state cleanup is future
-work. Interrupted local removal fails closed; retain pending/published only in the
+Unproven native containers stay untouched. Successful Beads purge still retains
+the valid private attachment and its exclusion for reuse.
+Interrupted local removal fails closed; retain pending/published only in the
 repository's .domestique-private and reconcile exact leaves/exclusions manually.
 Global recovery journals remain only in core state/; see the recovery specification.
 Global final removal leaves unproven empty core containers; before reinstall,

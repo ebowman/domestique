@@ -8,6 +8,8 @@ All scratch, HOME and TMPDIR live beneath an explicitly supplied project-local
 TMPDIR. Faults modify only a disposable installer and must actually trigger.
 """
 import ast
+import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -24,6 +26,7 @@ COUNT = 0
 NATIVE = sys.argv[1:] in (["--native"], ["--native-smoke"])
 SMOKE = sys.argv[1:] in (["--native-smoke"], ["--smoke"])
 assert not sys.argv[1:] or NATIVE or SMOKE
+PROCESS_BOUNDARY = "    result = execute_child(\n"
 
 
 def check(ok, why):
@@ -45,7 +48,26 @@ def beads(p):
                    if line.startswith("beads_"))
 
 
+def inject_pause(source, mark, release_gate):
+    """Prepend at the complete call boundary; refuse stale or broken helpers."""
+    check(source.count(PROCESS_BOUNDARY) == 1, "wrapped-operation pause anchor")
+    pause = (f"    if not Path({str(mark)!r}).exists():\n"
+             "        import time\n"
+             f"        Path({str(mark)!r}).write_text('active')\n"
+             f"        while not Path({str(release_gate)!r}).exists(): time.sleep(0.05)\n")
+    source = source.replace(PROCESS_BOUNDARY, pause + PROCESS_BOUNDARY)
+    ast.parse(source.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0])
+    return source
+
+
 def main():
+    # Synthetic/default mode does not even import the native selector.
+    if NATIVE:
+        spec = importlib.util.spec_from_file_location("beads_fixture", ROOT / "test/beads_fixture.py")
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        selected = fixture.resolve()
+        print("NATIVE_FIXTURE=" + json.dumps(selected), flush=True)
     parent = Path(os.environ["TMPDIR"]).resolve()
     assert ROOT in parent.parents and parent.is_dir(), "use a project-local private TMPDIR"
     with tempfile.TemporaryDirectory(prefix="beads-cleanup-", dir=parent) as temp:
@@ -54,7 +76,7 @@ def main():
             (work / name).mkdir(mode=0o700)
         binary = work / "bin/bd"
         if NATIVE:
-            binary.symlink_to("/opt/homebrew/Cellar/beads/1.1.2/bin/beads")
+            binary.symlink_to(selected["path"])
             check(NS["digest"](binary) == NS["PIN"], "actual pinned native artifact")
             source = SOURCE
         else:
@@ -69,7 +91,7 @@ def main():
         native_log = work / "native-calls"
         native_log.touch()
         # Instrument the production controller, not a proxy for native behavior.
-        anchor = "    env = environment(context, beads, git)\n"
+        anchor = PROCESS_BOUNDARY
         check(source.count(anchor) == 1, "native call instrumentation anchor")
         source = source.replace(anchor,
             f"    with open({str(native_log)!r}, 'a') as trace:\n"
@@ -269,13 +291,7 @@ def main():
         if not NATIVE:
             mark, release_gate = work / "wrapped-active", work / "wrapped-release"
             paused = work / "paused-wrapper"
-            anchor = "    env = environment(context, beads, git)\n"
-            pause = (f"    if not Path({str(mark)!r}).exists():\n"
-                     "        import time\n"
-                     f"        Path({str(mark)!r}).write_text('active')\n"
-                     f"        while not Path({str(release_gate)!r}).exists(): time.sleep(0.05)\n")
-            check(helper.read_text().count(anchor) == 1, "wrapped-operation pause anchor")
-            paused.write_text(helper.read_text().replace(anchor, pause + anchor))
+            paused.write_text(inject_pause(helper.read_text(), mark, release_gate))
             child = subprocess.Popen(["bash", str(paused), "beads", str(core), str(used),
                                       release, "ready"], cwd=work, env=env,
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

@@ -21,8 +21,12 @@ SPEC = importlib.util.spec_from_file_location(
     "native_discovery", Path(__file__).with_name("native-discovery.py"))
 N = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(N)
+SPEC = importlib.util.spec_from_file_location(
+    "beads_fixture", Path(__file__).with_name("beads_fixture.py"))
+F = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(F)
 PIN = "20e493e569c922d1253bdeff068c5e56c94957fb"
-BINARY = Path("/opt/homebrew/Cellar/beads/1.1.2/bin/beads")
+BINARY = F.DEFAULT
 PROOFS = ("sandbox", "native-init", "readiness", "required-operations",
           "separation", "IDENTITY_BINDING", "database-uuid-query", "host-privacy", "cleanup")
 SECTION = ("\n# Beads / Dolt files (added by bd init)\n"
@@ -50,7 +54,7 @@ def warnings(text):
                 if re.match(r"\s*(?:warning:|⚠)", line, re.I)]
     unknown = set(observed) - KNOWN_WARNINGS
     if unknown:
-        raise N.Blocked(f"unreviewed native warnings: {sorted(unknown)}")
+        raise AssertionError(f"unreviewed native warnings: {sorted(unknown)}")
     return observed
 
 
@@ -147,9 +151,10 @@ class Experiment:
         assert work.is_dir() and work.resolve() == work and not any(work.iterdir()), (
             "fixture must be fresh, empty, physical")
         self.work, self.tools = work, tools
+        self.binary = BINARY
         self.deadline = time.monotonic() + 480
         self.report = {
-            "scope": "TEST ONLY; disposable fixtures; production .6 remains blocked",
+            "scope": "TEST ONLY; disposable historical context experiment, not the production initializer",
             "source_pin": PIN, "binary": str(BINARY), "commands": [],
             "proofs": {key: "BLOCKED" for key in PROOFS}, "contexts": [],
             "limits": [
@@ -157,8 +162,8 @@ class Experiment:
                 "stderr denials and protected snapshots checked; no kernel denial audit",
                 "--sandbox is auto-push control, not OS isolation",
             ],
-            "process_policy": "60s/process, 480s/native phase; helper reaps/kills exact child "
-                              "process group on normal exit/timeout; no detached/external Dolt",
+            "process_policy": "60s/process, 480s/native phase; shared retained-leader supervisor "
+                              "signals before reaping, tracks observed descendants; no external Dolt",
             "proof_definitions": {
                 "readiness": "real ping query, persisted CRUD, physical embedded files, metadata UUIDs",
                 "IDENTITY_BINDING": "three disposable metadata-only UUID negative controls; "
@@ -173,18 +178,18 @@ class Experiment:
 
     def safe(self, argv, cwd, env, profile):
         if not self.tools["sandbox-exec"]:
-            raise N.Blocked("sandbox-exec unavailable; no native invocation")
+            raise N.Blocked("sandbox-exec unavailable; no native invocation", kind="absent-tool")
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
-            raise N.Blocked("480s experiment deadline exceeded")
+            raise subprocess.TimeoutExpired("480s experiment deadline", 480)
         return N.run([self.tools["sandbox-exec"], "-p", profile, *argv],
                      cwd, env, timeout=min(60, remaining))
 
     def checked(self, argv, cwd, env, profile):
         result = self.safe(argv, cwd, env, profile)
         if result.returncode:
-            raise N.Blocked(f"{list(map(str, argv))}: exit {result.returncode}: "
-                            f"{result.stderr or result.stdout}")
+            raise AssertionError(f"{list(map(str, argv))}: exit {result.returncode}: "
+                                 f"{result.stderr or result.stdout}")
         return result
 
     def validate(self, context):
@@ -227,10 +232,15 @@ class Experiment:
         self.report.setdefault("sandbox_probes", []).append(repo.name)
 
     def setup(self):
+        try:
+            selected = F.resolve(default=BINARY)
+        except F.MissingDefault as exc:
+            raise N.Blocked(str(exc), kind="absent-tool") from exc
+        self.binary = Path(selected["path"])
+        self.tools["beads"] = self.binary
+        self.report.update(binary=selected["path"], binary_sha256=selected["sha256"])
         if sys.platform != "darwin" or not self.tools["sandbox-exec"]:
-            raise N.Blocked("requires verified macOS sandbox-exec")
-        if not BINARY.is_file() or Path("/opt/homebrew/bin/bd").resolve() != BINARY:
-            raise N.Blocked("installed Beads path differs from experiment pin")
+            raise N.Blocked("requires verified macOS sandbox-exec", kind="absent-tool")
         # All setup state is already under the first project's private context.
         first = self.work / "A"
         private = first / ".domestique-private/beads-context"
@@ -246,7 +256,7 @@ class Experiment:
         h.validate_isolation()
         git = self.tools["git"]
         if git is None:
-            raise N.Blocked("Git unavailable")
+            raise N.Blocked("Git unavailable", kind="absent-tool")
         for name in ("A", "B"):
             repo = self.work / name
             repo.mkdir(exist_ok=True)
@@ -318,7 +328,7 @@ class Experiment:
         assert env["BEADS_DIR"] == str(repo / ".beads")
         if args[0] == "init" and "--help" not in args:
             assert not (repo / ".beads").exists(), "init is fresh-final-path only"
-        argv = [BINARY, "--sandbox", *args]
+        argv = [self.binary, "--sandbox", *args]
         if json_output:
             argv.append("--json")
         item = {"repo": repo.name, "cwd": str(private / "run"),
@@ -328,7 +338,11 @@ class Experiment:
             result = self.safe(argv, private / "run", env, profile)
         except N.Blocked as exc:
             item["classification"] = "BLOCKED"
+            item["blocker_kind"] = exc.kind
             item["diagnostic"] = str(exc)
+            raise
+        except N.FAILURES as exc:
+            item.update(classification="FAILED", **N.failure_fields(exc))
             raise
         item["exit"] = result.returncode
         if identity_expectation is not None:
@@ -337,18 +351,19 @@ class Experiment:
             item["classification"] = "FAILED"
             evidence = check_identity_refusal(result, *identity_expectation)
             if DENIAL.search(result.stdout + result.stderr):
-                raise N.Blocked("identity control permission denial")
+                raise AssertionError("identity control permission denial")
             item.update(classification="PASS: identity refusal", **evidence)
             return evidence
         item.update(stdout=result.stdout, stderr=result.stderr)
         if DENIAL.search(result.stdout + result.stderr):
-            raise N.Blocked(f"native permission denial: {item}")
+            raise AssertionError(f"native permission denial: {item}")
         if expected_error is not None:
             assert result.returncode == 1 and expected_error in result.stderr, item
             item["classification"] = "BLOCKED: source-reviewed unsupported diagnostic"
+            item["blocker_kind"] = "unsupported-interface"
             return result.stderr
         if result.returncode:
-            raise N.Blocked(f"native command failed: {item}")
+            raise AssertionError(f"native command failed: {item}")
         if "--help" in args:
             item["stdout"] = "(help inspected; omitted)"
         else:
@@ -478,7 +493,6 @@ class Experiment:
         self.setup()
         version = self.bd(self.contexts[0], "--version")
         self.report["version"] = version.strip()
-        self.report["binary_sha256"] = N.hashlib.sha256(BINARY.read_bytes()).hexdigest()
         assert re.search(r"\b1\.1\.2\b", version), "version differs from pin"
         self.bd(self.contexts[0], "--help")
         for command in ("init", "create", "dep", "ready", "show", "update",
@@ -558,22 +572,25 @@ def main():
         experiment.probe()
     except N.Blocked as exc:
         experiment.report["blocker"] = str(exc)
-    except (AssertionError, OSError, ValueError, KeyError, TypeError,
-            subprocess.TimeoutExpired) as exc:
+        experiment.report["blocker_kind"] = exc.kind
+    except N.FAILURES as exc:
         experiment.report["failure"] = str(exc)
+        experiment.report.update(N.failure_fields(exc))
         experiment.report["proofs"]["experiment"] = "FAILED"
     finally:
         try:
             experiment.privacy()
-        except (AssertionError, OSError, N.Blocked) as exc:
+        except (*N.FAILURES, N.Blocked) as exc:
             experiment.report["proofs"]["host-privacy"] = "FAILED"
             experiment.report["privacy_error"] = str(exc)
+            experiment.report.update(N.failure_fields(exc))
         try:
             temp.cleanup()
             assert not work.exists()
             experiment.report["proofs"]["cleanup"] = "PASS"
         except (OSError, AssertionError) as exc:
             experiment.report["proofs"]["cleanup"] = "FAILED"
+            experiment.report["failure_kind"] = "supervision"
             experiment.report["orphan"] = {"path": str(work), "error": str(exc)}
     experiment.report["date"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     experiment.report["counts"] = {

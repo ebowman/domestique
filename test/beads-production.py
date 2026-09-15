@@ -19,12 +19,16 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("native", ROOT / "test/native-discovery.py")
 N = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(N)
+SPEC = importlib.util.spec_from_file_location("beads_fixture", ROOT / "test/beads_fixture.py")
+F = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(F)
 
 
-def main():
+def experiment():
     if sys.argv[1:] != ["--run"]:
         print("STATIC ONLY; actual production fixture requires --run")
         return 2
+    selected = F.resolve()
     count = 0
     # Existing installer global_path intentionally remains unchanged here;
     # use the ordinary private OS temp parent used by its current suites.
@@ -33,7 +37,7 @@ def main():
         tools = N.resolve_tools()
         env = N.isolated_env(work, tools)
         env["GIT_CEILING_DIRECTORIES"] = str(work.parent)
-        (work / "bin/bd").symlink_to("/opt/homebrew/Cellar/beads/1.1.2/bin/beads")
+        (work / "bin/bd").symlink_to(selected["path"])
         (work / "bin/python3").symlink_to(Path(sys.executable).resolve())
         env.update(SECRET="SECRET-ENV", BD_DB="SECRET-ROUTE", BEADS_DB="SECRET-ROUTE",
                    HTTP_PROXY="http://127.0.0.1:9", OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:9")
@@ -209,6 +213,7 @@ def main():
         run(["bash", helper, "beads-guard", core, combined, release])
         run([tools["git"], "-C", combined, "check-ignore", "-q", ".beads/metadata.json"])
         print(json.dumps({"production": "PASS", "checked_processes": count,
+                          "native_fixture": selected,
                           "projects": list(queues), "protected_host_leaves": len(protected),
                           "protected_entries": len(protected_before),
                           "mixed_provider_ordering": "PASS (actual native C)",
@@ -216,6 +221,16 @@ def main():
                           "scope": "actual production initializer and installed wrapper; "
                                    "not role/model/MCP execution"}))
     return 0
+
+
+def main():
+    try:
+        return experiment()
+    except N.FAILURES as exc:
+        print(json.dumps({"production": "FAILED", "status": "ASSERTION_FAILURE",
+                          "scope": "production fixture failed; not native qualification",
+                          **N.failure_fields(exc)}))
+        return 1
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ SPEC = importlib.util.spec_from_file_location(
 N = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(N)
 NON_OBJECTS = (True, False, None, 7, "private-payload", [])
+# Functional allowance matching native TIMEOUT, not a latency promise.
+FUNCTIONAL_TEST_TIMEOUT = 30
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -25,11 +27,25 @@ class DiscoveryTests(unittest.TestCase):
         self.h = N.Harness(self.work, self.tools)
         self.h.versions["codex"] = "synthetic-test-only"
 
-    def rpc(self, script, timeout=2):
+    def rpc(self, script, timeout=FUNCTIONAL_TEST_TIMEOUT):
         rpc = N.Rpc([sys.executable, "-u", "-c", script],
                     self.work, self.h.env, timeout=timeout)
         self.addCleanup(rpc.close)
         return rpc
+
+    def test_rpc_functional_default_and_explicit_timeout_are_forwarded(self):
+        self.assertEqual(FUNCTIONAL_TEST_TIMEOUT, 30)
+        self.assertEqual(FUNCTIONAL_TEST_TIMEOUT, N.TIMEOUT)
+        with mock.patch.object(N, "Rpc") as constructor:
+            self.rpc("synthetic")
+            constructor.assert_called_once_with(
+                [sys.executable, "-u", "-c", "synthetic"],
+                self.work, self.h.env, timeout=FUNCTIONAL_TEST_TIMEOUT)
+            constructor.reset_mock()
+            self.rpc("synthetic", timeout=0.1)
+            constructor.assert_called_once_with(
+                [sys.executable, "-u", "-c", "synthetic"],
+                self.work, self.h.env, timeout=0.1)
 
     def response_rpc(self, response):
         return self.rpc("import sys,json\n"
@@ -91,6 +107,78 @@ class DiscoveryTests(unittest.TestCase):
                 mock.patch("builtins.print") as output:
             self.assertEqual(N.main(), 2)
             self.assertEqual(json.loads(output.call_args.args[0])["status"], "STATIC_ONLY")
+
+    def test_installer_failure_context_preserves_exception_and_primary(self):
+        for mode in ("--local", "--global"):
+            for kind in ("timeout", "supervision", "error", "cleanup"):
+                with self.subTest(mode=mode, kind=kind):
+                    caught = []
+                    primaries = []
+
+                    def fail(argv, cwd, env, timeout):
+                        self.assertEqual(timeout, 120)
+                        primary = subprocess.TimeoutExpired([str(arg) for arg in argv], timeout,
+                                                            output="private-payload")
+                        primaries.append(primary)
+                        error = {
+                            "timeout": primary,
+                            "supervision": N.SupervisionError(
+                                "process inspection deadline exhausted after parsing"),
+                            "error": OSError("synthetic launch failure"),
+                            "cleanup": N.SupervisionError(
+                                f"cleanup failed (synthetic); prior failure: {primary}"),
+                        }[kind]
+                        if kind == "cleanup":
+                            error.primary_failure = primary
+                            error.returncode = 7
+                            error.output = "private-payload"
+                        caught.append(error)
+                        raise error
+
+                    with mock.patch.object(N, "run", side_effect=fail), \
+                            mock.patch.object(N.time, "monotonic", side_effect=[10, 132.5]):
+                        with self.assertRaises(N.FAILURES) as raised:
+                            self.h.install(mode, "private-argument", "--platform", "all")
+                    self.assertIs(raised.exception, caught[0])
+                    fields = N.failure_fields(raised.exception)
+                    self.assertEqual(fields["failure_kind"],
+                                     "supervision" if kind == "cleanup" else kind)
+                    self.assertEqual(fields["fixture_installation"], {
+                        "operation": mode[2:] + " fixture installation",
+                        "budget_seconds": 120, "elapsed_seconds": 122.5})
+                    self.assertNotIn("private-argument", json.dumps(fields))
+                    self.assertNotIn("private-payload", json.dumps(fields))
+                    self.assertNotIn("(deny default)", json.dumps(fields))
+                    if kind == "cleanup":
+                        self.assertEqual(fields["exit"], 7)
+                        self.assertEqual(fields["primary_failure"]["failure_kind"], "timeout")
+                        self.assertIs(caught[0].primary_failure, primaries[0])
+                        self.assertEqual(caught[0].output, "private-payload")
+                    row = dict(component="harness", status="ASSERTION_FAILURE", **fields)
+                    self.assertEqual(N.exit_code([row]), 1)
+                    with mock.patch.object(N, "run", side_effect=caught[0]):
+                        code, report = self.cli_report(
+                            lambda h: h.install(mode, "private-argument", "--platform", "all"))
+                    self.assertEqual(code, 1)
+                    self.assertEqual(report["counts"]["BLOCKED"], 0)
+                    self.assertEqual(report["counts"]["NATIVE_DISCOVERY_OBSERVED"], 0)
+                    self.assertEqual(report["results"][0]["failure_kind"], fields["failure_kind"])
+
+    def test_installer_nonzero_cannot_report_success_or_dump_output(self):
+        def probe(harness):
+            harness.install("--local", "private-argument", "--platform", "all")
+
+        with mock.patch.object(N, "run", return_value=subprocess.CompletedProcess(
+                [], 9, "private-payload", "private-payload")):
+            code, report = self.cli_report(probe)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["counts"]["BLOCKED"], 0)
+        self.assertEqual(report["counts"]["NATIVE_DISCOVERY_OBSERVED"], 0)
+        row = report["results"][0]
+        self.assertEqual(row["failure_kind"], "error")
+        self.assertEqual(row["exit"], 9)
+        self.assertEqual(row["fixture_installation"]["operation"], "local fixture installation")
+        self.assertNotIn("private-payload", json.dumps(report))
 
     def test_environment_is_constructed_not_copied(self):
         extra = self.work / "env"
@@ -247,9 +335,9 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "escaped"):
             rpc.initialize(self.h.env["CODEX_HOME"])
 
-    def test_alive_server_without_protocol_is_blocked_and_reaped(self):
+    def test_alive_server_without_protocol_is_failure_and_reaped(self):
         rpc = self.rpc("import time; time.sleep(30)", timeout=0.1)
-        with self.assertRaisesRegex(N.Blocked, "protocol timeout"):
+        with self.assertRaises(subprocess.TimeoutExpired):
             rpc.request("skills/list", {})
         rpc.close()
         self.assertIsNotNone(rpc.proc.poll())
@@ -259,9 +347,9 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(N.Blocked, "native RPC error code -32601"):
             rpc.request("skills/list", {})
 
-    def test_eof_is_blocked_not_discovered(self):
+    def test_eof_is_failure_not_discovered(self):
         rpc = self.rpc("import sys; sys.stdin.readline()")
-        with self.assertRaisesRegex(N.Blocked, "EOF"):
+        with self.assertRaisesRegex(AssertionError, "EOF"):
             rpc.request("skills/list", {})
 
     def test_malformed_json_is_assertion_failure(self):
@@ -406,8 +494,14 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(report["counts"], {"NATIVE_DISCOVERY_OBSERVED": 0, "BLOCKED": 0,
                                            "ASSERTION_FAILURE": 1, "STATIC_ONLY": 1})
-        self.assertEqual(report["results"][0], {
+        row = dict(report["results"][0])
+        # This fixture may exit cleanly before cleanup, or still be live at
+        # its signaling boundary. Never report supervisor TERM/KILL as natural.
+        if "exit" in row:
+            self.assertEqual(row.pop("exit"), 0)
+        self.assertEqual(row, {
             "component": "codex-global-only-A", "status": "ASSERTION_FAILURE",
+            "failure_kind": "error",
             "diagnostic": "app-server initialize response: expected dict"})
 
     def test_cli_malformed_enabled_is_failure_not_native_proof(self):
@@ -425,6 +519,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report["counts"]["ASSERTION_FAILURE"], 1)
         self.assertEqual(report["results"][0], {
             "component": "copilot-global-only-A", "status": "ASSERTION_FAILURE",
+            "failure_kind": "error",
             "diagnostic": "copilot skill.enabled: expected bool"})
 
     def test_copilot_json_entrypoint_rejects_non_list_and_malformed_json(self):
@@ -470,6 +565,7 @@ class DiscoveryTests(unittest.TestCase):
                     self.assertEqual(report["counts"]["ASSERTION_FAILURE"], 1)
                     self.assertEqual(report["results"][0], {
                         "component": provider + "-interface", "status": "ASSERTION_FAILURE",
+                        "failure_kind": "error",
                         "diagnostic": provider + " --version: empty output"})
 
     def test_well_formed_version_is_unchanged(self):
@@ -504,9 +600,11 @@ class DiscoveryTests(unittest.TestCase):
         rpc = self.rpc(script)
         self.failed_step("codex-initialize", lambda: rpc.initialize(
             self.h.env["CODEX_HOME"]), diagnostic)
-        with mock.patch.object(N.os, "killpg", wraps=os.killpg) as kill:
+        with mock.patch.object(N.S.os, "killpg", wraps=os.killpg) as kill:
             rpc.close()
-        kill.assert_called_once_with(rpc.proc.pid, N.signal.SIGKILL)
+        self.assertEqual(kill.call_args_list, [
+            mock.call(rpc.proc.pid, N.S.signal.SIGTERM),
+            mock.call(rpc.proc.pid, N.S.signal.SIGKILL)])
         self.assertIsNotNone(rpc.proc.poll())
         child = subprocess.run(["/bin/ps", "-p", pidfile.read_text(), "-o", "stat="],
                                capture_output=True, text=True, timeout=5)
@@ -520,7 +618,7 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_unexpected_server_request_never_approved(self):
         rpc = self.response_rpc({"id": 999, "method": "unexpected"})
-        with self.assertRaisesRegex(N.Blocked, "unexpected server request"):
+        with self.assertRaisesRegex(AssertionError, "unexpected server request"):
             rpc.request("skills/list", {})
 
     def test_non_introspection_request_is_rejected(self):
@@ -528,11 +626,17 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "forbidden"):
             rpc.request("turn/start", {})
 
-    def test_command_timeout_is_blocked_and_group_reaped(self):
+    def test_command_timeout_is_failure_and_group_reaped(self):
         pidfile = self.work / "pid"
         script = f"import os,time,pathlib; pathlib.Path({str(pidfile)!r}).write_text(str(os.getpid())); time.sleep(30)"
-        with self.assertRaisesRegex(N.Blocked, "timeout"):
-            N.run([sys.executable, "-c", script], self.work, self.h.env, timeout=0.5)
+        spec = importlib.util.spec_from_file_location(
+            "timeout_fixture", Path(__file__).with_name("acceptance-tests.py"))
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        with mock.patch.object(fixture, "A", N.S), \
+                fixture.AcceptanceTests().expire_after(lambda table: pidfile.exists()), \
+                self.assertRaises(subprocess.TimeoutExpired):
+            N.run([sys.executable, "-c", script], self.work, self.h.env, timeout=30)
         with self.assertRaises(ProcessLookupError):
             os.kill(int(pidfile.read_text()), 0)
 
@@ -543,10 +647,10 @@ class DiscoveryTests(unittest.TestCase):
 
         def fail():
             (self.h.repos[0] / "cache").write_text("fixture")
-            raise N.Blocked("synthetic runtime refusal")
+            raise AssertionError("synthetic runtime failure")
 
         self.h.observed_step("synthetic", fail)
-        self.assertEqual(self.h.results[-2]["status"], "BLOCKED")
+        self.assertEqual(self.h.results[-2]["status"], "ASSERTION_FAILURE")
         self.assertEqual(self.h.results[-1]["changes"], {"A": ["cache"], "B": []})
 
 

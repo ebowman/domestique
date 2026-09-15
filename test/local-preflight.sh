@@ -175,9 +175,16 @@ fixture; owned claude
 refuse 'permission denial simulated and triggered' bash -c '
 source "$1"
 global_stat() {
-  if [ "$1" = "$DENIED" ]; then printf "%s 000\n" "$(id -u)"
-  elif [ "$(uname -s)" = Darwin ]; then stat -f "%u %Lp" "$1"
-  else stat -c "%u %a" "$1"; fi
+  local p
+  for p in "$@"; do
+    if [ "$G_STAT_SYSTEM" = Darwin ]; then
+      if [ "$p" = "$DENIED" ]; then stat -f "%u 000 %d %i %N" "$p"
+      else stat -f "%u %Mp%03Lp %d %i %N" "$p"; fi
+    else
+      if [ "$p" = "$DENIED" ]; then stat -c "%u 000 %d %i %n" -- "$p"
+      else stat -c "%u %a %d %i %n" -- "$p"; fi
+    fi
+  done
 }
 export DENIED="$2/.domestique-private/manifest"
 local_preflight "$2" claude

@@ -18,15 +18,15 @@ for exact formats/recovery. `main` and draft PR #11 do not contain this preview.
 | Private local safety/profiles | .4/.5 implemented: physical Git root, exact ownership/exclusions, qualified roles/receipts, runtime routing separate from database eligibility |
 | Beads operations | .6 qualified Darwin arm64 / observed 1.1.2 CGO private initializer and controlled dispatcher implemented; unowned/failed/unsupported cases stop. .10's always-refusing status is superseded |
 | Removal | .11 global, .12 local profiles and .7 Beads retention/unchanged-only purge implemented; valid providers=none attachment retained for reuse |
-| Native evidence | .6 actual production init/wrapper fixture and .14 historical init/CRUD/identity controls; direct SQL UUID query unsupported. .13 limited skill discovery; Claude skills/all roles and full role/tool/MCP acceptance .8 remain **open** |
-| Documentation | .9 approved **now** against implemented preview and .13 evidence, explicitly deferring blocked full .8; not a release-complete claim |
+| Native evidence | .8 final acceptance below separates actual production init/wrapper/cleanup from .14 historical context controls and .13 skill discovery. Direct SQL UUID queries, Claude skills and all native roles remain scoped runtime limitations, not invented passes |
+| Documentation | Qualified preview, not a release-complete or all-runtimes claim; final acceptance does not replace independent review |
 | Old plans | Parent-reconciled **deferred**, not completed/closed/reparented; see final disposition table |
 
 Within the private section, checkpoint accounts record what existed **at that
 checkpoint**. Their older “future” statements are superseded by this table and
-later implemented checkpoints, not competing active instructions. Future Beads
-formats/acceptance are expressly labelled and are not accepted by current
-parsers. Only .6's exact pinned engine qualification is claimed, not general
+later implemented checkpoints, not competing active instructions. Historical proposed
+Beads formats are not authority for the current parsers; use .6/.7's implemented
+formats and lifecycle. Only .6's exact pinned engine qualification is claimed, not general
 backend certification or end-to-end native workflow acceptance. .14's database
 operations remain distinct historical disposable-test evidence.
 
@@ -606,6 +606,63 @@ Installed Python 3.9+ stdlib and `/usr/bin/sandbox-exec` are required for Beads
 only; ordinary core/profile loads have no Python dependency. Apple's Python/Git
 setup launchers are not an installer fallback. No package installation occurs.
 Python uses `-I -S -B` to disable site startup hooks and bytecode-cache writes.
+Python 3.9+ is necessary but not sufficient: working
+`os.waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)`, nonblocking POSIX pipes and sessions
+are required, with default SIGCHLD and single-threaded exclusive child ownership.
+Darwin additionally requires stdlib ctypes and working `proc_listpids` in the
+system `/usr/lib/libproc.dylib`.
+Missing Darwin interpreter/kernel support refuses before child creation and
+qualification/claim/init writes; ordinary non-Beads core loading is unchanged.
+The embedded `execute_child` retains the direct session leader until its last
+group signal and only then reaps. Fair selector reads retain UTF-8 boundaries
+and universal newlines, with 60 seconds execution plus one shared five-second
+cleanup deadline. Synthetic integration reuses the extracted primitive with
+600 seconds plus five; there is no production import from tests or host-wide
+process-table polling. No post-reap group fallback or detached-descendant
+containment is claimed. A surviving native leader retains inherited FD8.
+Timeout/cleanup failures retain private output/status while public diagnostics
+omit argv and payload. Leader completion alone cannot excuse EPERM. The sole
+exception is a completed, exclusively unreaped leader revalidated on both sides
+of one exact-group PID enumeration that returns empty or only that leader.
+Any other PID (including another zombie), full/truncated buffer, malformed length
+or PID, nonzero errno/error, unsupported API, ownership change/loss or exhausted
+original five-second cleanup budget keeps explicit cleanup failure. A still-live
+leader never uses this exception. No signal follows reap.
+`test/beads-execution-tests.py` now has 27 synthetic/harmless tests, requiring
+actual Darwin natural zero/nonzero success, UTF-8/newline and dual-pipe output,
+own-group cleanup and FD8 inheritance; native qualification success is **not**
+established for this changed bridge.
+
+**Narrow Darwin API evidence.** Installed SDK `libproc.h` declares
+`int proc_listpids(uint32_t, uint32_t, void *, int)`; `sys/proc_info.h` defines
+`PROC_PGRP_ONLY` as 2. The buffer contains int-sized PIDs; the result is **bytes**,
+not a PID count. Apple's released
+[`xnu-12377.1.9` kernel implementation](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/proc_info.c#L359-L485)
+holds `proc_list_lock` throughout both `allproc` and `zombproc`, filtering
+`p_pgrpid` directly. There is no later per-PID state lookup or exit-state elision.
+[`kern_proc.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_proc.c)
+protects group changes and process-list insertion with that lock;
+[`kern_exit.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_exit.c)
+moves processes between the two lists under that lock. Exec shadows are duplicate
+proc objects, not omitted independent PIDs:
+[`kern_exec.c`](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_exec.c#L5241-L5261)
+transfers the shadow flag and PID identity under the same lock.
+The [libproc wrapper](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/libsyscall/wrappers/libproc/libproc.c#L45-L59)
+maps syscall -1 to zero **with errno**. ctypes uses `use_errno=True`, clears errno
+immediately before the call and captures it immediately afterward; only a zero
+result with zero errno is empty success. The fixed non-NULL two-int buffer never
+uses the NULL sizing mode, which is a host-count estimate rather than membership.
+Full buffers refuse, without retries, growth, per-member state reads or `ps`.
+A cached runtime capability check binds this one symbol and verifies the
+zero-size/non-NULL call's expected zero/ENOMEM before mutation or child creation;
+that probe fails before process enumeration. Harmless disposable retained-child
+tests verify actual own-group pair/full, running-singleton and completed
+membership behavior on Darwin. This proves no live members at the locked
+observation, not future/detached containment or a solution to `ps` latency.
+
+This production change invalidates prior whole-file source fingerprints and
+requires independent reassessment of initializer, bridge, synthetic integration,
+native production/cleanup and runner coverage; it does not complete .8.
 The exact observed user-owned Homebrew Cellar parent mode 0775 is accepted for
 the digest-pinned executable; other unsafe writable ancestors refuse. This
 retains the existing no-hostile-writer/concurrency guarantee boundary.
@@ -713,11 +770,12 @@ beads_created=<known relative leaf/subtree>:<initial SHA-256>
 `.beads/metadata.json`, `.domestique-private/beads-context`,
 `.domestique-private/exports`. File hashes are SHA-256 of bytes; subtree hashes
 use sorted relative names, NUL framing, `d` directory or `f` plus binary file
-digest. These are initial unchanged-only future purge baselines, not runtime DB
+digest. These are initial unchanged-only purge baselines (.7), not runtime DB
 freshness. Pinned `last_touched.go` reads empty as no default and writes the
 explicit issue ID; its leaf is exclusively precreated before publishing ready,
-never inferred from a later unknown artifact. `retained` parses with the same
-readiness/ownership checks but is not currently emitted. `failed` is explicit
+never inferred from a later unknown artifact. `retained` uses the same ownership
+fields; .7 emits it after last-provider removal, not as a fresh readiness claim.
+`failed` is explicit
 in the attempt journal and never eligible for runtime/rerun. Duplicate, missing,
 NUL, unknown, unordered or unsupported state refuses in every consumer.
 
@@ -976,7 +1034,9 @@ production initialization/CRUD/reactivation and cleanup with native-call
 instrumentation. Both require project-local private TMPDIR and isolated HOME,
 and neither implies .8 native role/tool/MCP acceptance.
 
-The .7 implementation verification observed **204 synthetic cleanup checks**
+The historical .7 implementation verification checkpoint (**2026-09-13,
+commit `20b6fe8`**, superseded by the complete final matrix below) observed
+**204 synthetic cleanup checks**
 and **84 pinned-native cleanup checks** (107 and 56 instrumented bridge process
 calls, respectively, including qualification probes). Final-source focused
 checks passed **28 native checks / 15 real bd calls** and **27 synthetic checks /
@@ -1227,7 +1287,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -W error test/native-discovery-tests.py
 
 The first command emits JSON: `NATIVE_DISCOVERY_OBSERVED` means an actual
 native metadata response with checked IDs, enabled state and source paths;
-`BLOCKED` names an unavailable/unsafe interface or runtime refusal;
+`BLOCKED` names a typed absent tool, source-backed unsupported interface or
+documented denied tool approval, never an arbitrary runtime refusal;
 `ASSERTION_FAILURE` is a regression or malformed response; `STATIC_ONLY`
 is installer/filesystem/schema/isolation evidence, **not** native discovery.
 Exit **0** means no blocked or failed discovery components, **1** means
@@ -1315,6 +1376,56 @@ blocked by upstream privacy, .7 database retention/purge remains future work,
 and those execution/trust criteria of .8 remain open.
 
 #### hq-b3q.14 native Beads private-context experiment (TEST ONLY; .6 blocked)
+
+**Current .8 test-only selection checkpoint (2026-09-14).** Historical observations
+below are unchanged. `test/beads_fixture.py` is an independent stdlib resolver
+shared by context, production, native cleanup and the acceptance controller.
+Default remains `/opt/homebrew/Cellar/beads/1.1.2/bin/beads`; explicit
+`DOMESTIQUE_TEST_BEADS_BINARY` accepts a manually provisioned absolute private
+path only after physical-path, regular/readable/executable and exact SHA-256
+validation:
+`cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42`.
+No downloads, registry, cache, system downgrade/link change, production PIN
+change or alternative release-build acceptance is involved. An invalid explicit
+selection is a failure, never a missing-tool blocker or fallback. Only an absent
+default retains the context harness's missing-tool blocker.
+
+Selection occurs only after native opt-in. Default/synthetic cleanup does not
+even import the resolver. Acceptance forwards the setting solely to the three
+native Beads scopes, including empty values so they fail rather than disappear;
+offline, historical and AI discovery scopes receive none. Spawned product/native
+commands retain their allowlisted environments without this variable. The context
+profile uses the existing tools/profile mechanism for one extra **literal**
+selected-executable read; no HOME/parent, network or mach grants. It no longer
+depends on the global `bd` link. Production and cleanup retain the initializer's
+own sandbox, not a nested test sandbox. Native platform/ABI and live validation
+are unchanged.
+
+Context records `binary`/`binary_sha256`; production records `native_fixture`;
+cleanup emits `NATIVE_FIXTURE=` JSON before its unchanged completion line.
+Acceptance validates this grammar, records each selected actual path/digest as
+per-scope `native_fixture` under the source-bound report, and compares selection
+again after execution. Private reports retain the actual private path.
+`beads-fixture-tests.py` is in QUICK and CURRENT; validation/provenance globbing
+includes it and the resolver. Newly affected dependencies are acceptance and
+its units, the three native Beads harnesses, the shared discovery profile
+(hence discovery/context/native-supervision units), the new selector units,
+syntax/AST/lint and these usage docs. No prior native-discovery evidence is
+replaced. The missing-qualified-dependency failure in `s86mqfvk` is not product
+fallback evidence; its 12 discovery observations / 8 legitimate blockers remain
+separate. This checkpoint is not native lifecycle requalification or completion
+of .8: fresh remaining native/current/historical coverage and independent review
+are still required.
+
+Checkpoint validation: selector/wiring **17**, acceptance runner **99**, context
+**31**, discovery protocol **48**, and native-supervision **26** synthetic unit
+tests passed sequentially. Existing selected syntax validation passed (14 shell
+files, emitted resolver, 24 Python ASTs, embedded Python, warning-level
+ShellCheck with zero exceptions, `git diff --check`). Exactly one isolated
+qualified-path `--sandbox --version` smoke returned `bd version 1.1.2 (Homebrew)`,
+exit 0, empty stderr, with the exact digest above and fixture cleanup verified.
+No native init/CRUD, lifecycle/context/discovery suite or matrix was run at this
+checkpoint; the system `bd` link remained on 1.2.2.
 
 **Executed on macOS, 2026-09-12; not a user initialization recipe.**
 `test/beads-native-context.py` imports the existing native-discovery stdlib
@@ -2091,8 +2202,8 @@ registry claims to remember otherwise.
 | Codex | documented agent TOML fields and `mcp_servers` only | `developer_instructions` prompt-body value contains the declaration/resolver, not a new TOML key; [subagents](https://developers.openai.com/codex/subagents/), [skills](https://developers.openai.com/codex/skills/) | start/reload a new session and confirm native trust/capability |
 | Copilot | documented agent frontmatter `name`, `description`, `tools`, `mcp-servers`; Markdown body | body instruction declares the protocol; [CLI reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | documented reload/discovery plus project/server trust confirmation |
 
-No version threshold is asserted here; .13 records limited observed versions
-and .8 full native execution remains open. Domestique emits minimal adapters,
+No version threshold is asserted here; .8 final acceptance records limited observed
+versions and precise native execution limitations. Domestique emits minimal adapters,
 accepts no arbitrary MCP
 or secret CLI input, and does not implement a YAML/TOML parser or universal
 MCP interface. User edits remain native configuration. An unsupported
@@ -2177,9 +2288,9 @@ fallback.
 
 Global definition installation and project Beads initialization are distinct.
 Loading a skill creates neither a database nor Git artifact. Current explicit
-local `--with-beads` refuses before inspection/writes as specified in .10;
-the runtime guard separately classifies eligibility without reading database
-contents or invoking bd. The only
+local `--with-beads` uses .6's qualified initializer and refuses unsupported contexts;
+.10's unconditional refusal is historical. The structural runtime guard separately
+classifies eligibility without reading database contents or invoking bd. The only
 Beads location this contract uses is the literal repo-relative `.beads/`
 (`beads_path=.beads` in the local manifest); it does not auto-discover an
 arbitrary Beads storage location or assume a resolver/environment route.
@@ -2244,10 +2355,12 @@ private state tree itself; otherwise it retains it. Thus neither an adapter
 removal nor a successful/failed rerun converts existing host `.beads/` into
 owned state.
 
-### Later implementation acceptance matrix (not run by this documentation task)
+### Acceptance matrix and remaining runtime gates
 
 Using a temporary HOME and two disposable Git repositories (including a linked
-worktree fixture where applicable), later work must demonstrate:
+worktree fixture where applicable), the contract requires the following. The
+final acceptance evidence below distinguishes executable offline coverage from
+native observations and blocked runtime gates; this table alone is not a pass:
 
 | Fixture/action | Required observation |
 | --- | --- |
@@ -2265,12 +2378,433 @@ worktree fixture where applicable), later work must demonstrate:
 | Owned adapter edited with an inline-secret sentinel | divergence leaves the live adapter byte-identical and emits no backup, conflict, `.new`, log, or serialized copy containing the sentinel |
 | Scoped uninstall/purge | only positively owned untracked selected leaves are removed; retained recovery/Beads protections and other scope remain |
 
-This is the retained full acceptance matrix, **not a completed checklist**.
-Current offline coverage and the strictly bounded .13 native metadata
-observations are recorded separately above. Role execution, MCP/tool/trust,
-model/goal sessions and agent-driven database workflows remain unverified; .8
-is open. The qualified native initializer and wrapper evidence above does not
-constitute native agent execution acceptance.
+This is the retained full contract, **not a native execution checklist marked
+complete**. Offline coverage and strictly bounded native observations are recorded
+separately in final acceptance. Role execution, MCP/tool/trust, model/goal
+sessions and agent-driven database workflows remain unverified. Qualified native
+initializer/wrapper/cleanup evidence does not constitute native agent execution.
+
+### Final acceptance (2026-09-13)
+
+**Qualified preview, not production-ready across all runtimes. Final acceptance
+is pending after the runner safety checkpoint.** The completed results below
+are dated prior evidence from 2026-09-13, using runner SHA256
+`4cdcbd5f2e2c9a3eecd6d4d16a76968320da9bd4f60d574b159452818d9f2d45`;
+they do not certify the updated runner or complete .8/the epic.
+That acceptance used the checkout based on `20b6fe8` on `epic/hq-b3q`; neither `main` nor
+draft #11 has been updated. Independent review is a separate required gate:
+the implementer does not mark its own work review-PASS or close .8/the epic.
+Observed host/toolchain: **macOS 26.6.2 arm64**, `/bin/bash` **3.2.57**,
+Python **3.14.6**, Apple Git **2.50.1**, ShellCheck **0.11.0**. Native client and
+Beads versions below are observations, not minimum/universal support claims.
+
+For a separately authorized exhaustive run, use
+`python3 -B -W error test/acceptance.py --exhaustive --jobs 1 --total-seconds 43200 --suite-seconds 14400`
+and, separately,
+`python3 -B -W error test/acceptance.py --exhaustive --native-only --jobs 1 --total-seconds 43200 --suite-seconds 14400`
+only after explicit non-model native consent. `--native` in place of
+`--native-only` combines both groups with that same consent.
+Default `python3 -B -W error test/acceptance.py` is labelled **QUICK** and selects
+only `private-core.sh`, native-discovery/beads-native-context/acceptance/global-path/
+local-index **unit** suites, `native-supervision-tests.py`,
+`global-diagnostics-tests.py`, `beads-fixture-tests.py`, and
+`beads-execution-tests.py` (synthetic/harmless production ownership probes,
+not native qualification). No lifecycle,
+historical or native operations run in QUICK. Syntax/lint includes per-file Bash syntax, warning-level ShellCheck
+on source/tests/emitted resolver, and Python AST including the embedded
+controller. EXHAUSTIVE alone selects the intact CURRENT and five pinned **b60feef**
+HISTORICAL lists plus the new diagnostic unit suite and syntax/lint.
+Native-only is never labelled complete offline acceptance. Logs/JSON are retained only in the printed private
+`SESSION_ARTIFACTS`; disposable fixtures are cleaned up. No additional tools,
+framework, CI service, model calls or performance framework are involved.
+
+For an explicitly partial run, repeat `--suite CATEGORY:NAME`, for example:
+
+```sh
+python3 -B -W error test/acceptance.py --suite CURRENT:syntax-lint-ast-diff --suite CURRENT:private-core.sh
+```
+
+Only exact entries permitted by the existing mode/flags are selectable.
+`CURRENT`, `HISTORICAL_FIXTURE` and `NATIVE` are literal categories; there is no
+path/glob/regex/shorthand interpretation. Empty, unknown, duplicate, wrong-category
+or unavailable-in-mode tokens are rejected before provenance, fixtures or launch.
+`CURRENT:local-uninstall.py` needs exhaustive mode and explicit total/per-suite
+budgets. `NATIVE:beads-cleanup.py` needs those plus `--native` or `--native-only`
+and explicit non-model native consent; it is distinct from offline
+`CURRENT:beads-cleanup.py`. Native-only excludes all offline scopes, including
+syntax/lint. Exhaustive remains serial regardless of selection. The exact requested
+category/name list and submission order follow caller order so cheap scopes can
+precede expensive ones; QUICK `--jobs 2` can overlap execution and results may be
+in completion order. No-selector manifests and order are unchanged.
+
+Explicit selections always use `SELECTED_SCOPES_NOT_FULL_ACCEPTANCE` with
+`full_offline_acceptance: false`, including selected-all and all-native-only runs.
+Existing provenance, budgets and per-scope results remain in the report. Exit 0
+means only selected work passed, not full acceptance; validated native blocker 2
+and failure/incomplete 1 classifications are unchanged. Only the non-selected
+`FULL_OFFLINE` / `FULL_OFFLINE_AND_NATIVE` labels can qualify for full offline
+acceptance, subject to the existing completeness checks.
+There is no automatic trusted reuse, report import/cache/resume trust or
+coverage-union generation. Prior failed reports remain unchanged; any eventual
+historical-plus-fresh coverage union needs independent attestation of exact runs,
+source dependencies and tool-fingerprint limitations, and fresh native evidence.
+This checkpoint neither completes .8 nor claims current full acceptance.
+
+QUICK accepts positive finite `--total-seconds` (default/max **1200**) and
+`--suite-seconds` (default/max **600**). EXHAUSTIVE requires both explicitly and
+rejects `--jobs 2`; native flags require EXHAUSTIVE. Invalid combinations fail
+before artifacts. No larger quick budgets silently select exhaustive coverage.
+Reports include mode, exact requested coverage, jobs/budgets and progress.
+QUICK exit 0 is `QUICK_SUBSET_NOT_FULL_OFFLINE`, `full_offline_acceptance: false`.
+The full-offline discriminator requires completed exhaustive current/historical/
+syntax coverage, never native-only or partial/duplicate results.
+Per-suite execution/validation/shutdown is capped by remaining total time.
+Shutdown and final fixture cleanup reserve time **within** the total budget;
+deadlines are never silently extended. Quick budgets are not exhaustive defaults.
+Full acceptance needs a separately
+authorized explicit budget, not smaller sampled coverage or timeout-as-pass.
+
+The serial budget example is based on prior healthy global/preflight/profiles/
+global-uninstall/local-uninstall observations of 577/1079/3803/11868/9930 seconds:
+over 7.5 hours combined, with a longest suite above 3.2 hours. Twelve hours total
+and four hours per suite provide explicit operator-chosen bounded headroom, not
+a guarantee, expected current duration or automatic permission to run.
+Do not overlap heavyweight suites for the next acceptance gate or automatically
+retry/extend these limits. Exhaustive can take hours; no exact current exhaustive
+duration is claimed. Timeouts are `INCOMPLETE`, exit 1. Assertion/timeout failure
+stops scheduling and cancels remaining work as INCOMPLETE without masking the
+original failure as user cancellation. Validated native BLOCKED/exit 2 is distinct
+and does not trigger this fail-fast policy.
+Inspection is bounded by the original remaining execution/cleanup deadline, with at
+most five seconds per attempt. Only `TimeoutExpired` allows one fresh retry, without
+sleep or budget extension. Work cancellation/fail-fast prevents reattempt; cleanup
+omits those work checks so owned-target cleanup remains best-effort. No partial or
+stale snapshot is used; recovery requires complete parsing before the deadline.
+Recovery emits the identity-free `PROCESS_INSPECTION_RECOVERED` stderr diagnostic
+in shared/native supervision and `process_inspection_recoveries` counts in runner
+suite results. Qualified success remains success, never native BLOCKED/2.
+Repeated timeouts and non-retriable inspection failures,
+including empty/malformed output, and cleanup errors are `INCOMPLETE`/exit 1 with
+`failure_kind: supervision`, not test-budget `timeout`, native blockers or passes.
+Cleanup continues for observed descendants using a fresh PID/birth snapshot for
+each individual signal (best-effort, not atomic; birth timestamps have second
+resolution);
+isolated error diagnostics retain both cleanup errors and the full primary failure.
+State parsing validates Darwin/Linux primary states and suffix flags, with only a
+primary `Z` classified as a zombie. Known pre-cleanup child exits remain in suite
+results and isolated diagnostics with stdout/stderr; cleanup-induced signal exits
+never replace an existing timeout, cancellation or supervision failure.
+
+**Retained-leader supervision requirement (2026-09-14 correction):** group
+signals must precede any direct-child reap. The direct `start_new_session`
+child reserves the PID/PGID while live **and while retained as a zombie**.
+Completion is observed with `waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)`, never
+`poll`, `communicate` or `wait` before group cleanup. Selector-based bounded
+nonblocking reads drain both pipes; pipe-holding ordinary/background children
+cannot postpone group cleanup once leader completion is observed. All group
+TERM/KILL attempts and termination verification precede final drain/wait.
+There is no group-signal fallback after that irreversible release boundary.
+Missing waitid support, non-default SIGCHLD, ECHILD, premature reap and
+contradictory leader identity fail closed, permanently disabling group signals.
+No global SIGCHLD configuration is changed. The runner must be the sole reaper
+of each child it launches; embedding it with a competing reaper is unsupported,
+not a safety guarantee against arbitrary concurrent `waitpid` calls.
+This retained kernel-leader guarantee is distinct from observed descendant
+birth checks: those remain best-effort and detach/reparent between observations
+can escape detection. Known surviving owned descendants are cleanup failures.
+Regressions use mocked delivery for foreign PID/PGID reuse and lost ownership;
+real-child tests cover live/completed leaders, ordinary/closed-pipe/new-session
+descendants, large output, exit 7, signal exits and cancellation. This focused
+correction and any QUICK result are not full .8 acceptance or independent review.
+
+**Native helper integration (2026-09-14):** the same stdlib
+`acceptance.supervised_process` ownership context now serves `execute`,
+native-discovery `run`, and interactive `Rpc` startup/close; the Beads context
+and production fixtures import that batch helper. No duplicate group cleanup
+implementation remains in discovery. Explicit cwd/environment/sandbox argv and
+optional stdin text survive the shared boundary. Nonblocking writes avoid pipe
+deadlocks; output is bounded to 64 MiB for batch and 4 MiB for RPC metadata.
+RPC uses its protocol timeout plus a fixed five-second supervision/cleanup
+allowance, still beneath the outer runner's unchanged caps. Path-based loading
+has no native/runner dependency cycle and supports standalone/importlib/runpy.
+Source provenance automatically hashes this helper and the new small regression
+suite, selected once in QUICK and once in the exhaustive CURRENT inventory.
+
+TimeoutExpired and supervision/cleanup errors propagate as typed failures into
+exit-1 native reports, including nested fixture error and privacy handlers.
+Protocol EOF, unknown RPC errors, generic nonzero exits and unreviewed warnings
+are failures, not unsupported-interface evidence. Exit 2 requires a structured
+`blocker_kind` (absent-tool, unsupported-interface, denied-approval) with its
+diagnostic; optional source-reviewed unsupported embedded SQL remains allowed.
+Validators reject structured failure fields anywhere in a report, irrespective
+of a BLOCKED label, without guessing from prose. Safe regressions use mocked
+foreign targets, real harmless Python pipes, and injected native fixtures only.
+The earlier native reports below are previous evidence, not fresh qualification
+of this corrected implementation.
+
+The bounded global diagnostic checkpoint ran the complete suite once, alone:
+exit 0, 316 assertions, 47 fixtures, 343.74 seconds. The largest gap between
+recorded progress events was nine seconds; fixture f8 took about 40 seconds
+across additive installation, helper, cross-repository and refresh operations.
+There was no observed global hang. The earlier concurrent 599.24-second timeout
+is consistent with contention but does not establish its cause. Completion-only
+records from this experiment cannot independently attribute time to snapshots,
+setup and production operations. They also predate the final diagnostic format;
+the ad-hoc driver did not record a source-content pin and used weaker cleanup
+than the acceptance runner. This is diagnostic evidence, not full acceptance.
+
+For future authorized diagnostic experiments use the exhaustive offline command
+above with `--global-diagnostics`. The report binds source/tool SHA256 (including
+the actual helpers and new test), platform/Python identity, diagnostic format,
+exact selection/configuration/budgets, command/exit and suite wall times.
+`global-progress.tsv` is outside all fixture/snapshot/native roots; fixtures are
+cleaned while session evidence survives cancellation and is operator-removed
+after review. No long diagnostic run is authorized by this documentation.
+
+The raw `DOM_TEST_DIAG=/absolute/private/path/global.diag bash test/global.sh`
+interface alone is not provenance-complete. Its directory must exist outside
+fixture roots (including resolved symlinks). Leave the variable unset for ordinary
+execution. `global-diag-v1` appends whole-second elapsed time, case id, stable
+caller line, fixed operation/phase, and numeric end status. It logs no argv,
+payload or arbitrary check-label text. Helper starts/ends pair by case/caller/
+operation and chronological order, but nested timings are not additive.
+Setup/direct operations/gaps remain unattributed and interrupted starts may
+lack ends. Do not invent per-operation attribution from the earlier 343.74s run:
+it predates final formatting and is not new-source acceptance.
+Open/write errors are explicit failures, including writes inside command
+substitutions. Persistent disposable probes extract the actual helper definitions
+to test stream/status equivalence, failures, nonleakage, path isolation and
+append-only cancellation survival without executing the 316-case suite.
+Full .8 requires independently completed current-source `--exhaustive` coverage,
+qualified native evidence-or-blockers and independent review; QUICK green is
+insufficient. Those gates remain pending.
+No production optimization or native gate was exercised by this checkpoint.
+The runner uses
+checkout CWD, `/dev/null` stdin, private HOME/TMPDIR and no inherited Git policy
+or authentication environment. Its Git template provides the ordinary
+`.git/info/exclude` container but no user hooks. Discovery and its offline
+protocol units are staged outside the checkout, under ordinary OS-private
+TMPDIR, rather than bypassing production's global-root guard or weakening
+the sandbox-profile unit assertion.
+It validates native JSON shapes, proof sets, counts, diagnostics and exit-code
+consistency. Missing/malformed reports, timeout, cleanup failure or omitted suite
+completion are failures, not legitimate exit-2 blockers.
+
+SIGINT/SIGTERM stop further scheduling; active owned process groups and observed
+descendants (including nested new-session children) receive TERM then KILL within
+the shutdown reserve. Direct children are reaped; orphan descendants are verified
+terminated and left to the OS reaper. Identity-only `ps` snapshots track exact
+PIDs/start times, never command names or payloads. This is not kernel containment:
+detach/reparent between snapshots can escape observation, and uninterruptible
+OS/filesystem operations can delay return. Inspection/termination/fixture-cleanup
+failures are explicit failures, not suppressed. One failed termination does not
+abort bounded best-effort termination/escalation
+of the remaining positively identified owned targets. Collected cleanup errors
+still make the run fail even if subsequent KILL succeeds. SIGKILL cannot be intercepted;
+external CLI lifecycle events cannot be inferred. An agent cancellation that
+sends the runner no signal is bounded only by its own total deadline.
+
+An atomic sanitized incremental JSON report starts `INCOMPLETE`/exit 1 and records
+each completed/failing/cancelled task, requested coverage, session timestamps,
+source-file hashes including dirty runner/tests, and actual tool binary hashes.
+Partial runs finish `INCOMPLETE` or `CANCELLED`, never a full-suite claim.
+Final exit/completeness includes cancellation captured through fixture cleanup,
+incomplete-report serialization, and handler restoration. Both previous signal
+dispositions are restored before the definitive outcome snapshot/completion write;
+each restored signal has ordinary native behavior, not a sticky runner flag.
+Later native termination can leave the last persisted report intact. Cleanup and
+final-report errors remain nonzero; successful suites cannot override them.
+Ten-second progress heartbeats expose active/pending counts and remaining budget;
+raw diagnostics remain only in the private fixture artifacts. There is no
+automatic resume or cached-success path. Native-only still implies no offline
+coverage; CURRENT/HISTORICAL/NATIVE and precise blocker distinctions are unchanged.
+
+The safety checkpoint runs only the fast runner units and applicable syntax
+checks, not the acceptance matrix or native clients. Prior durations were
+global-uninstall **11867.82s**, local-uninstall **9929.61s**, local-profiles
+**3802.87s**, native production **1148.45s**, native cleanup **1632.87s**.
+Those are observations of the previous runner snapshot, not performance changes
+or current acceptance evidence.
+
+The subsequent [bounded path-batching checkpoint](../test/global-path-performance.md)
+adds `global-path-tests.py` once to offline `CURRENT`; the multi-minute benchmark
+is explicit opt-in only. Both use a checksum-pinned, verbatim helper fixture from
+`20b6fe8d924d50c943242dc730725e59ce1ef956`, not mutable HEAD or required Git history.
+The fixture is included in syntax/lint and source-provenance capture. BSD
+`%Mp%03Lp` now retains special permission bits, allowing root-owned sticky
+writable ancestors outside the boundary without allowing user-owned
+sticky/writable ancestors or unsafe in-boundary paths. Special-bit-only changes
+are detected by metadata stability checks; the oracle retains the legacy bug
+and the tests explicitly distinguish the intended correction.
+Earlier concurrent bounded attempts: **18 path tests (2 errors)** and **54 runner units
+(2 failing subtests, 3 errors)**, not passes; existing process-inspection/cleanup
+deadlines blocked validation. Syntax/warning-ShellCheck/diff and fixture integrity
+passed. The prior **117** private-core checks were not rerun after this correction.
+Earlier batching timings predate the correction; local-preflight's earlier
+120-second timeout was not a pass and was not rerun. Full applicable `.8`
+acceptance and independent review remain required.
+
+The resumed **index-query-only checkpoint** leaves those path helpers and the
+runner's signal/finalization guarantees unchanged. `local_untracked` now issues
+one fresh `git ls-files -z` query at the literal outermost candidate component,
+matching destination/subtree collisions and exact indexed ancestor objects while
+ignoring unrelated indexed siblings. The internal candidate contract is canonical
+printable ASCII repo-relative inventory leaves; noncanonical/non-ASCII candidates
+and all Git pathspec overrides refuse before querying, avoiding normalization and
+case/pathspec rewriting mismatches. Indexed sibling names remain opaque bytes,
+including LF and non-UTF8. Git's original literal byte-exact case semantics are
+preserved even with `core.ignorecase=true`. Routing overrides, malformed/empty
+frames, truncated tails and nonzero commands still refuse. All per-mutation
+calls remain fresh; there is no cross-call cache or extra filesystem optimization.
+
+`local-index-tests.py` is included exactly once in `CURRENT`, with strict unittest
+completion reporting and source provenance for its immutable helper fixture and
+loader. Its baseline is the original helper at
+`20b6fe8d924d50c943242dc730725e59ce1ef956`, never mutable HEAD; synthetic corruption
+is protocol testing, not native-client or Beads evidence. Sequential checks passed
+**12 index tests, 18 unchanged path tests, 55 runner units and 117 private-core
+checks**. The opt-in benchmark reuses the existing isolated fixture and supervision:
+one global-all and one local-all per source, four successful operations total,
+120 seconds/operation and 300 seconds overall. Only the index helper differs.
+Local-all measured **73.425 → 54.929 seconds**, saving **18.497 seconds (25.2%)**,
+**1.337x** in one sample. Global setup measured 10.148 → 6.556 seconds; do not
+attribute that variability to local index querying. Core starts absent below
+`work/scope/core`. No native clients, databases, network or full matrices ran.
+The parent's complete local-preflight attempt timed out at **599.16 seconds**
+without a complete summary; it was not repeated or granted a larger limit here.
+Details and initial fixture-validation failures are retained in the
+[checkpoint record](../test/global-path-performance.md). Full `.8` acceptance
+and independent review remain pending.
+
+**Prior completed CURRENT offline counts:** `private-core.sh` **117**, `global.sh`
+**316**, `local-preflight.sh` **366**, `local-profiles.sh` **1134** (wrapper runs
+Python once), `global-uninstall.py` **3173**, full `local-uninstall.py` **1365**
+(all selection/preflight/shared-worktree/transaction/late-fault phases),
+`beads-guard.py` **1697**, synthetic `beads-private.py` **823**, synthetic
+`beads-cleanup.py` **212**. Offline protocol units: native discovery **45**,
+Beads context **31**; runner classification/isolation/timeout/help units **30**.
+These are per-harness check counts, not native operation totals or additional
+standalone `private-core-commands.py`/`local-profiles.py` suites.
+Synthetic cleanup recorded **71 fake Beads / 107 instrumented process calls**,
+with zero calls during cleanup.
+
+The complete stable-source offline runner finished **exit 0** at
+**2026-09-13 09:11 UTC**. The separate completed native runner finished **exit 2**
+at **03:48 UTC** for only the documented native blockers, with no assertion
+failures. No independent-review PASS or bead closure is asserted here.
+
+**HISTORICAL_FIXTURE b60feef counts, separately:** Codex **16**, Copilot **85**,
+guest **14**, uninstall **23**, upgrade **12** reported passes. Original pinned
+coverage is retained, not repurposed as current installation acceptance.
+**Syntax/lint PASS:** all **12** applicable shell files plus the emitted resolver
+under Bash 3.2; warning-level ShellCheck on source/tests/helper, **0 new warning
+exceptions** (no blanket SC2034 suppression); AST for all **14** Python files
+plus the embedded controller, no bytecode caches; `git diff --check`.
+
+**Observed native results (2026-09-13).**
+
+| Scope / harness | Actual result |
+| --- | --- |
+| `native-discovery.py --run` | 12 native skill observations, 8 blocked records, 22 static-only, 0 assertion failures; exit 2 |
+| Historical context `beads-native-context.py --run` | 71 recorded commands; 8 PASS proofs, 1 BLOCKED optional SQL UUID query, 0 failures; exit 2 |
+| CURRENT `beads-production.py --run` | 85 checked processes; A/B/linked W queue and storage identity separation, 15 protected host leaves / 121 protected entries; mixed-provider C ordering PASS; exit 0 |
+| CURRENT `beads-cleanup.py --native` | 92 checks; 38 native Beads / 56 instrumented process calls, ZERO calls during cleanup; retain/pristine purge/cooperative locks PASS; exit 0 |
+
+Native AI fixtures use the actual current installer. Global setup leaves both
+repositories untouched; local setup creates six qualified role files only in A,
+leaves B untouched and now explicitly asserts byte/type/mtime identity of the
+global core and HOME during that operation. This is filesystem evidence, not
+native role enumeration. Skills in A/B are checked before local setup, in fresh
+processes after local A setup, and after a skill-description edit/reload.
+
+| Actual client version | Executed bounded interface / precise blocker |
+| --- | --- |
+| Claude **2.1.269** | `--version`, `--help`, `agents --help`: **“Manage background agents”**, `--json` prints active sessions, not configured role IDs; no non-model skill listing advertised. Session view not launched. The dated .13 observation of 2.1.268 is retained above. |
+| Codex **0.154.0** | `app-server --help`, `app-server generate-json-schema --help` then `--out <fixture>`; `app-server --listen stdio://` with `initialize`, `initialized`, `skills/list` (`cwds`, `forceReload=true`) and `config/read`. Skills observed, native-returned source paths checked; `config.agents=null` in A/B at every stage and stable schema has no role-list method. No thread/model session launched. |
+| Copilot **1.0.83** | `--help`, `skill --help`, `skill list --help`, `skill list --json` in A/B; skill IDs/source paths observed. `--agent` selects a session agent; help advertises no non-model role-list subcommand. Authenticated startup/ACP not invoked. |
+
+The Beads experiment's exact optional response was
+`Error: 'bd sql' is not yet supported in embedded mode` for argv
+``["bd", "--sandbox", "sql", "SELECT value FROM metadata WHERE `key` = '_project_id'", "--json"]``
+(passed directly, not interpreted by a shell).
+Native initialization, CRUD/dependencies/remember/export, readiness, distinct
+queues, storage UUID identity negative controls, host privacy and teardown passed.
+That TEST ONLY experiment is not the production initializer; the separate CURRENT
+fixture uses the actual emitted dispatcher and .6 sandbox, and .7 native cleanup
+uses source instrumentation solely to count calls without changing protection.
+
+**Corrections during execution, not suppressed failures.** Initial runner attempts
+misplaced discovery under the checkout (global worktree refusal), then under
+`/private/tmp` (unsafe writable ancestor refusal). The completed corrected native
+run uses ordinary OS-private staging and exits 2 for only the precise native
+limitations above. Offline discovery units also require outside-checkout staging
+for their sandbox no-source-read assertion; the runner now supplies it. One
+global-uninstall attempt was invalidated by editing the live script's help while
+Bash was running (changed byte offsets, syntax error after an otherwise successful
+operation); complete reruns use stable source. These were runner/execution
+corrections, not changes to production ownership, sandbox or locking guards.
+Do not edit source during acceptance.
+
+**Coverage interpretation.** Current executable tests cover all seven provider
+selectors; qualified IDs and cross-client collision refusal; missing bound
+release, corrupt/missing/mid-run receipts and no global fallback; metadata edits,
+secret-sentinel non-copying and core-update/local-byte separation; local scope
+byte identity; state-only none, successful/failed/unowned Beads; shared-worktree
+exclusions; retained and pristine-purge state; publication fault/journal privacy;
+force unchanged-only and ambiguous legacy refusal. Native protocol units use
+synthetic responses, not native clients. Model defaults, ephemeral choices,
+explicit-goal authority, source-commit authorization and no private staging
+are prompt/guard assertions, **not executed model-session behavior**.
+
+**Native limitations and manual gates — NOT executed.** Repeat the safe metadata
+protocol with `python3 -B test/native-discovery.py --run` before interpreting any
+future version. Help, schemas, config reads, skill listings, receipt validation
+and inline SDK custom-agent injection cannot prove filesystem role discovery.
+The bounded interfaces below do not establish that the products lack roles.
+No authentication, model budget, UI trust or MCP/network workload was authorized
+for this acceptance; do not weaken the isolation profile to get a green result.
+
+For future separately authorized manual acceptance, recreate two disposable Git
+roots A/B and a private HOME/core, using the harness's environment/setup helper.
+Run current `domestique.sh --global --platform all`, then
+`domestique.sh --local A --platform all`; retain pre/post snapshots of B and
+global HOME/core. Start each installed client's **documented interactive role
+interface** from A and B (fresh processes, no guessed role-list command).
+Use the README's provider-qualified base/decompose/goal invocations and record:
+
+1. The native-returned source path and exact
+   `domestique-<provider>-{implementer,reviewer}` global IDs in A/B, plus
+   `domestique-<provider>-local-{implementer,reviewer}` only in A; no collisions
+   or same-name precedence assumptions. Claude skills also need native proof.
+2. A-only supported nonsecret tools/MCP metadata edit, documented reload,
+   exact selected native role, source binding and effective capabilities.
+   Record trust separately from tool availability. Do not register/authenticate
+   or execute a server without new explicit permission.
+3. Bind each role independently via its receipt; then remove/corrupt the bound
+   receipt/adapter or release in that disposable fixture. The native workflow
+   must stop, not delegate to global/broader tools. Restore by a fresh fixture,
+   not by fabricating production provenance.
+4. Perform a compatible core-only update from an explicitly supplied local
+   source; a fresh global/local role must read the new bound core while local
+   customized bytes remain identical. Skill-description reload is not this test.
+5. Under separately authorized model-session tests, verify native defaults,
+   explicit session model choice and unavailable-choice stop without persistence;
+   ordinary/base requests must not authorize unattended work. Only same-provider
+   explicit goal authority permits sequential implementer/fresh-reviewer work,
+   with no private staging, unauthorized source commit, push or merge.
+
+Until those records exist, native role discovery/routing, custom metadata
+reload/capability enforcement, live core update in roles, MCP/trust/tool access,
+model/goal-session behavior and agent-driven Beads remain **UNVERIFIED**.
+The qualified Beads production initializer/dispatcher and guarded cleanup are
+separate observations, not substitutes for these gates. Beads qualification is
+only Darwin arm64, Python stdlib and `sandbox-exec`, with 1.1.2 CGO embedded SHA-256
+`cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42`.
+Other versions/platforms/backends refuse. Direct embedded SQL UUID inspection is
+optional/unsupported, not a remaining Beads feasibility blocker: native identity
+negative controls and actual production queries are distinct proof. Cleanup
+never queries Beads. Stop raw/older writers: metadata `flock` coordinates only
+the current wrapper/controller/cleanup, not arbitrary writers or a process census.
 
 ### Old-plan disposition (parent-approved deferral)
 
@@ -2284,14 +2818,15 @@ untouched, not merged or pushed.
 | --- | --- |
 | hq-2su.3 guest preflight | hq-b3q.4 done; .6 private Beads initialization implemented for the qualified artifact/platform |
 | hq-2su.4 uninstall | .11 global / .12 local profiles / .7 unchanged-only database cleanup implemented; valid none attachment retained |
-| hq-2su.5 policy/discovery | .2/.5 done; .13 limited native evidence; .8 full execution open |
-| hq-2su.6 acceptance | .8 **OPEN**, not completed by offline tests or .13 discovery |
+| hq-2su.5 policy/discovery | .2/.5 done; .13/.8 limited native evidence; role/tool/MCP runtime limitations remain |
+| hq-2su.6 acceptance | .8 final evidence above; independent review required, no claim of all old native criteria fulfilled |
 | hq-2su.7 documentation | current .9, approved now using implemented preview + .13 evidence |
 | hq-e7f missing-mode safety | .4 fail-closed legacy classification; absent/corrupt mode never permits normal writes |
 | hq-4oh.15 setup/init | no `bd setup`; .6 uses the qualified private execution context and sandbox, not four flags alone |
 
 Old normal/guest dual-mode prescriptions are retired; do not restore
 `--no-guest`, unsafe init/rollback or force-overwrite paths. Approval explicitly
-defers blocked full .8 rather than holding .9 behind it or presenting the old
-plan as ready. This records disposition, **not fulfillment of all old criteria
-or release completion**.
+allowed .9 without claiming blocked native execution. Final .8 evidence above
+retains those runtime limitations rather than presenting the old plan as ready.
+This records disposition, **not fulfillment of all old criteria or release
+completion**.

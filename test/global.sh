@@ -13,13 +13,54 @@ for forbidden in curl wget bd claude codex copilot; do
 done
 export PATH="$WORK/never-call:$PATH"
 PASS=0 FAIL=0 N=0
+# Opt-in diagnostics: append-only, timing/progress only, never argv/payload.
+# Disabled (default, unset DOM_TEST_DIAG) this is a single cheap builtin
+# comparison per call site; no subprocess, no behavior/output change.
+diag() {
+  [ -n "${DOM_TEST_DIAG:-}" ] || return 0
+  # Fixed operation/phase, integer status and source-bound caller identity.
+  # Helper start/end use the SAME caller line, including command substitutions.
+  local caller="${BASH_LINENO[1]:-0}"
+  [ "$caller" -ne 0 ] || caller="${BASH_LINENO[0]}"
+  if { printf 'global-diag-v1\t%s\tf%s\t%s\t%s\t%s\t%s\n' \
+      "$SECONDS" "$N" "$caller" "$1" "$2" "$3" >&9; } 2>/dev/null; then
+    return 0
+  fi
+  printf 'diag: write failed\n' >&2
+  # A failed write inside $(tree ...) must also fail the owning suite.
+  kill -USR1 "$$"
+  exit 1
+}
+diag_setup() {
+  [ -n "${DOM_TEST_DIAG:-}" ] || return 0
+  # Every snapshot/native fixture root is below WORK. Resolve symlinks too.
+  if ! python3 - "$DOM_TEST_DIAG" "$WORK" <<'PY'
+import pathlib,sys
+p,w=map(pathlib.Path,sys.argv[1:])
+if not p.is_absolute() or p.resolve().is_relative_to(w.resolve()):
+    raise SystemExit(1)
+PY
+  then
+    printf 'diag: path must be absolute and outside fixture/snapshot roots\n' >&2
+    exit 1
+  fi
+  trap 'exit 1' USR1
+  if ! { exec 9>> "$DOM_TEST_DIAG"; } 2>/dev/null; then
+    printf 'diag: open failed\n' >&2
+    exit 1
+  fi
+}
 check() {
   local label="$1"; shift
+  local rc=0
+  diag check start -
   if "$@"; then PASS=$((PASS + 1))
-  else printf 'FAIL: %s\n' "$label" >&2; FAIL=$((FAIL + 1)); fi
+  else rc=$?; printf 'FAIL: %s\n' "$label" >&2; FAIL=$((FAIL + 1)); fi
+  diag check end "$rc"
 }
 fixture() {
   N=$((N + 1)); F="$WORK/f$N"
+  diag fixture start -
   mkdir -p "$F/home" "$F/tmp" "$F/cwd" "$F/repo1" "$F/repo2"
   export HOME="$F/home" TMPDIR="$F/tmp" XDG_STATE_HOME="$F/state"
   unset DOMESTIQUE_HOME
@@ -30,14 +71,18 @@ fixture() {
     mkdir "$F/$r/.domestique-private"
     printf 'custom local profile\n' > "$F/$r/.domestique-private/manifest"
   done
+  diag fixture end 0
 }
 run() {
+  diag run start -
   (cd "$F/cwd" && bash "$@") > "$F/out" 2> "$F/err"
   RC=$?
+  diag run end "$RC"
 }
 # Include directories, regular bytes, symlink targets, modes and file mtimes.
 # Directory mtimes excluded: transient staging must not alter leaf metadata.
 tree() {
+  diag tree start -
   python3 - "$@" <<'PY'
 import hashlib,os,pathlib,stat,sys
 h=hashlib.sha256()
@@ -53,8 +98,12 @@ for name in sys.argv[1:]:
         elif stat.S_ISLNK(s.st_mode): h.update(os.readlink(p).encode())
 print(h.hexdigest())
 PY
+  local rc=$?
+  diag tree end "$rc"
+  return "$rc"
 }
 native_inventory() {
+  diag native_inventory start -
   python3 - "$HOME" "$CORE" "$1" <<'PY'
 import pathlib,sys
 h,c=map(pathlib.Path,sys.argv[1:3]); selection=sys.argv[3]
@@ -80,6 +129,9 @@ r=(c/"active").read_text().strip().removeprefix("release=")
 assert {str(p.relative_to(c/"releases"/r)) for p in (c/"releases"/r).rglob("*") if p.is_file()}=={
     "API","SHA256SUMS",*[f"roles/{r}.md" for r in ("orchestrator","goal","implementer","reviewer")]}
 PY
+  local rc=$?
+  diag native_inventory end "$rc"
+  return "$rc"
 }
 refusal() {
   local label="$1"; shift
@@ -90,6 +142,8 @@ refusal() {
   after="$(tree "$HOME" "$CORE" "$F/repo1" "$F/repo2")"
   check "$label writes nothing" test "$before" = "$after"
 }
+
+diag_setup
 
 # Each canonical set is accepted explicitly and reused by a bare rerun.
 for selection in claude codex copilot both claude-copilot codex-copilot all; do
@@ -136,7 +190,9 @@ printf 'host instruction\n' > "$HOME/CLAUDE.md"
 before="$(tree "$HOME" "$F/repo1" "$F/repo2")"
 for r in repo1 repo2; do
   (cd "$F/$r" && bash "$DOM" --global) > "$F/out" 2> "$F/err"
-  check "global from $r" test "$?" -eq 0
+  DIRECT_RC=$?
+  diag direct end "$DIRECT_RC"
+  check "global from $r" test "$DIRECT_RC" -eq 0
 done
 check "both repos and global host files untouched" test "$before" = "$(tree "$HOME" "$F/repo1" "$F/repo2")"
 
@@ -569,5 +625,6 @@ for kind in api extra symlink; do
 done
 unset RACE_KIND RACE_CORE RACE_TRIGGER
 
+diag summary end "$FAIL"
 echo "global: $PASS passed, $FAIL failed"
 exit "$FAIL"

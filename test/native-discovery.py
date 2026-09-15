@@ -8,13 +8,12 @@ Only Python stdlib and already installed tools are used.
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
-import selectors
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -25,9 +24,39 @@ CLIENTS = ("claude", "codex", "copilot")
 TIMEOUT = 30
 RELOAD_MARKER = "Fixture metadata reload hq-b3q.13."
 
+# Path-based loading supports standalone, importlib and runpy callers without
+# changing sys.path. The runner imports no native fixture: no dependency cycle.
+_SPEC = importlib.util.spec_from_file_location(
+    "_domestique_test_supervision", Path(__file__).with_name("acceptance.py"))
+if _SPEC.name not in sys.modules:
+    S = importlib.util.module_from_spec(_SPEC)
+    sys.modules[_SPEC.name] = S
+    _SPEC.loader.exec_module(S)
+S = sys.modules[_SPEC.name]
+SupervisionError = S.SupervisionError
+FAILURES = (AssertionError, OSError, ValueError, KeyError, TypeError,
+            subprocess.SubprocessError, SupervisionError)
+BLOCKER_KINDS = {"absent-tool", "unsupported-interface", "denied-approval"}
+
 
 class Blocked(Exception):
-    pass
+    def __init__(self, diagnostic, *, kind="unsupported-interface"):
+        assert kind in BLOCKER_KINDS, "invalid native blocker kind"
+        self.kind = kind
+        super().__init__(diagnostic)
+
+
+def failure_fields(exc):
+    fields = {"failure_kind": S.failure_status(exc)["failure_kind"],
+              "diagnostic": getattr(exc, "fixture_diagnostic", str(exc))}
+    if hasattr(exc, "fixture_installation"):
+        fields["fixture_installation"] = exc.fixture_installation
+    if getattr(exc, "returncode", None) is not None:
+        fields["exit"] = exc.returncode
+    primary = getattr(exc, "primary_failure", None)
+    if primary is not None:
+        fields["primary_failure"] = failure_fields(primary)
+    return fields
 
 
 def shaped(value, kind, context):
@@ -42,35 +71,11 @@ def decode(text, context):
         raise AssertionError(f"{context}: malformed JSON") from exc
 
 
-def finish(proc):
-    # Reap a completed leader first. Darwin can return EPERM, not ESRCH,
-    # for a process group whose last member just exited.
-    proc.poll()
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        if proc.poll() is None:
-            raise
-    proc.communicate(timeout=5)
-
-
 def run(argv, cwd, env, timeout=TIMEOUT, input_text=None):
     """Bound the entire process group, including descendants on normal exit."""
-    proc = subprocess.Popen(
-        [str(a) for a in argv], cwd=cwd, env=env, text=True,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
-    try:
-        try:
-            out, err = proc.communicate(input_text, timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            raise Blocked(f"timeout after {timeout}s: {Path(argv[0]).name}") from exc
-        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
-    finally:
-        finish(proc)
+    out, err, rc = S.execute([str(a) for a in argv], env, timeout,
+                             cwd=cwd, input_text=input_text)
+    return subprocess.CompletedProcess(argv, rc, out, err)
 
 
 def resolve_tools():
@@ -152,6 +157,10 @@ def sandbox_profile(work, tools, installer=False):
     for path in reads:
         kind = "subpath" if path.is_dir() else "literal"
         lines.append(f"(allow file-read* ({kind} {json.dumps(str(path))}))")
+    # Only the context harness supplies this already digest-qualified executable.
+    # Never grant its private parent directory (which can be outside Cellar).
+    if tools.get("beads"):
+        lines.append(f"(allow file-read* (literal {json.dumps(str(tools['beads']))}))")
     lines += [f"(allow file-write* (subpath {json.dumps(str(work))}))",
               '(allow file-write-data (literal "/dev/null"))']
     return "\n".join(lines)
@@ -178,33 +187,84 @@ class Rpc:
     METHODS = {"initialize", "skills/list", "config/read"}
 
     def __init__(self, argv, cwd, env, timeout=TIMEOUT):
-        self.proc = subprocess.Popen(
-            [str(a) for a in argv], cwd=cwd, env=env, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        self.selector = selectors.DefaultSelector()
-        self.selector.register(self.proc.stdout, selectors.EVENT_READ, "stdout")
-        self.selector.register(self.proc.stderr, selectors.EVENT_READ, "stderr")
+        self.argv, self.timeout = argv, timeout
+        self.owner = S.supervised_process(
+            [str(a) for a in argv], env, timeout + 5, cwd=cwd, stdin=True,
+            binary=True, max_output=4 * 1024 * 1024)
+        self.session = self.owner.__enter__()
+        self.proc = self.session.proc
+        try:
+            self.session.check()
+        except Exception:
+            self.owner.__exit__(*sys.exc_info())
+            raise
         self.deadline = time.monotonic() + timeout
         self.pending, self.stderr, self.size, self.next_id = b"", b"", 0, 0
+        self.stdout = b""
         self.closed = False
+        self.failure = None
 
     def close(self):
         if self.closed:
             return
         self.closed = True
+        exc = self.failure
+        # Carry protocol failure into cleanup, but never mistake our own
+        # TERM/KILL result for a child that failed before cleanup signaling.
+        cleanup_failure = None
         try:
-            finish(self.proc)
-        finally:
-            self.selector.close()
+            self.owner.__exit__(type(exc) if exc else None, exc,
+                                exc.__traceback__ if exc else None)
+        except Exception as raised:
+            if raised is not exc:
+                cleanup_failure = raised
+        rc = self.session.completed_returncode
+        out, err = (prefix + bytes(chunk) for prefix, chunk in
+                    zip((self.stdout, self.stderr), self.session.drain.chunks))
+        out, err = out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+        if cleanup_failure is not None:
+            failure = cleanup_failure
+        elif rc not in (None, 0):
+            failure = subprocess.CalledProcessError(rc, self.argv)
+            failure.primary_failure = exc
+        else:
+            failure = exc
+        if failure is not None:
+            failure.output, failure.stderr = out, err
+            primary = getattr(failure, "primary_failure", None)
+            if primary is not None:
+                primary.output, primary.stderr = out, err
+            if rc is not None:
+                failure.returncode = rc
+            self.failure = failure
+        if cleanup_failure is not None or rc not in (None, 0):
+            raise failure
 
     def send(self, payload):
         try:
-            self.proc.stdin.write((json.dumps(payload) + "\n").encode())
-            self.proc.stdin.flush()
+            data = (json.dumps(payload) + "\n").encode()
+            assert len(data) <= 4 * 1024 * 1024, "RPC input exceeded bounded metadata limit"
+            self.session.drain.send(data)
+            while self.session.drain.pending_input:
+                self.check_deadline()
+                self.session.step(min(.02, max(0, self.deadline - time.monotonic())))
+            if self.proc.stdin.closed:
+                raise BrokenPipeError("app-server stdin closed")
         except BrokenPipeError as exc:
-            raise Blocked("app-server closed stdin before protocol completion") from exc
+            raise AssertionError("app-server closed stdin before protocol completion") from exc
+
+    def check_deadline(self):
+        if time.monotonic() >= self.deadline:
+            raise subprocess.TimeoutExpired("app-server protocol", self.timeout)
 
     def request(self, method, params):
+        try:
+            return self._request(method, params)
+        except Exception as exc:
+            self.failure = exc
+            raise
+
+    def _request(self, method, params):
         assert method in self.METHODS, "non-introspection RPC forbidden"
         self.next_id += 1
         request_id = self.next_id
@@ -215,7 +275,13 @@ class Rpc:
                 message = shaped(decode(line, f"app-server {method}"), dict,
                                  f"app-server {method} response")
                 if "id" in message and "method" in message:
-                    raise Blocked("unexpected server request; no approval/auth/tool responses sent")
+                    # Only documented approval requests justify a blocker.
+                    if message["method"] in (
+                            "item/commandExecution/requestApproval",
+                            "item/fileChange/requestApproval"):
+                        raise Blocked("server requested tool approval; no response sent",
+                                      kind="denied-approval")
+                    raise AssertionError("unexpected server request; no response sent")
                 if "id" not in message:
                     shaped(message.get("method"), str, f"app-server {method} notification.method")
                     if "params" in message:
@@ -232,25 +298,21 @@ class Rpc:
                         error = shaped(message["error"], dict, f"app-server {method} error")
                         code = shaped(error.get("code"), int, f"app-server {method} error.code")
                         shaped(error.get("message"), str, f"app-server {method} error.message")
-                        raise Blocked(f"app-server {method}: native RPC error code {code}")
+                        if code == -32601:  # JSON-RPC Method not found.
+                            raise Blocked(f"app-server {method}: native RPC error code {code}")
+                        raise AssertionError(f"app-server {method}: native RPC error code {code}")
                     assert "result" in message, f"app-server {method}: RPC response missing result/error"
                     return shaped(message["result"], dict, f"app-server {method} result")
-            remaining = self.deadline - time.monotonic()
-            if remaining <= 0:
-                raise Blocked(f"app-server {method}: protocol timeout")
-            if not self.selector.get_map():
-                raise Blocked(f"app-server {method}: EOF before response")
-            for key, _ in self.selector.select(remaining):
-                data = os.read(key.fileobj.fileno(), 65536)
-                if not data:
-                    self.selector.unregister(key.fileobj)
-                    continue
-                self.size += len(data)
-                assert self.size <= 4 * 1024 * 1024, "RPC output exceeded bounded metadata limit"
-                if key.data == "stdout":
-                    self.pending += data
-                else:
-                    self.stderr += data
+            self.check_deadline()
+            drain = self.session.drain
+            if drain.streams[0] not in drain.selector.get_map() and not drain.chunks[0]:
+                raise AssertionError(f"app-server {method}: EOF before response")
+            self.session.step(min(.02, max(0, self.deadline - time.monotonic())))
+            self.stdout += bytes(drain.chunks[0])
+            self.pending += bytes(drain.chunks[0])
+            self.stderr += bytes(drain.chunks[1])
+            for chunk in drain.chunks:
+                chunk.clear()
 
     def initialize(self, expected_home):
         response = self.request("initialize", {
@@ -270,11 +332,13 @@ class Harness:
         self.versions = {}
 
     def result(self, component, status, **data):
+        if status == "BLOCKED":
+            assert data.get("blocker_kind") in BLOCKER_KINDS
         self.results.append(dict(component=component, status=status, **data))
 
     def safe(self, argv, cwd=None, **kwargs):
         if not self.tools["sandbox-exec"]:
-            raise Blocked("sandbox-exec unavailable; no native process invoked")
+            raise Blocked("sandbox-exec unavailable; no native process invoked", kind="absent-tool")
         return run([self.tools["sandbox-exec"], "-p", self.profile, *argv],
                    cwd or self.work, self.env, **kwargs)
 
@@ -303,20 +367,20 @@ class Harness:
             result = self.safe([Path(sys.executable).resolve(), "-c", script,
                                 self.work / "allowed", sentinel])
             if result.returncode or sentinel.read_text() != "fixture-only":
-                raise Blocked("sandbox validation failed: " +
+                raise AssertionError("sandbox validation failed: " +
                               (result.stderr or result.stdout or str(result.returncode))[:1000])
         self.result("isolation", "STATIC_ONLY", diagnostic=result.stdout.strip(),
                     policy="default deny; no network or mach/Keychain IPC grants")
 
     def setup(self):
         if not self.tools["git"]:
-            raise Blocked("git unavailable; fixtures cannot be prepared")
+            raise Blocked("git unavailable; fixtures cannot be prepared", kind="absent-tool")
         self.repos = [self.work / name for name in ("A", "B")]
         for repo in self.repos:
             repo.mkdir()
             result = self.safe([self.tools["git"], "init", "-q", repo])
             if result.returncode:
-                raise Blocked("isolated git init: " + result.stderr[:1000])
+                raise AssertionError("isolated git init: " + result.stderr[:1000])
             # Empty templates suppress sample hooks AND Git's ordinary info
             # directory. Supply the normal private-exclude container ourselves.
             (repo / ".git/info").mkdir(exist_ok=True)
@@ -327,25 +391,48 @@ class Harness:
         self.result("installer-global", "STATIC_ONLY", untouched_repos=["A", "B"])
 
     def install(self, *args):
-        result = run([self.tools["sandbox-exec"], "-p",
-                      sandbox_profile(self.work, self.tools, installer=True),
-                      "/bin/bash", ROOT / "domestique.sh", *args],
-                     self.work, self.env, timeout=120)
-        assert result.returncode == 0, "installer: " + (result.stderr + result.stdout)[-2000:]
+        # Fixture setup is separate from the native metadata-command budget.
+        budget = 120
+        operation = ("local fixture installation" if "--local" in args else
+                     "global fixture installation")
+        argv = [self.tools["sandbox-exec"], "-p",
+                sandbox_profile(self.work, self.tools, installer=True),
+                "/bin/bash", ROOT / "domestique.sh", *args]
+        started = time.monotonic()
+        try:
+            result = run(argv, self.work, self.env, timeout=budget)
+            if result.returncode:
+                error = AssertionError(f"installer exited nonzero: {result.returncode}")
+                error.returncode = result.returncode
+                error.output, error.stderr = result.stdout, result.stderr
+                raise error
+        except FAILURES as exc:
+            context = {"operation": operation, "budget_seconds": budget,
+                       "elapsed_seconds": time.monotonic() - started}
+            # Keep exception identity, kind, output and cleanup/primary links.
+            # Reports need no sandbox profile, argv or installer output dump.
+            failure = exc
+            while failure is not None:
+                failure.fixture_installation = context
+                failure.fixture_diagnostic = str(failure).replace(
+                    str(argv), "<fixture installer>").replace(
+                    str([str(arg) for arg in argv]), "<fixture installer>")
+                failure = getattr(failure, "primary_failure", None)
+            raise
 
     def inspect(self, name):
         path = self.tools[name]
         if not path:
-            raise Blocked(f"{name}: executable unavailable; not installed by harness")
+            raise Blocked(f"{name}: executable unavailable; not installed by harness", kind="absent-tool")
         version = self.safe([path, "--version"])
         if version.returncode:
-            raise Blocked(f"{name} --version exit {version.returncode}: {version.stderr[:1000]}")
+            raise AssertionError(f"{name} --version exit {version.returncode}: {version.stderr[:1000]}")
         lines = version.stdout.strip().splitlines()
         assert lines, f"{name} --version: empty output"
         self.versions[name] = lines[0]
         help_result = self.safe([path, "--help"])
         if help_result.returncode:
-            raise Blocked(f"{name} --help exit {help_result.returncode}: {help_result.stderr[:1000]}")
+            raise AssertionError(f"{name} --help exit {help_result.returncode}: {help_result.stderr[:1000]}")
         text = help_result.stdout + help_result.stderr
         self.result(name + "-interface", "STATIC_ONLY", executable=str(path),
                     version=self.versions[name], commands=["--version", "--help"])
@@ -354,7 +441,7 @@ class Harness:
     def command(self, name, args, cwd=None):
         result = self.safe([self.tools[name], *args], cwd=cwd)
         if result.returncode:
-            raise Blocked(f"{name} {' '.join(args)} exit {result.returncode}: " +
+            raise AssertionError(f"{name} {' '.join(args)} exit {result.returncode}: " +
                           (result.stderr or result.stdout)[:1000])
         return result.stdout
 
@@ -378,6 +465,7 @@ class Harness:
         if "--json" not in text or "List all available skills" not in text:
             raise Blocked("copilot skill list --help: unsupported listing format")
         self.result("copilot-roles", "BLOCKED", version=self.versions["copilot"],
+                    blocker_kind="unsupported-interface",
                     command="copilot --help",
                     diagnostic="--agent selects a session agent; no non-model role-list "
                     "subcommand advertised. No authenticated startup or ACP invoked.")
@@ -496,6 +584,7 @@ class Harness:
             # config/read is not a role enumeration API. Even a populated config
             # must not be promoted to runtime .codex/agents discovery.
             self.result("codex-roles", "BLOCKED", stage=stage, repo=repo.name,
+                        blocker_kind="unsupported-interface",
                         version=self.versions["codex"],
                         command="app-server: initialize; skills/list; config/read",
                         diagnostic="config/read is not agent enumeration; "
@@ -509,9 +598,9 @@ class Harness:
         try:
             callback()
         except Blocked as exc:
-            self.result(component, "BLOCKED", diagnostic=str(exc))
-        except (AssertionError, OSError, ValueError, KeyError, TypeError) as exc:
-            self.result(component, "ASSERTION_FAILURE", diagnostic=str(exc))
+            self.result(component, "BLOCKED", diagnostic=str(exc), blocker_kind=exc.kind)
+        except FAILURES as exc:
+            self.result(component, "ASSERTION_FAILURE", **failure_fields(exc))
         finally:
             self.result(component + "-project-writes", "STATIC_ONLY",
                         changes={repo.name: differences(old, snapshot(repo))
@@ -529,9 +618,10 @@ class Harness:
                 ready.append(name)
             except Blocked as exc:
                 self.result(name + "-discovery", "BLOCKED",
+                            blocker_kind=exc.kind,
                             version=self.versions.get(name, "unavailable"), diagnostic=str(exc))
-            except (AssertionError, OSError, ValueError, KeyError, TypeError) as exc:
-                self.result(name + "-discovery", "ASSERTION_FAILURE", diagnostic=str(exc))
+            except FAILURES as exc:
+                self.result(name + "-discovery", "ASSERTION_FAILURE", **failure_fields(exc))
             finally:
                 self.result(name + "-help-schema-project-writes", "STATIC_ONLY",
                             changes={repo.name: differences(old, snapshot(repo))
@@ -539,8 +629,11 @@ class Harness:
         for stage in ("global-only", "after-local-A-fresh-process", "metadata-reload"):
             if stage == "after-local-A-fresh-process":
                 before_b = snapshot(self.repos[1])
+                before_global = snapshot(Path(self.env["DOMESTIQUE_HOME"])), snapshot(Path(self.env["HOME"]))
                 self.install("--local", self.repos[0], "--platform", "all")
                 assert snapshot(self.repos[1]) == before_b, "local A installer changed B"
+                assert before_global == (snapshot(Path(self.env["DOMESTIQUE_HOME"])),
+                                         snapshot(Path(self.env["HOME"]))), "local A installer changed global state"
                 local_ids = []
                 for provider, prefix, suffix in (("claude", ".claude", "md"),
                                                   ("codex", ".codex", "toml"),
@@ -568,7 +661,7 @@ class Harness:
 
 
 def exit_code(results):
-    if any(r["status"] == "ASSERTION_FAILURE" for r in results):
+    if any(r["status"] == "ASSERTION_FAILURE" or "failure_kind" in r for r in results):
         return 1
     if any(r["status"] == "BLOCKED" for r in results):
         return 2
@@ -591,12 +684,13 @@ def main():
         try:
             harness.probe()
         except Blocked as exc:
-            harness.result("prerequisite", "BLOCKED", diagnostic=str(exc))
+            harness.result("prerequisite", "BLOCKED", diagnostic=str(exc), blocker_kind=exc.kind)
             for name in CLIENTS:
                 harness.result(name + "-discovery", "BLOCKED",
+                               blocker_kind=exc.kind,
                                diagnostic="isolation/setup prerequisite failed; no discovery invoked")
-        except (AssertionError, OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
-            harness.result("harness", "ASSERTION_FAILURE", diagnostic=str(exc))
+        except FAILURES as exc:
+            harness.result("harness", "ASSERTION_FAILURE", **failure_fields(exc))
         print(json.dumps({
             "date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "scope": "native-discovery-only; no auth/inference/MCP/Beads",
