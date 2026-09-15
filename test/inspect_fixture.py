@@ -778,7 +778,7 @@ class FixtureSession:
                                         hashlib.sha256(current.read_bytes()).hexdigest(),
                                         str(current))
         self.projects = {name: self.project(name, git=name in (
-            "normal", "guest", "private", "global-only"))
+            "normal", "guest", "adopted", "private", "global-only"))
                          for name in ("normal", "guest", "old", "adopted", "empty",
                                       "nongit", "spaces here", "control\n\t\x1bhere",
                                       "private", "global-only")}
@@ -996,8 +996,12 @@ class Case:
             file = next(r for r in NORMAL.providers if r.provider == provider).files[0]
             s._edit(Path(bind(file.path, {"project": str(p)})), edit)
         elif mutation == "unrelated":
+            # Include bounded historical native paths, but no Domestique content
+            # or state. Arbitrary host names alone are outside that inventory.
             for rel in (".claude/agents/host.md", ".codex/agents/host.toml",
-                        ".github/agents/host.agent.md"):
+                        ".github/agents/host.agent.md",
+                        ".claude/agents/implementer.md", ".codex/agents/implementer.toml",
+                        ".github/agents/domestique-implementer.agent.md"):
                 dest = p / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(SECRET + "\n")
@@ -1060,12 +1064,16 @@ class Case:
         elif mutation == "mixed-markers":
             dest = p / "CLAUDE.local.md"
             dest.write_bytes((s.projects["guest"] / "CLAUDE.local.md").read_bytes())
-        elif mutation in ("symlink", "hardlink", "directory", "fifo", "socket"):
+        elif mutation == "hardlink":
+            peer = p / "hardlink-peer.md"
+            s.owned_path(leaf)
+            s.owned_path(peer)
+            # Only the live inode becomes unsafe; the installed baseline stays intact.
+            os.link(leaf, peer)
+        elif mutation in ("symlink", "directory", "fifo", "socket"):
             leaf.unlink()
             if mutation == "symlink":
                 leaf.symlink_to(base)  # Safe referent but unsafe managed path.
-            elif mutation == "hardlink":
-                os.link(base, leaf)
             elif mutation == "directory":
                 leaf.mkdir()
             elif mutation == "fifo":
@@ -1126,5 +1134,6 @@ def provenance_summary(session):
                        "installer_seconds": sum(c[2] for c in session.commands
                                                 if c[0] == "install"),
                        "scenarios": len(MATRIX), "root": str(session.root),
+                       "root_identity": session.identity,
                        "native_calls": 0, "beads": "synthetic metadata only"},
                       sort_keys=True)

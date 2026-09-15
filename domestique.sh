@@ -36,6 +36,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import shutil
 import stat
@@ -536,6 +537,405 @@ class Collector:
                                          data=None) for o in observations)
         self._sealed = Collection(self.root, observations, diagnostics, not self._broken)
         return self._sealed
+
+
+# Shared status/reference records (the .1 oracle's projection contract).
+# Comparison stays unknown here: snapshots are merge bases, never proof of
+# creation or effective native permissions. No current emitter is consulted.
+@dataclass(frozen=True)
+class Baseline:
+    kind: str
+    status: str
+    path: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class FileEvidence:
+    path: str
+    status: str
+    baseline: Baseline
+    ownership: str
+    comparison: str = "unknown"
+    metadata: str = "unknown"
+    instructions: str = "unknown"
+    permission_fields: Tuple[str, ...] = ()
+    reasons: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class GenerationEvidence:
+    generation: str
+    evidence: Tuple[str, ...]
+    reported_version: Optional[str]
+    reported_ref: Optional[str]
+
+
+@dataclass(frozen=True)
+class ProviderRecord:
+    provider: str
+    generations: Tuple[GenerationEvidence, ...]
+    installation: str
+    mode: str
+    customization: str
+    files: Tuple[FileEvidence, ...]
+    reasons: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ScopeRecord:
+    scope: str
+    directory: str
+    installation: str
+    mode: str
+    customization: str
+    providers: Tuple[ProviderRecord, ...]
+    reasons: Tuple[str, ...] = ()
+    beads: str = "absent"
+
+
+@dataclass(frozen=True)
+class LegacyScan:
+    """Legacy-only project projection, not a whole-inspection completion claim.
+
+    Sealed collections retain private UTF-8 bytes for the later comparator;
+    policy observations contain ONLY the owned body, never host text. Paths
+    in status records are absolute references; renderers must use display().
+    Preview generations/global scope are deliberately left to their scanner.
+    """
+    scope: ScopeRecord
+    diagnostics: Tuple[Diagnostic, ...]
+    exit_code: int
+    collections: Tuple[Collection, ...] = field(repr=False)
+
+
+# Grammar provenance: b60feef4d0d41b8d99b7afec68dd5e6ef648b027
+# configure_provider/managed_files_list/write_manifest/local_legacy_inventory,
+# plus pre-snapshot 69f39c468b65335d05260b8c5bc4653a7cf3c9f3.
+# These are finite trusted paths, NOT instructions taken from a manifest.
+LEGACY_LAYOUTS = (
+    ("claude", ".claude",
+     (".claude/agents/implementer.md", ".claude/agents/reviewer.md",
+      ".claude/commands/decompose.md", ".claude/commands/goal.md"),
+     ("CLAUDE.md", "CLAUDE.local.md"), ()),
+    ("codex", ".codex",
+     (".codex/agents/implementer.toml", ".codex/agents/reviewer.toml",
+      ".agents/skills/domestique/SKILL.md", ".agents/skills/domestique-decompose/SKILL.md",
+      ".agents/skills/domestique-goal/SKILL.md",
+      ".agents/skills/domestique-goal/agents/openai.yaml"),
+     ("AGENTS.md", "AGENTS.override.md"), ("guest-excludes",)),
+    ("copilot", ".github",
+     (".github/agents/domestique-implementer.agent.md",
+      ".github/agents/domestique-reviewer.agent.md", ".github/skills/domestique/SKILL.md",
+      ".github/skills/domestique-decompose/SKILL.md",
+      ".github/skills/domestique-goal/SKILL.md"),
+     (".github/copilot-instructions.md",), ("created-files",)),
+)
+LEGACY_BEGIN = "<!-- BEGIN domestique (managed) -->\n"
+LEGACY_END = "<!-- END domestique -->\n"
+
+
+def legacy_policy(text):
+    """Return marker state and private owned body; do not normalize CRLF."""
+    if text is None:
+        return "none", None
+    lines = text.splitlines(keepends=True)
+    markers = [(i, line) for i, line in enumerate(lines)
+               if re.search(r"(?:begin|end)\s+domestique", line, re.I)]
+    if not markers:
+        return "none", None
+    if (len(markers) == 2 and markers[0][1] == LEGACY_BEGIN and
+            markers[1][1] == LEGACY_END):
+        return "valid", "".join(lines[markers[0][0] + 1:markers[1][0]])
+    if (len(markers) > 2 and len(markers) % 2 == 0 and
+            all(line == (LEGACY_BEGIN if i % 2 == 0 else LEGACY_END)
+                for i, (_, line) in enumerate(markers))):
+        return "multiple", None
+    return "corrupt", None
+
+
+def legacy_manifest(text, provider, inventory):
+    """Canonical seven-line v1 grammar; no arbitrary reported values escape."""
+    if text is None or len(text) > 8192:
+        return None
+    keys = ("snapshot_format", "platform", "domestique_version", "installed_ref",
+            "installed_at", "script_sha256", "files")
+    lines = text.split("\n")
+    if len(lines) != 8 or lines[-1] != "":
+        return None
+    values = []
+    for key, line in zip(keys, lines[:-1]):
+        if (not line.startswith(key + "=") or line.count("=") != 1 or
+                any(ord(c) < 32 or ord(c) == 127 for c in line)):
+            return None
+        values.append(line[len(key) + 1:])
+    fmt, platform, version, ref, date, digest, files = values
+    if (fmt != "1" or platform != provider or
+            re.fullmatch(r"[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}", version) is None or
+            re.fullmatch(r"(?:unknown|[0-9a-f]{4,40})", ref) is None or
+            re.fullmatch(r"[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T"
+                         r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z", date) is None or
+            re.fullmatch(r"(?:unavailable|[0-9a-f]{64})", digest) is None):
+        return None
+    listed = tuple(files.split(","))
+    if len(set(listed)) != len(listed) or not set(listed) <= set(inventory):
+        return None
+    return version, ref, listed
+
+
+def legacy_native(provider, path, text):
+    """Corroborating historical content, not filename ownership or a parser."""
+    if text is None:
+        return False
+    if "/agents/" in path and path.endswith((".md", ".toml")):
+        role = "implementer" if "implementer" in path else "reviewer"
+        if provider == "claude":
+            anchor = ("You are an implementer. You receive one bounded task"
+                      if role == "implementer" else
+                      "You are a reviewer. You independently verify one completed task")
+            return f"\nname: {role}\n" in text and anchor in text
+        if provider == "codex":
+            return (f'name = "{role}"\n' in text and
+                    f"You are the domestique {role}." in text)
+        return (f"\nname: domestique-{role}\n" in text and
+                f"You are the Domestique {role}." in text)
+    anchors = {
+        ".claude/commands/decompose.md": "Decompose the following into a beads work graph:",
+        ".claude/commands/goal.md": "Drive epic $ARGUMENTS to completion, unattended",
+    }
+    if path in anchors:
+        return anchors[path] in text and "bd " in text
+    return "# Domestique " in text and ("bead" in text or "orchestrat" in text)
+
+
+def legacy_provider(root, layout, limits, context):
+    provider, prefix, native, policies, provenance = layout
+    state = prefix + "/.domestique/"
+    inventory = native + policies
+    records = tuple(state + name for name in ("manifest", "mode", "platforms") + provenance)
+    bases = {p: state + "base/" + p + (".block" if p in policies else "")
+             for p in inventory}
+    # A complete static collection also observes orphaned baselines. Nothing
+    # parsed from untrusted bytes can widen this per-provider allowlist.
+    allowed = records + inventory + tuple(bases.values())
+    reader = Collector(root, allowed, scope=provider, limits=limits, context=context)
+    for path in allowed:
+        reader.read(path)
+    collection = reader.finish()
+    observed = {o.path: o for o in collection.observations}
+    reasons = list(dict.fromkeys(d.code for d in collection.diagnostics))
+    if not collection.consistent:
+        return (ProviderRecord(provider, (), "unknown", "unknown", "unknown", (),
+                               tuple(reasons)), collection)
+
+    def text(path):
+        return observed[path].text()
+
+    def exists(path):
+        return observed[path].status != "missing"
+
+    def reason(code):
+        if code not in reasons:
+            reasons.append(code)
+
+    policy = {p: legacy_policy(text(p)) for p in policies}
+    recognized = tuple(p for p in native if legacy_native(provider, p, text(p)))
+    marked = tuple(p for p in policies if policy[p][0] != "none")
+    manifest = legacy_manifest(text(records[0]), provider, inventory)
+    state_present = any(exists(p) for p in records + tuple(bases.values()))
+    evidence = state_present or bool(recognized or marked)
+    if not evidence and not reasons:
+        record = ProviderRecord(provider, (), "absent", "unknown", "not-applicable", (),
+                                ("unrelated-native-files" if any(exists(p) for p in native)
+                                 else "no-domestique-evidence",))
+        # Even unowned host policy text must not survive the scanner boundary.
+    else:
+        bad = bool(reasons)
+        mixed = False
+        mode = "unknown"
+        mode_text = text(state + "mode")
+        if exists(state + "mode") and mode_text != "guest\n":
+            reason("mode-corrupt")
+            bad = True
+        platforms = text(state + "platforms")
+        platform_sets = {
+            "claude\n": ("claude",), "codex\n": ("codex",), "copilot\n": ("copilot",),
+            "both\n": ("claude", "codex"), "claude,copilot\n": ("claude", "copilot"),
+            "codex,copilot\n": ("codex", "copilot"), "all\n": ("claude", "codex", "copilot"),
+        }
+        if exists(state + "platforms") and provider not in platform_sets.get(platforms, ()):
+            reason("platforms-corrupt")
+            bad = True
+        for p in marked:
+            if policy[p][0] != "valid":
+                reason("multiple-policy-blocks" if policy[p][0] == "multiple"
+                       else "partial-policy-markers")
+                bad = True
+        valid_policies = tuple(p for p in marked if policy[p][0] == "valid")
+        if provider == "claude":
+            modes = {("guest" if p == "CLAUDE.local.md" else "normal")
+                     for p in valid_policies}
+            for p in valid_policies:
+                body = policy[p][1]
+                if "domestique state is personal and stays local." in body:
+                    modes.add("guest")
+                if "then export and commit (" in body or "then sync (`bd sync" in body:
+                    modes.add("normal")
+        else:
+            modes = {"normal"} if valid_policies else set()
+        if mode_text == "guest\n":
+            modes.add("guest")
+        if len(modes) > 1:
+            mode, mixed = "mixed", True
+            reason("mixed-mode-markers")
+        elif modes:
+            mode = next(iter(modes))
+        # Malformed markers/records cannot certify a mode.
+        if any(policy[p][0] != "valid" for p in marked) or (
+                exists(state + "mode") and mode_text != "guest\n"):
+            mode = "unknown" if not mixed else mode
+        generations = ()
+        listed = ()
+        old = False
+        manifest_problem = None
+        if manifest:
+            version, ref, listed = manifest
+            generation = "historical-draft-copilot" if provider == "copilot" else "v1-snapshot-1"
+            generations = (GenerationEvidence(generation, (root + "/" + records[0],),
+                                              version, ref),)
+            # The historical grammar always inventories every native leaf.
+            # An edited subset is not a complete supported installation.
+            if not set(native) <= set(listed):
+                reason("manifest-incomplete-inventory")
+                bad = True
+        else:
+            old = (provider == "claude" and not state_present and
+                   len(recognized) >= 2 and "CLAUDE.md" in valid_policies and
+                   "bd sync --flush-only" in policy["CLAUDE.md"][1])
+            if old:
+                generations = (GenerationEvidence("legacy-pre-snapshot",
+                                                  (root + "/CLAUDE.md",), None, None),)
+                listed = native[:3] + ("CLAUDE.md",)
+                reason("old-baseline-unavailable")
+            else:
+                bad = True
+                manifest_problem = ("manifest-missing" if not exists(records[0])
+                                    else "manifest-corrupt")
+                reason(manifest_problem)
+                # Recognizable files plus surviving snapshot state identify a
+                # damaged snapshot, not an invented version or clean absence.
+                if recognized and state_present:
+                    generation = ("historical-draft-copilot" if provider == "copilot"
+                                  else "v1-snapshot-1")
+                    generations = (GenerationEvidence(
+                        generation, tuple(root + "/" + p for p in recognized), None, None),)
+        if manifest and mode == "unknown":
+            reason("mode-unavailable")
+            bad = True
+        if provider == "codex" and len(valid_policies) > 1:
+            reason("multiple-policy-blocks")
+            bad = True
+        created = ()
+        for name in provenance:
+            path = state + name
+            if not exists(path):
+                continue
+            raw = text(path)
+            lines = ([] if raw == "" else raw.split("\n")[:-1]
+                     if raw is not None and raw.endswith("\n") else None)
+            permitted = set(listed if manifest else inventory) | (
+                {".codex/.domestique/"} if provider == "codex" else set())
+            if lines is None or len(set(lines)) != len(lines) or not set(lines) <= permitted:
+                reason("creation-record-corrupt")
+                bad = True
+            # The frozen .1 projection conservatively leaves normal Codex
+            # exclusion records as unknown authority. Only guest Codex and
+            # draft Copilot's created-files project created-record witnesses.
+            elif manifest and (provider == "copilot" or
+                               provider == "codex" and mode == "guest"):
+                created = tuple(p for p in lines if p in listed)
+        files = []
+        for p in inventory:
+            if p not in set(listed) | set(recognized) | set(marked):
+                continue
+            status = observed[p].status
+            why = [manifest_problem] if manifest_problem else []
+            if status == "missing":
+                why.append("managed-file-missing")
+                bad = True
+            elif status != "readable":
+                why.extend(d.code for d in observed[p].diagnostics)
+                bad = True
+            if p in policies:
+                why.append("host-text-excluded")
+                if status == "readable" and (policy[p][0] != "valid" or mixed):
+                    status = "corrupt"
+                    why.append("mixed-mode-markers" if policy[p][0] == "valid" else
+                               "multiple-policy-blocks" if policy[p][0] == "multiple"
+                               else "partial-policy-markers")
+                    bad = True
+            baseline = Baseline("none", "unavailable")
+            if manifest and p in listed:
+                base = observed[bases[p]]
+                if base.status == "readable":
+                    baseline = Baseline("snapshot", "valid", root + "/" + bases[p])
+                    why.append("installed-baseline")
+                elif base.status == "missing":
+                    why.append("baseline-missing")
+                else:
+                    baseline = Baseline("snapshot", "corrupt", root + "/" + bases[p])
+                    why.append("baseline-corrupt")
+                    bad = True
+            else:
+                why.append("old-baseline-unavailable" if old
+                           else "baseline-unavailable")
+            for code in why:
+                reason(code)
+            files.append(FileEvidence(root + "/" + p, status, baseline,
+                                      "created-record" if p in created else "unknown",
+                                      reasons=tuple(why)))
+        record = ProviderRecord(provider, generations,
+                                "mixed" if mixed else "partial" if bad else "installed",
+                                mode, "unknown", tuple(files), tuple(reasons))
+    # Hand the comparator only owned body bytes for policy inputs. Invalid,
+    # unowned and multiple blocks have no unambiguous comparison body.
+    collection = replace(collection, observations=tuple(
+        replace(o, data=(policy[o.path][1].encode("utf-8")
+                         if policy[o.path][1] is not None else None), _proof=())
+        if o.path in policy else o for o in collection.observations))
+    return record, collection
+
+
+def inspect_scan_legacy(context, *, limits=Limits()):
+    """Collect legacy evidence independently per provider through .2 only.
+
+    No CLI, preview scanner, repair, comparison engine or native readiness.
+    Missing baselines alone remain completed (exit 0); unsafe/partial/mixed or
+    uncertain scopes are incomplete (exit 1). Context is resolved by the caller.
+    """
+    root = context.resolved_directory
+    if root is None or context.diagnostics:
+        scope = ScopeRecord("project", root or "", "unknown", "unknown", "unknown", (),
+                            ("invalid-target",))
+        return LegacyScan(scope, context.diagnostics, 1, ())
+    results = tuple(legacy_provider(root, layout, limits, context) for layout in LEGACY_LAYOUTS)
+    providers = tuple(p for p, _ in results)
+    collections = tuple(c for _, c in results)
+    modes = {p.mode for p in providers if p.installation != "absent"}
+    mode = ("mixed" if "mixed" in modes or {"normal", "guest"} <= modes else
+            "unknown" if not modes or "unknown" in modes else next(iter(modes)))
+    states = {p.installation for p in providers}
+    installation = ("mixed" if "mixed" in states else
+                    "partial" if "partial" in states else
+                    "unknown" if "unknown" in states else
+                    "installed" if "installed" in states else "absent")
+    reasons = ("mixed-provider-modes",) if {"normal", "guest"} <= modes else ()
+    scope = ScopeRecord("project", root, installation, mode,
+                        "not-applicable" if installation == "absent" else "unknown",
+                        providers, reasons)
+    diagnostics = tuple(d for c in collections for d in c.diagnostics)
+    return LegacyScan(scope, diagnostics,
+                      0 if installation in ("absent", "installed") and mode != "mixed"
+                      else 1, collections)
 
 
 def boundary_main(args):

@@ -218,16 +218,90 @@ class RealFixtureTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         # Never clean an active/unasserted case or a changed session.
-        if cls.completed != set(range(1, 7)):
+        if cls.completed != set(range(1, 9)):
             print("inspect fixture assertion failed; retained:", cls.session.root, flush=True)
             return
         cls.session.clean()
         print(f"inspect fixtures: cleaned; {time.monotonic() - cls.started:.3f}s", flush=True)
 
+    def assert_baseline_witnesses(self, case, observed=None):
+        s = case.session
+        observed = case.before if observed is None else observed
+        mutation = case.scenario.mutation
+
+        def entry(path):
+            rel = Path(path).relative_to(s.root)
+            for parent in rel.parents:
+                self.assertTrue(F.stat.S_ISDIR(observed[str(parent)].mode),
+                                "baseline ancestor must be a real directory")
+            value = observed[str(rel)]
+            self.assertTrue(F.stat.S_ISREG(value.mode), "baseline must be regular")
+            self.assertEqual(value.identity[2], 1, "baseline must be single-linked")
+            self.assertTrue(value.mode & 0o444, "baseline must be readable")
+            return value
+
+        def unchanged_text(path, source=None):
+            value = entry(path)
+            self.assertLessEqual(len(value.data), F.MAX_INPUT_BYTES)
+            self.assertTrue(b"\0" not in value.data, "baseline must be text")
+            try:
+                value.data.decode("utf-8")
+            except UnicodeDecodeError:
+                self.fail("baseline must be UTF-8")
+            original = s.pristine[str(Path(source or path).relative_to(s.root))]
+            self.assertTrue(value.data == original.data, "baseline bytes changed")
+            if source is None:
+                self.assertTrue(value == original, "baseline structure changed")
+
+        for scope in case.expected().scopes:
+            for provider in scope.providers:
+                prefix = {"claude": ".claude", "codex": ".codex",
+                          "copilot": ".github"}[provider.provider]
+                for file in provider.files:
+                    baseline = file.baseline
+                    if baseline.status == "valid":
+                        self.assertIn(baseline.kind, ("snapshot", "digest"))
+                        self.assertIsNotNone(baseline.path)
+                        source = None
+                        if baseline.kind == "snapshot":
+                            if mutation == "mixed-providers" and provider.provider == "codex":
+                                source = s.projects["guest"] / Path(
+                                    baseline.path).relative_to(case.project)
+                            elif mutation == "generations":
+                                source = s.projects["normal"] / Path(
+                                    baseline.path).relative_to(case.project)
+                        unchanged_text(baseline.path, source)
+                    elif baseline.status == "corrupt":
+                        self.assertEqual(mutation, "corrupt-base")
+                        self.assertEqual(baseline.kind, "snapshot")
+                        self.assertTrue(entry(baseline.path).data == b"\xff\x00invalid baseline\n",
+                                        "corrupt baseline witness changed")
+                    else:
+                        self.assertEqual(baseline, F.Baseline("none", "unavailable"))
+                        state = case.project / prefix / ".domestique"
+                        physical_base = state / "base" / Path(file.path).relative_to(case.project)
+                        if case.scenario.cohort == "old":
+                            self.assertNotIn(str(state.relative_to(s.root)), observed)
+                        elif mutation == "missing-base":
+                            self.assertNotIn(str(physical_base.relative_to(s.root)), observed)
+                        else:
+                            self.assertIn(mutation, ("missing-manifest", "corrupt-manifest"))
+                            manifest = (case.project / ".domestique-private/manifest"
+                                        if case.scenario.cohort == "private" else state / "manifest")
+                            if mutation == "missing-manifest":
+                                self.assertNotIn(str(manifest.relative_to(s.root)), observed)
+                            else:
+                                self.assertTrue(entry(manifest).data ==
+                                                b"format=\x00\n" + F.SECRET.encode(),
+                                                "corrupt manifest witness changed")
+                            if case.scenario.cohort != "private":
+                                # Intact bytes without a usable manifest are not authority.
+                                unchanged_text(physical_base)
+
     def test_01_source_provenance_and_bounded_setup(self):
         s = self.session
         self.assertEqual(s.counts, {
-            "git_init": 4, "worktree_add": 1, "historical_normal": 1,
+            "git_init": 5, "worktree_add": 1, "historical_normal": 1,
             "historical_guest": 1, "pre_snapshot": 1, "historical_adoption": 1,
             "current_global": 1, "current_local": 1})
         self.assertEqual(s.origins["historical"].revision, F.HISTORICAL_PIN)
@@ -286,9 +360,23 @@ class RealFixtureTests(unittest.TestCase):
             with self.subTest(row=row.name):
                 case = s.begin(row.name)
                 record = case.expected()
+                self.assert_baseline_witnesses(case)
                 self.assertEqual(record.exit_code, row.record.exit_code)
                 self.assertNotIn("{project}", json.dumps(asdict(record)))
                 self.assertNotIn("{release}", json.dumps(asdict(record)))
+                if row.mutation == "unrelated":
+                    for leaf, state in (
+                            (".claude/agents/implementer.md", ".claude/.domestique"),
+                            (".codex/agents/implementer.toml", ".codex/.domestique"),
+                            (".github/agents/domestique-implementer.agent.md",
+                             ".github/.domestique")):
+                        self.assertTrue((case.project / leaf).read_bytes() ==
+                                        (F.SECRET + "\n").encode(),
+                                        "unrelated native witness must not be Domestique")
+                        self.assertFalse((case.project / state).exists())
+                    self.assertTrue(all(p.installation == "absent" and not p.files
+                                        and p.reasons == ("unrelated-native-files",)
+                                        for p in record.scopes[1].providers))
                 if record.context not in ("invalid-target", "cli-misuse"):
                     self.assertEqual(record.resolved_directory, str(case.project))
                 # Every error fixture retains an independent readable provider
@@ -298,6 +386,24 @@ class RealFixtureTests(unittest.TestCase):
                         for file in provider.files:
                             if file.status == "readable":
                                 self.assertTrue(Path(file.path).is_file(), file.path)
+                if row.name.startswith("unsafe-"):
+                    file = record.scopes[1].providers[0].files[0]
+                    live = case.before[str(Path(file.path).relative_to(s.root))]
+                    kind = {"symlink": F.stat.S_ISLNK, "hardlink": F.stat.S_ISREG,
+                            "directory": F.stat.S_ISDIR, "fifo": F.stat.S_ISFIFO,
+                            "socket": F.stat.S_ISSOCK, "unreadable": F.stat.S_ISREG}
+                    self.assertTrue(kind[row.mutation](live.mode))
+                    if row.mutation == "hardlink":
+                        peer = case.project / "hardlink-peer.md"
+                        peer_rel = str(peer.relative_to(s.root))
+                        self.assertNotIn(peer_rel, s.pristine)
+                        self.assertEqual(live.identity[2], 2)
+                        self.assertEqual(live.identity, case.before[peer_rel].identity)
+                        self.assertTrue(live.data == case.before[peer_rel].data)
+                        base = case.before[str(Path(file.baseline.path).relative_to(s.root))]
+                        self.assertNotEqual(live.identity[:2], base.identity[:2])
+                    elif row.mutation == "unreadable":
+                        self.assertEqual(live.mode & 0o444, 0)
                 if row.mutation in ("committed", "committed-metadata"):
                     result = s.run(["git", "-C", case.project, "status", "--porcelain"])
                     self.assertEqual(result.stdout, b"")
@@ -362,6 +468,7 @@ class RealFixtureTests(unittest.TestCase):
                 # Status/reason/field-name/escaped-path reports remain valid,
                 # including missing witnesses and all generation identities.
                 case.accept(json.dumps(asdict(record)).encode())
+                print("fixture oracle accepted:", row.name, flush=True)
         self.assertEqual(s.counts, before_counts)
         self.assertLess(time.monotonic() - self.started, F.SESSION_SECONDS)
         self.completed.add(3)
@@ -456,6 +563,60 @@ class RealFixtureTests(unittest.TestCase):
         F.assert_private_output(case, b"Provider: claude\nScope: global\ninstalled\n", b"")
         case.accept(json.dumps(str(case.project)).encode())
         self.completed.add(6)
+
+    def test_07_adopted_git_root_and_nongit_cohorts_match_frozen_contexts(self):
+        s = self.session
+        before_counts = s.counts.copy()
+        for name in ("adopted-baseline-not-ownership", "pre-snapshot-no-git",
+                     "v1-no-git", "absent", "path-with-spaces",
+                     "path-with-control-characters"):
+            with self.subTest(row=name):
+                case = s.begin(name)
+                expected = case.expected()
+                adopted = name == "adopted-baseline-not-ownership"
+                self.assertEqual(expected.context, "git-root" if adopted else "non-git")
+                result = s.run(["git", "-C", case.requested, "rev-parse",
+                                "--show-toplevel", "--is-inside-work-tree"], check=False)
+                if adopted:
+                    self.assertTrue((case.project / ".git").is_dir())
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout,
+                                     (expected.resolved_directory + "\ntrue\n").encode())
+                else:
+                    self.assertFalse((case.project / ".git").exists())
+                    self.assertEqual(result.returncode, 128)
+                    self.assertEqual(result.stdout, b"")
+                case.accept()
+        self.assertEqual(s.counts, before_counts)
+        self.completed.add(7)
+
+    def test_08_baseline_assertions_reject_misconstructed_witnesses(self):
+        s = self.session
+        before_counts = s.counts.copy()
+        for name in ("unsafe-hardlink", "corrupt-baseline", "missing-baseline",
+                     "normal-missing-manifest", "normal-corrupt-manifest",
+                     "private-missing-manifest", "private-corrupt-manifest"):
+            with self.subTest(row=name):
+                case = s.begin(name)
+                self.assert_baseline_witnesses(case)
+                base = case.project / ".claude/.domestique/base/.claude/agents/implementer.md"
+                if name == "unsafe-hardlink":
+                    leaf = case.project / ".claude/agents/implementer.md"
+                    leaf.unlink()
+                    # Reproduce the former live/base alias, not an external link.
+                    os.link(base, leaf)
+                else:
+                    path = (case.project / (".domestique-private/manifest"
+                                           if name.startswith("private-") else
+                                           ".claude/.domestique/manifest")
+                            if "manifest" in name else base)
+                    path.write_bytes(s.pristine[str(path.relative_to(s.root))].data)
+                with self.assertRaises(AssertionError):
+                    self.assert_baseline_witnesses(case, s.snapshot())
+                # Explicit recovery after the fault assertion, never acceptance.
+                s.restore(s.snapshot())
+        self.assertEqual(s.counts, before_counts)
+        self.completed.add(8)
 
 
 if __name__ == "__main__":

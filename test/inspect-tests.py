@@ -1,4 +1,4 @@
-"""hq-ln2.2: collection/context ONLY; no generation/comparison/CLI assertions.
+"""hq-ln2.2/.3: collection/context and legacy detection; no comparator/CLI.
 
 One qualified fixture session (six offline installer calls), plus small owned
 fault fixtures. Failures retain evidence; success removes only owned fixtures.
@@ -6,8 +6,9 @@ All reads execute the extractable payload, never source installer callbacks.
 """
 import ast
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, asdict, replace
 import io
+import json
 import os
 from pathlib import Path
 import shlex
@@ -44,6 +45,227 @@ def collect(root, paths, **kwargs):
     for path in paths:
         reader.read(path)
     return reader.finish()
+
+
+# .3 projects only these .5 comparison conclusions out of the frozen oracle.
+# baseline-not-ownership needs a live/base difference (adoption is not recorded);
+# ownership itself, baseline availability, and every detection reason stay exact.
+DEFERRED_COMPARISON_REASONS = frozenset((
+    "metadata-changed", "instructions-changed", "file-changed",
+    "crlf-difference", "unsupported-metadata", "baseline-not-ownership",
+))
+
+
+def legacy_detection_projection(oracle):
+    """Explicit .3 oracle, independent of scanner output and current emitters.
+
+    .1 files are required witnesses, not an exhaustive file list. Generation
+    evidence is checked in full: the two damaged-manifest rows declare the
+    implementer witness; the pinned Claude layout also corroborates it with
+    reviewer/decompose/goal. No other extra generation paths are permitted.
+
+    Only customization/comparison/metadata/instructions/permission_fields and
+    the named comparison reasons above are deferred to .5. Structural reasons
+    supplement (never replace) frozen reasons: usable baselines survive live
+    edits, host policy text is excluded, and provider reasons aggregate the
+    whole inventory, including files outside the frozen witness projection.
+    """
+    providers = []
+    for provider in oracle.providers:
+        if provider.installation == "absent":
+            providers.append(provider)
+            continue
+        reasons = set(provider.reasons) - DEFERRED_COMPARISON_REASONS
+        damaged = reasons & {"manifest-missing", "manifest-corrupt"}
+        old = any(g.generation == "legacy-pre-snapshot" for g in provider.generations)
+        reasons.add("baseline-unavailable" if damaged else
+                    "old-baseline-unavailable" if old else "installed-baseline")
+        if not (provider.provider == "codex" and provider.mode == "guest"):
+            reasons.add("host-text-excluded")
+        if "baseline-corrupt" in reasons:
+            # The frozen corrupt-base mutation is invalid UTF-8, not missing.
+            reasons.add("invalid-encoding")
+        if "mixed-mode-markers" in reasons:
+            # The additional guest policy is not listed in the normal manifest.
+            reasons.add("baseline-unavailable")
+        if not old and not damaged and provider.mode == "unknown":
+            # A valid manifest does not repair the damaged policy's mode.
+            reasons.add("mode-unavailable")
+        generations = provider.generations
+        if damaged:
+            assert provider.provider == "claude", "only legacy damaged-manifest rows"
+            generations = tuple(replace(g, evidence=g.evidence + tuple(
+                oracle.directory + "/" + path for path in (
+                    ".claude/agents/reviewer.md", ".claude/commands/decompose.md",
+                    ".claude/commands/goal.md"))) for g in generations)
+        files = []
+        for file in provider.files:
+            why = set(file.reasons) - DEFERRED_COMPARISON_REASONS
+            if file.baseline.status == "valid":
+                why.add("installed-baseline")
+            elif file.baseline.status == "corrupt":
+                why.add("baseline-corrupt")
+            elif damaged:
+                why.add("baseline-unavailable")
+            if file.path.endswith(("/CLAUDE.md", "/CLAUDE.local.md", "/AGENTS.md",
+                                   "/AGENTS.override.md", "/copilot-instructions.md")):
+                why.add("host-text-excluded")
+            files.append(replace(file, comparison="unknown", metadata="unknown",
+                                 instructions="unknown", permission_fields=(),
+                                 reasons=tuple(sorted(why))))
+        providers.append(replace(provider, generations=generations,
+                                 customization="unknown", files=tuple(files),
+                                 reasons=tuple(sorted(reasons))))
+    return replace(oracle, providers=tuple(providers),
+                   customization="not-applicable" if oracle.installation == "absent"
+                   else "unknown")
+
+
+def assert_legacy_projection(test, actual, oracle):
+    wanted = legacy_detection_projection(oracle)
+    test.assertEqual(tuple(p.provider for p in actual.providers),
+                     tuple(p.provider for p in wanted.providers))
+    providers = []
+    for record, expected in zip(actual.providers, wanted.providers):
+        files = {file.path: file for file in record.files}
+        test.assertEqual(len(files), len(record.files), "duplicate file evidence")
+        if not expected.files:
+            test.assertEqual(record.files, ())
+        test.assertTrue({file.path for file in expected.files} <= files.keys(),
+                        "missing frozen file witness")
+        witnesses = []
+        for file in expected.files:
+            observed = files[file.path]
+            test.assertEqual(len(observed.reasons), len(set(observed.reasons)))
+            witnesses.append(replace(observed, reasons=tuple(sorted(observed.reasons))))
+        test.assertEqual(len(record.reasons), len(set(record.reasons)))
+        providers.append(replace(record, files=tuple(witnesses),
+                                 reasons=tuple(sorted(record.reasons))))
+    # Compare all record fields, not a hand-picked subset. Only the .1-declared
+    # additional-file allowance and reason ordering are normalized on actual.
+    test.assertEqual(asdict(replace(actual, providers=tuple(providers))), asdict(wanted))
+
+
+class LegacyProjectionTests(unittest.TestCase):
+    def test_structural_projection_requires_unavailable_mode_reason(self):
+        row = next(row for row in F.MATRIX if row.name == "partial-markers")
+        oracle = F.bind(row.record.scopes[1], {"project": "/synthetic-project"})
+        projected = legacy_detection_projection(oracle)
+        assert_legacy_projection(self, projected, oracle)
+        provider = projected.providers[0]
+        self.assertIn("mode-unavailable", provider.reasons)
+        damaged = replace(provider, reasons=tuple(
+            reason for reason in provider.reasons if reason != "mode-unavailable"))
+        with self.assertRaises(AssertionError):
+            assert_legacy_projection(self, replace(
+                projected, providers=(damaged, *projected.providers[1:])), oracle)
+
+    def test_projection_rejects_dropped_or_invented_detection_fields(self):
+        count = 0
+        for name in ("normal-missing-manifest", "normal-corrupt-manifest"):
+            row = next(row for row in F.MATRIX if row.name == name)
+            oracle = F.bind(row.record.scopes[1], {"project": "/synthetic-project"})
+            projected = legacy_detection_projection(oracle)
+            assert_legacy_projection(self, projected, oracle)
+            provider = projected.providers[0]
+            file = provider.files[0]
+            generation = provider.generations[0]
+            reason = "manifest-missing" if name.endswith("missing-manifest") else "manifest-corrupt"
+            mutations = [
+                replace(projected, **{key: value}) for key, value in (
+                    ("scope", "global"), ("directory", "/wrong"),
+                    ("installation", "installed"), ("mode", "guest"),
+                    ("customization", "unchanged"), ("reasons", ("invented",)),
+                    ("beads", "synthetic-metadata-presence-only"))]
+            provider_mutations = [
+                replace(provider, **{key: value}) for key, value in (
+                    ("provider", "wrong"), ("installation", "installed"),
+                    ("mode", "guest"), ("customization", "unchanged"),
+                    ("reasons", tuple(r for r in provider.reasons if r != reason)),
+                    ("reasons", provider.reasons + ("invented",)),
+                    ("files", ()), ("generations", ()))]
+            for key, value in (("generation", "legacy-pre-snapshot"),
+                               ("evidence", ()), ("evidence", ("/wrong",)),
+                               ("reported_version", "0.1.0"), ("reported_ref", "unknown")):
+                provider_mutations.append(replace(
+                    provider, generations=(replace(generation, **{key: value}),)))
+            file_mutations = [
+                replace(file, **{key: value}) for key, value in (
+                    ("path", "/wrong"), ("status", "missing"),
+                    ("ownership", "created-record"), ("comparison", "same"),
+                    ("metadata", "same"), ("instructions", "same"),
+                    ("permission_fields", ("tools",)),
+                    ("reasons", tuple(r for r in file.reasons if r != reason)),
+                    ("reasons", file.reasons + ("invented",)))]
+            for key, value in (("kind", "snapshot"), ("status", "valid"), ("path", "/wrong")):
+                file_mutations.append(replace(file, baseline=replace(
+                    file.baseline, **{key: value})))
+            provider_mutations.extend(replace(provider, files=(file,)) for file in file_mutations)
+            mutations.extend(replace(projected, providers=(p, *projected.providers[1:]))
+                             for p in provider_mutations)
+            for index, actual in enumerate(mutations):
+                with self.subTest(row=name, mutation=index):
+                    with self.assertRaises(AssertionError):
+                        assert_legacy_projection(self, actual, oracle)
+                    count += 1
+        print(f"legacy projection: {count} dropped/invented-field mutations rejected", flush=True)
+
+    def test_in_memory_collections_preserve_manifest_failure_on_every_affected_file(self):
+        count = 0
+        for layout in I.LEGACY_LAYOUTS:
+            provider, prefix, native, policies, _ = layout
+            for status, reason in (("missing", "manifest-missing"), ("readable", "manifest-corrupt")):
+                with self.subTest(provider=provider, reason=reason):
+                    manifest = prefix + "/.domestique/manifest"
+                    leaf = native[0]
+                    text = {
+                        "claude": "\nname: implementer\nYou are an implementer. "
+                                  "You receive one bounded task",
+                        "codex": 'name = "implementer"\nYou are the domestique implementer.',
+                        "copilot": "\nname: domestique-implementer\n"
+                                   "You are the Domestique implementer.",
+                    }[provider]
+                    observations = (
+                        I.Observation(manifest, status, data=b"not-a-manifest\n"
+                                      if status == "readable" else None),
+                        I.Observation(leaf, "readable", data=text.encode()),
+                        I.Observation(prefix + "/.domestique/base/" + leaf,
+                                      "readable", data=b"intact baseline, not authority\n"),
+                        I.Observation(policies[0], "readable",
+                                      data=(F.BEGIN + b"\nowned\n" + F.END + b"\n")),
+                    )
+                    by_path = {o.path: o for o in observations}
+
+                    def collector(root, allowed, **kwargs):
+                        collection = I.Collection(root, tuple(
+                            by_path.get(path, I.Observation(path, "missing")) for path in allowed),
+                            (), True)
+                        reader = unittest.mock.Mock()
+                        reader.finish.return_value = collection
+                        return reader
+
+                    with patch.object(I, "Collector", side_effect=collector):
+                        record, collection = I.legacy_provider(
+                            "/synthetic-project", layout, I.Limits(), None)
+                    self.assertTrue(collection.consistent)
+                    self.assertEqual(record.installation, "partial")
+                    self.assertIn(reason, record.reasons)
+                    self.assertEqual(len(record.files), 2)
+                    self.assertEqual(len(record.generations), 1)
+                    for file in record.files:
+                        self.assertIn(reason, file.reasons)
+                        self.assertNotIn("old-baseline-unavailable", file.reasons)
+                        self.assertEqual(file.baseline, I.Baseline("none", "unavailable"))
+                        self.assertEqual(file.ownership, "unknown")
+                        self.assertEqual((file.comparison, file.metadata, file.instructions,
+                                          file.permission_fields),
+                                         ("unknown", "unknown", "unknown", ()))
+                    for generation in record.generations:
+                        self.assertEqual(generation.evidence, ("/synthetic-project/" + leaf,))
+                        self.assertIsNone(generation.reported_version)
+                        self.assertIsNone(generation.reported_ref)
+                    count += 1
+        print(f"legacy manifest propagation: {count} in-memory provider/case probes", flush=True)
 
 
 class BoundaryTests(unittest.TestCase):
@@ -755,6 +977,226 @@ class QualifiedFixtureTests(unittest.TestCase):
             if self.session.active is not None:
                 return  # Keep the first failed case; no cascading fixture use.
         type(self).complete = True
+
+
+    def test_z_legacy_source_qualified_projection(self):
+        # Reuse the SAME six cold installs as the boundary projection. The .1
+        # declarations stay frozen; only the documented .5 comparison fields
+        # and reasons are projected by legacy_detection_projection().
+        type(self).complete = False
+        selected = [row for row in F.MATRIX if row.cohort not in ("private", "empty")
+                    and not row.name.startswith("cli-")]
+        selected += [row for row in F.MATRIX
+                     if row.name in ("absent", "unrelated-native-agents")]
+        for row in selected:
+            with self.subTest(scenario=row.name):
+                case = self.session.begin(row.name)
+                expected = case.expected()
+                with patch.dict(os.environ, case.env, clear=True):
+                    context = I.resolve_context(case.requested)
+                    result = I.inspect_scan_legacy(context)
+                oracle = expected.scopes[1]
+                self.assertEqual(context.context, expected.context)
+                self.assertEqual(context.resolved_directory, expected.resolved_directory)
+                self.assertEqual(result.exit_code, expected.exit_code)
+                assert_legacy_projection(self, result.scope, oracle)
+                self.assertTrue(all(c.consistent for c in result.collections))
+                self.assertNotIn("unread-required-input", codes(result))
+                case.accept(json.dumps(asdict(result.scope), ensure_ascii=True).encode(), b"")
+                print("legacy oracle accepted:", row.name, flush=True)
+            if self.session.active is not None:
+                return
+        print(f"legacy oracle: {len(selected)} source-qualified cases; no comparison claims",
+              flush=True)
+        # Coexistence is a legacy-only projection, NOT guessing preview bytes
+        # into a snapshot version; .4/.5 combine distinct generation records.
+        case = self.session.begin("multiple-generations-one-provider")
+        with patch.dict(os.environ, case.env, clear=True):
+            result = I.inspect_scan_legacy(I.resolve_context(case.requested))
+        # The coexistence mutation copies only historical Claude into preview.
+        oracle = F.bind(F.scope((F.NORMAL.providers[0], F.absent_provider("codex"),
+                                 F.absent_provider("copilot"))),
+                        {"project": str(case.project)})
+        assert_legacy_projection(self, result.scope, oracle)
+        self.assertEqual(result.exit_code, 0)
+        case.accept(json.dumps(asdict(result.scope), ensure_ascii=True).encode(), b"")
+        print("legacy oracle accepted: multiple-generations-one-provider (legacy only)",
+              flush=True)
+        type(self).complete = True
+
+
+class LegacyFailureTests(unittest.TestCase):
+    # Tiny owned fault roots only; no additional cold installer setup.
+    setUp = BoundaryTests.setUp
+    tearDown = BoundaryTests.tearDown
+    guarded = BoundaryTests.guarded
+
+    def write(self, path, value):
+        destination = self.project / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(value.encode() if isinstance(value, str) else value)
+
+    def scan(self, **kwargs):
+        return self.guarded(lambda: I.inspect_scan_legacy(
+            I.resolve_context(self.project), **kwargs))
+
+    def manifest(self, provider="claude"):
+        # Fixed historical grammar, independent of detector inventory/output.
+        native = {
+            "claude": ".claude/agents/implementer.md,.claude/agents/reviewer.md,"
+                      ".claude/commands/decompose.md,.claude/commands/goal.md,CLAUDE.md",
+            "codex": ".codex/agents/implementer.toml,.codex/agents/reviewer.toml,"
+                     ".agents/skills/domestique/SKILL.md,"
+                     ".agents/skills/domestique-decompose/SKILL.md,"
+                     ".agents/skills/domestique-goal/SKILL.md,"
+                     ".agents/skills/domestique-goal/agents/openai.yaml",
+        }[provider]
+        return ("snapshot_format=1\nplatform=" + provider +
+                "\ndomestique_version=0.1.0\ninstalled_ref=b60feef\n"
+                "installed_at=2026-01-01T00:00:00Z\nscript_sha256=unavailable\n"
+                "files=" + native + "\n")
+
+    def test_generic_known_filenames_and_unowned_policy_are_not_ownership(self):
+        self.write("CLAUDE.md", F.SECRET)
+        result = self.scan()
+        self.assertEqual(result.scope.installation, "absent")
+        self.assertEqual(result.scope.providers[0].files, ())
+        self.assertEqual(result.scope.providers[0].reasons, ("unrelated-native-files",))
+        policy = next(o for o in result.collections[0].observations if o.path == "CLAUDE.md")
+        self.assertIsNone(policy.data)
+
+    def test_orphaned_state_markers_and_baselines_are_not_clean_absence(self):
+        for path, value in (
+                ("CLAUDE.md", F.BEGIN + b"\n" + F.END + b"\n"),
+                (MANIFEST, self.manifest()),
+                (".claude/.domestique/mode", "guest\n"),
+                (BASE, "orphan baseline")):
+            with self.subTest(path=path):
+                self.write(path, value)
+                record = self.scan().scope.providers[0]
+                self.assertEqual(record.installation, "partial")
+                self.assertTrue(record.reasons)
+                if path == "CLAUDE.md":
+                    self.assertIn("manifest-missing", record.files[0].reasons)
+                    self.assertNotIn("old-baseline-unavailable", record.files[0].reasons)
+                (self.project / path).unlink()
+
+    def test_marker_damage_duplicates_crlf_and_host_text_privacy(self):
+        block = F.BEGIN + b"\n" + b"owned\n" + F.END + b"\n"
+        for value, reason in (
+                (block + block, "multiple-policy-blocks"),
+                (block.replace(b"\n", b"\r\n"), "partial-policy-markers"),
+                (block[:-1], "partial-policy-markers"),
+                (F.END + b"\n" + F.BEGIN + b"\n", "partial-policy-markers"),
+                (block.replace(b"BEGIN", b"begin"), "partial-policy-markers"),
+                (block.replace(F.END, b""), "partial-policy-markers"),
+                (b"<!-- BEGIN domestique\n", "partial-policy-markers")):
+            with self.subTest(reason=reason, value_size=len(value)):
+                self.write("CLAUDE.md", F.SECRET.encode() + b"\n" + value)
+                result = self.scan()
+                self.assertEqual(result.scope.providers[0].mode, "unknown")
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn(reason, result.scope.providers[0].reasons)
+                self.assertTrue(all(o.data is None for o in result.collections[0].observations
+                                    if o.path == "CLAUDE.md"))
+
+    def test_missing_mode_competing_blocks_is_mixed_not_normal(self):
+        block = F.BEGIN + b"\nowned\n" + F.END + b"\n"
+        for path in ("CLAUDE.md", "CLAUDE.local.md"):
+            self.write(path, block)
+        result = self.scan()
+        self.assertEqual(result.scope.providers[0].mode, "mixed")
+        self.assertEqual(result.scope.providers[0].installation, "mixed")
+        self.assertIn("mixed-mode-markers", result.scope.providers[0].reasons)
+        self.assertTrue(all(f.status == "corrupt" for f in result.scope.providers[0].files
+                            if f.path.endswith(("CLAUDE.md", "CLAUDE.local.md"))))
+
+    def test_mixed_provider_modes_preserve_installation_evidence(self):
+        block = F.BEGIN + b"\nowned\n" + F.END + b"\n"
+        for provider in ("claude", "codex"):
+            manifest = self.manifest(provider)
+            self.write("." + provider + "/.domestique/manifest", manifest)
+            for path in manifest.split("files=", 1)[1].strip().split(","):
+                self.write(path, block if path == "CLAUDE.md" else "native\n")
+        self.write(".codex/.domestique/mode", "guest\n")
+        result = self.scan()
+        self.assertEqual((result.scope.installation, result.scope.mode, result.exit_code),
+                         ("installed", "mixed", 1))
+        self.assertEqual(result.scope.reasons, ("mixed-provider-modes",))
+        self.assertEqual(tuple(p.installation for p in result.scope.providers),
+                         ("installed", "installed", "absent"))
+        (self.project / LEAF).unlink()
+        result = self.scan()
+        self.assertEqual((result.scope.installation, result.scope.mode, result.exit_code),
+                         ("partial", "mixed", 1))
+        self.write("CLAUDE.local.md", block)
+        result = self.scan()
+        self.assertEqual((result.scope.installation, result.scope.mode, result.exit_code),
+                         ("mixed", "mixed", 1))
+
+    def test_manifest_poison_never_widens_inventory_or_echoes_values(self):
+        original = self.manifest()
+        for value in (
+                original.replace("0.1.0", F.SECRET),
+                original.replace("b60feef", F.SECRET),
+                original.replace("CLAUDE.md", "../" + F.SECRET),
+                original.replace("CLAUDE.md", ".codex/agents/implementer.toml"),
+                original.replace("CLAUDE.md", "CLAUDE.md,CLAUDE.md"),
+                original.replace("\n", "\r\n"),
+                original[:-1], original + "files=" + F.SECRET + "\n",
+                original.replace("platform=claude", "platform=codex")):
+            self.write(MANIFEST, value)
+            self.write(".codex/.domestique/manifest", self.manifest("codex"))
+            result = self.scan()
+            claude, codex = result.scope.providers[:2]
+            self.assertIn("manifest-corrupt", claude.reasons)
+            self.assertFalse(claude.generations)
+            self.assertEqual(codex.generations[0].reported_ref, "b60feef")
+            self.assertFalse(any(F.SECRET in o.path for c in result.collections
+                                 for o in c.observations))
+
+    def test_every_static_input_observed_and_provider_limits_stay_independent(self):
+        self.write(MANIFEST, self.manifest())
+        self.write(".codex/.domestique/manifest", self.manifest("codex"))
+        result = self.scan()
+        self.assertTrue(all(c.consistent for c in result.collections))
+        self.assertEqual(tuple(len(c.observations) for c in result.collections), (15, 20, 16))
+        self.write(LEAF, "x" * 800)
+        with patch.object(I.os, "scandir", side_effect=AssertionError("enumeration")), \
+                patch.object(I.Path, "read_bytes", side_effect=AssertionError("direct read")), \
+                patch.object(I.Path, "read_text", side_effect=AssertionError("direct read")):
+            context = I.resolve_context(self.project)
+            limited = I.inspect_scan_legacy(context, limits=I.Limits(total_bytes=600))
+        # Claude alone exceeds this byte budget; Codex's smaller manifest
+        # remains observable (independent collector), never globally suppressed.
+        self.assertIn("byte-limit", codes(limited))
+        self.assertFalse(limited.collections[0].consistent)
+        self.assertTrue(limited.collections[1].consistent)
+        self.assertEqual(limited.scope.providers[1].generations[0].reported_ref, "b60feef")
+        self.assertEqual(limited.exit_code, 1)
+
+    def test_mode_platform_and_creation_records_are_bounded_not_authority(self):
+        self.write(MANIFEST, self.manifest())
+        for name, value, code in (
+                ("mode", F.SECRET + "\n", "mode-corrupt"),
+                ("platforms", "codex\n", "platforms-corrupt"),
+                ("platforms", F.SECRET + "\n", "platforms-corrupt")):
+            self.write(".claude/.domestique/" + name, value)
+            self.assertIn(code, self.scan().scope.providers[0].reasons)
+            (self.project / (".claude/.domestique/" + name)).unlink()
+        self.write(".codex/.domestique/manifest", self.manifest("codex"))
+        self.write(".codex/.domestique/guest-excludes", "../" + F.SECRET + "\n")
+        result = self.scan().scope.providers[1]
+        self.assertIn("creation-record-corrupt", result.reasons)
+        self.assertTrue(all(f.ownership == "unknown" for f in result.files))
+
+    def test_unexpected_detector_fault_surfaces_without_logging(self):
+        output, errors = io.StringIO(), io.StringIO()
+        with patch.object(I, "legacy_manifest", side_effect=RuntimeError(F.SECRET)), \
+                redirect_stdout(output), redirect_stderr(errors):
+            with self.assertRaises(RuntimeError):
+                I.inspect_scan_legacy(I.resolve_context(self.project))
+        self.assertFalse(output.getvalue() + errors.getvalue())
 
 
 if __name__ == "__main__":
