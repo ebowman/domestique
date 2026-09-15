@@ -11,13 +11,16 @@ Other cases mutate/reuse owned trees. No native database is initialized,
 copied, or treated as readiness. Failures retain the owned session as evidence.
 Python 3.9+ stdlib only. Run test/inspect-fixture-tests.py for the complete scope.
 """
+import ast
 from collections import Counter
 from dataclasses import dataclass, replace
 from functools import wraps
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+import platform
 import re
 import shlex
 import shutil
@@ -25,9 +28,11 @@ import signal
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Literal, Optional, Tuple
+import unittest
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -36,8 +41,12 @@ PRE_SNAPSHOT_PIN = "69f39c468b65335d05260b8c5bc4653a7cf3c9f3"
 FORBIDDEN = ("bd", "beads", "claude", "codex", "copilot", "curl", "wget")
 PROVIDERS = ("claude", "codex", "copilot")
 MAX_INPUT_BYTES = 1024 * 1024
-SESSION_SECONDS = 480
+SESSION_SECONDS = 900
 COMMAND_SECONDS = 120
+INSTALL_SECONDS = 300
+INSTALL_PHASES = ("historical_normal", "historical_guest", "pre_snapshot",
+                  "historical_adoption", "current_global", "current_local")
+INSTALL_TIMING_PREFIX = "INSPECTION_INSTALL_PHASE="
 SECRET = "INSPECT_FIXTURE_PRIVATE_VALUE_7c193"
 BEGIN = b"<!-- BEGIN domestique (managed) -->"
 END = b"<!-- END domestique -->"
@@ -433,6 +442,110 @@ def expected_matrix():
 
 
 MATRIX = expected_matrix()
+CLI_EXTRA_CASES = ("independent-invalid-core", "independent-corrupt-global",
+                   "independent-missing-core", "legacy-manifest-traversal",
+                   "private-manifest-traversal")
+QUALIFICATION_PREFIX = "INSPECTION_QUALIFICATION="
+QUALIFICATION_SUITES = {
+    "inspect-tests.py": "public-cli-and-engine",
+    "inspect-fixture-tests.py": "fixture-oracles-not-runtime",
+}
+QUALIFICATION_LIMITS = (
+    "CLI inventory names the qualified cohort; supplemental controls are in unittest IDs; "
+    "offline owned fixtures; no native/readiness, atime or hostile-writer atomicity proof")
+SETUP_COUNTS = dict(git_init=5, worktree_add=1, historical_normal=1, historical_guest=1,
+                    pre_snapshot=1, historical_adoption=1, current_global=1, current_local=1)
+COMPLETED_MATRIX = []
+COMPLETED_CLI = []
+QUALIFIED_COHORTS = []
+
+
+def test_inventory(name):
+    """Static inventory only; importing a suite must never start its fixtures."""
+    if name not in QUALIFICATION_SUITES:
+        raise ValueError("unknown inspection qualification suite")
+    tree = ast.parse((ROOT / "test" / name).read_text())
+    return sorted(cls.name + "." + method.name for cls in tree.body
+                  if isinstance(cls, ast.ClassDef)
+                  for method in cls.body if isinstance(method, ast.FunctionDef)
+                  and method.name.startswith("test_"))
+
+
+def qualification_sources():
+    paths = ("domestique.sh", "README.md", "test/inspect_fixture.py",
+             "test/inspect-tests.py", "test/inspect-fixture-tests.py",
+             "test/acceptance.py", "test/acceptance-tests.py")
+    return {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in paths}
+
+
+class QualificationResult(unittest.TextTestResult):
+    """Observe the ordinary unittest result; do not replace test execution."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.started_ids = []
+        self.successful_ids = []
+
+    def startTest(self, test):
+        self.started_ids.append(".".join(test.id().split(".")[-2:]))
+        super().startTest(test)
+
+    def addSuccess(self, test):
+        self.successful_ids.append(".".join(test.id().split(".")[-2:]))
+        super().addSuccess(test)
+
+
+class QualificationRunner(unittest.TextTestRunner):
+    resultclass = QualificationResult
+
+
+def qualification_report(name, program, before, started):
+    result = program.result
+    selected = program.testNames is not None or bool(program.testNamePatterns)
+    expected = test_inventory(name)
+    cli = ([row.name for row in MATRIX] + list(CLI_EXTRA_CASES)
+           if name == "inspect-tests.py" else [])
+    sources = qualification_sources()
+    complete = (not selected and result.wasSuccessful() and not result.skipped
+                and not result.expectedFailures
+                and result.testsRun == len(expected)
+                and sorted(result.started_ids) == expected
+                and sorted(result.successful_ids) == expected
+                and sorted(COMPLETED_MATRIX) == sorted(row.name for row in MATRIX)
+                and sorted(COMPLETED_CLI) == sorted(cli)
+                and len(QUALIFIED_COHORTS) == 1
+                and QUALIFIED_COHORTS[0]["cleaned"]
+                and sources == before)
+    return {
+        "suite": name, "scope": QUALIFICATION_SUITES[name],
+        "coverage": ("COMPLETE_INSPECTION_SCOPE" if complete else
+                     "PARTIAL_INSPECTION_SCOPE" if selected and result.wasSuccessful()
+                     else "INCOMPLETE_INSPECTION_SCOPE"),
+        "explicit_selection": selected,
+        "unittest": {
+            "run": result.testsRun, "started": result.started_ids,
+            "successful": result.successful_ids, "failures": len(result.failures),
+            "errors": len(result.errors), "skips": len(result.skipped),
+            "expected_failures": len(result.expectedFailures),
+            "unexpected_successes": len(result.unexpectedSuccesses),
+        },
+        "matrix_completed": COMPLETED_MATRIX, "matrix_count": len(COMPLETED_MATRIX),
+        "cli_completed": COMPLETED_CLI, "cli_count": len(COMPLETED_CLI),
+        "qualified_cohorts": QUALIFIED_COHORTS,
+        "source_sha256": sources, "source_unchanged": sources == before,
+        "runtime": {"python": platform.python_version(), "system": sys.platform,
+                    "machine": platform.machine()},
+        "elapsed_seconds": time.monotonic() - started,
+        "limits": QUALIFICATION_LIMITS,
+    }
+
+
+def qualification_main(name, *, verbosity=1):
+    before, started = qualification_sources(), time.monotonic()
+    program = unittest.main(exit=False, verbosity=verbosity, testRunner=QualificationRunner)
+    report = qualification_report(name, program, before, started)
+    print(QUALIFICATION_PREFIX + json.dumps(report, sort_keys=True), flush=True)
+    return (0 if program.result.wasSuccessful() and
+            report["coverage"] != "INCOMPLETE_INSPECTION_SCOPE" else 1)
 
 
 class SourceUnavailable(RuntimeError):
@@ -455,6 +568,19 @@ def operation_error(operation, outcome, returncode=None):
         operation = "command"
     code = f"; returncode={returncode}" if type(returncode) is int else ""
     return FixtureOperationError(f"fixture {operation}: {outcome}{code}; evidence retained")
+
+
+def install_timing(label, limit, started, outcome, returncode=None):
+    # Supplemental stdout event only: keep the strict qualification/provenance
+    # schema unchanged. All labels/outcomes originate in this fixture, not argv
+    # or exception/child text. A returned installer alone is not qualification.
+    if label is not None:
+        print(INSTALL_TIMING_PREFIX + json.dumps({
+            "phase": label, "limit_seconds": limit,
+            "elapsed_seconds": time.monotonic() - started,
+            "outcome": outcome,
+            "returncode": returncode if type(returncode) is int else None,
+        }, sort_keys=True), flush=True)
 
 
 def setup_errors(function):
@@ -670,20 +796,31 @@ class FixtureSession:
             "LC_ALL": "C", "BD_DISABLE_METRICS": "1",
         }
 
-    def run(self, args, *, cwd=None, env=None, check=True, operation="command"):
+    def run(self, args, *, cwd=None, env=None, check=True, operation="command",
+            install_phase=None):
         if operation not in OPERATIONS:
             raise operation_error("command", "invalid-operation")
-        remaining = self.deadline - time.monotonic()
-        if remaining <= 0:
-            raise operation_error(operation, "budget-exhausted")
+        if install_phase is not None and (
+                operation != "install" or install_phase not in INSTALL_PHASES):
+            raise operation_error(operation, "invalid-install-phase")
         start = time.monotonic()
+        if type(self.deadline) not in (int, float) or not math.isfinite(self.deadline):
+            install_timing(install_phase, 0, start, "invalid-deadline")
+            raise operation_error(operation, "invalid-deadline")
+        remaining = self.deadline - start
+        if remaining <= 0:
+            install_timing(install_phase, 0, start, "budget-exhausted")
+            raise operation_error(operation, "budget-exhausted")
+        cap = INSTALL_SECONDS if operation == "install" else COMMAND_SECONDS
+        limit = min(cap, remaining)
         phase, process, failure = "launch-failure", None, None
         try:
             process = subprocess.Popen([str(a) for a in args], cwd=cwd or self.root,
                                        env=env or self.env, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, start_new_session=True)
             phase = "communication-failure"
-            stdout, stderr = process.communicate(timeout=min(COMMAND_SECONDS, remaining))
+            limit = min(cap, max(0, self.deadline - time.monotonic()))
+            stdout, stderr = process.communicate(timeout=limit)
         except subprocess.TimeoutExpired:
             failure = "timeout"
         except (OSError, ValueError, subprocess.SubprocessError):
@@ -709,10 +846,14 @@ class FixtureSession:
                     except OSError:
                         failure = (failure + "; " if failure else "") + "pipe-close-failure"
         if failure:
+            install_timing(install_phase, limit, start, failure,
+                           process.returncode if process is not None else None)
             raise operation_error(operation, failure) from None
         result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
         self.commands.append((operation, result.returncode,
                               round(time.monotonic() - start, 3)))
+        install_timing(install_phase, limit, start,
+                       "nonzero-exit" if result.returncode else "returned", result.returncode)
         if check and result.returncode:
             raise operation_error(operation, "nonzero-exit", result.returncode)
         return result
@@ -745,8 +886,10 @@ class FixtureSession:
         return path
 
     def install(self, label, script, *args):
+        if label not in INSTALL_PHASES:
+            raise operation_error("install", "invalid-install-phase")
         self.counts[label] += 1
-        self.run(["bash", script, *args], operation="install")
+        self.run(["bash", script, *args], operation="install", install_phase=label)
         self.assert_no_calls()
 
     def copy_text(self, source, destination):
@@ -1007,6 +1150,13 @@ class Case:
         return bind(self.scenario.argv, {"requested": str(self.requested),
                                         "project": str(self.project)})
 
+    def cli_invocation(self):
+        # Invalid targets are argv, never the subprocess working directory.
+        expected = self.expected()
+        cwd = (self.project if expected.context in ("invalid-target", "cli-misuse")
+               else self.requested)
+        return (("/bin/bash", str(ROOT / "domestique.sh"), *self.argv()), cwd, expected)
+
     def prepare(self):
         s, p, mutation = self.session, self.project, self.scenario.mutation
         leaf = p / ".claude/agents/implementer.md"
@@ -1127,7 +1277,9 @@ class Case:
             if mutation == "target-file":
                 self.requested.write_text(SECRET)
             elif mutation == "target-symlink":
-                self.requested.symlink_to(p)
+                # A readable directory alias is supported. This frozen INVALID
+                # target row needs a dangling link, not a valid alias to p.
+                self.requested.symlink_to(p / "missing-referent")
         else:
             raise ValueError("undeclared fixture mutation: " + mutation)
 
@@ -1155,7 +1307,19 @@ def provenance_summary(session):
                        "setup_counts": dict(session.counts),
                        "installer_seconds": sum(c[2] for c in session.commands
                                                 if c[0] == "install"),
-                       "scenarios": len(MATRIX), "root": str(session.root),
+                       "declared_matrix_cases": len(MATRIX), "root": str(session.root),
                        "root_identity": session.identity,
                        "native_calls": 0, "beads": "synthetic metadata only"},
                       sort_keys=True)
+
+
+def qualified_cohort(session):
+    tools = {}
+    for name, path in (("python3", shutil.which("python3", path=session.env["PATH"])),
+                       ("bash", "/bin/bash"),
+                       ("git", shutil.which("git", path=session.env["PATH"]))):
+        tools[name] = {"path": path, "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
+    return {**json.loads(provenance_summary(session)),
+            "commands": dict(Counter(c[0] for c in session.commands)),
+            "command_seconds": sum(c[2] for c in session.commands),
+            "forbidden_stubs": list(FORBIDDEN), "tools": tools, "cleaned": False}

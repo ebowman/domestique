@@ -31,9 +31,43 @@ import sys
 import tempfile
 import threading
 import time
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parent.parent
 PYTHON = str(Path(sys.executable).resolve())
+
+
+def inspection_fixture():
+    """Cache this checkout's fixture, without replacing a foreign public name."""
+    path = ROOT / "test/inspect_fixture.py"
+    key = "_domestique_inspect_fixture_" + hashlib.sha256(os.fsencode(path)).hexdigest()
+
+    def correct(module):
+        return (isinstance(module, ModuleType)
+                and getattr(module, "__file__", None) is not None
+                and Path(module.__file__).resolve() == path
+                and getattr(getattr(module, "__spec__", None), "origin", None) is not None
+                and Path(module.__spec__.origin).resolve() == path)
+
+    if key in sys.modules:
+        if not correct(sys.modules[key]):
+            raise ImportError("inspection fixture cache name occupied")
+        return sys.modules[key]
+    public = sys.modules.get("inspect_fixture")
+    if correct(public):
+        module = public
+    else:
+        name = key if "inspect_fixture" in sys.modules else "inspect_fixture"
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        # Dataclasses resolve annotations through the module's registered name.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    sys.modules[key] = module
+    return module
+
+
+INSPECTION = inspection_fixture()
 SPEC = importlib.util.spec_from_file_location("beads_fixture", ROOT / "test/beads_fixture.py")
 F = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(F)
@@ -226,7 +260,121 @@ def offline_report(name, stdout, stderr, rc):
         matches = re.findall("^" + SUMMARY[name] + "$", stdout, re.M)
         require(len(matches) == 1, "missing/ambiguous suite completion")
     require(int(matches[0]) > 0, "empty suite")
+    if name in INSPECTION.QUALIFICATION_SUITES:
+        return inspection_report(name, stdout, int(matches[0]))
     return {"status": "PASS", "checks": int(matches[0])}
+
+
+def inspection_report(name, stdout, tests_run):
+    """Source-bound scoped evidence, not cryptographic proof of execution."""
+    prefix = INSPECTION.QUALIFICATION_PREFIX
+    lines = [line[len(prefix):] for line in stdout.splitlines() if line.startswith(prefix)]
+    require(len(lines) == 1, "missing/ambiguous inspection qualification")
+    report = json.loads(lines[0])
+    require(type(report) is dict and set(report) == {
+        "suite", "scope", "coverage", "explicit_selection", "unittest", "matrix_completed",
+        "matrix_count", "cli_completed", "cli_count", "qualified_cohorts", "source_sha256",
+        "source_unchanged", "runtime", "elapsed_seconds", "limits"},
+        "invalid inspection report fields")
+    require(report["suite"] == name and report["scope"] == INSPECTION.QUALIFICATION_SUITES[name],
+            "wrong inspection qualification scope")
+    require(report["coverage"] == "COMPLETE_INSPECTION_SCOPE"
+            and report["explicit_selection"] is False,
+            "partial/incomplete inspection qualification")
+    require(report["source_unchanged"] is True
+            and report["source_sha256"] == INSPECTION.qualification_sources(),
+            "inspection source mismatch")
+
+    def inventory(actual, expected, label):
+        require(type(actual) is list and all(type(v) is str for v in actual)
+                and len(actual) == len(set(actual))
+                and sorted(actual) == sorted(expected), "invalid inspection " + label)
+
+    unit = report["unittest"]
+    require(type(unit) is dict and set(unit) == {
+        "run", "started", "successful", "failures", "errors", "skips",
+        "expected_failures", "unexpected_successes"}, "invalid inspection unittest result")
+    expected_tests = INSPECTION.test_inventory(name)
+    require(type(unit["run"]) is int and unit["run"] == tests_run == len(expected_tests),
+            "incomplete inspection unittest count")
+    inventory(unit["started"], expected_tests, "started tests")
+    inventory(unit["successful"], expected_tests, "successful tests")
+    for key in ("failures", "errors", "skips", "expected_failures", "unexpected_successes"):
+        require(type(unit[key]) is int and unit[key] == 0, "inspection unittest " + key)
+    matrix = [row.name for row in INSPECTION.MATRIX]
+    cli = matrix + list(INSPECTION.CLI_EXTRA_CASES) if name == "inspect-tests.py" else []
+    for field, expected in (("matrix", matrix), ("cli", cli)):
+        inventory(report[field + "_completed"], expected, field + " cases")
+        require(type(report[field + "_count"]) is int
+                and report[field + "_count"] == len(expected), "invalid inspection case count")
+    event = "CLI source-qualified: " if cli else "fixture oracle accepted: "
+    inventory([line[len(event):] for line in stdout.splitlines() if line.startswith(event)],
+              cli or matrix, "completed case events")
+    cohorts = report["qualified_cohorts"]
+    require(type(cohorts) is list and len(cohorts) == 1 and type(cohorts[0]) is dict,
+            "missing/duplicate qualified cohort")
+    cohort = cohorts[0]
+    require(set(cohort) == {
+        "origins", "setup_counts", "installer_seconds", "declared_matrix_cases", "root",
+        "root_identity", "native_calls", "beads", "commands", "command_seconds",
+        "forbidden_stubs", "tools", "cleaned"}, "invalid qualified cohort fields")
+    require(cohort["cleaned"] is True and cohort["setup_counts"] == INSPECTION.SETUP_COUNTS
+            and all(type(v) is int for v in cohort["setup_counts"].values())
+            and type(cohort["native_calls"]) is int and cohort["native_calls"] == 0
+            and cohort["beads"] == "synthetic metadata only"
+            and cohort["forbidden_stubs"] == list(INSPECTION.FORBIDDEN)
+            and type(cohort["declared_matrix_cases"]) is int
+            and cohort["declared_matrix_cases"] == len(matrix), "unqualified inspection cohort")
+    require(text(cohort["root"]) and Path(cohort["root"]).is_absolute()
+            and type(cohort["root_identity"]) is list and len(cohort["root_identity"]) == 2
+            and all(type(v) is int and v >= 0 for v in cohort["root_identity"]),
+            "invalid inspection fixture identity")
+    commands = cohort["commands"]
+    require(type(commands) is dict and set(commands) <= INSPECTION.OPERATIONS
+            and all(positive(v) for v in commands.values())
+            and all(commands.get(k) == v for k, v in (
+                ("install", 6), ("git-init", 5), ("git-worktree", 1),
+                ("source-probe", 2), ("source-read", 2), ("source-revision", 1)))
+            and commands.get("command", 0) >= len(cli), "invalid inspection command counters")
+    origins = cohort["origins"]
+    require(type(origins) is dict and set(origins) == {"historical", "pre-snapshot", "current"},
+            "invalid inspection source origins")
+    for key, revision in (("historical", INSPECTION.HISTORICAL_PIN),
+                          ("pre-snapshot", INSPECTION.PRE_SNAPSHOT_PIN), ("current", None)):
+        origin = origins[key]
+        require(type(origin) is dict and set(origin) == {"label", "revision", "sha256", "installer"},
+                "invalid inspection source origin")
+        require(origin["label"] == ("current-private-preview" if key == "current" else key)
+                and text(origin["installer"]) and Path(origin["installer"]).is_absolute()
+                and type(origin["sha256"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}", origin["sha256"]) is not None
+                and type(origin["revision"]) is str
+                and re.fullmatch(r"[0-9a-f]{40}", origin["revision"]) is not None
+                and (origin["revision"] == revision if revision else
+                     origin["sha256"] == report["source_sha256"]["domestique.sh"]),
+                "unqualified inspection source origin")
+    tools = cohort["tools"]
+    require(type(tools) is dict and set(tools) == {"python3", "bash", "git"},
+            "missing inspection tool fingerprints")
+    for tool in tools.values():
+        require(type(tool) is dict and set(tool) == {"path", "sha256"}
+                and text(tool["path"]) and Path(tool["path"]).is_absolute()
+                and type(tool["sha256"]) is str
+                and re.fullmatch(r"[0-9a-f]{64}", tool["sha256"]) is not None,
+                "invalid inspection tool fingerprint")
+    runtime = report["runtime"]
+    require(type(runtime) is dict and set(runtime) == {"python", "system", "machine"}
+            and all(text(v) for v in runtime.values()), "missing inspection runtime provenance")
+    require(re.fullmatch(r"\d+\.\d+\.\d+", runtime["python"]) is not None
+            and tuple(map(int, runtime["python"].split("."))) >= (3, 9),
+            "invalid inspection Python runtime")
+    for seconds in (cohort["installer_seconds"], cohort["command_seconds"], report["elapsed_seconds"]):
+        require(type(seconds) in (int, float) and math.isfinite(seconds) and seconds > 0,
+                "invalid inspection elapsed time")
+    require(cohort["installer_seconds"] <= cohort["command_seconds"] <= report["elapsed_seconds"]
+            and report["limits"] == INSPECTION.QUALIFICATION_LIMITS,
+            "invalid inspection timing/scope limits")
+    return {"status": "PASS", "checks": tests_run, "inspection_qualification": report}
 
 
 class Cancelled(Exception):

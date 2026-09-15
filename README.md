@@ -97,6 +97,74 @@ misuse. A failed scope does not hide independently readable evidence. The
 internal scanner/comparison records are reusable by the future migration
 planner; this command performs no migration, repair, JSON export, or raw diff.
 
+### Focused inspection qualification
+
+Run the complete inspection scopes directly from this checkout, capturing each
+command's full stdout/stderr and exit status against unchanged source:
+
+```sh
+python3 -B -W error test/inspect-tests.py
+python3 -B -W error test/inspect-fixture-tests.py
+python3 -B -W error test/acceptance-tests.py
+# Existing syntax/lint/AST scope; selected acceptance, not full repository acceptance:
+python3 -B -W error test/acceptance.py --suite CURRENT:syntax-lint-ast-diff
+```
+
+The direct commands do not share an automatic outer timer. Use one declared
+cumulative 1200-second wall budget for the focused gate, including setup and
+owned cleanup; preserve partial evidence on exhaustion rather than extending
+the budget or starting unrelated lifecycle/native suites.
+
+Test-only fixture construction allows each real installer at most 300 seconds,
+versus 120 seconds for ordinary fixture commands, inside the original finite
+900-second fixture session. Execution allowances are clipped to remaining
+session time (including launch time); neither these caps nor separate sessions
+extend the cumulative 1200-second gate. Production/native/inspection limits
+and process cleanup behavior are unchanged.
+
+Each attempted install emits a supplemental `INSPECTION_INSTALL_PHASE=` JSON
+line: `phase` (historical_normal, historical_guest, pre_snapshot,
+historical_adoption, current_global, current_local), `limit_seconds`,
+`elapsed_seconds`, `outcome` (returned, nonzero-exit, or fixture failure
+classification), and numeric/null `returncode`. Only known labels and timing/
+process facts are logged, never argv, child output or configuration. These
+events leave the strict qualification schema unchanged and survive setup
+failure. Six successful events plus completed cohort qualification establish
+actual setup; measured elapsed time can show whether the earlier 120-second
+cap was insufficient, but cannot diagnose a host/API/sleep cause.
+
+The inspection suite invokes the actual `bash domestique.sh --inspect` entrypoint
+for every named frozen matrix case, including invalid targets and CLI misuse,
+plus independently damaged-global and traversal cases. It retains the earlier
+collection/scanner/comparison, parser-control and escaped-path privacy oracles.
+One source-qualified cohort per suite reuses six offline installer calls, five
+Git initializations and one linked worktree; other boundary/control fixtures
+do not repeat that cold installation cohort. Historical sources are pinned
+local Git objects, never fetched. The fixture-only suite proves builders and
+model/oracle annotations, **not inspector execution or native readiness**.
+
+`INSPECTION_QUALIFICATION` is emitted after the actual unittest result and owned
+cleanup, with completed test/case IDs, counts, source/tool fingerprints, runtime
+and setup counters. Only the complete, unselected, no-skip scope may report
+`COMPLETE_INSPECTION_SCOPE`. Unit selectors (including `-k`) are partial even if
+they happen to select every test. `test/acceptance.py`'s existing `offline_report`
+also validates these summaries in captured direct results against current
+source; a bare `Ran 1 test` / `OK` is insufficient. This is source-bound scoped
+evidence, not cryptographic execution proof or a fabricated aggregate runner
+report. Both inspection suites are in CURRENT, **not default QUICK**; full/quick
+and `--suite` selection rules are unchanged.
+
+Actual runtime qualification is **Python 3.14.7 on macOS (Darwin arm64)**.
+Python 3.9 has static syntax/stdlib API evidence, not an actual 3.9 runtime pass.
+Preservation measures owned project/Git common-dir/index/exclusions, isolated
+HOME/core and temporary-state bytes, modes, mtimes and membership, with all
+seven forbidden-tool markers observable. It does not claim unchanged atime or
+atomicity against hostile concurrent writers. Synthetic Beads metadata is not
+native database/discovery/readiness or effective-permission evidence. These
+focused scopes do not establish whole-epic native or GA readiness, and default
+QUICK remains explicitly **not full offline acceptance**. A final independent
+gate must qualify the frozen candidate; no passing totals are assumed here.
+
 ## Setup: global first
 
 Use the **checked-out current preview script**, once per user, selecting the

@@ -1565,7 +1565,8 @@ def inspect_scan_private(context, *, limits=Limits(), legacy=None):
             merged = []
             for preview, old in zip(project_scope.providers, legacy.scope.providers):
                 if old.installation == "absent":
-                    merged.append(preview)
+                    merged.append(old if preview.installation == "absent" and
+                                  preview.reasons == ("no-domestique-evidence",) else preview)
                 elif preview.installation == "absent":
                     merged.append(old)
                 else:

@@ -1,4 +1,4 @@
-"""hq-ln2.2/.3/.4/.5/.6: collection, scanners, comparison and public CLI.
+"""hq-ln2.2-.7: collection, scanners, comparison and complete public CLI matrix.
 
 One qualified fixture session (six offline installer calls), plus small owned
 fault fixtures. Failures retain evidence; success removes only owned fixtures.
@@ -1400,6 +1400,260 @@ def cli_path_fields(test, output, requested, project, home):
     return tuple(witnesses)
 
 
+CLI_MISUSE_STDERR = {
+    **{name: b"domestique inspect: conflicts with installation/removal options\n"
+       for name in ("cli-conflicting-install", "cli-conflicting-local",
+                    "cli-conflicting-beads", "cli-conflicting-uninstall")},
+    "cli-extra-target": b"domestique inspect: requires at most one nonempty target\n",
+    "cli-unknown-option": b"domestique inspect: invalid option; use --inspect [TARGET]\n",
+}
+
+
+def matrix_cli_scopes(case, expected):
+    scopes = []
+    for scope in expected.scopes:
+        if case.scenario.cohort == "adopted" and scope.scope == "project":
+            scope = adopted_comparison_oracle(scope)
+        scopes.append(comparison_projection(scope, private=case.scenario.cohort == "private"))
+    return tuple(scopes)
+
+
+def cli_scope_lines(scope):
+    """Public grammar expected from independent complete .1/.3/.4/.5 records."""
+    def reasons(values):
+        return ", ".join(sorted(values)) or "none"
+
+    def states(record):
+        return "; ".join(key + "=" + getattr(record, key)
+                         for key in ("installation", "mode", "customization"))
+
+    lines = ["  Directory: " + json.dumps(scope.directory),
+             "  Summary: " + states(scope), "  Reasons: " + reasons(scope.reasons)]
+    for provider in scope.providers:
+        generations = sorted(g.generation for g in provider.generations) or ["none"]
+        lines.extend("  Provider: " + provider.provider + "; generation=" + g +
+                     "; " + states(provider) +
+                     (" (combined provider state)" if len(generations) > 1 else "")
+                     for g in generations)
+        lines.append("    Reasons: " + reasons(provider.reasons))
+        for file in sorted(provider.files, key=lambda f: f.path):
+            path = "<" + scope.scope + ">" + file.path[len(scope.directory):]
+            lines.append("    File: " + json.dumps(path) + "; status=" + file.status +
+                         "; baseline=" + file.baseline.kind + "/" + file.baseline.status +
+                         "; comparison=" + file.comparison + "; metadata=" + file.metadata +
+                         "; instructions=" + file.instructions + "; permission-fields=" +
+                         (",".join(file.permission_fields) or "none"))
+            lines.append("      Reasons: " + reasons(file.reasons))
+    return lines
+
+
+def matrix_cli_environment(case, expected):
+    private = case.scenario.cohort == "private"
+    core_status = ("partial" if case.scenario.mutation == "core" else
+                   "available" if private else "absent")
+    core_reasons = (("core-content-edited", "core-selector-corrupt")
+                    if case.scenario.mutation == "core" else () if private else ("core-missing",))
+    attention = {("core", reason) for reason in core_reasons}
+    if expected.context == "invalid-target":
+        attention.add(("project", "invalid-target"))
+    if private and case.scenario.mutation in ("missing-manifest", "corrupt-manifest"):
+        attention.add(("project", "manifest-" + case.scenario.mutation.split("-")[0]))
+    if case.scenario.mutation == "beads":
+        attention.add(("project", "synthetic-beads-metadata-only"))
+    fault = {"corrupt-base": "invalid-encoding", "invalid-encoding": "invalid-encoding",
+             "oversized": "input-too-large", "unreadable": "unreadable-file"}
+    fault.update({kind: "unsafe-" + kind
+                  for kind in ("symlink", "hardlink", "directory", "fifo", "socket")})
+    if case.scenario.mutation in fault:
+        attention.add(("inspection", fault[case.scenario.mutation]))
+    return core_status, core_reasons, attention
+
+
+def assert_matrix_cli(test, case, result, expected):
+    if expected.context == "cli-misuse":
+        test.assertEqual((expected.exit_code, expected.scopes), (2, ()))
+        test.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (2, b"", CLI_MISUSE_STDERR[case.scenario.name]))
+        return ()
+    sections = cli_sections(test, result, expected.exit_code)
+    text = result.stdout.decode()
+    context_scope = ("unresolved" if expected.context == "invalid-target" else
+                     "directory-only" if expected.context == "non-git" else "worktree")
+    test.assertEqual(text.splitlines()[3],
+                     "Context: " + expected.context + "; scope=" + context_scope)
+    path_fields = cli_path_fields(test, result.stdout, expected.requested_directory,
+                                  expected.resolved_directory, expected.scopes[0].directory)
+    core_status, core_reasons, attention = matrix_cli_environment(case, expected)
+    scopes = matrix_cli_scopes(case, expected)
+    test.assertEqual(len(scopes), 1 if expected.context == "invalid-target" else 2)
+    for index, section in enumerate(sections):
+        if index == len(scopes):
+            test.assertEqual(section.strip("\n"), "  Scope unavailable; no absence conclusion.")
+            continue
+        wanted = cli_scope_lines(scopes[index])
+        if index == 0:
+            wanted += ["  Core evidence: " + core_status,
+                       "  Core reasons: " + (", ".join(core_reasons) or "none")]
+        else:
+            synthetic = case.scenario.mutation == "beads"
+            wanted += ["  Beads: " + ("metadata present" if synthetic else "no metadata observed") +
+                       "; database contents unopened; readiness not assessed",
+                       "  Beads reasons: " + ("beads-metadata-only, synthetic-beads-metadata-only"
+                                              if synthetic else "none")]
+        test.assertEqual(section.strip("\n").splitlines(), wanted)
+    actual_attention = text.split("\nAttention:\n", 1)[1].split("\nResult:", 1)[0].splitlines()
+    test.assertEqual(actual_attention, ["  " + scope + ": " + reason
+                                       for scope, reason in sorted(attention)] or ["  none"])
+    return path_fields
+
+
+class MatrixCLIAssemblyTests(unittest.TestCase):
+    @staticmethod
+    def model_case(row):
+        projects = {row.cohort: Path("/owned/cohorts") / row.cohort for row in F.MATRIX}
+        session = types.SimpleNamespace(
+            root=Path("/owned"), projects=projects,
+            env={"HOME": "/owned/home", "DOMESTIQUE_HOME": "/owned/core"},
+            pristine={"global/core/active": F.Entry(
+                stat.S_IFREG | 0o600, 0, (1, 2, 1), b"release=r-" + b"a" * 64 + b"\n")})
+        case = F.Case(session, row)
+        if row.record.context == "invalid-target":
+            case.requested = case.project / "invalid target"
+        elif row.record.context == "git-subdirectory":
+            case.requested = case.project / "sub/deeper"
+        return case
+
+    def test_every_frozen_row_has_executable_spec_and_independent_complete_oracle(self):
+        seen = []
+        misuse = []
+        for row in F.MATRIX:
+            with self.subTest(scenario=row.name):
+                case = self.model_case(row)
+                argv, cwd, expected = case.cli_invocation()
+                self.assertEqual(argv[:2], ("/bin/bash", str(F.ROOT / "domestique.sh")))
+                self.assertEqual(argv[2:], F.bind(row.argv, {
+                    "project": str(case.project), "requested": str(case.requested)}))
+                self.assertEqual(expected, F.bind(row.record, {
+                    "project": str(case.project), "requested": str(case.requested),
+                    "home": case.env["HOME"], "core": case.env["DOMESTIQUE_HOME"],
+                    "release": "r-" + "a" * 64}))
+                invalid = row.record.context in ("invalid-target", "cli-misuse")
+                self.assertEqual(cwd, case.project if invalid else case.requested)
+                if row.record.context == "cli-misuse":
+                    misuse.append(row.name)
+                    good = subprocess.CompletedProcess(argv, 2, b"", CLI_MISUSE_STDERR[row.name])
+                    self.assertEqual(assert_matrix_cli(self, case, good, expected), ())
+                    with self.assertRaises(AssertionError):
+                        assert_matrix_cli(self, case, subprocess.CompletedProcess(
+                            argv, 0, good.stdout, good.stderr), expected)
+                else:
+                    scopes = matrix_cli_scopes(case, expected)
+                    self.assertEqual(len(scopes), len(expected.scopes))
+                    for actual, frozen in zip(scopes, expected.scopes):
+                        self.assertEqual(tuple(p.provider for p in actual.providers), F.PROVIDERS)
+                        self.assertEqual(actual.installation, frozen.installation)
+                        lines = cli_scope_lines(actual)
+                        self.assertEqual(sum(line.startswith("    File: ") for line in lines),
+                                         sum(len(p.files) for p in actual.providers))
+                        for p, witness in zip(actual.providers, frozen.providers):
+                            self.assertEqual(p.installation, witness.installation)
+                            files = {f.path: f for f in p.files}
+                            for file in witness.files:
+                                observed = files[file.path]
+                                for key in ("status", "baseline", "comparison", "metadata",
+                                            "instructions", "permission_fields", "ownership"):
+                                    self.assertEqual(getattr(observed, key), getattr(file, key))
+                                self.assertLessEqual(set(file.reasons), set(observed.reasons))
+                seen.append(row.name)
+        self.assertEqual(seen, [row.name for row in F.MATRIX])
+        self.assertEqual(set(misuse), set(CLI_MISUSE_STDERR))
+
+    def test_public_oracle_rejects_extra_records_reasons_fields_and_wrong_status(self):
+        # Renderer-only synthetic records, never counted as completed CLI cases.
+        count = 0
+        for row in F.MATRIX:
+            with self.subTest(scenario=row.name):
+                case = self.model_case(row)
+                argv, _, expected = case.cli_invocation()
+                if expected.context == "cli-misuse":
+                    text, err = "", CLI_MISUSE_STDERR[row.name]
+                else:
+                    status, reasons, attention = matrix_cli_environment(case, expected)
+                    synthetic = row.mutation == "beads"
+                    scan = types.SimpleNamespace(
+                        scopes=matrix_cli_scopes(case, expected),
+                        core=types.SimpleNamespace(status=status, reasons=reasons),
+                        beads=(None if expected.resolved_directory is None else
+                               types.SimpleNamespace(
+                                   presence=(types.SimpleNamespace(
+                                       status="directory" if synthetic else "missing"),),
+                                   reasons=("beads-metadata-only", "synthetic-beads-metadata-only")
+                                   if synthetic else ())),
+                        diagnostics=tuple(I.Diagnostic(scope, why) for scope, why in attention),
+                        exit_code=expected.exit_code)
+                    context = I.Context(expected.requested_directory, expected.resolved_directory,
+                                        expected.context, "unresolved" if
+                                        expected.resolved_directory is None else "directory-only"
+                                        if expected.context == "non-git" else "worktree")
+                    text, err = I.inspect_render(context, scan), b""
+                good = subprocess.CompletedProcess(argv, expected.exit_code, text.encode(), err)
+                with patch.object(Path, "is_file", return_value=True):
+                    assert_matrix_cli(self, case, good, expected)
+                    with self.assertRaises(AssertionError):
+                        assert_matrix_cli(self, case, subprocess.CompletedProcess(
+                            argv, (expected.exit_code + 1) % 3, good.stdout, err), expected)
+                    count += 1
+                    if expected.context == "cli-misuse":
+                        continue
+                    provider = next(line for line in text.splitlines()
+                                    if line.startswith("  Provider: "))
+                    damaged = [text.replace(provider, provider + "\n" + provider, 1),
+                               text.replace("    Reasons: ", "    Reasons: invented, ", 1),
+                               text.replace("  Reasons: ", "  Reasons: invented, ", 1)]
+                    files = [line for line in text.splitlines() if line.startswith("    File: ")]
+                    if files:
+                        damaged += [text.replace(files[0], files[0] + "\n" + files[0], 1),
+                                    text.replace(files[0], "", 1),
+                                    text.replace("; comparison=", "; extra=wrong; comparison=", 1),
+                                    text.replace("      Reasons: ", "      Reasons: invented, ", 1)]
+                    for output in damaged:
+                        with self.assertRaises(AssertionError):
+                            assert_matrix_cli(self, case, subprocess.CompletedProcess(
+                                argv, expected.exit_code, output.encode(), err), expected)
+                        count += 1
+        print(f"CLI matrix model: {count} result/extra-record/reason/field mutations rejected; "
+              "no CLI completion evidence", flush=True)
+
+    def test_actual_unittest_result_and_explicit_selection_control_completion(self):
+        # A reporting regression only: no setup, fixture or CLI evidence is
+        # manufactured. The complete synthetic lists cannot bless a selector.
+        expected = F.test_inventory("inspect-tests.py")
+        result = F.QualificationResult(io.StringIO(), True, 1)
+        result.testsRun = len(expected)
+        result.started_ids = expected.copy()
+        result.successful_ids = expected.copy()
+        program = types.SimpleNamespace(result=result, testNames=None, testNamePatterns=None)
+        source = F.qualification_sources()
+        matrix = [row.name for row in F.MATRIX]
+        with patch.object(F, "COMPLETED_MATRIX", matrix), \
+                patch.object(F, "COMPLETED_CLI", matrix + list(F.CLI_EXTRA_CASES)), \
+                patch.object(F, "QUALIFIED_COHORTS", [{"cleaned": True}]):
+            def report():
+                return F.qualification_report("inspect-tests.py", program, source, time.monotonic())
+            self.assertEqual(report()["coverage"], "COMPLETE_INSPECTION_SCOPE")
+            for names, patterns in ((expected, None), (None, ["*"])):
+                program.testNames, program.testNamePatterns = names, patterns
+                self.assertEqual(report()["coverage"], "PARTIAL_INSPECTION_SCOPE")
+            program.testNames = program.testNamePatterns = None
+            result.successful_ids.pop()
+            self.assertEqual(report()["coverage"], "INCOMPLETE_INSPECTION_SCOPE")
+            result.successful_ids.append(expected[-1])
+            result.skipped.append((self, "synthetic"))
+            self.assertEqual(report()["coverage"], "INCOMPLETE_INSPECTION_SCOPE")
+            result.skipped.clear()
+            source["domestique.sh"] = "0" * 64
+            self.assertEqual(report()["coverage"], "INCOMPLETE_INSPECTION_SCOPE")
+
 class CLITests(unittest.TestCase):
     # Small owned fault fixtures, NOT another cold installation cohort.
     setUp = BoundaryTests.setUp
@@ -1526,6 +1780,22 @@ class CLITests(unittest.TestCase):
                       "inspect the reported policy file)", project)
         self.assertNotIn("unrecognized-evidence", result.stdout.decode())
         self.assertNotIn(F.SECRET.encode(), result.stdout)
+
+    def test_unrelated_legacy_native_evidence_survives_public_combination(self):
+        # No installers: the existing owned fixture already has an unrelated
+        # historical-name agent. Its reason must survive the preview merger.
+        for leaf in (".codex/agents/implementer.toml",
+                     ".github/agents/domestique-implementer.agent.md"):
+            path = self.project / leaf
+            path.parent.mkdir(parents=True)
+            path.write_text(F.SECRET)
+        result = self.cli(("--inspect", self.project))
+        row = next(row for row in F.MATRIX if row.name == "unrelated-native-agents")
+        case = types.SimpleNamespace(scenario=row)
+        expected = F.bind(row.record, {
+            "requested": str(self.project), "project": str(self.project),
+            "home": self.session.env["HOME"]})
+        assert_matrix_cli(self, case, result, expected)
 
     def test_missing_unsupported_and_unexpected_runtime_actual_script(self):
         env = dict(self.session.env, PATH=str(self.root / "bin"))
@@ -1726,10 +1996,13 @@ class QualifiedFixtureTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cohort = F.qualified_cohort(cls.session)
+        F.QUALIFIED_COHORTS.append(cohort)
         if not cls.complete:
             print("collection fixture failed; retained:", cls.session.root, flush=True)
             return
         cls.session.clean()
+        cohort["cleaned"] = True
         print(f"collection fixtures: cleaned; {time.monotonic() - cls.started:.3f}s", flush=True)
 
     def test_qualified_contexts_and_boundary_projection(self):
@@ -1791,75 +2064,21 @@ class QualifiedFixtureTests(unittest.TestCase):
 
     def test_y_public_cli_source_qualified_reports(self):
         type(self).complete = False
-        names = (
-            "absent", "unrelated-native-agents", "v1-normal-all-including-draft-copilot",
-            "v1-guest-claude-codex", "v1-mixed-provider-modes", "pre-snapshot-no-git",
-            "v1-no-git", "default-current-directory", "v1-subdirectory",
-            "v1-linked-worktree", "path-with-spaces", "path-with-control-characters",
-            "private-global-and-local", "private-global-only",
-            "private-synthetic-beads-presence", "multiple-generations-one-provider",
-            "committed-permissions-customization", "adopted-baseline-not-ownership",
-            "claude-metadata-edit", "codex-metadata-edit", "copilot-metadata-edit",
-            "claude-both-edit", "missing-baseline", "corrupt-baseline",
-            "managed-file-missing", "invalid-encoding", "oversized-input",
-            "unsupported-metadata", "private-metadata-digest-only", "host-text-outside-policy",
-            "partial-markers", "mixed-markers", "unsafe-symlink", "unsafe-hardlink",
-            "unsafe-directory", "unsafe-fifo", "unsafe-socket", "unsafe-unreadable",
-            "normal-missing-manifest", "normal-corrupt-manifest",
-            "private-missing-manifest", "private-corrupt-manifest", "private-inconsistent-core",
-        )
-        for name in names:
-            with self.subTest(scenario=name):
-                case = self.session.begin(name)
-                expected = case.expected()
-                if name == "committed-permissions-customization":
+        for row in F.MATRIX:
+            with self.subTest(scenario=row.name):
+                case = self.session.begin(row.name)
+                argv, cwd, expected = case.cli_invocation()
+                if row.mutation in ("committed", "committed-metadata"):
                     status = self.session.run(
                         ["git", "-C", case.project, "status", "--porcelain"],
                         env=case.env, operation="command")
                     self.assertEqual(status.stdout, b"")
-                result = self.session.run(
-                    ["/bin/bash", F.ROOT / "domestique.sh", *case.argv()],
-                    cwd=case.requested, env=case.env, check=False)
-                sections = cli_sections(self, result, expected.exit_code)
-                self.assertIn("Context: " + expected.context + ";", result.stdout.decode())
-                path_fields = cli_path_fields(
-                    self, result.stdout, expected.requested_directory,
-                    expected.resolved_directory, expected.scopes[0].directory)
-                for section, scope in zip(sections, expected.scopes):
-                    oracle = (adopted_comparison_oracle(scope)
-                              if name == "adopted-baseline-not-ownership" and
-                              scope.scope == "project" else scope)
-                    self.assertIn("Summary: installation=" + oracle.installation +
-                                  "; mode=" + oracle.mode +
-                                  "; customization=" + oracle.customization, section)
-                    observed_rows = re.findall(
-                        r"^  Provider: (\S+); generation=(\S+); installation=(\S+); "
-                        r"mode=(\S+); customization=([a-z-]+)", section, re.M)
-                    wanted_rows = sorted(
-                        (p.provider, g, p.installation, p.mode, p.customization)
-                        for p in oracle.providers for g in (
-                            tuple(g.generation for g in p.generations) or ("none",)))
-                    self.assertEqual(sorted(observed_rows), wanted_rows)
-                    files = {}
-                    for line in section.splitlines():
-                        if not line.startswith("    File: "):
-                            continue
-                        path, end = json.JSONDecoder().raw_decode(line[10:])
-                        details = dict(part.split("=", 1) for part in
-                                       line[10 + end:].removeprefix("; ").split("; "))
-                        self.assertNotIn(path, files)
-                        files[path] = details
-                    for p in oracle.providers:
-                        for f in p.files:
-                            anchor = "<" + scope.scope + ">" + f.path[len(scope.directory):]
-                            actual = files[anchor]
-                            self.assertEqual(actual, dict(
-                                status=f.status, baseline=f.baseline.kind + "/" + f.baseline.status,
-                                comparison=f.comparison, metadata=f.metadata,
-                                instructions=f.instructions,
-                                **{"permission-fields": ",".join(f.permission_fields) or "none"}))
+                result = self.session.run(argv, cwd=cwd, env=case.env, check=False)
+                path_fields = assert_matrix_cli(self, case, result, expected)
                 case.accept(result.stdout, result.stderr, path_fields=path_fields)
-                print("CLI source-qualified:", name, flush=True)
+                F.COMPLETED_MATRIX.append(row.name)
+                F.COMPLETED_CLI.append(row.name)
+                print("CLI source-qualified:", row.name, flush=True)
             if self.session.active is not None:
                 return
         # An independently damaged global scope must not hide legacy project
@@ -1884,11 +2103,38 @@ class QualifiedFixtureTests(unittest.TestCase):
             path_fields = cli_path_fields(
                 self, result.stdout, str(case.project), str(case.project), case.env["HOME"])
             case.accept(result.stdout, result.stderr, path_fields=path_fields)
+            F.COMPLETED_CLI.append("independent-" + kind)
+            print("CLI source-qualified:", "independent-" + kind, flush=True)
             print("CLI independent project:", kind, flush=True)
-        self.assertEqual(dict(self.session.counts), dict(
-            historical_normal=1, historical_guest=1, pre_snapshot=1, historical_adoption=1,
-            current_global=1, current_local=1, git_init=5, worktree_add=1))
-        print(f"CLI reports: {len(names) + 3} cases; same six-install cohort", flush=True)
+        for kind in ("legacy", "private"):
+            case = self.session.begin("private-global-and-local" if kind == "private" else
+                                      "v1-normal-all-including-draft-copilot")
+            manifest = case.project / (".domestique-private/manifest" if kind == "private"
+                                       else MANIFEST)
+            original = manifest.read_text()
+            anchor = (PRIVATE_PATHS["project", "claude"][0] if kind == "private" else LEAF)
+            self.assertIn(anchor, original)
+            manifest.write_text(original.replace(anchor, "../" + F.SECRET))
+            case.before = self.session.snapshot()
+            argv, cwd, expected = case.cli_invocation()
+            result = self.session.run(argv, cwd=cwd, env=case.env, check=False)
+            global_text, project = cli_sections(self, result, 1)
+            self.assertIn("manifest-inventory-corrupt" if kind == "private" else
+                          "manifest-corrupt", project)
+            self.assertIn("installation=partial", project)
+            self.assertIn("installation=installed" if kind == "private" else
+                          "installation=absent", global_text)
+            fields = cli_path_fields(self, result.stdout, expected.requested_directory,
+                                     expected.resolved_directory, expected.scopes[0].directory)
+            case.accept(result.stdout, result.stderr, path_fields=fields)
+            name = kind + "-manifest-traversal"
+            F.COMPLETED_CLI.append(name)
+            print("CLI source-qualified:", name, flush=True)
+        self.assertEqual(dict(self.session.counts), F.SETUP_COUNTS)
+        self.assertEqual(F.COMPLETED_MATRIX, [row.name for row in F.MATRIX])
+        self.assertEqual(F.COMPLETED_CLI, F.COMPLETED_MATRIX + list(F.CLI_EXTRA_CASES))
+        print(f"CLI reports: {len(F.COMPLETED_CLI)} completed; "
+              f"{len(F.COMPLETED_MATRIX)} named matrix cases; same six-install cohort", flush=True)
         type(self).complete = True
 
     def test_z_legacy_source_qualified_projection(self):
@@ -3384,6 +3630,31 @@ class PrivateBoundaryTests(unittest.TestCase):
         parsed, reasons = I.private_manifest(valid, "project", str(self.project), core)
         self.assertEqual(reasons, ())
         self.assertEqual(parsed.pairs, ((key, "a" * 64, "b" * 64),))
+        parsed, reasons = I.private_manifest(
+            valid.replace(key, "claude:../" + F.SECRET), "project", str(self.project), core)
+        self.assertIsNone(parsed)
+        self.assertEqual(reasons, ("manifest-inventory-corrupt",))
+        # Small synthetic fault fixture, not a qualified install/matrix row.
+        # Exercise the real CLI and Case.accept privacy/state/stub gates without
+        # requiring the complete shared six-install cohort for this regression.
+        self.session.projects = {"private": self.project}
+        self.session.pristine = self.session.snapshot()
+        case = self.session.begin("private-global-and-local")
+        LegacyFailureTests.write(
+            self, ".domestique-private/manifest",
+            valid.replace(key, "claude:../" + F.SECRET))
+        case.before = self.session.snapshot()
+        result = self.session.run(
+            ["/bin/bash", F.ROOT / "domestique.sh", "--inspect", self.project],
+            cwd=self.project, env=case.env, check=False)
+        global_text, project = cli_sections(self, result, 1)
+        self.assertIn("manifest-inventory-corrupt", project)
+        self.assertIn("installation=partial", project)
+        self.assertIn("installation=absent", global_text)
+        path_fields = cli_path_fields(
+            self, result.stdout, str(self.project), str(self.project), case.env["HOME"])
+        case.accept(result.stdout, result.stderr, path_fields=path_fields)
+        self.assertIsNone(self.session.active)
         for mutation in (valid[:-1], valid.replace("\n", "\r\n"), valid + pair,
                          valid.replace("baseline=", "unknown="),
                          valid.replace("providers=claude", "providers=none"),
@@ -3404,4 +3675,4 @@ class PrivateBoundaryTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    sys.exit(F.qualification_main("inspect-tests.py", verbosity=2))

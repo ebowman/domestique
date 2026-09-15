@@ -844,6 +844,209 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             A.offline_report("acceptance-tests.py", "", "Ran 24 tests in 0.2s\nOK (skipped=1)", 0)
 
+    def inspection_example(self, name):
+        """Synthetic grammar witness, never an execution/acceptance artifact."""
+        f = A.INSPECTION
+        tests = f.test_inventory(name)
+        matrix = [row.name for row in f.MATRIX]
+        cli = matrix + list(f.CLI_EXTRA_CASES) if name == "inspect-tests.py" else []
+        sources = f.qualification_sources()
+        origins = {key: dict(label="current-private-preview" if key == "current" else key,
+                              revision=revision, sha256=sources["domestique.sh"] if key == "current"
+                              else "a" * 64, installer="/synthetic/" + key)
+                   for key, revision in (("historical", f.HISTORICAL_PIN),
+                                         ("pre-snapshot", f.PRE_SNAPSHOT_PIN),
+                                         ("current", "a" * 40))}
+        cohort = dict(
+            origins=origins, setup_counts=f.SETUP_COUNTS.copy(), installer_seconds=1.0,
+            declared_matrix_cases=len(matrix), root="/synthetic/owned", root_identity=[1, 2],
+            native_calls=0, beads="synthetic metadata only", commands={
+                "install": 6, "git-init": 5, "git-worktree": 1,
+                "source-probe": 2, "source-read": 2, "source-revision": 1, "command": 100},
+            command_seconds=2.0, forbidden_stubs=list(f.FORBIDDEN), cleaned=True,
+            tools={tool: {"path": "/synthetic/" + tool, "sha256": "b" * 64}
+                   for tool in ("python3", "bash", "git")})
+        report = dict(
+            suite=name, scope=f.QUALIFICATION_SUITES[name], coverage="COMPLETE_INSPECTION_SCOPE",
+            explicit_selection=False, unittest=dict(run=len(tests), started=tests,
+                successful=tests.copy(), failures=0, errors=0, skips=0, expected_failures=0,
+                unexpected_successes=0), matrix_completed=matrix, matrix_count=len(matrix),
+            cli_completed=cli, cli_count=len(cli), qualified_cohorts=[cohort],
+            source_sha256=sources, source_unchanged=True,
+            runtime=dict(python="3.14.7", system="darwin", machine="arm64"), elapsed_seconds=3.0,
+            limits=f.QUALIFICATION_LIMITS)
+        events = "".join(("CLI source-qualified: " if cli else "fixture oracle accepted: ") + v + "\n"
+                         for v in cli or matrix)
+        return report, events, f"Ran {len(tests)} tests in 3.0s\n\nOK\n"
+
+    def test_inspection_registration_and_complete_scoped_report(self):
+        for name in A.INSPECTION.QUALIFICATION_SUITES:
+            with self.subTest(suite=name):
+                self.assertEqual(A.CURRENT.count(name), 1)
+                self.assertNotIn(name, A.QUICK + A.HISTORICAL + A.NATIVE)
+                report, events, err = self.inspection_example(name)
+                out = events + A.INSPECTION.QUALIFICATION_PREFIX + json.dumps(report) + "\n"
+                result = A.offline_report(name, out, err, 0)
+                self.assertEqual(result["inspection_qualification"], report)
+                self.assertEqual(result["checks"], report["unittest"]["run"])
+                with self.assertRaises(ValueError):
+                    A.offline_report(name, "", "Ran 1 test in 0.1s\n\nOK\n", 0)
+                # Fresh location-bound import, with no test directory on the
+                # search path. Use the actual validator, not a subprocess stub.
+                # The input remains a synthetic grammar witness, not evidence
+                # that either complete inspection suite has executed.
+                for mode in ("fresh", "preloaded", "foreign"):
+                    code = (
+                        "import dataclasses,importlib.util,json,pathlib,sys,types\n"
+                        f"path=pathlib.Path({str(Path(A.__file__).resolve())!r})\n"
+                        f"mode={mode!r}\n"
+                        "search_path=sys.path.copy()\n"
+                        "assert str(path.parent) not in sys.path\n"
+                        "assert 'inspect_fixture' not in sys.modules\n"
+                        "def load(name,path,register=False):\n"
+                        "    s=importlib.util.spec_from_file_location(name,path)\n"
+                        "    m=importlib.util.module_from_spec(s)\n"
+                        "    if register: sys.modules[name]=m\n"
+                        "    s.loader.exec_module(m)\n"
+                        "    return m\n"
+                        "if mode=='preloaded':\n"
+                        "    public=load('inspect_fixture',path.with_name('inspect_fixture.py'),True)\n"
+                        "elif mode=='foreign':\n"
+                        "    public=types.ModuleType('inspect_fixture')\n"
+                        "    public.__file__='/foreign/inspect_fixture.py'\n"
+                        "    public.marker=object()\n"
+                        "    sys.modules['inspect_fixture']=public\n"
+                        "if mode!='fresh': original=vars(public).copy()\n"
+                        "a=load('isolated_acceptance',path)\n"
+                        "f=a.INSPECTION\n"
+                        "matrix=f.MATRIX; scenario=f.Scenario; baseline=f.Baseline\n"
+                        "assert sys.modules[f.__name__] is f\n"
+                        "assert pathlib.Path(f.__file__).resolve()==path.with_name('inspect_fixture.py')\n"
+                        "if mode=='preloaded': assert f is public\n"
+                        "if mode=='foreign': assert f is not public\n"
+                        "if mode=='fresh': assert sys.modules['inspect_fixture'] is f\n"
+                        "name,out,err=json.load(sys.stdin)\n"
+                        "for index in range(3):\n"
+                        "    b=load('repeated_acceptance_'+str(index),path)\n"
+                        "    assert b.INSPECTION is f\n"
+                        "    assert b.INSPECTION.Scenario is scenario\n"
+                        "    assert b.INSPECTION.Baseline is baseline\n"
+                        "    assert b.INSPECTION.MATRIX is matrix\n"
+                        "    assert b.INSPECTION.MATRIX==tuple(dataclasses.replace(r) for r in matrix)\n"
+                        "    assert type(b.INSPECTION.MATRIX[0]) is scenario\n"
+                        "    for runner in (a,b):\n"
+                        "        result=runner.offline_report(name,out,err,0)\n"
+                        "        assert result['inspection_qualification']['suite']==name\n"
+                        "        assert result['checks']==len(f.test_inventory(name))\n"
+                        "        try: runner.offline_report(name,out,err,1)\n"
+                        "        except ValueError: pass\n"
+                        "        else: raise AssertionError('accepted failed report')\n"
+                        "if mode!='fresh':\n"
+                        "    assert sys.modules['inspect_fixture'] is public\n"
+                        "    assert vars(public)==original\n"
+                        "assert sys.modules[f.__name__] is f\n"
+                        "assert sys.path==search_path\n"
+                        "print('isolated offline_report validated synthetic grammar')\n")
+                    with self.subTest(module_mode=mode), tempfile.TemporaryDirectory() as temp:
+                        child = subprocess.run(
+                            [sys.executable, "-I", "-B", "-W", "error", "-c", code], cwd=temp,
+                            input=json.dumps([name, out, err]), text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+                        self.assertEqual(child.returncode, 0, "isolated offline_report failed")
+                        self.assertEqual(child.stderr, "")
+                        self.assertEqual(child.stdout,
+                                         "isolated offline_report validated synthetic grammar\n")
+        sources = A.provenance(A.Control(10))["source_sha256"]
+        self.assertLessEqual(set(A.INSPECTION.qualification_sources()), set(sources))
+
+    def test_inspection_malformed_incomplete_duplicate_and_selected_reports(self):
+        for name in A.INSPECTION.QUALIFICATION_SUITES:
+            good, events, err = self.inspection_example(name)
+            mutations = [
+                lambda r: r.update(coverage="PARTIAL_INSPECTION_SCOPE"),
+                lambda r: r.update(coverage="INCOMPLETE_INSPECTION_SCOPE"),
+                lambda r: r.update(explicit_selection=True),
+                lambda r: r.update(scope="native-ready"),
+                lambda r: r.update(suite="acceptance-tests.py"),
+                lambda r: r.update(source_unchanged=False),
+                lambda r: r["source_sha256"].update({"domestique.sh": "0" * 64}),
+                lambda r: r["unittest"].update(run=1),
+                lambda r: r["unittest"].update(run=True),
+                lambda r: r["unittest"].update(skips=1),
+                lambda r: r["unittest"].update(errors=1),
+                lambda r: r["unittest"].update(expected_failures=1),
+                lambda r: r["unittest"]["successful"].pop(),
+                lambda r: r["unittest"]["started"].append(r["unittest"]["started"][0]),
+                lambda r: r["unittest"]["successful"].__setitem__(0, "Invented.test_case"),
+                lambda r: r["matrix_completed"].pop(),
+                lambda r: r["matrix_completed"].append(r["matrix_completed"][0]),
+                lambda r: r["matrix_completed"].__setitem__(0, "invented"),
+                lambda r: r.update(matrix_count=True),
+                lambda r: r.update(cli_count=-1),
+                lambda r: r["cli_completed"].append("invented"),
+                lambda r: r.update(qualified_cohorts=[]),
+                lambda r: r["qualified_cohorts"].append(r["qualified_cohorts"][0]),
+                lambda r: r["qualified_cohorts"][0].update(cleaned=False),
+                lambda r: r["qualified_cohorts"][0]["setup_counts"].update(current_local=2),
+                lambda r: r["qualified_cohorts"][0].update(native_calls=1),
+                lambda r: r["qualified_cohorts"][0]["forbidden_stubs"].pop(),
+                lambda r: r["qualified_cohorts"][0]["commands"].update(install=1),
+                lambda r: r["qualified_cohorts"][0]["origins"]["historical"].update(revision="0" * 40),
+                lambda r: r["qualified_cohorts"][0]["tools"].pop("git"),
+                lambda r: r.update(runtime={}),
+                lambda r: r["runtime"].update(python="not-a-version"),
+                lambda r: r["runtime"].update(python="3.8.0"),
+                lambda r: r.update(limits="native readiness"),
+                lambda r: r.update(elapsed_seconds=float("nan")),
+                lambda r: r.update(elapsed_seconds=1),
+                lambda r: r.update(invented="extra"),
+            ]
+            if name == "inspect-tests.py":
+                mutations += [
+                    lambda r: r["cli_completed"].pop(),
+                    lambda r: r["cli_completed"].append(r["cli_completed"][0]),
+                    lambda r: r["cli_completed"].__setitem__(0, "invented"),
+                ]
+            for index, mutate in enumerate(mutations):
+                bad = copy.deepcopy(good)
+                mutate(bad)
+                with self.subTest(suite=name, mutation=index), self.assertRaises(ValueError):
+                    A.offline_report(name, events + A.INSPECTION.QUALIFICATION_PREFIX +
+                                     json.dumps(bad) + "\n", err, 0)
+            marker = A.INSPECTION.QUALIFICATION_PREFIX
+            summary = marker + json.dumps(good) + "\n"
+            for out in (events, events + marker + "{\n", events + marker + "[]\n",
+                        events + summary * 2, summary, events + events + summary,
+                        "invented\n" + summary, "\n".join(events.splitlines()[1:]) + "\n" + summary):
+                with self.subTest(suite=name, shape=out[:40]), self.assertRaises(ValueError):
+                    A.offline_report(name, out, err, 0)
+            for stderr, rc in ((err, 1), (err + err, 0), (err.replace("OK", "OK (skipped=1)"), 0),
+                               ("Ran 1 test in 0.1s\n\nOK\n", 0)):
+                with self.assertRaises(ValueError):
+                    A.offline_report(name, events + summary, stderr, rc)
+
+    def test_inspection_actual_selected_unittest_summary_is_partial_without_setup(self):
+        for name, selector in (
+                ("inspect-tests.py", "MatrixCLIAssemblyTests"),
+                ("inspect-fixture-tests.py", "ContractTests.test_named_matrix_and_exit_contract")):
+            result = subprocess.run(
+                [sys.executable, "-B", "-W", "error", str(A.ROOT / "test" / name), selector],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            prefix = A.INSPECTION.QUALIFICATION_PREFIX
+            summary = [line[len(prefix):] for line in result.stdout.splitlines()
+                       if line.startswith(prefix)]
+            self.assertEqual(len(summary), 1)
+            report = json.loads(summary[0])
+            self.assertEqual(report["coverage"], "PARTIAL_INSPECTION_SCOPE")
+            self.assertIs(report["explicit_selection"], True)
+            self.assertEqual(report["qualified_cohorts"], [])
+            self.assertEqual(report["matrix_completed"], [])
+            self.assertEqual(report["cli_completed"], [])
+            self.assertEqual(report["unittest"]["run"], len(report["unittest"]["successful"]))
+            with self.assertRaises(ValueError):
+                A.offline_report(name, result.stdout, result.stderr, result.returncode)
+
     def test_timeout_reaps_exact_process_group(self):
         with tempfile.TemporaryDirectory() as temp:
             pidfile = Path(temp) / "pid"

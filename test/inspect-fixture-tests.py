@@ -1,9 +1,13 @@
 """Focused fixture/contract/oracle qualification, NOT runtime --inspect tests."""
+from collections import Counter
+from contextlib import redirect_stdout
 from dataclasses import asdict
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import traceback
 import unittest
@@ -32,7 +36,93 @@ class ContractTests(unittest.TestCase):
         session.deadline = time.monotonic() + 120
         session.env = {}
         session.commands = []
+        session.counts = Counter()
         return session
+
+    def test_install_and_ordinary_caps_clip_original_session_including_launch(self):
+        self.assertEqual((F.SESSION_SECONDS, F.INSTALL_SECONDS, F.COMMAND_SECONDS),
+                         (900, 300, 120))
+        for operation in F.OPERATIONS:
+            cap = 300 if operation == "install" else 120
+            for remaining, launch_seconds in ((900, 0), (200, 0), (75, 10), (0.25, 0),
+                                               (1, 2)):
+                with self.subTest(operation=operation, remaining=remaining, launch=launch_seconds):
+                    session = self.mock_session()
+                    session.deadline = 100 + remaining
+                    process = Mock(returncode=0)
+                    process.communicate.return_value = (b"", b"")
+                    with patch.object(F.time, "monotonic", return_value=100) as clock:
+                        def launch(*args, **kwargs):
+                            clock.return_value = 100 + launch_seconds
+                            return process
+                        with patch.object(F.subprocess, "Popen", side_effect=launch):
+                            session.run(["synthetic"], operation=operation)
+                    process.communicate.assert_called_once_with(
+                        timeout=min(cap, max(0, remaining - launch_seconds)))
+                    self.assertEqual(session.deadline, 100 + remaining)
+                    self.assertEqual(session.commands, [(operation, 0, launch_seconds)])
+
+    def test_invalid_and_expired_session_deadlines_fail_before_launch(self):
+        for deadline in (float("nan"), float("inf"), float("-inf"), None, True,
+                         F.SECRET, -1, 0, 100):
+            outcome = ("budget-exhausted" if type(deadline) is int else "invalid-deadline")
+            for operation in ("command", "install"):
+                with self.subTest(deadline_type=type(deadline).__name__, operation=operation):
+                    session = self.mock_session()
+                    session.deadline = deadline
+                    output = io.StringIO()
+                    with patch.object(F.time, "monotonic", return_value=100), \
+                            patch.object(F.subprocess, "Popen") as launch, redirect_stdout(output):
+                        self.assert_safe_failure(
+                            lambda: session.run([F.SECRET], operation=operation,
+                                install_phase="current_local" if operation == "install" else None),
+                            outcome)
+                        launch.assert_not_called()
+                    self.assertNotIn(F.SECRET, output.getvalue())
+                    if operation == "install":
+                        row = json.loads(output.getvalue().removeprefix(F.INSTALL_TIMING_PREFIX))
+                        self.assertEqual(row, dict(phase="current_local", limit_seconds=0,
+                            elapsed_seconds=0, outcome=outcome, returncode=None))
+                    else:
+                        self.assertEqual(output.getvalue(), "")
+
+    def test_install_phase_events_are_known_safe_and_leave_provenance_unchanged(self):
+        for label in F.INSTALL_PHASES:
+            for returncode in (0, 128):
+                with self.subTest(label=label, returncode=returncode):
+                    session = self.mock_session()
+                    session.deadline = 1000
+                    process = Mock(returncode=returncode)
+                    output = io.StringIO()
+                    with patch.object(F.time, "monotonic", return_value=100) as clock:
+                        def communicate(**kwargs):
+                            clock.return_value = 231.5
+                            return F.SECRET.encode(), F.SECRET.encode()
+                        process.communicate.side_effect = communicate
+                        with patch.object(F.subprocess, "Popen", return_value=process), \
+                                patch.object(session, "assert_no_calls") as no_calls, \
+                                redirect_stdout(output):
+                            if returncode:
+                                self.assert_safe_failure(
+                                    lambda: session.install(label, F.SECRET, F.SECRET), "nonzero-exit")
+                                no_calls.assert_not_called()
+                            else:
+                                session.install(label, F.SECRET, F.SECRET)
+                                no_calls.assert_called_once_with()
+                    row = json.loads(output.getvalue().removeprefix(F.INSTALL_TIMING_PREFIX))
+                    self.assertEqual(row, dict(phase=label, limit_seconds=300,
+                        elapsed_seconds=131.5, outcome="nonzero-exit" if returncode else "returned",
+                        returncode=returncode))
+                    self.assertNotIn(F.SECRET, output.getvalue())
+                    self.assertEqual(session.commands, [("install", returncode, 131.5)])
+                    self.assertEqual(session.counts, {label: 1})
+        session = self.mock_session()
+        with patch.object(session, "run") as run, redirect_stdout(io.StringIO()) as output:
+            self.assert_safe_failure(lambda: session.install(F.SECRET, F.SECRET),
+                                     "invalid-install-phase")
+            run.assert_not_called()
+            self.assertEqual(output.getvalue(), "")
+        self.assertEqual(session.counts, {})
 
     def test_named_matrix_and_exit_contract(self):
         self.assertEqual(len(F.MATRIX), len({r.name for r in F.MATRIX}))
@@ -121,8 +211,9 @@ class ContractTests(unittest.TestCase):
                         io_error if fault == "drain-io" else result]
                 elif fault == "pipe-close":
                     process.stdout.close.side_effect = io_error
+                output = io.StringIO()
                 with patch.object(F.subprocess, "Popen", return_value=process) as launch, \
-                        patch.object(F.os, "killpg") as kill:
+                        patch.object(F.os, "killpg") as kill, redirect_stdout(output):
                     if fault in ("launch", "arguments"):
                         launch.side_effect = io_error if fault == "launch" else ValueError(F.SECRET)
                     if fault == "termination":
@@ -130,12 +221,22 @@ class ContractTests(unittest.TestCase):
                     elif fault == "exit-race":
                         kill.side_effect = ProcessLookupError(F.SECRET)
                     self.assert_safe_failure(
-                        lambda: session.run(["untrusted-command", F.SECRET], operation="install"),
+                        lambda: session.run(["untrusted-command", F.SECRET], operation="install",
+                                            install_phase="historical_normal"),
                         "install: " + expected)
                     if process.communicate.call_count == 2:
                         kill.assert_called_once_with(12345, F.signal.SIGKILL)
                         self.assertEqual(process.communicate.call_args.kwargs["timeout"], 10)
                 self.assertFalse(F.SECRET in repr(session.commands))
+                self.assertNotIn(F.SECRET, output.getvalue())
+                row = json.loads(output.getvalue().removeprefix(F.INSTALL_TIMING_PREFIX))
+                self.assertEqual(set(row), {"phase", "limit_seconds", "elapsed_seconds",
+                                            "outcome", "returncode"})
+                self.assertEqual(row["phase"], "historical_normal")
+                self.assertEqual(row["outcome"], expected.split("; returncode=")[0])
+                self.assertGreater(row["limit_seconds"], 0)
+                self.assertLessEqual(row["limit_seconds"], 120)
+                self.assertGreaterEqual(row["elapsed_seconds"], 0)
 
     def test_budget_setup_and_success_output_failures_do_not_leak(self):
         session = self.mock_session()
@@ -217,11 +318,14 @@ class RealFixtureTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cohort = F.qualified_cohort(cls.session)
+        F.QUALIFIED_COHORTS.append(cohort)
         # Never clean an active/unasserted case or a changed session.
         if cls.completed != set(range(1, 9)):
             print("inspect fixture assertion failed; retained:", cls.session.root, flush=True)
             return
         cls.session.clean()
+        cohort["cleaned"] = True
         print(f"inspect fixtures: cleaned; {time.monotonic() - cls.started:.3f}s", flush=True)
 
     def assert_baseline_witnesses(self, case, observed=None):
@@ -379,6 +483,15 @@ class RealFixtureTests(unittest.TestCase):
                                         for p in record.scopes[1].providers))
                 if record.context not in ("invalid-target", "cli-misuse"):
                     self.assertEqual(record.resolved_directory, str(case.project))
+                elif record.context == "invalid-target":
+                    if row.mutation == "target-symlink":
+                        self.assertTrue(case.requested.is_symlink())
+                    self.assertFalse(case.requested.is_dir(),
+                                     "invalid target must not be a supported directory alias")
+                argv, cwd, wanted = case.cli_invocation()
+                self.assertTrue(cwd.is_dir(), "CLI launch must use an executable cwd")
+                self.assertEqual(argv, ("/bin/bash", str(F.ROOT / "domestique.sh"), *case.argv()))
+                self.assertEqual(wanted, record)
                 # Every error fixture retains an independent readable provider
                 # witness, except absent/CLI/invalid-target which have none.
                 for scope in record.scopes:
@@ -468,6 +581,7 @@ class RealFixtureTests(unittest.TestCase):
                 # Status/reason/field-name/escaped-path reports remain valid,
                 # including missing witnesses and all generation identities.
                 case.accept(json.dumps(asdict(record)).encode())
+                F.COMPLETED_MATRIX.append(row.name)
                 print("fixture oracle accepted:", row.name, flush=True)
         self.assertEqual(s.counts, before_counts)
         self.assertLess(time.monotonic() - self.started, F.SESSION_SECONDS)
@@ -620,4 +734,4 @@ class RealFixtureTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    sys.exit(F.qualification_main("inspect-fixture-tests.py"))
