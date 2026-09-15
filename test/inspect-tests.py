@@ -1,4 +1,4 @@
-"""hq-ln2.2/.3/.4: collection, legacy and private preview; no comparator/CLI.
+"""hq-ln2.2/.3/.4/.5: collection, scanners and comparison; no public CLI.
 
 One qualified fixture session (six offline installer calls), plus small owned
 fault fixtures. Failures retain evidence; success removes only owned fixtures.
@@ -6,7 +6,8 @@ All reads execute the extractable payload, never source installer callbacks.
 """
 import ast
 from contextlib import redirect_stderr, redirect_stdout
-from dataclasses import FrozenInstanceError, asdict, replace
+from dataclasses import FrozenInstanceError, asdict, fields, replace
+from functools import lru_cache
 import io
 import json
 import os
@@ -281,6 +282,161 @@ def without_core_selection(provider):
         replace(g, evidence=g.evidence[:1], reported_ref=None)
         if g.generation == "private-preview-api-1" and g.reported_ref is not None else g
         for g in provider.generations))
+
+
+@lru_cache(maxsize=128)
+def comparison_projection(oracle, *, private=False):
+    """Own ALL .5 fields and reasons; expand frozen witnesses independently.
+
+    Detection projections retain their strong stage-specific oracles. Here no
+    comparison field/reason is filtered: frozen witnesses are restored, extra
+    pinned native files are unchanged, and applicable reasons are cumulative.
+    baseline-not-ownership applies to EVERY changed unknown-authority snapshot,
+    not to inferred adoption. No directory/scenario name selects that reason.
+    """
+    structural = (private_detection_projection(oracle) if private else
+                  legacy_detection_projection(oracle))
+    providers = []
+    for observed, declared in zip(structural.providers, oracle.providers):
+        witnesses = {f.path: f for f in declared.files}
+        files = []
+        for file in observed.files:
+            witness = witnesses.get(file.path)
+            policy = "host-text-excluded" in file.reasons
+            if witness is not None:
+                file = replace(file, comparison=witness.comparison, metadata=witness.metadata,
+                               instructions=witness.instructions,
+                               permission_fields=witness.permission_fields,
+                               reasons=tuple(sorted(set(file.reasons) | set(witness.reasons))))
+            elif file.baseline.status == "valid" and file.status == "readable":
+                digest = file.baseline.kind == "digest"
+                plain = file.path.endswith("/openai.yaml") or policy
+                file = replace(file, comparison="same",
+                               metadata="unknown" if digest else
+                               "not-applicable" if plain else "same",
+                               instructions="unknown" if digest else "same")
+            elif policy:
+                file = replace(file, metadata="not-applicable")
+            why = set(file.reasons)
+            for field, reason in (("metadata", "metadata-changed"),
+                                  ("instructions", "instructions-changed")):
+                if getattr(file, field) == "different":
+                    why.add(reason)
+            if (file.comparison == "different" and file.baseline.kind == "snapshot" and
+                    file.ownership == "unknown"):
+                why.add("baseline-not-ownership")
+            files.append(replace(file, reasons=tuple(sorted(why))))
+        reasons = set(observed.reasons) | set(declared.reasons)
+        reasons.update(r for f in files for r in f.reasons if r != "digest-only-baseline")
+        providers.append(replace(observed, files=tuple(files),
+                                 customization=declared.customization,
+                                 reasons=tuple(sorted(reasons))))
+    return replace(structural, customization=oracle.customization, providers=tuple(providers))
+
+
+@lru_cache(maxsize=512)
+def comparison_key(record):
+    """Every dataclass field, with only file/reason ORDER normalized.
+
+    Memoize immutable subrecords for mutation tests; duplicates and all extra
+    records remain significant. This is not a selected-field projection.
+    """
+    if isinstance(record, tuple):
+        return tuple(comparison_key(item) for item in record)
+    if not hasattr(record, "__dataclass_fields__"):
+        return record
+    result = []
+    for field in fields(record):
+        value = getattr(record, field.name)
+        if field.name == "reasons":
+            value = tuple(sorted(value))
+        elif field.name == "files":
+            value = tuple(sorted(value, key=lambda f: f.path))
+        result.append((field.name, comparison_key(value)))
+    return tuple(result)
+
+
+def assert_comparison_projection(test, actual, oracle, *, private=False):
+    test.assertTrue(comparison_key(actual) ==
+                    comparison_key(comparison_projection(oracle, private=private)),
+                    "complete comparison record mismatch")
+
+
+def adopted_comparison_oracle(oracle):
+    # Additional witness, not a change to frozen .1 user-level status semantics.
+    # b60feef4 lines 3206-3215 snapshot the new policy but retain the old live
+    # block. Physical cohort evidence: 69f39c4 body SHA256 1496c0b3... (3029 B),
+    # recorded b60feef4 body 86a12823... (4524 B). Both are legitimately compared.
+    policy = F.FileEvidence(
+        oracle.directory + "/CLAUDE.md", "readable",
+        F.Baseline("snapshot", "valid",
+                   oracle.directory + "/.claude/.domestique/base/CLAUDE.md.block"),
+        "unknown", "different", "not-applicable", "different",
+        reasons=("host-text-excluded", "installed-baseline", "instructions-changed",
+                 "baseline-not-ownership"))
+    return replace(oracle, providers=tuple(
+        replace(p, files=(*p.files, policy)) if p.provider == "claude" else p
+        for p in oracle.providers))
+
+
+class ComparisonProjectionTests(unittest.TestCase):
+    def test_payload_python39_syntax_and_stdlib_contract(self):
+        tree = ast.parse(PAYLOAD, feature_version=(3, 9))
+        modules = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        modules.update(alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                       for alias in node.names)
+        self.assertLessEqual(modules, {"sys", "dataclasses", "errno", "hashlib", "json",
+                                      "os", "pathlib", "re", "selectors", "shutil", "stat",
+                                      "subprocess", "time", "typing"})
+        self.assertNotIn("tomllib", PAYLOAD)
+        self.assertNotIn("match case", PAYLOAD)
+
+    def test_all_now_owned_fields_reasons_and_extra_records_are_load_bearing(self):
+        count = 0
+        for row in F.MATRIX:
+            if row.name.startswith(("cli-", "invalid-target-")):
+                continue
+            bound = F.bind(row.record, {"requested": "/project", "project": "/project",
+                                       "home": "/home", "core": "/core",
+                                       "release": "r-" + "a" * 64})
+            for oracle in bound.scopes:
+                if row.cohort == "adopted" and oracle.scope == "project":
+                    oracle = adopted_comparison_oracle(oracle)
+                private = row.cohort == "private"
+                expected = comparison_projection(oracle, private=private)
+                assert_comparison_projection(self, expected, oracle, private=private)
+                mutations = [replace(expected, customization="wrong"),
+                             replace(expected, reasons=(*expected.reasons, "invented"))]
+                for pi, provider in enumerate(expected.providers):
+                    altered = [replace(provider, customization="wrong"),
+                               replace(provider, reasons=(*provider.reasons, "invented"))]
+                    altered += [replace(provider, reasons=tuple(
+                        r for r in provider.reasons if r != reason)) for reason in provider.reasons]
+                    if provider.files:
+                        altered.append(replace(provider, files=(*provider.files, provider.files[0])))
+                    for fi, file in enumerate(provider.files):
+                        changed = [replace(file, **{k: v}) for k, v in (
+                            ("comparison", "wrong"), ("metadata", "wrong"),
+                            ("instructions", "wrong"), ("permission_fields", ("invented",)),
+                            ("ownership", "wrong"), ("status", "wrong"),
+                            ("reasons", (*file.reasons, "invented")))]
+                        changed += [replace(file, reasons=tuple(r for r in file.reasons if r != why))
+                                    for why in file.reasons]
+                        changed += [replace(file, baseline=replace(file.baseline, **{k: v}))
+                                    for k, v in (("kind", "wrong"), ("status", "wrong"),
+                                                 ("path", "/wrong"))]
+                        altered += [replace(provider, files=tuple(
+                            value if i == fi else f for i, f in enumerate(provider.files)))
+                                    for value in changed]
+                    mutations += [replace(expected, providers=tuple(
+                        value if i == pi else p for i, p in enumerate(expected.providers)))
+                                  for value in altered]
+                for actual in mutations:
+                    with self.assertRaises(AssertionError):
+                        assert_comparison_projection(self, actual, oracle, private=private)
+                    count += 1
+        print(f"comparison oracle: {count} full-field/reason/extra-record mutations rejected",
+              flush=True)
 
 
 def assert_stale_combination(test, result, before):
@@ -1269,9 +1425,21 @@ class QualifiedFixtureTests(unittest.TestCase):
                 self.assertEqual(context.resolved_directory, expected.resolved_directory)
                 self.assertEqual(result.exit_code, expected.exit_code)
                 assert_legacy_projection(self, result.scope, oracle)
+                compared = I.inspect_compare(result)
+                complete_oracle = (adopted_comparison_oracle(oracle)
+                                   if row.cohort == "adopted" else oracle)
+                assert_comparison_projection(self, compared.scope, complete_oracle)
+                if row.cohort == "adopted":
+                    observed = {o.path: o for c in result.collections for o in c.observations}
+                    self.assertEqual(F.hashlib.sha256(observed["CLAUDE.md"].data).hexdigest(),
+                                     "1496c0b308110131921a2e7c7e36b10efbdcf411684106aa4d5f234bbab2071e")
+                    self.assertEqual(F.hashlib.sha256(
+                        observed[".claude/.domestique/base/CLAUDE.md.block"].data).hexdigest(),
+                        "86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120")
+                self.assertEqual(compared.exit_code, result.exit_code)
                 self.assertTrue(all(c.consistent for c in result.collections))
                 self.assertNotIn("unread-required-input", codes(result))
-                case.accept(json.dumps(asdict(result.scope), ensure_ascii=True).encode(), b"")
+                case.accept(json.dumps(asdict(compared.scope), ensure_ascii=True).encode(), b"")
                 print("legacy oracle accepted:", row.name, flush=True)
             if self.session.active is not None:
                 return
@@ -1287,6 +1455,7 @@ class QualifiedFixtureTests(unittest.TestCase):
                                  F.absent_provider("copilot"))),
                         {"project": str(case.project)})
         assert_legacy_projection(self, result.scope, oracle)
+        assert_comparison_projection(self, I.inspect_compare(result).scope, oracle)
         self.assertEqual(result.exit_code, 0)
         case.accept(json.dumps(asdict(result.scope), ensure_ascii=True).encode(), b"")
         print("legacy oracle accepted: multiple-generations-one-provider (legacy only)",
@@ -1392,6 +1561,14 @@ class QualifiedFixtureTests(unittest.TestCase):
                         assert_detection_projection(self, actual, wanted)
                     else:
                         assert_private_projection(self, actual, oracle)
+                compared = I.inspect_compare(result)
+                for actual, oracle in zip(compared.scopes, expected.scopes):
+                    wanted = comparison_projection(oracle, private=True)
+                    if row.mutation == "core":
+                        wanted = replace(wanted, providers=tuple(
+                            without_core_selection(p) for p in wanted.providers))
+                    assert_detection_projection(self, actual, wanted)
+                self.assertEqual(compared.exit_code, result.exit_code)
                 release = expected.scopes[0].providers[0].generations[0].reported_ref
                 core = case.env["DOMESTIQUE_HOME"]
                 core_paths = ("state/global-manifest", "active", "bin/resolve-core",
@@ -1426,7 +1603,7 @@ class QualifiedFixtureTests(unittest.TestCase):
                 # A corrupt manifest makes unattached Beads ownership unknown,
                 # but cannot change the observed absence or readiness.
                 counts[row.name] = self.assert_private_inputs(case, result)
-                self.accept_private(case, result)
+                self.accept_private(case, compared)
                 print("private oracle accepted:", row.name, "digests=" + str(counts[row.name]),
                       flush=True)
             if self.session.active is not None:
@@ -1795,6 +1972,12 @@ class QualifiedFixtureTests(unittest.TestCase):
                                             for o in c.observations))
                     else:
                         assert_stale_combination(self, result, before)
+                        compared = I.inspect_compare(result)
+                        self.assertEqual(compared.exit_code, 1)
+                        self.assertEqual(compared.scopes[1].customization, "unknown")
+                        self.assertTrue(all(f.comparison == "unknown"
+                                            for s in compared.scopes for p in s.providers
+                                            for f in p.files))
                         if name == "manifest-format":
                             fresh = I.inspect_scan_legacy(I.resolve_context(case.requested))
                             self.assertEqual(fresh.scope.installation, "partial")
@@ -1804,6 +1987,77 @@ class QualifiedFixtureTests(unittest.TestCase):
             if self.session.active is not None:
                 return
         print(f"supplied legacy: {len(names)} cases; same six-install cohort", flush=True)
+        type(self).complete = True
+
+
+    def test_zzzzz_comparison_fresh_scopes_and_template_independence(self):
+        type(self).complete = False
+        mutations = ("template-drift", "prompt-fork", "unknown-frontmatter",
+                     "stale-private-local", "stale-private-core", "digest-input-missing")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                private = mutation.startswith(("stale-private", "digest-input"))
+                case = self.session.begin("private-global-and-local" if private else
+                                          "v1-normal-all-including-draft-copilot")
+                with patch.dict(os.environ, case.env, clear=True):
+                    context = I.resolve_context(case.requested)
+                    scan = I.inspect_scan_private(context) if private else I.inspect_scan_legacy(context)
+                    if mutation == "template-drift":
+                        (case.project / "domestique.sh").write_text(F.SECRET + "\n")
+                    elif mutation in ("prompt-fork", "unknown-frontmatter"):
+                        leaf = case.project / LEAF
+                        raw = leaf.read_bytes()
+                        leaf.write_bytes((raw.split(b"\n---\n", 1)[0] + b"\n---\n" +
+                                          F.SECRET.encode() + b"\n") if mutation == "prompt-fork"
+                                         else raw.replace(b"tools:", b"unknown:"))
+                    elif mutation == "stale-private-local":
+                        leaf = case.project / PRIVATE_PATHS["project", "claude"][0]
+                        leaf.write_bytes(leaf.read_bytes() + F.SECRET.encode())
+                    elif mutation == "stale-private-core":
+                        active = Path(case.env["DOMESTIQUE_HOME"]) / "active"
+                        active.write_text("release=invalid\n")
+                    elif mutation == "digest-input-missing":
+                        scan = replace(scan, digests=())
+                    if not private:
+                        scan = I.inspect_scan_legacy(I.resolve_context(case.requested))
+                    case.before = self.session.snapshot()
+                    with patch.object(I.subprocess, "Popen", side_effect=AssertionError("execution")), \
+                            patch.object(I.Path, "read_bytes", side_effect=AssertionError("raw read")), \
+                            patch.object(I.Path, "read_text", side_effect=AssertionError("raw read")), \
+                            patch.object(I.os, "scandir", side_effect=AssertionError("enumeration")):
+                        result = I.inspect_compare(scan)
+                if private:
+                    project = result.scopes[1]
+                    self.assertEqual(project.customization, "unknown")
+                    self.assertTrue(all(f.comparison == "unknown" for p in project.providers
+                                        for f in p.files))
+                    if mutation == "stale-private-local":
+                        assert_comparison_projection(self, result.scopes[0],
+                                                     case.expected().scopes[0], private=True)
+                        self.assertEqual(project.installation, "unknown")
+                    elif mutation == "stale-private-core":
+                        self.assertEqual(result.core.status, "unknown")
+                        self.assertEqual(result.scopes[0].customization, "unknown")
+                    else:
+                        self.assertTrue(all("baseline-unavailable" in f.reasons
+                                            for s in result.scopes for p in s.providers
+                                            for f in p.files))
+                    self.accept_private(case, result)
+                else:
+                    if mutation == "template-drift":
+                        assert_comparison_projection(self, result.scope, case.expected().scopes[1])
+                    else:
+                        file = result.scope.providers[0].files[0]
+                        self.assertEqual((file.comparison, file.metadata, file.instructions),
+                                         ("different", "same", "different")
+                                         if mutation == "prompt-fork" else
+                                         ("different", "unknown", "unknown"))
+                        self.assertEqual(file.permission_fields, ())
+                    case.accept(json.dumps(asdict(result.scope), ensure_ascii=True).encode(), b"")
+                print("comparison source-qualified:", mutation, flush=True)
+            if self.session.active is not None:
+                return
+        print(f"comparison additional: {len(mutations)} cases; same six-install cohort", flush=True)
         type(self).complete = True
 
 
@@ -1979,6 +2233,339 @@ class LegacyFailureTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 I.inspect_scan_legacy(I.resolve_context(self.project))
         self.assertFalse(output.getvalue() + errors.getvalue())
+
+
+class ComparisonTests(unittest.TestCase):
+    setUp = BoundaryTests.setUp
+    tearDown = BoundaryTests.tearDown
+    guarded = BoundaryTests.guarded
+    write = LegacyFailureTests.write
+
+    def evidence(self, baseline, live, *, provider="claude", policy=False):
+        path = ("CLAUDE.md" if policy else ".codex/agents/implementer.toml"
+                if provider == "codex" else ".github/agents/domestique-implementer.agent.md"
+                if provider == "copilot" else LEAF)
+        base = ".claude/.domestique/base/" + path + (".block" if policy else "")
+        self.write(base, baseline)
+        self.write(path, F.BEGIN + b"\n" + live + F.END + b"\n" if policy else live)
+        context = I.resolve_context(self.project)
+        collection = collect(self.project, (path, base), context=context)
+        if policy:
+            collection = I.collection_content(collection, "legacy-policy")
+        absolute, reference = str(self.project / path), str(self.project / base)
+        file = I.FileEvidence(absolute, collection.observations[0].status,
+                              I.Baseline("snapshot", "valid", reference), "unknown",
+                              reasons=("installed-baseline",) +
+                              (("host-text-excluded",) if policy else ()))
+        provider = I.ProviderRecord(provider, (), "installed", "normal", "unknown",
+                                    (file,), ("installed-baseline",))
+        scope = I.ScopeRecord("project", str(self.project), "installed", "normal", "unknown",
+                              (provider,))
+        return I.LegacyScan(scope, (), 0, (collection,), context)
+
+    def compare(self, evidence):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr), \
+                patch.object(I, "inspect_scan_legacy", side_effect=AssertionError("rescan")), \
+                patch.object(I, "inspect_scan_private", side_effect=AssertionError("rescan")), \
+                patch.object(I.Path, "read_bytes", side_effect=AssertionError("raw read")), \
+                patch.object(I.Path, "read_text", side_effect=AssertionError("raw read")), \
+                patch.object(I.os, "listdir", side_effect=AssertionError("enumeration")), \
+                patch.object(I.subprocess, "Popen", side_effect=AssertionError("execution")):
+            result = I.inspect_compare(evidence)
+        self.assertEqual(stdout.getvalue() + stderr.getvalue(), "")
+        self.assertNotIn(F.SECRET, repr(result))
+        return result
+
+    def test_supported_native_metadata_body_both_models_quotes_and_multiline(self):
+        cases = (
+            ("claude", b"---\nname: implementer\ntools: [Read, Bash]\nmodel: old\n---\nbody\n",
+             ((b"[Read, Bash]", b'["Read", "Edit"]', "different", "same", ("tools",)),
+              (b"body", b"fork", "same", "different", ()),
+              (b"model: old", b"model: new", "different", "same", ()))),
+            ("copilot", b"---\nname: 'agent'\ndescription: |\n  one\n  two\ntools: ['read']\n"
+             b"---\nbody\n",
+             ((b"one", b"changed", "different", "same", ()),
+              (b"['read']", b"['edit']", "different", "same", ("tools",)),
+              (b"'agent'", b"'agent''s name'", "different", "same", ()))),
+            ("codex", b'name = "agent"\nmodel = "old"\nsandbox_mode = "workspace-write"\n'
+             b'description = """multi\nline \\"quoted\\""""\n'
+             b'developer_instructions = """\nbody\n"""\n',
+             ((b"workspace-write", b"read-only", "different", "same", ("sandbox_mode",)),
+              (b'body', b'fork', "same", "different", ()),
+              (b'model = "old"', b'model = "new"', "different", "same", ()),
+              (b'line ', b'new line ', "different", "same", ()))),
+        )
+        count = 0
+        for provider, base, mutations in cases:
+            for old, new, metadata, instructions, fields in (
+                    (b"absent", b"absent", "same", "same", ()), *mutations):
+                for body_change in (False, True):
+                    with self.subTest(provider=provider, mutation=count):
+                        live = base.replace(old, new)
+                        if body_change:
+                            live = live.replace(b"body", F.SECRET.encode())
+                        evidence = self.evidence(base, live, provider=provider)
+                        before = self.session.snapshot()
+                        result = self.compare(evidence)
+                        file = result.scope.providers[0].files[0]
+                        body = "different" if body_change else instructions
+                        same = live == base
+                        reasons = {"installed-baseline"}
+                        if not same:
+                            reasons.add("baseline-not-ownership")
+                        if metadata == "different":
+                            reasons.add("metadata-changed")
+                        if body == "different":
+                            reasons.add("instructions-changed")
+                        wanted = replace(evidence.scope.providers[0].files[0],
+                                         comparison="same" if same else "different",
+                                         metadata=metadata, instructions=body,
+                                         permission_fields=fields, reasons=tuple(sorted(reasons)))
+                        self.assertEqual(replace(file, reasons=tuple(sorted(file.reasons))), wanted)
+                        self.assertEqual(result.scope.customization,
+                                         "unchanged" if same else "customized")
+                        self.assertEqual(before, self.session.snapshot())
+                        count += 1
+        print(f"comparison native subset: {count} exact metadata/body/permission cases", flush=True)
+
+    def test_unsupported_syntax_never_claims_unchanged_instructions_or_fields(self):
+        yaml = b"---\nname: agent\ntools: [Read]\n---\nbody\n"
+        toml = b'name = "agent"\nsandbox_mode = "read-only"\ndeveloper_instructions = """body"""\n'
+        cases = [
+            ("claude", yaml, yaml.replace(b"[Read]", value)) for value in (
+                b"&anchor [Read]", b"[*alias]", b"{nested: value}", b'"unclosed',
+                b'["Read"', b'"multi\nline"', b"|\n  first\n second", b"!tag value",
+                b"- invalid sequence", b"? invalid mapping")]
+        cases += [("claude", yaml, live) for live in (
+            yaml.replace(b"tools:", b"unknown:"),
+            yaml.replace(b"name: agent", b"name: agent\nname: duplicate"),
+            yaml.replace(b"---\nbody", b"--\nbody"),
+            b"entire prompt fork " + F.SECRET.encode(),
+            yaml.replace(b"tools:", b" tools:"))]
+        cases += [("codex", toml, live) for live in (
+            toml.replace(b"sandbox_mode", b"unknown"),
+            toml.replace(b'"""body"""', b'"""unterminated'),
+            toml.replace(b'"""body"""', b'"""body""""'),
+            toml + b"[sandbox_workspace_write]\nnetwork_access = true\n",
+            toml.replace(b'name = "agent"', b'name = "agent"\nname = "duplicate"'),
+            toml.replace(b'"""body"""', b'"""bad\\qescape"""'))]
+        for index, (provider, base, live) in enumerate(cases):
+            with self.subTest(case=index):
+                result = self.compare(self.evidence(base, live, provider=provider))
+                file = result.scope.providers[0].files[0]
+                self.assertEqual((file.comparison, file.metadata, file.instructions,
+                                  file.permission_fields), ("different", "unknown", "unknown", ()))
+                self.assertEqual(set(file.reasons), {"installed-baseline", "unsupported-metadata",
+                                                    "baseline-not-ownership"})
+        print(f"comparison conservative syntax: {len(cases)} cases", flush=True)
+
+    def test_comments_crlf_and_managed_policy_body_only(self):
+        base = b"---\nname: agent\ntools: [Read] # comment\n---\nbody\n"
+        for live, metadata, reasons in (
+            (base.replace(b"comment", b"changed"), "different", {"metadata-changed"}),
+            (base.replace(b"\n", b"\r\n"), "same", {"crlf-difference"})):
+            result = self.compare(self.evidence(base, live))
+            file = result.scope.providers[0].files[0]
+            self.assertEqual((file.metadata, file.instructions, file.permission_fields),
+                             (metadata, "same", ()))
+            self.assertEqual(set(file.reasons), reasons | {
+                "installed-baseline", "baseline-not-ownership"})
+        evidence = self.evidence(b"owned\n", b"owned\n", policy=True)
+        self.write("CLAUDE.md", F.SECRET.encode() + b"\n" + F.BEGIN + b"\nowned\n" +
+                   F.END + b"\n" + F.SECRET.encode())
+        evidence = replace(evidence, collections=(I.collection_content(
+            collect(self.project, ("CLAUDE.md", ".claude/.domestique/base/CLAUDE.md.block"),
+                    context=I.resolve_context(self.project)), "legacy-policy"),),
+                           _context=I.resolve_context(self.project))
+        result = self.compare(evidence)
+        file = result.scope.providers[0].files[0]
+        self.assertEqual((file.comparison, file.metadata, file.instructions),
+                         ("same", "not-applicable", "same"))
+        self.assertNotIn(F.SECRET.encode(), evidence.collections[0].observations[0].data)
+
+    def test_pinned_native_literal_characters_and_comment_context(self):
+        source = self.session.source("comment-syntax", F.HISTORICAL_PIN).read_bytes()
+        self.assertEqual(F.hashlib.sha256(source).hexdigest(),
+                         "2a4fc602e8b8991e5e7d52663993384d7f2ba3bfed6c58aced5cad61195d22a8")
+        pinned = (
+            ("claude", "emit_implementer",
+             "d50fdb9a7bec1d457ea21547038985a46965b02e0b71416fde6969ccfb1e9e8c"),
+            ("copilot", "emit_copilot_implementer",
+             "75aa888490638d10c4ed482e0be6efe517c344a6a3eac296719785c179486dea"),
+            ("codex", "emit_codex_implementer",
+             "ad16242a1e34631e728729ad9b4a7da37f02ead712d4b989028b4ceca59332e7"),
+        )
+        malformed_count, supported_count = 0, 0
+        secret = F.SECRET.encode()
+        for provider, emitter, digest in pinned:
+            anchor = (emitter + "() { cat <<'DOM_EOF'\n").encode()
+            self.assertEqual(source.count(anchor), 1)
+            base = source.split(anchor, 1)[1].split(b"\nDOM_EOF\n", 1)[0] + b"\n"
+            self.assertEqual(F.hashlib.sha256(base).hexdigest(), digest)
+            toml = provider == "codex"
+            permission = "sandbox_mode" if toml else "tools"
+
+            def field(raw, key, line):
+                result, count = F.re.subn(rb"(?m)^" + key.encode() + rb"[:= ].*$",
+                                          lambda match: line, raw)
+                self.assertEqual(count, 1, "pinned metadata field anchor")
+                return result
+
+            changed = field(base, permission, b'sandbox_mode = "read-only"' if toml
+                            else b"tools: ['" + secret + b"']")
+            self.assertTrue(changed != base, "source-qualified permission witness")
+            invalid, positive = [], []
+            controls = (0, 1, 8, 11, 12, 14, 31, 127)
+            if not toml:
+                controls += (0x80, 0x84, 0x86, 0x9f, 0xfffe, 0xffff)
+            for point in controls:
+                value = secret + chr(point).encode() + b"suffix"
+                if toml:
+                    invalid.extend((
+                        b"# " + value + b"\n" + changed,
+                        field(changed, permission, b'sandbox_mode = "read-only" # ' + value),
+                        field(changed, "name", b'name = "' + value + b'"'),
+                        field(changed, "description", b'description = """\n' + value + b'\n"""'),
+                        changed + b"# " + value + b"\n",
+                    ))
+                else:
+                    invalid.extend((
+                        changed.replace(b"---\n", b"---\n# " + value + b"\n", 1),
+                        field(changed, "tools", b"tools: Read # " + value),
+                        field(changed, "tools", b"tools: 'Read' # " + value),
+                        field(changed, "tools", b"tools: ['Read'] # " + value),
+                        field(changed, "description", b"description: | # " + value + b"\n  text"),
+                        field(changed, "description", b"description: |\n  " + value),
+                        field(changed, "name", b"name: " + value),
+                        field(changed, "name", b'name: "' + value + b'"'),
+                    ))
+            if toml:
+                for comment in (b"# " + secret, b"\t# " + secret,
+                                "# \t\u0080\u0085\u009f\u00a0\u2028\U0001f642".encode()):
+                    positive.extend((
+                        comment + b"\n" + changed,
+                        field(changed, permission, b'sandbox_mode = "read-only"' + comment),
+                        changed + comment + b"\n",
+                    ))
+                for value in (b'"quoted#hash"', b"'literal#hash'",
+                              b'"escaped\\u0000\\u001f\\t\\n\\"#hash"',
+                              b'"""multiline\n# string content\n"""'):
+                    positive.append(field(changed, "description", b"description = " + value))
+            else:
+                for value in (b"'Read'#comment", b"['Read']#comment",
+                              b'"Read"#comment', b"|#comment\n  text",
+                              "'Read'\u00a0#comment".encode(),
+                              "['Read']\u0085#comment".encode()):
+                    invalid.append(field(changed, "tools", b"tools: " + value))
+                invalid.extend((
+                    field(changed, "tools", b"tools:['Read']"),
+                    field(changed, "name", b'name:"agent"'),
+                    field(changed, "name", b"name:#comment"),
+                    changed.replace(b"---\n", "---\n\u00a0# comment\n".encode(), 1),
+                ))
+                for comment in (b" # " + secret, b"\t# " + secret,
+                                " # \t\u0085\u00a0\u2028\U0001f642".encode()):
+                    positive.extend((
+                        changed.replace(b"---\n", b"---\n" + comment + b"\n", 1),
+                        field(changed, "name", b"name: plain" + comment),
+                        field(changed, "name", b"name: 'quoted#hash'" + comment),
+                        field(changed, "description", b"description: [one, 'two#hash']" + comment),
+                        field(changed, "description", b"description: |" + comment + b"\n  text"),
+                    ))
+                for value in (b"plain#hash", b'"quoted#hash"', b"'quoted#hash'",
+                              b'"escaped\\u0000\\u001f\\t\\n\\"#hash"',
+                              "'printable\u0085\u00a0\u2028\U0001f642'".encode(),
+                              b"|\n  # block content\n  text"):
+                    positive.append(field(changed, "description", b"description: " + value))
+            for index, malformed in enumerate(invalid):
+                for baseline_bad in (False, True):
+                    with self.subTest(provider=provider, malformed=index, baseline_bad=baseline_bad):
+                        evidence = self.evidence(malformed if baseline_bad else base,
+                                                 base if baseline_bad else malformed,
+                                                 provider=provider)
+                        result = self.guarded(lambda: self.compare(evidence))
+                        expected = replace(evidence.scope.providers[0].files[0],
+                                           comparison="different", reasons=(
+                                               "installed-baseline", "unsupported-metadata",
+                                               "baseline-not-ownership"))
+                        self.assertEqual(result.scope.providers[0].files[0], expected)
+                        self.assertEqual(result.scope.customization, "customized")
+                        malformed_count += 1
+            for index, live in enumerate((base, changed, *positive)):
+                for crlf in (False, True):
+                    with self.subTest(provider=provider, supported=index, crlf=crlf):
+                        live_bytes = live.replace(b"\n", b"\r\n") if crlf else live
+                        evidence = self.evidence(base, live_bytes, provider=provider)
+                        result = self.guarded(lambda: self.compare(evidence))
+                        reasons = ["installed-baseline"]
+                        if index:
+                            reasons.append("metadata-changed")
+                        elif crlf:
+                            reasons.append("crlf-difference")
+                        if index or crlf:
+                            reasons.append("baseline-not-ownership")
+                        expected = replace(
+                            evidence.scope.providers[0].files[0],
+                            comparison="different" if index or crlf else "same",
+                            metadata="different" if index else "same", instructions="same",
+                            permission_fields=(permission,) if index else (),
+                            reasons=tuple(reasons))
+                        self.assertEqual(result.scope.providers[0].files[0], expected)
+                        supported_count += 1
+            print(f"pinned comment syntax: {provider} baseline SHA256 {digest}", flush=True)
+        print(f"pinned comment syntax: {malformed_count} exact conservative cases; "
+              f"{supported_count} supported cases; all seven stubs/preservation/privacy guarded; "
+              f"owned root {self.root}", flush=True)
+
+    def test_missing_revoked_incomplete_and_stale_evidence_cannot_be_pristine(self):
+        base = b"---\nname: agent\ntools: [Read]\n---\nbody\n"
+        for mutation in ("edit", "identity", "missing", "baseline", "manifest-proof",
+                         "revoked", "unsealed", "incomplete", "absent-collections"):
+            with self.subTest(mutation=mutation):
+                evidence = self.evidence(base, base)
+                c = evidence.collections[0]
+                if mutation == "edit":
+                    self.write(LEAF, base + b"fork\n")
+                elif mutation == "identity":
+                    self.write(LEAF + ".replacement", base)
+                    os.replace(self.project / (LEAF + ".replacement"), self.project / LEAF)
+                elif mutation == "missing":
+                    (self.project / LEAF).unlink()
+                elif mutation == "baseline":
+                    self.write(BASE, base + b"baseline drift\n")
+                elif mutation == "manifest-proof":
+                    self.write("CLAUDE.md", "new root membership")
+                elif mutation == "revoked":
+                    c = replace(c, consistent=False)
+                elif mutation == "unsealed":
+                    c = replace(c, _declaration=())
+                elif mutation == "incomplete":
+                    c = replace(c, observations=c.observations[:1])
+                evidence = replace(evidence, collections=() if mutation == "absent-collections"
+                                   else (c,))
+                result = self.compare(evidence)
+                self.assertEqual((result.exit_code, result.scope.installation,
+                                  result.scope.customization), (1, "unknown", "unknown"))
+                self.assertEqual(result.scope.providers[0].files[0].comparison, "unknown")
+                self.assertIn("inconsistent-evidence", codes(result))
+        with self.assertRaisesRegex(TypeError, "^unsupported-comparison-input$"):
+            I.inspect_compare(None)
+
+    def test_omitted_generation_collection_is_not_pristine(self):
+        base = b"---\nname: agent\ntools: [Read]\n---\nbody\n"
+        evidence = self.evidence(base, base)
+        receipt = self.project / MANIFEST
+        self.write(MANIFEST, "recorded generation\n")
+        context = I.resolve_context(self.project)
+        native = collect(self.project, (LEAF, BASE), context=context)
+        generation = I.GenerationEvidence("v1-snapshot-1", (str(receipt),), "0.1.0", "abc123")
+        provider = replace(evidence.scope.providers[0], generations=(generation,))
+        evidence = replace(evidence, scope=replace(evidence.scope, providers=(provider,)),
+                           collections=(native,), _context=context)
+        result = self.compare(evidence)
+        self.assertEqual((result.exit_code, result.scope.customization), (1, "unknown"))
+        self.assertEqual(result.scope.providers[0].files[0].comparison, "unknown")
 
 
 class PrivateBoundaryTests(unittest.TestCase):

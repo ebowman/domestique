@@ -309,6 +309,8 @@ class Collection:
     observations: Tuple[Observation, ...]
     diagnostics: Tuple[Diagnostic, ...]
     consistent: bool
+    _declaration: tuple = field(default=(), repr=False)
+    _content: str = field(default="full", repr=False)
 
 
 class _Refusal(Exception):
@@ -562,8 +564,50 @@ class Collector:
         if self._broken:
             observations = tuple(replace(o, status="inconsistent" if changed else "unreadable",
                                          data=None) for o in observations)
-        self._sealed = Collection(self.root, observations, diagnostics, not self._broken)
+        self._sealed = Collection(
+            self.root, observations, diagnostics, not self._broken,
+            (tuple(self._observed) + tuple(sorted(self._allowed.difference(self._observed))),
+             self.scope, self.limits, self.context,
+             tuple(self._metadata.items()), self._missing_root))
         return self._sealed
+
+
+def collection_content(collection, content):
+    """Apply only the scanners' private-byte reductions, including on refresh."""
+    policies = {p for layout in LEGACY_LAYOUTS for p in layout[3]}
+    native = {p for scope in ("global", "project") for provider in PRIVATE_PROVIDERS
+              for p in private_inventory(scope, provider)}
+    observations = []
+    for o in collection.observations:
+        if content == "legacy-policy" and o.path in policies:
+            body = legacy_policy(o.text())[1]
+            o = replace(o, data=body.encode("utf-8") if body is not None else None)
+        elif content == "private-native" and o.path not in native:
+            o = replace(o, data=None)
+        observations.append(o)
+    return replace(collection, observations=tuple(observations), _content=content)
+
+
+def collection_fresh(collection, *, require_consistent=True):
+    """Revalidate the complete original declaration, never just surviving files.
+
+    Use the same bounded reader, original context and byte reduction. Identity
+    proofs still cover removed host/manifest bytes. Revoked or unsealed inputs
+    cannot be replaced by a newer successful generation.
+    """
+    if require_consistent and not collection.consistent or not collection._declaration:
+        return False
+    paths, scope, limits, context, metadata, missing_root = collection._declaration
+    reader = Collector(collection.directory, paths, scope=scope, limits=limits,
+                       context=context, metadata=dict(metadata), missing_root=missing_root)
+    for path in paths:
+        reader.read(path)
+    after = collection_content(reader.finish(), collection._content)
+    before_items = {o.path: o for o in collection.observations}
+    after_items = {o.path: o for o in after.observations}
+    return (len(before_items) == len(collection.observations) and
+            after.consistent == collection.consistent and before_items == after_items and
+            collection.diagnostics == after.diagnostics)
 
 
 # Shared status/reference records (the .1 oracle's projection contract).
@@ -926,10 +970,7 @@ def legacy_provider(root, layout, limits, context):
                                 mode, "unknown", tuple(files), tuple(reasons))
     # Hand the comparator only owned body bytes for policy inputs. Invalid,
     # unowned and multiple blocks have no unambiguous comparison body.
-    collection = replace(collection, observations=tuple(
-        replace(o, data=(policy[o.path][1].encode("utf-8")
-                         if policy[o.path][1] is not None else None))
-        if o.path in policy else o for o in collection.observations))
+    collection = collection_content(collection, "legacy-policy")
     return record, collection
 
 
@@ -1049,6 +1090,7 @@ class PrivateScan:
     exit_code: int
     collections: Tuple[Collection, ...] = field(repr=False)
     digests: Tuple[DigestEvidence, ...] = field(repr=False)
+    _context: Optional[Context] = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -1561,10 +1603,7 @@ def inspect_scan_private(context, *, limits=Limits(), legacy=None):
             changed_scopes.add("project")
             diagnose("project", ("inconsistent-evidence",), root)
     for (anchor, paths, kwargs), before in zip(specs, collections):
-        reader = Collector(anchor, paths, **kwargs)
-        for path in paths:
-            reader.read(path)
-        if reader.finish() != before:
+        if not collection_fresh(before, require_consistent=False):
             code_scope = kwargs["scope"]
             changed_scopes.add("global" if code_scope == "core" or
                                code_scope.startswith("global") else "project")
@@ -1574,11 +1613,7 @@ def inspect_scan_private(context, *, limits=Limits(), legacy=None):
         diagnose("project", ("inconsistent-evidence",), root)
     # Metadata and core roles are not native comparison content. Legacy has
     # already removed host text; retain its separately qualified snapshots.
-    native_paths = {p for scope in ("global", "project") for provider in PRIVATE_PROVIDERS
-                    for p in private_inventory(scope, provider)}
-    collections = [replace(c, observations=tuple(
-        o if o.path in native_paths else replace(o, data=None) for o in c.observations))
-                   for c in collections]
+    collections = [collection_content(c, "private-native") for c in collections]
     if legacy is not None:
         collections.extend(legacy.collections)
     if changed_scopes:
@@ -1607,7 +1642,383 @@ def inspect_scan_private(context, *, limits=Limits(), legacy=None):
                          legacy is not None and legacy.exit_code) or any(
         s.installation not in ("absent", "installed") or s.mode == "mixed" for s in scopes))
     return PrivateScan(tuple(scopes), core_record, beads_record, tuple(diagnostics),
-                       exit_code, tuple(collections), tuple(digests))
+                       exit_code, tuple(collections), tuple(digests), context)
+
+
+# Deliberately small native syntax subsets, not configuration evaluation.
+# Unknown keys/structures disable detail for BOTH metadata and instructions.
+NATIVE_FIELDS = {
+    "claude": frozenset(("name", "description", "model", "tools", "disallowedTools",
+                         "permissionMode", "skills", "maxTurns", "argument-hint")),
+    "copilot": frozenset(("name", "description", "model", "tools", "target",
+                          "infer", "user-invocable", "disable-model-invocation")),
+    "codex": frozenset(("name", "description", "model", "model_reasoning_effort",
+                        "sandbox_mode", "approval_policy", "developer_instructions")),
+}
+PERMISSION_FIELDS = {
+    "claude": frozenset(("tools", "disallowedTools", "permissionMode")),
+    "copilot": frozenset(("tools",)),
+    "codex": frozenset(("sandbox_mode", "approval_policy")),
+}
+
+
+def _quoted_end(text, start, *, toml=False):
+    quote = text[start]
+    triple = toml and text.startswith(quote * 3, start)
+    delimiter = quote * (3 if triple else 1)
+    i = start + len(delimiter)
+    while i < len(text):
+        if text.startswith(delimiter, i):
+            end = i + len(delimiter)
+            # TOML's four/five-quote endings and YAML doubled quotes need
+            # separate rules; only the latter is in this supported subset.
+            if not toml and quote == "'" and text.startswith("''", i):
+                i += 2
+                continue
+            if toml and triple and text[end:end + 1] == quote:
+                return None
+            return end
+        char = text[i]
+        if char == "\\" and quote == '"':
+            escape = re.compile(r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})'
+                                ).match(text, i)
+            if escape:
+                if toml and escape[0] == "\\/":
+                    return None
+                if escape[0][1] in "uU":
+                    point = int(escape[0][2:], 16)
+                    if point > 0x10ffff or 0xd800 <= point <= 0xdfff:
+                        return None
+                i += len(escape[0])
+                continue
+            continuation = re.compile(r"\\[ \t]*\n[ \t\n]*").match(text, i) if triple else None
+            if continuation:
+                i += len(continuation[0])
+                continue
+            return None
+        if (ord(char) < 32 and char != "\t" and not (triple and char == "\n") or
+                ord(char) == 127):
+            return None
+        i += 1
+    return None
+
+
+def _yaml_comment_suffix(value):
+    return re.fullmatch(r"(?:[ \t]+(?:#[^\n]*)?)?", value) is not None
+
+
+def _yaml_scalar(value):
+    """Validate a scalar or flat scalar list; return a private lexical token."""
+    value = value.strip(" \t")
+    if not value:
+        return None
+    if value[0] in ("'", '"'):
+        end = _quoted_end(value, 0)
+        if end is None or not _yaml_comment_suffix(value[end:]):
+            return None
+        return value[:end]
+    if value.startswith("["):
+        i, tokens = 1, []
+        while i < len(value):
+            while i < len(value) and value[i] in " \t":
+                i += 1
+            if i == len(value):
+                return None
+            if value[i] == "]":
+                return tuple(tokens) if _yaml_comment_suffix(value[i + 1:]) else None
+            if value[i] in ("'", '"'):
+                end = _quoted_end(value, i)
+                if end is None:
+                    return None
+                token = value[i:end]
+                i = end
+            else:
+                match = re.compile(r"[A-Za-z0-9_./-]+").match(value, i)
+                if not match:
+                    return None
+                token = match[0]
+                i += len(token)
+            tokens.append(token)
+            while i < len(value) and value[i] in " \t":
+                i += 1
+            if i < len(value) and value[i] == ",":
+                i += 1
+            elif i >= len(value) or value[i] != "]":
+                return None
+        return None
+    value = re.split(r"[ \t]+#", value, maxsplit=1)[0].rstrip(" \t")
+    if (not value or value[0] in "&*!|>{}[]%@`#," or
+            re.match(r"[-?:](?:[ \t]|$)", value) or
+            re.search(r":(?:[ \t]|$)|[\[\]{}]", value)):
+        return None
+    return value
+
+
+def _yaml_parts(text, provider):
+    end = text.find("\n---\n", 3)
+    if not text.startswith("---\n") or end < 0:
+        return None
+    metadata = text[:end + 5]
+    # Validate YAML c-printable before dropping comments or tokenizing values.
+    # NEL and Unicode line separators are content, not LF/CR line boundaries.
+    if not re.fullmatch(
+            r"[\t\n\x20-\x7e\x85\xa0-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]*",
+            metadata):
+        return None
+    lines = re.findall(r"[^\n]*\n", metadata)
+    fields, i = {}, 1
+    while i < len(lines) and lines[i] != "---\n":
+        line = lines[i]
+        if not line.strip(" \t\n") or line.lstrip(" \t").startswith("#"):
+            i += 1
+            continue
+        match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_-]*):[ \t]+(.*?)\n", line)
+        if not match or match[1] not in NATIVE_FIELDS[provider] or match[1] in fields:
+            return None
+        key, value = match.groups()
+        i += 1
+        if re.fullmatch(r"[|>][+-]?(?:[ \t]+#.*)?", value):
+            block = []
+            while i < len(lines) and (not lines[i].strip(" \t\n") or lines[i].startswith(" ")):
+                if "\t" in lines[i][:len(lines[i]) - len(lines[i].lstrip(" \t"))]:
+                    return None
+                block.append(lines[i])
+                i += 1
+            if not block:
+                return None
+            indents = [len(line) - len(line.lstrip(" ")) for line in block if line.strip(" \t\n")]
+            if not indents or any(indent < indents[0] for indent in indents):
+                return None
+            fields[key] = (value.split("#", 1)[0].rstrip(), "".join(block))
+        else:
+            token = _yaml_scalar(value)
+            if token is None:
+                return None
+            fields[key] = token
+    if i == len(lines):
+        return None
+    return metadata, text[end + 5:], fields
+
+
+def _toml_parts(text):
+    # TOML forbids these literal controls everywhere, including comments and
+    # multiline strings; escaped representations are validated separately.
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
+        return None
+    fields, i, body_span = {}, 0, None
+    while i < len(text):
+        whitespace = re.match(r"[ \t\n]*(?:#[^\n]*(?:\n|$)[ \t\n]*)*", text[i:])
+        i += len(whitespace[0])
+        if i == len(text):
+            break
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_-]*)[ \t]*=[ \t]*", text[i:])
+        if not match or match[1] not in NATIVE_FIELDS["codex"] or match[1] in fields:
+            return None
+        key = match[1]
+        i += len(match[0])
+        start = i
+        if i < len(text) and text[i] in ("'", '"'):
+            end = _quoted_end(text, i, toml=True)
+            if end is None:
+                return None
+            i = end
+        else:
+            value = re.match(r"(?:true|false|[+-]?(?:0|[1-9][0-9]*))", text[i:])
+            if not value or key == "developer_instructions":
+                return None
+            i += len(value[0])
+        fields[key] = text[start:i]
+        if key == "developer_instructions":
+            body_span = (start, i)
+        suffix = re.match(r"[ \t]*(?:#[^\n]*)?(?:\n|$)", text[i:])
+        if not suffix:
+            return None
+        i += len(suffix[0])
+    if body_span is None:
+        return None
+    start, end = body_span
+    return text[:start] + text[end:], fields.pop("developer_instructions"), fields
+
+
+def _native_parts(data, provider, path, policy):
+    text = data.decode("utf-8").replace("\r\n", "\n")
+    if "\r" in text:
+        return None
+    if policy:
+        return None, text, {}
+    if "/agents/" in path and path.endswith(".toml"):
+        return _toml_parts(text)
+    if text.startswith("---") or "/agents/" in path and path.endswith(".md"):
+        return _yaml_parts(text, provider)
+    return None, text, {}
+
+
+def _compare_file(file, provider, observations, digests):
+    why = list(file.reasons)
+    policy = "host-text-excluded" in why
+    details = dict(comparison="unknown", metadata="not-applicable" if policy else "unknown",
+                   instructions="unknown", permission_fields=())
+    live = observations.get(file.path)
+    if (file.status != "readable" or file.baseline.status != "valid" or
+            live is None or live.status != "readable" or live.data is None):
+        return replace(file, **details)
+    if file.baseline.kind == "digest":
+        digest = digests.get((file.path, file.baseline.path))
+        reference = observations.get(file.baseline.path)
+        if digest is None or reference is None or reference.status != "readable":
+            return replace(file, **details,
+                           reasons=tuple(dict.fromkeys((*why, "baseline-unavailable"))))
+        same = hashlib.sha256(live.data).hexdigest() == digest.sha256
+        details["comparison"] = "same" if same else "different"
+        if not same:
+            why.append("file-changed")
+    elif file.baseline.kind == "snapshot":
+        base = observations.get(file.baseline.path)
+        if base is None or base.status != "readable" or base.data is None:
+            return replace(file, **details,
+                           reasons=tuple(dict.fromkeys((*why, "baseline-unavailable"))))
+        same = live.data == base.data
+        details["comparison"] = "same" if same else "different"
+        before = _native_parts(base.data, provider, file.path, policy)
+        after = _native_parts(live.data, provider, file.path, policy)
+        if before is None or after is None:
+            why.append("unsupported-metadata")
+        else:
+            details["metadata"] = ("not-applicable" if before[0] is None and after[0] is None
+                                   else "same" if before[0] == after[0] else "different")
+            details["instructions"] = "same" if before[1] == after[1] else "different"
+            details["permission_fields"] = tuple(sorted(
+                key for key in PERMISSION_FIELDS[provider]
+                if before[2].get(key) != after[2].get(key)))
+            for field_name, reason in (("metadata", "metadata-changed"),
+                                       ("instructions", "instructions-changed")):
+                if details[field_name] == "different":
+                    why.append(reason)
+        if not same:
+            if live.data.replace(b"\r\n", b"\n") == base.data.replace(b"\r\n", b"\n"):
+                why.append("crlf-difference")
+            # This describes comparison authority, NOT adoption or history.
+            if file.ownership == "unknown":
+                why.append("baseline-not-ownership")
+            if not any(r in why for r in ("metadata-changed", "instructions-changed",
+                                          "crlf-difference", "unsupported-metadata")):
+                why.append("file-changed")
+    return replace(file, **details, reasons=tuple(dict.fromkeys(why)))
+
+
+def _customization(installation, states):
+    states = tuple(states)
+    if installation == "absent" and not states:
+        return "not-applicable"
+    if installation != "installed" or not states or "unknown" in states:
+        return "unknown"
+    if "customized" in states:
+        return "customized"
+    return "unchanged" if all(s == "unchanged" for s in states) else "unknown"
+
+
+def inspect_compare(scan):
+    """Compare completed .3/.4 evidence; return the SAME immutable record type.
+
+    Only installed snapshot bytes/digests are comparison authority. No Git,
+    emitters, environment rediscovery, file enumeration or native execution.
+    Refresh uses original complete Collector declarations, not a new scanner.
+    Missing is a live status with unknown comparison, as in the .1 contract.
+    """
+    if not isinstance(scan, (LegacyScan, PrivateScan)):
+        raise TypeError("unsupported-comparison-input")
+    legacy = isinstance(scan, LegacyScan)
+    scopes = (scan.scope,) if legacy else scan.scopes
+    diagnostics = list(scan.diagnostics)
+    stale, observations = set(), {}
+    if not scan.collections:
+        stale.update(s.scope for s in scopes)
+    for collection in scan.collections:
+        declaration = collection._declaration
+        source_scope = declaration[1] if declaration else ""
+        kind = ("global" if source_scope == "core" or source_scope.startswith("global")
+                else "project")
+        if not collection_fresh(collection):
+            stale.add(kind)
+            if source_scope == "core":
+                stale.update(s.scope for s in scopes if any(
+                    e.startswith(collection.directory + "/") for p in s.providers
+                    for g in p.generations for e in g.evidence))
+            diagnostics.append(Diagnostic(kind, "inconsistent-evidence",
+                                          display(collection.directory)))
+            continue
+        for observation in collection.observations:
+            key = collection.directory + "/" + observation.path
+            if key in observations and observations[key] != observation:
+                stale.add(kind)
+            observations[key] = observation
+    context = scan._context
+    if context is None or not context.unchanged():
+        stale.add("project")
+        diagnostics.append(Diagnostic("project", "inconsistent-evidence"))
+    for scope in scopes:
+        if any(path not in observations for provider in scope.providers
+               for generation in provider.generations for path in generation.evidence):
+            stale.add(scope.scope)
+    digests = {}
+    if not legacy:
+        for digest in scan.digests:
+            key = (digest.path, digest.baseline_path)
+            if (key in digests or digest.content_available or
+                    re.fullmatch(r"[0-9a-f]{64}", digest.sha256) is None):
+                stale.add("global" if any(s.scope == "global" and any(
+                    f.path == digest.path for p in s.providers for f in p.files)
+                                                       for s in scopes) else "project")
+            digests[key] = digest
+    results = []
+    for scope in scopes:
+        revoked = scope.scope in stale or "inconsistent-evidence" in scope.reasons
+        providers = []
+        for provider in scope.providers:
+            unavailable = revoked or "inconsistent-evidence" in provider.reasons
+            if unavailable:
+                files = tuple(replace(
+                    f, status="unknown", ownership="unknown",
+                    baseline=replace(f.baseline, status="unavailable"),
+                    comparison="unknown", metadata="unknown", instructions="unknown",
+                    permission_fields=(),
+                    reasons=tuple(dict.fromkeys((*f.reasons, "inconsistent-evidence"))))
+                              for f in provider.files)
+            else:
+                files = tuple(_compare_file(f, provider.provider, observations, digests)
+                              for f in provider.files)
+            reasons = tuple(dict.fromkeys((*provider.reasons, *(r for f in files
+                for r in f.reasons if r != "digest-only-baseline"),
+                *(("inconsistent-evidence",) if unavailable else ()))))
+            customization = _customization(
+                provider.installation, tuple("unchanged" if f.comparison == "same" else
+                                             "customized" if f.comparison == "different" else
+                                             "unknown" for f in files))
+            providers.append(replace(
+                provider, files=files, reasons=reasons,
+                installation="unknown" if unavailable else provider.installation,
+                customization="unknown" if unavailable else customization))
+        states = tuple(p.customization for p in providers if p.installation != "absent")
+        reasons = tuple(dict.fromkeys((*scope.reasons,
+                                       *(("inconsistent-evidence",) if revoked else ()))))
+        results.append(replace(scope, providers=tuple(providers), reasons=reasons,
+                               installation="unknown" if revoked else scope.installation,
+                               customization="unknown" if revoked else
+                               _customization(scope.installation, states)))
+    diagnostics.extend(Diagnostic(kind, "inconsistent-evidence") for kind in sorted(stale))
+    changes = dict(diagnostics=tuple(dict.fromkeys(diagnostics)),
+                   exit_code=1 if stale else scan.exit_code)
+    if legacy:
+        return replace(scan, scope=results[0], **changes)
+    core = scan.core
+    beads = scan.beads
+    if "global" in stale:
+        core = replace(core, status="unknown", release=None,
+                       reasons=tuple(dict.fromkeys((*core.reasons, "inconsistent-evidence"))))
+    if beads is not None and "project" in stale:
+        beads = replace(beads, ownership="unknown", state="unknown",
+                        reasons=tuple(dict.fromkeys((*beads.reasons, "inconsistent-evidence"))))
+    return replace(scan, scopes=tuple(results), core=core, beads=beads, **changes)
 
 
 def boundary_main(args):
