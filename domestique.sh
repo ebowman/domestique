@@ -33,6 +33,7 @@ if sys.version_info < (3, 9):
 
 from dataclasses import dataclass, field, replace
 import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -260,7 +261,7 @@ def resolve_context(requested=None, *, ceiling=None):
                       "invalid-target" if physical is None else "root-discovery-unavailable")
 
 
-def path_error(path, limits):
+def path_error(path, limits, metadata=False):
     if (not isinstance(path, str) or not path or len(path) > MAX_PATH_BYTES or
             path.startswith("/") or path[1:2] == ":" or "\\" in path or
             any(ord(c) < 32 or ord(c) == 127 for c in path)):
@@ -271,9 +272,16 @@ def path_error(path, limits):
     if len(parts) > limits.depth:
         return "depth-limit"
     # These are never textual inspection inputs, even in a caller allowlist.
+    beads_metadata = metadata and path in (
+        ".beads", ".beads/SYNTHETIC", ".beads/metadata.json",
+        ".beads/config.yaml", ".beads/.local_version",
+        ".beads/embeddeddolt", ".beads/dolt")
+    # Only a complete root-relative metadata declaration exempts its Beads
+    # components. No suffix can authorize forbidden ancestors or descendants.
+    checked_parts = () if beads_metadata else parts
     if any(p.lower() in (".git", ".beads", ".dolt", "dolt") or
            p.lower().endswith((".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm"))
-           for p in parts):
+           for p in checked_parts):
         return "unsupported-input"
     return None
 
@@ -342,12 +350,19 @@ class Collector:
     read() must observe missing/unsafe inputs too. finish() never reads omitted
     inventory on the caller's behalf or silently drops it. An empty declaration
     intentionally requests no files; it still validates the root/context.
+
+    metadata declares exact file/directory probes with no leaf opens, including
+    the narrowly permitted Beads metadata names. missing_root is for declared
+    optional global scopes; it never turns an unsafe root into an absent one.
     """
-    def __init__(self, root, allowed, *, scope="project", limits=Limits(), context=None):
+    def __init__(self, root, allowed, *, scope="project", limits=Limits(), context=None,
+                 metadata=None, missing_root=False):
         self.root = os.fspath(root)
         self.scope = scope
         self.limits = limits
         self.context = context
+        self._metadata = dict(metadata or {})
+        self._missing_root = missing_root
         self._allowed = set()
         self._observed = {}
         self._diagnostics = []
@@ -373,14 +388,20 @@ class Collector:
             if i >= limits.entries:
                 self._fail("entry-limit")
                 break
-            problem = path_error(path, limits)
+            problem = path_error(path, limits, path in self._metadata)
             if problem:
                 self._fail(problem)
                 break
             self._allowed.add(path)
+        if (not self._metadata.keys() <= self._allowed or
+                any(kind not in ("file", "directory") for kind in self._metadata.values())):
+            self._fail("invalid-metadata-inventory")
         if not self._broken:
             self._anchor = self._observe(None, 0)
-            if self._anchor.status != "directory":
+            if self._anchor.status != "directory" and not (
+                    missing_root and self._anchor.status == "missing"):
+                if missing_root:
+                    self._diagnostics.extend(self._anchor.diagnostics)
                 self._fail("invalid-target")
 
     def _fail(self, code, path=None):
@@ -437,9 +458,15 @@ class Collector:
             leaf = path.split("/")[-1]
             before = os.stat(leaf, dir_fd=fd, follow_symlinks=False)
             proof.append(identity(before))
-            problem = file_problem(before)
+            metadata_kind = self._metadata.get(path)
+            problem = file_problem(before, directory=metadata_kind == "directory")
             if problem:
                 raise _Refusal(problem)
+            if metadata_kind is not None:
+                # Presence/type/identity only. In particular, never open a
+                # Beads selector, engine directory or synthetic sentinel.
+                return Observation(path, "directory" if metadata_kind == "directory"
+                                   else "regular", _proof=tuple(proof))
             if before.st_size > self.limits.file_bytes:
                 raise _Refusal("input-too-large")
             if before.st_size > budget:
@@ -465,7 +492,7 @@ class Collector:
             data.decode("utf-8", errors="strict")
             status = "readable"
         except FileNotFoundError:
-            if in_inventory:
+            if in_inventory or self._missing_root:
                 status = "missing"
             else:
                 code = "invalid-target"
@@ -498,7 +525,7 @@ class Collector:
         self._calls += 1
         if self._calls > self.limits.entries:
             self._fail("entry-limit")
-        problem = path_error(path, self.limits) or (
+        problem = path_error(path, self.limits, path in self._metadata) or (
             "not-allowlisted" if path not in self._allowed else None)
         if problem:
             self._fail(problem)
@@ -606,6 +633,7 @@ class LegacyScan:
     diagnostics: Tuple[Diagnostic, ...]
     exit_code: int
     collections: Tuple[Collection, ...] = field(repr=False)
+    _context: Optional[Context] = field(default=None, repr=False, compare=False)
 
 
 # Grammar provenance: b60feef4d0d41b8d99b7afec68dd5e6ef648b027
@@ -900,7 +928,7 @@ def legacy_provider(root, layout, limits, context):
     # unowned and multiple blocks have no unambiguous comparison body.
     collection = replace(collection, observations=tuple(
         replace(o, data=(policy[o.path][1].encode("utf-8")
-                         if policy[o.path][1] is not None else None), _proof=())
+                         if policy[o.path][1] is not None else None))
         if o.path in policy else o for o in collection.observations))
     return record, collection
 
@@ -916,7 +944,7 @@ def inspect_scan_legacy(context, *, limits=Limits()):
     if root is None or context.diagnostics:
         scope = ScopeRecord("project", root or "", "unknown", "unknown", "unknown", (),
                             ("invalid-target",))
-        return LegacyScan(scope, context.diagnostics, 1, ())
+        return LegacyScan(scope, context.diagnostics, 1, (), context)
     results = tuple(legacy_provider(root, layout, limits, context) for layout in LEGACY_LAYOUTS)
     providers = tuple(p for p, _ in results)
     collections = tuple(c for _, c in results)
@@ -935,7 +963,651 @@ def inspect_scan_legacy(context, *, limits=Limits()):
     diagnostics = tuple(d for c in collections for d in c.diagnostics)
     return LegacyScan(scope, diagnostics,
                       0 if installation in ("absent", "installed") and mode != "mixed"
-                      else 1, collections)
+                      else 1, collections, context)
+
+
+PRIVATE_PROVIDERS = ("claude", "codex", "copilot")
+PRIVATE_SETS = {
+    "none": (), "claude": ("claude",), "codex": ("codex",), "copilot": ("copilot",),
+    "both": ("claude", "codex"), "claude-copilot": ("claude", "copilot"),
+    "codex-copilot": ("codex", "copilot"), "all": PRIVATE_PROVIDERS,
+}
+PRIVATE_ROLES = ("goal", "implementer", "orchestrator", "reviewer")
+CORE_LEAVES = ("API", "SHA256SUMS") + tuple("roles/" + r + ".md" for r in PRIVATE_ROLES)
+BEADS_FIELDS = (
+    "beads_path", "beads_path_created", "beads_status", "beads_executable",
+    "beads_sha256", "beads_version", "beads_platform", "beads_backend",
+    "beads_context", "beads_prefix", "beads_uuid", "beads_readiness",
+    "beads_selectors_sha256", "beads_git", "beads_git_sha256",
+)
+BEADS_CREATED = tuple(".beads/" + p for p in (
+    ".gitignore", ".local_version", "README.md", "config.yaml", "embeddeddolt",
+    "interactions.jsonl", "last-touched", "metadata.json")) + (
+        ".domestique-private/beads-context", ".domestique-private/exports")
+BEADS_METADATA = {
+    ".beads": "directory", ".beads/SYNTHETIC": "file", ".beads/metadata.json": "file",
+    ".beads/config.yaml": "file", ".beads/.local_version": "file",
+    ".beads/embeddeddolt": "directory", ".beads/dolt": "directory",
+    ".domestique-private/beads-context": "directory",
+    ".domestique-private/exports": "directory",
+    ".domestique-private/beads-attempt": "file",
+}
+
+
+@dataclass(frozen=True)
+class DigestEvidence:
+    """Installed digest, not emitter output or new creation authority.
+
+    No pristine native content is stored by this format. Live bytes (even if
+    equal) must never become an invented field-level textual baseline.
+    """
+    path: str
+    baseline_path: str
+    sha256: str = field(repr=False)
+    content_available: bool = False
+
+
+@dataclass(frozen=True)
+class CoreEvidence:
+    directory: str
+    selector: str
+    status: str
+    release: Optional[str]
+    evidence: Tuple[str, ...]
+    reasons: Tuple[str, ...]
+    label: str = "PRIVATE PREVIEW"
+
+
+@dataclass(frozen=True)
+class PresenceEvidence:
+    path: str
+    status: str
+    reasons: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BeadsEvidence:
+    path: str
+    ownership: str
+    state: str
+    presence: Tuple[PresenceEvidence, ...]
+    reasons: Tuple[str, ...]
+    readiness: str = "not-assessed"
+
+
+@dataclass(frozen=True)
+class PrivateScan:
+    """Global availability and project attachments, optionally with .3 evidence.
+
+    Status records are safe references, not native discovery/routing claims.
+    Collections/digests are private comparator inputs, never default output.
+    """
+    scopes: Tuple[ScopeRecord, ...]
+    core: CoreEvidence
+    beads: Optional[BeadsEvidence]
+    diagnostics: Tuple[Diagnostic, ...]
+    exit_code: int
+    collections: Tuple[Collection, ...] = field(repr=False)
+    digests: Tuple[DigestEvidence, ...] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _PrivateManifest:
+    providers: tuple
+    core: str = field(repr=False)
+    pairs: tuple = field(repr=False)
+    beads: tuple = field(default=(), repr=False)
+
+
+def private_inventory(scope, provider):
+    # Read-only references: global_inventory/local_inventory, API-1 preview.
+    prefix, ext = {"claude": (".claude", "md"), "codex": (".codex", "toml"),
+                   "copilot": (".copilot" if scope == "global" else ".github",
+                               "agent.md")}[provider]
+    local = "" if scope == "global" else "-local"
+    agents = tuple(f"{prefix}/agents/domestique-{provider}{local}-{r}.{ext}"
+                   for r in ("implementer", "reviewer"))
+    if scope != "global":
+        return agents
+    skills = ".agents" if provider == "codex" else prefix
+    return tuple(f"{skills}/skills/domestique-{provider}{s}/SKILL.md"
+                 for s in ("", "-decompose", "-goal")) + agents + (
+        (".agents/skills/domestique-codex-goal/agents/openai.yaml",)
+        if provider == "codex" else ())
+
+
+def private_absolute(value):
+    return (isinstance(value, str) and 1 < len(value) <= MAX_PATH_BYTES and
+            value.startswith("/") and os.path.normpath(value) == value and
+            not value.startswith("//") and
+            not any(ord(c) < 32 or ord(c) == 127 or c == "=" for c in value))
+
+
+def private_lines(text):
+    if (text is None or not text.endswith("\n") or
+            any(ord(c) < 32 and c != "\n" or ord(c) == 127 for c in text)):
+        return None
+    lines = text[:-1].split("\n")
+    return lines if len(lines) <= 2 * MAX_ENTRIES + 32 else None
+
+
+def private_beads_declaration(lines):
+    """Structural records() reference ONLY: no selectors()/validate()/runtime.
+
+    Qualification values are declarations, never requalified or printed.
+    Neither the pinned binary nor an installed version is required here.
+    """
+    if not lines:
+        return (), None
+    if len(lines) != len(BEADS_FIELDS) + len(BEADS_CREATED):
+        return (), "beads-schema-unsupported"
+    values = {}
+    for key, line in zip(BEADS_FIELDS, lines):
+        if not line.startswith(key + "=") or line.count("=") != 1:
+            return (), "beads-schema-unsupported"
+        values[key] = line[len(key) + 1:]
+    if (values["beads_path"] != ".beads" or
+            values["beads_context"] != ".domestique-private/beads-context" or
+            re.fullmatch(r"by-init:[0-9a-f]{32}", values["beads_path_created"]) is None or
+            values["beads_status"] not in ("ready", "retained") or
+            values["beads_prefix"] != "dm" + values["beads_path_created"][8:20] or
+            re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}",
+                         values["beads_uuid"]) is None or
+            any(re.fullmatch(r"[0-9a-f]{64}", values[k]) is None for k in
+                ("beads_sha256", "beads_selectors_sha256", "beads_git_sha256")) or
+            any(not private_absolute(values[k]) for k in ("beads_executable", "beads_git"))):
+        return (), "beads-manifest-corrupt"
+    if (re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", values["beads_version"]) is None or
+            values["beads_platform"] != "Darwin-arm64" or
+            values["beads_backend"] != "dolt-embedded-cgo" or
+            values["beads_readiness"] != "init-ping-where-v1"):
+        return (), "beads-schema-unsupported"
+    for path, line in zip(BEADS_CREATED, lines[len(BEADS_FIELDS):]):
+        if re.fullmatch(re.escape("beads_created=" + path + ":") + r"[0-9a-f]{64}",
+                        line) is None:
+            return (), "beads-manifest-corrupt"
+    return ("declared-owned", "retained" if values["beads_status"] == "retained"
+            else "declared-ready"), None
+
+
+def private_manifest(text, scope, root, core):
+    """Canonical pairs, exact provider inventories and bounded core references.
+
+    References: global_read_manifest/global_install and local_manifest_read.
+    Local pairs may be reordered or contain a single role; global native pairs
+    must follow global_inventory. No persisted root authorizes a filesystem read.
+    """
+    lines = private_lines(text)
+    keys = (("format", "scope", "core_root", "core_api", "providers") if scope == "global"
+            else ("format", "scope", "worktree_root", "core_root", "core_api", "providers"))
+    if lines is None or len(lines) < len(keys):
+        return None, ("manifest-corrupt",)
+    header = {}
+    for key, line in zip(keys, lines):
+        if not line.startswith(key + "=") or line.count("=") != 1:
+            return None, ("manifest-corrupt",)
+        header[key] = line[len(key) + 1:]
+    if header["format"] != "1" or header["core_api"] != "1":
+        return None, ("manifest-schema-unsupported",)
+    if (header["scope"] != ("global" if scope == "global" else "local") or
+            not private_absolute(header["core_root"]) or
+            header["providers"] not in PRIVATE_SETS or
+            scope == "global" and header["providers"] == "none"):
+        return None, ("manifest-corrupt",)
+    if scope == "project" and header["worktree_root"] != root:
+        return None, ("project-binding-mismatch",)
+    if scope == "global" and header["core_root"] != core:
+        return None, ("core-binding-mismatch",)
+    providers = PRIVATE_SETS[header["providers"]]
+    inventory = tuple(p + ":" + f for p in providers for f in private_inventory(scope, p))
+    pairs, seen, beads = [], set(), ()
+    rest = lines[len(keys):]
+    while rest:
+        if rest[0].startswith("beads_") and scope == "project":
+            beads = tuple(rest)
+            break
+        if len(rest) < 2:
+            return None, ("manifest-corrupt",)
+        pair = []
+        for field_name, line in zip(("created", "baseline"), rest[:2]):
+            if not line.startswith(field_name + "="):
+                return None, ("manifest-corrupt",)
+            key, sep, digest = line[len(field_name) + 1:].rpartition(":")
+            if not sep or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                return None, ("manifest-corrupt",)
+            pair.append((key, digest))
+        key, created = pair[0]
+        if pair[1][0] != key or key in seen:
+            return None, ("manifest-corrupt",)
+        if key not in inventory:
+            if scope != "global" or not (
+                    key in ("core:active", "core:bin/resolve-core") or
+                    re.fullmatch(r"core:releases/r-[0-9a-f]{64}/(?:API|SHA256SUMS|roles/"
+                                 r"(?:goal|implementer|orchestrator|reviewer)\.md)", key)):
+                return None, ("manifest-inventory-corrupt",)
+            if key.startswith("core:releases/") and created != pair[1][1]:
+                return None, ("core-provenance-corrupt",)
+        pairs.append((key, created, pair[1][1]))
+        seen.add(key)
+        rest = rest[2:]
+    native = tuple(k for k, _, _ in pairs if not k.startswith("core:"))
+    if (scope == "global" and native != inventory or
+            any(not any(k.startswith(p + ":") for k in native) for p in providers)):
+        return None, ("manifest-inventory-corrupt",)
+    reasons = (() if header["core_root"] == core else ("core-binding-mismatch",))
+    return _PrivateManifest(providers, header["core_root"], tuple(pairs), beads), reasons
+
+
+def private_native(provider, scope, text):
+    return (text is not None and
+            f"Provider: {provider}\nScope: {'global' if scope == 'global' else 'local'}\n"
+            in text and "\ncore_api=1\n" in text and
+            "Stable loader: domestique-core-api-1; router-api-1;" in text)
+
+
+def private_installation(states):
+    return next((s for s in ("mixed", "partial", "unknown", "installed")
+                 if s in states), "absent")
+
+
+def private_scope(kind, root, providers, reasons=(), beads="absent"):
+    modes = {p.mode for p in providers if p.installation != "absent"}
+    installation = private_installation({p.installation for p in providers})
+    mode = ("mixed" if "mixed" in modes or {"normal", "guest"} <= modes else
+            "unknown" if not modes or "unknown" in modes else next(iter(modes)))
+    if {"normal", "guest"} <= modes:
+        reasons = (*reasons, "mixed-provider-modes")
+    return ScopeRecord(kind, root, installation, mode,
+                       "not-applicable" if installation == "absent" else "unknown",
+                       tuple(providers), tuple(dict.fromkeys(reasons)), beads)
+
+
+def inspect_scan_private(context, *, limits=Limits(), legacy=None):
+    """Read-only b3q PRIVATE PREVIEW, not released v2 or a public CLI.
+
+    Optional legacy is the existing .3 result, not a second legacy inventory.
+    Inherited HOME/core paths declare scope, not ownership. No native config
+    discovery or recorded executable/core-root redirection is performed.
+    """
+    home = os.environ.get("HOME", "")
+    state = os.environ.get("XDG_STATE_HOME") or (home + "/.local/state" if home else "")
+    core = os.environ.get("DOMESTIQUE_HOME") or (state + "/domestique" if state else "")
+    selector = ("DOMESTIQUE_HOME" if os.environ.get("DOMESTIQUE_HOME") else
+                "XDG_STATE_HOME" if os.environ.get("XDG_STATE_HOME") else "HOME")
+    specs, collections, diagnostics, digests = [], [], [], []
+    root = context.resolved_directory
+    if legacy is not None and (
+            root is None or context.diagnostics or legacy.scope.scope != "project" or
+            legacy.scope.directory != root or
+            tuple(p.provider for p in legacy.scope.providers) != PRIVATE_PROVIDERS):
+        raise ValueError("legacy-scope-mismatch")
+
+    def collect(root, paths, scope, metadata=None):
+        paths = tuple(paths)
+        kwargs = dict(scope=scope, limits=limits, metadata=metadata, missing_root=True)
+        reader = Collector(root, paths, **kwargs)
+        for path in paths:
+            reader.read(path)
+        collection = reader.finish()
+        specs.append((root, paths, kwargs))
+        collections.append(collection)
+        diagnostics.extend(replace(d, path=display(root + "/" + json.loads(d.path))
+                                   if d.path is not None else display(root))
+                           for d in collection.diagnostics)
+        return {o.path: o for o in collection.observations}, collection.consistent
+
+    def observation(items, path):
+        # Missing observations indicate a failed boundary, NOT absent files.
+        return items.get(path, Observation(path, "unreadable",
+                         (Diagnostic("inspection", "unread-required-input"),)))
+
+    def manifest_from(items, path, scope, root):
+        o = observation(items, path)
+        if o.status == "missing":
+            return None, ("manifest-missing",)
+        if o.status != "readable":
+            return None, ("manifest-corrupt",) + tuple(d.code for d in o.diagnostics)
+        return private_manifest(o.text(), scope, root, core)
+
+    def diagnose(scope, reasons, path):
+        diagnostics.extend(Diagnostic(scope, code, display(path)) for code in reasons)
+
+    core_valid = private_absolute(core)
+    home_valid = private_absolute(home)
+    static = ("state/global-manifest", "active", "bin/resolve-core",
+              "state/pending", "state/previous", "state/published")
+    journals = {p: "file" for p in static[3:]}
+    core_items, core_stable = collect(core, static, "core", journals) if core_valid else ({}, False)
+    gm, gm_reasons = manifest_from(core_items, static[0], "global", core)
+    core_reasons = []
+    core_present = any(o.status != "missing" for o in core_items.values())
+    if not core_valid:
+        core_reasons.append("invalid-core-scope")
+    elif not core_stable:
+        core_reasons.append("core-evidence-unavailable")
+    elif not core_present:
+        core_reasons.append("core-missing")
+    else:
+        core_reasons.extend(gm_reasons)
+    releases = tuple(dict.fromkeys(k.split("/")[1] for k, _, _ in gm.pairs
+                                  if k.startswith("core:releases/"))) if gm else ()
+    active = observation(core_items, "active")
+    match = re.fullmatch(r"release=(r-[0-9a-f]{64})\n", active.text() or "")
+    selected = match[1] if match else None
+    if core_present:
+        if not selected:
+            core_reasons.append("core-selector-missing" if active.status == "missing"
+                                else "core-selector-corrupt")
+        if any(observation(core_items, p).status != "missing" for p in journals):
+            core_reasons.append("global-publication-pending")
+    wanted = tuple(dict.fromkeys((*releases, *((selected,) if selected else ()))))
+    if len(wanted) > 16:
+        core_reasons.append("core-release-limit")
+        wanted = ()
+    discovered = tuple("releases/" + r + "/" + p for r in wanted for p in CORE_LEAVES)
+    if discovered:
+        first = core_items
+        core_items, core_stable = collect(core, static + discovered, "core", journals)
+        if any(observation(core_items, p) != observation(first, p) for p in static):
+            core_reasons.append("inconsistent-evidence")
+            core_stable = False
+        if not core_stable:
+            core_reasons.append("core-evidence-unavailable")
+    pairs = {k: b for k, _, b in gm.pairs} if gm else {}
+    valid_releases = []
+    for release in wanted:
+        prefix = "releases/" + release + "/"
+        api = observation(core_items, prefix + "API")
+        sums = observation(core_items, prefix + "SHA256SUMS")
+        role_obs = tuple(observation(core_items, prefix + "roles/" + r + ".md")
+                         for r in PRIVATE_ROLES)
+        if any(o.status != "readable" for o in (api, sums, *role_obs)):
+            core_reasons.append("core-resource-unavailable")
+            continue
+        if api.text() != f"format=1\ncore_api=1\nrelease={release}\n":
+            core_reasons.append("core-api-unsupported")
+            continue
+        expected = "".join(hashlib.sha256(o.data).hexdigest() + "  roles/" + r + ".md\n"
+                           for r, o in zip(PRIVATE_ROLES, role_obs))
+        if (sums.text() != expected or
+                hashlib.sha256(sums.data).hexdigest() != release[2:]):
+            core_reasons.append("core-content-edited")
+            continue
+        valid_releases.append(release)
+    if gm:
+        required = ("active", "bin/resolve-core") + discovered
+        for path in required:
+            o = observation(core_items, path)
+            if "core:" + path not in pairs:
+                core_reasons.append("core-provenance-missing")
+            elif o.data is None:
+                core_reasons.append("core-resource-unavailable")
+            elif hashlib.sha256(o.data).hexdigest() != pairs["core:" + path]:
+                core_reasons.append("core-content-edited")
+        helper = observation(core_items, "bin/resolve-core")
+        if helper.data is not None and (
+                "# router_api=1 (standalone, read-only; native discovery is NOT shell validation)\n"
+                not in helper.text()):
+            core_reasons.append("core-helper-unsupported")
+    release = (selected if selected in valid_releases else
+               valid_releases[0] if len(valid_releases) == 1 else None)
+    core_reasons = tuple(dict.fromkeys(core_reasons))
+    core_record = CoreEvidence(
+        core if core_valid else "", selector,
+        "unknown" if not core_stable else "absent" if not core_present else
+        "partial" if core_reasons else "available", release,
+        tuple(core + "/" + p for p, o in core_items.items() if o.status != "missing"),
+        core_reasons)
+    diagnose("core", core_reasons, core if core_valid else "")
+
+    def provider_record(provider, scope, root, manifest, manifest_reasons, items, stable):
+        native = private_inventory(scope, provider)
+        manifest_path = (core + "/state/global-manifest" if scope == "global"
+                         else root + "/.domestique-private/manifest")
+        reasons = list(dict.fromkeys(d.code for p in native
+                                    for d in observation(items, p).diagnostics))
+        if not stable:
+            return ProviderRecord(provider, (), "unknown", "unknown", "unknown", (),
+                                  tuple(dict.fromkeys((*reasons, "inconsistent-evidence"))))
+        known = tuple(p for p in native if private_native(
+            provider, scope, observation(items, p).text()))
+        listed = {k.split(":", 1)[1]: b for k, _, b in manifest.pairs
+                  if k.startswith(provider + ":")} if manifest else {}
+        receipt = ".domestique-private/routing/" + provider + ".receipt"
+        route = observation(items, receipt) if scope == "project" else None
+        selected_provider = manifest is not None and provider in manifest.providers
+        route_present = route is not None and route.status != "missing"
+        if not listed and not known and not reasons and not route_present:
+            return ProviderRecord(provider, (), "absent", "unknown", "not-applicable", (),
+                                  ("unrelated-native-files" if any(
+                                      observation(items, p).status != "missing" for p in native)
+                                   else "no-domestique-evidence",))
+        bad = bool(reasons)
+        if manifest is not None and manifest.core != core:
+            reasons.append("core-binding-mismatch")
+            bad = True
+        if manifest is None:
+            reasons.extend((*manifest_reasons, "baseline-unavailable"))
+            bad = True
+        if manifest and listed:
+            reasons.append("installed-baseline")
+        route_compatible = scope == "global"
+        if route is not None and selected_provider:
+            expected = (f"format=1\nworktree_root={root}\nprovider={provider}\n"
+                        f"core_root={manifest.core}\ncore_api=1\n" + "".join(
+                            "role=" + p.rsplit("/", 1)[1].split(".", 1)[0] + "\n"
+                            for p in listed))
+            route_compatible = route.text() == expected
+            if not route_compatible:
+                reasons.append("receipt-missing" if route.status == "missing"
+                               else "receipt-corrupt")
+                reasons.extend(d.code for d in route.diagnostics)
+                bad = True
+        elif route_present and manifest is not None:
+            reasons.append("receipt-unowned")
+            bad = True
+        files = []
+        for path in native:
+            if path not in listed and path not in known:
+                continue
+            o = observation(items, path)
+            why = []
+            if path in listed:
+                baseline = Baseline("digest", "valid", manifest_path)
+                why.extend(("installed-baseline", "digest-only-baseline"))
+                digests.append(DigestEvidence(root + "/" + path, manifest_path, listed[path]))
+            else:
+                baseline = Baseline("none", "unavailable")
+                why.extend((*manifest_reasons, "baseline-unavailable") if manifest is None
+                           else ("unrecorded-profile", "baseline-unavailable"))
+                bad = True
+            if o.status == "missing":
+                why.append("managed-file-missing")
+            elif o.status != "readable":
+                why.extend(d.code for d in o.diagnostics)
+            if o.status != "readable":
+                bad = True
+            files.append(FileEvidence(root + "/" + path, o.status, baseline,
+                                      "created-record" if path in listed else "unknown",
+                                      reasons=tuple(dict.fromkeys(why))))
+            reasons.extend(code for code in why if code != "digest-only-baseline")
+        bound_release = (selected if manifest is not None and manifest.core == core and
+                         route_compatible and
+                         selected in valid_releases and active.status == "readable" else None)
+        evidence = ((manifest_path,) + ((core + "/active",) if bound_release else ()) if listed else
+                    tuple(root + "/" + p for p in known))
+        generations = ((GenerationEvidence("private-preview-api-1", evidence, None,
+                                          bound_release if listed else None),) if evidence else ())
+        return ProviderRecord(provider, generations, "partial" if bad else "installed",
+                              "normal", "unknown", tuple(files),
+                              tuple(dict.fromkeys(reasons)))
+
+    global_providers = []
+    for provider in PRIVATE_PROVIDERS:
+        paths = private_inventory("global", provider)
+        items, stable = collect(home, paths, "global:" + provider) if home_valid else ({}, False)
+        global_providers.append(provider_record(
+            provider, "global", home, gm, gm_reasons, items, stable))
+    global_scope = private_scope("global", home if home_valid else "", global_providers)
+    if core_record.status in ("partial", "unknown"):
+        global_scope = replace(global_scope, installation="partial", customization="unknown",
+                               reasons=("core-inconsistent",))
+    scopes = [global_scope]
+    beads_record = None
+    if root is not None and not context.diagnostics:
+        local_path = ".domestique-private/manifest"
+        local_meta = {".domestique-private": "directory",
+                      ".domestique-private/pending": "file",
+                      ".domestique-private/published": "file"}
+        local_items, local_stable = collect(
+            root, (local_path, *local_meta), "project", local_meta)
+        lm, lm_reasons = manifest_from(local_items, local_path, "project", root)
+        local_reasons = []
+        if (observation(local_items, ".domestique-private").status != "missing" and
+                lm_reasons):
+            local_reasons.extend(lm_reasons)
+        pending = any(observation(local_items, p).status != "missing"
+                      for p in local_meta if p != ".domestique-private")
+        if pending:
+            local_reasons.append("local-publication-pending")
+        providers = []
+        for provider in PRIVATE_PROVIDERS:
+            paths = private_inventory("project", provider) + (
+                ".domestique-private/routing/" + provider + ".receipt",)
+            items, stable = collect(root, paths, "project:" + provider)
+            providers.append(provider_record(provider, "project", root, lm, lm_reasons,
+                                             items, stable and local_stable))
+        beads_items, beads_stable = collect(root, BEADS_METADATA, "beads", BEADS_METADATA)
+        declaration, problem = private_beads_declaration(lm.beads if lm else ())
+        presence = tuple(PresenceEvidence(root + "/" + p, o.status,
+                                         tuple(d.code for d in o.diagnostics))
+                         for p, o in beads_items.items())
+        beads_present = any(o.status != "missing" for o in beads_items.values())
+        synthetic = observation(beads_items, ".beads/SYNTHETIC").status == "regular"
+        attempt = observation(beads_items, ".domestique-private/beads-attempt").status != "missing"
+        why = [problem] if problem else []
+        if beads_present or declaration:
+            why.append("beads-metadata-only")
+        if synthetic:
+            why.append("synthetic-beads-metadata-only")
+        beads_unsafe = not beads_stable or any(
+            o.status not in ("missing", "regular", "directory") for o in beads_items.values())
+        if beads_unsafe:
+            why.append("beads-evidence-unavailable")
+            local_reasons.append("beads-evidence-unavailable")
+        why.extend(d.code for o in beads_items.values() for d in o.diagnostics)
+        if attempt:
+            local_reasons.append("beads-attachment-pending")
+        ownership = declaration[0] if declaration else (
+            "unknown" if problem or beads_unsafe or not local_stable or lm is None and
+            observation(local_items, local_path).status != "missing" else "unowned")
+        state = ("pending" if pending or attempt else declaration[1] if declaration else
+                 "unknown" if problem or beads_unsafe else
+                 "unattached" if beads_present else "absent")
+        beads_record = BeadsEvidence(root + "/.beads", ownership, state, presence,
+                                     tuple(dict.fromkeys(why)))
+        if problem:
+            local_reasons.append(problem)
+        local_beads = ("synthetic-metadata-presence-only" if synthetic else
+                       "metadata-presence-only" if beads_present or declaration else "absent")
+        if synthetic:
+            local_reasons.append("synthetic-beads-metadata-only")
+        project_scope = private_scope("project", root, providers, local_reasons, local_beads)
+        if any(r != "synthetic-beads-metadata-only" for r in local_reasons):
+            project_scope = replace(project_scope, installation="partial", customization="unknown")
+        if lm and not lm.providers:
+            project_scope = replace(project_scope, reasons=tuple(dict.fromkeys(
+                (*project_scope.reasons, "providers-none-retained"))))
+        diagnose("project", local_reasons, root + "/" + local_path)
+        if legacy is not None:
+            merged = []
+            for preview, old in zip(project_scope.providers, legacy.scope.providers):
+                if old.installation == "absent":
+                    merged.append(preview)
+                elif preview.installation == "absent":
+                    merged.append(old)
+                else:
+                    multiple = bool(preview.generations and old.generations)
+                    combined_provider = private_scope("project", root, (preview, old))
+                    merged.append(ProviderRecord(
+                        preview.provider, preview.generations + old.generations,
+                        "mixed" if multiple else combined_provider.installation,
+                        combined_provider.mode, "unknown",
+                        preview.files + old.files, tuple(dict.fromkeys(
+                            (*preview.reasons, *old.reasons,
+                             *(("multiple-generations",) if multiple else ()))))))
+            combined = private_scope("project", root, merged, tuple(dict.fromkeys(
+                (*project_scope.reasons, *legacy.scope.reasons))),
+                                     project_scope.beads)
+            installation = private_installation({
+                project_scope.installation, legacy.scope.installation, combined.installation})
+            project_scope = replace(combined, installation=installation,
+                                    customization="not-applicable" if installation == "absent"
+                                    else "unknown")
+            diagnostics.extend(legacy.diagnostics)
+        scopes.append(project_scope)
+    else:
+        diagnostics.extend(context.diagnostics)
+    # Staging is never atomic. Recollect each COMPLETE declaration after all
+    # stages, so a changed selector/manifest cannot certify mixed generations.
+    changed_scopes = set()
+    if legacy is not None:
+        # Re-run only the bounded .3 declarations, including sanitized policy
+        # identity proofs. Keep the supplied generation, never substitute a
+        # newer successful scan for the evidence the caller actually observed.
+        current_legacy = inspect_scan_legacy(context, limits=limits)
+        if (legacy._context is None or not legacy._context.unchanged() or
+                current_legacy != legacy):
+            changed_scopes.add("project")
+            diagnose("project", ("inconsistent-evidence",), root)
+    for (anchor, paths, kwargs), before in zip(specs, collections):
+        reader = Collector(anchor, paths, **kwargs)
+        for path in paths:
+            reader.read(path)
+        if reader.finish() != before:
+            code_scope = kwargs["scope"]
+            changed_scopes.add("global" if code_scope == "core" or
+                               code_scope.startswith("global") else "project")
+            diagnose(code_scope, ("inconsistent-evidence",), anchor)
+    if root is not None and not context.unchanged():
+        changed_scopes.add("project")
+        diagnose("project", ("inconsistent-evidence",), root)
+    # Metadata and core roles are not native comparison content. Legacy has
+    # already removed host text; retain its separately qualified snapshots.
+    native_paths = {p for scope in ("global", "project") for provider in PRIVATE_PROVIDERS
+                    for p in private_inventory(scope, provider)}
+    collections = [replace(c, observations=tuple(
+        o if o.path in native_paths else replace(o, data=None) for o in c.observations))
+                   for c in collections]
+    if legacy is not None:
+        collections.extend(legacy.collections)
+    if changed_scopes:
+        scopes = [replace(s, installation="unknown", customization="unknown",
+                          providers=tuple(replace(
+                              p, installation="unknown", customization="unknown",
+                              files=tuple(replace(
+                                  f, status="unknown", ownership="unknown",
+                                  baseline=replace(f.baseline, status="unavailable"),
+                                  reasons=tuple(dict.fromkeys((*f.reasons, "inconsistent-evidence"))))
+                                          for f in p.files),
+                              reasons=tuple(dict.fromkeys((*p.reasons, "inconsistent-evidence"))))
+                                          for p in s.providers),
+                          reasons=(*s.reasons, "inconsistent-evidence"))
+                  if s.scope in changed_scopes else s for s in scopes]
+        digests = []
+        collections = [replace(c, consistent=False, observations=tuple(
+            replace(o, data=None) for o in c.observations)) for c in collections]
+        if "global" in changed_scopes:
+            core_record = replace(core_record, status="unknown", release=None,
+                                  reasons=(*core_record.reasons, "inconsistent-evidence"))
+        if beads_record is not None and "project" in changed_scopes:
+            beads_record = replace(beads_record, ownership="unknown", state="unknown",
+                                   reasons=(*beads_record.reasons, "inconsistent-evidence"))
+    exit_code = int(bool(context.diagnostics or changed_scopes or
+                         legacy is not None and legacy.exit_code) or any(
+        s.installation not in ("absent", "installed") or s.mode == "mixed" for s in scopes))
+    return PrivateScan(tuple(scopes), core_record, beads_record, tuple(diagnostics),
+                       exit_code, tuple(collections), tuple(digests))
 
 
 def boundary_main(args):
