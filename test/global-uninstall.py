@@ -4,14 +4,19 @@ No recursive root deletion, even for fixtures: cleanup unlinks explicit observed
 fixture leaves then rmdirs empty fixture directories (never follows symlinks).
 """
 import ast
+import argparse
 from contextlib import contextmanager
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
+import time
+
+from global_uninstall_fixture import SyntheticTree
 
 ROOT = Path(__file__).resolve().parent.parent
 DOM = ROOT / "domestique.sh"
@@ -19,6 +24,87 @@ SETS = {"claude": {"claude"}, "codex": {"codex"}, "copilot": {"copilot"},
         "both": {"claude", "codex"}, "claude-copilot": {"claude", "copilot"},
         "codex-copilot": {"codex", "copilot"}, "all": {"claude", "codex", "copilot"}}
 COUNT = 0
+EXECUTED = []
+SETUP_COMMANDS = {"global_install": 0, "local_install": 0, "git_init": 0}
+STARTED = time.monotonic()
+
+# Explicit 0a34d678193186cd656d6ff1bfe04bef1e1e1793 case-to-body inventory.
+# The cold IDs below retain their original nested assertions/subscenarios.
+# The two fault lists are the original tuples, in original execution order.
+release_leaves = ("API", "SHA256SUMS", "roles/goal.md", "roles/implementer.md",
+                  "roles/orchestrator.md", "roles/reviewer.md")
+core_faults = [("native", "active", "missing"), ("native", "bin/resolve-core", "edit")]
+core_faults += [("native", f"{version}/{leaf}", "missing" if i % 2 else "edit")
+                for version in ("current", "old") for i, leaf in enumerate(release_leaves)]
+core_faults += [(boundary, leaf, kind)
+                for boundary in ("manifest", "published", "previous")
+                for leaf, kind in (("active", "missing"), ("bin/resolve-core", "edit"),
+                                   ("old/API", "edit"))]
+core_faults += [("native", "active", "repoint")]
+journal_faults = [(boundary, journal, kind) for boundary, journal in (
+    ("native", "published"), ("published", "previous"), ("published", "pending"),
+    ("previous", "pending"), ("previous", "published"),
+) for kind in ("edit", "symlink", "directory")]
+path_faults = ("unlink", "leaf-edit", "manifest-directory", "manifest-edited",
+               "journal-directory")
+
+
+def fault_id(group, values):
+    return ":".join((group, *values))
+
+
+INVENTORY = (
+    [(f"cold:{s}", "old lines 143-162: canonical cold install/removal") for s in SETS] +
+    [(f"subset:{s}", "old lines 167-216: real projects, subset/reinstall/fences")
+     for s in SETS] +
+    [(f"retention:{s}:{f}", "old lines 220-249: whole edited provider/privacy")
+     for s in ("all", "claude") for f in ("normal", "force")] +
+    [("ownership", "old lines 253-311: all malformed/missing/symlink/root refusals")] +
+    [(f"index:{p}", "old lines 313-325: actual index-only collision")
+     for p in ("skills/domestique-claude/SKILL.md", "skills")] +
+    [("history", "old lines 327-349: real upgrade/history provenance/removal")] +
+    [(f"path:{f}", "old lines 353-411: actual PATH failure/race and completed journal")
+     for f in path_faults] +
+    [(fault_id("journal", f), "old lines 464-501: same journal mutation body")
+     for f in journal_faults] +
+    [(fault_id("core", f), "old lines 506-557: same core mutation body")
+     for f in core_faults] +
+    [("gates", "old lines 561-586: grammar/local preflight/absent/guest")])
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--case", action="append", default=[], help="exact ID from --list; repeatable")
+parser.add_argument("--fixture-mode", choices=("fresh", "reuse"), default="reuse",
+                    help="fresh repeats the original genuine setup for every selected case")
+parser.add_argument("--list", action="store_true", help="list finite inventory; no fixtures")
+parser.add_argument("--self-test", action="store_true", help="synthetic reset tests only (PARTIAL)")
+ARGS = parser.parse_args()
+IDS = [name for name, _ in INVENTORY]
+if len(ARGS.case) != len(set(ARGS.case)) or any(c not in IDS for c in ARGS.case):
+    parser.error("unknown or duplicate --case; use --list")
+if (ARGS.list or ARGS.self_test) and ARGS.case:
+    parser.error("--list/--self-test cannot be combined with --case")
+if ARGS.list and ARGS.self_test:
+    parser.error("--list and --self-test are exclusive")
+SELECTED = set(ARGS.case) if ARGS.case else set(IDS)
+if ARGS.list:
+    for name, origin in INVENTORY:
+        print(f"{name}\t{origin}")
+    print(f"global-uninstall PARTIAL: inventory only ({len(IDS)} cases); no execution")
+    raise SystemExit(0)
+
+
+def self_tests():
+    import unittest
+    from global_uninstall_fixture_tests import ResetTests
+    result = unittest.TextTestRunner(verbosity=1).run(
+        unittest.defaultTestLoader.loadTestsFromTestCase(ResetTests))
+    if not result.wasSuccessful():
+        raise SystemExit(1)
+
+
+self_tests()
+if ARGS.self_test:
+    print("global-uninstall PARTIAL: synthetic self-tests only; no production cases")
+    raise SystemExit(0)
 
 
 def check(value, label):
@@ -54,14 +140,14 @@ def clean(root):
 
 
 @contextmanager
-def fixture():
+def fixture(case=None, *, managed=False):
     global W, HOME, CORE, ENV, LOG
     W = Path(tempfile.mkdtemp(prefix="domestique-remove-test-")).resolve()
     HOME, CORE = W / "home", W / "core"
     for name in ("home", "tmp", "forbidden"):
         (W / name).mkdir()
     LOG = W / "forbidden-call"
-    for cmd in ("bd", "claude", "codex", "copilot", "curl", "wget"):
+    for cmd in ("bd", "beads", "claude", "codex", "copilot", "curl", "wget"):
         p = W / "forbidden" / cmd
         p.write_text("#!/usr/bin/env python3\nimport os\nfrom pathlib import Path\n"
                      "Path(os.environ['FORBIDDEN_LOG']).write_text('called')\n"
@@ -74,8 +160,11 @@ def fixture():
     try:
         yield
         check(not LOG.exists(), "zero native/network/Beads calls")
+        if case is not None:
+            EXECUTED.append(case)
     finally:
-        clean(W)
+        if not managed:
+            clean(W)
 
 
 def run(*args, env=None, cwd=None):
@@ -90,6 +179,7 @@ def success(*args, **kwargs):
 
 
 def install(selection="all", script=DOM):
+    SETUP_COMMANDS["global_install"] += 1
     success("/bin/bash", script, "--global", "--platform", selection)
 
 
@@ -126,9 +216,88 @@ def dest(key):
 def project(name):
     p = W / name
     p.mkdir()
+    SETUP_COMMANDS["git_init"] += 1
     success("git", "init", "-q", p)
+    SETUP_COMMANDS["local_install"] += 1
     success("/bin/bash", DOM, "--local", p, "--platform", "all")
     return p
+
+
+def cold_cases(case):
+    # Generator keeps singleton original cold bodies unchanged and selectable.
+    if case in SELECTED:
+        with fixture(case):
+            yield
+
+
+class FaultFixture:
+    """One pristine production-created baseline per eligible compatible group."""
+
+    def __init__(self):
+        self.tree = None
+        self.context = None
+        self.group = None
+        self.samples = []
+        self.cleanup_seconds = 0
+
+    def setup(self, group):
+        # This is exactly the old per-case setup, not a proxy/control shortcut:
+        # journal: install + protected_fixture (two git init + two local install)
+        # core: install + real v2 upgrade/history check + protected_fixture.
+        install()
+        if group == "core":
+            old = (CORE / "active").read_text().strip().split("=")[1]
+            v2 = W / "v2.sh"
+            v2.write_text(DOM.read_text().replace("# Domestique private core: reviewer",
+                                                "# Domestique private core: reviewer test-v2"))
+            install(script=v2)
+            current = (CORE / "active").read_text().strip().split("=")[1]
+            check(old != current, "mutation fixture has actual retained release history")
+            self.releases = old, current
+        self.protected = protected_fixture()
+        check(not LOG.exists(), "setup made zero native/network/Beads calls")
+        self.tree = SyntheticTree(W, roots=("home", "core", "project-a",
+                                            "project-b", "protected-root"))
+
+    @contextmanager
+    def case(self, group, case):
+        start = time.monotonic()
+        counts = SETUP_COMMANDS.copy()
+        if self.tree is None:
+            self.context = fixture(managed=True)
+            self.context.__enter__()
+            self.group = group
+            self.setup(group)
+        else:
+            check(self.group == group, "compatible fixture group only")
+            self.tree.restore()
+            check(not LOG.exists(), "verified pristine restore has no forbidden marker")
+            check([snapshot(p) for p in self.protected[0]] == self.protected[1],
+                  "verified pristine restoration of real protected projects/providers")
+        self.tree.begin()
+        # No finally-based reset/cleanup: any assertion, permission, or safety
+        # failure leaves the exact physical evidence in place and stops the run.
+        yield
+        check(not LOG.exists(), "case made zero native/network/Beads calls before reset")
+        self.tree.accept()
+        if ARGS.fixture_mode == "fresh":
+            self.close()
+        EXECUTED.append(case)
+        self.samples.append({"case": case, "elapsed_seconds": time.monotonic() - start,
+                             "setup_commands": {k: SETUP_COMMANDS[k] - counts[k]
+                                                for k in counts}})
+
+    def close(self):
+        if self.tree is not None:
+            start = time.monotonic()
+            self.context.__exit__(None, None, None)
+            self.tree.clean()
+            self.tree = None
+            self.context = None
+            self.cleanup_seconds += time.monotonic() - start
+
+
+FAULT_FIXTURE = FaultFixture()
 
 
 def empty_core_containers():
@@ -142,7 +311,9 @@ def empty_core_containers():
 
 # Each actual canonical installed union supports selectorless dry-run/removal.
 for selection in SETS:
-    with fixture():
+    if f"cold:{selection}" not in SELECTED:
+        continue
+    with fixture(f"cold:{selection}"):
         install(selection)
         owned = records()
         if selection != "all":
@@ -164,7 +335,9 @@ for selection in SETS:
 # settings/instructions/forks. Reinstall follows documented manual empty-dir
 # reconciliation; local adapter fences stop without core, then work again.
 for selection, providers in SETS.items():
-    with fixture():
+    if f"subset:{selection}" not in SELECTED:
+        continue
+    with fixture(f"subset:{selection}"):
         install()
         projects = [project("project-a"), project("project-b")]
         project_hashes = [snapshot(p) for p in projects]
@@ -217,7 +390,9 @@ for selection, providers in SETS.items():
 # original baselines unchanged; unselected edits aren't copied or rewritten.
 for selected in ("all", "claude"):
     for force in ((), ("--force",)):
-        with fixture():
+        if f"retention:{selected}:{'force' if force else 'normal'}" not in SELECTED:
+            continue
+        with fixture(f"retention:{selected}:{'force' if force else 'normal'}"):
             install()
             edited = HOME / ".codex/agents/domestique-codex-reviewer.toml"
             with edited.open("a") as f:
@@ -246,7 +421,7 @@ for selected in ("all", "claude"):
 
 # Missing/malformed/NUL/unknown ownership, exact symlink/index collisions, old
 # retained release history and unknown extra files are all prewrite refusals.
-with fixture():
+for _ in cold_cases("ownership"):
     install()
     m = CORE / "state/global-manifest"
     original = m.read_bytes()
@@ -312,7 +487,9 @@ with fixture():
     alias.unlink()
 
 for index_path in ("skills/domestique-claude/SKILL.md", "skills"):
-    with fixture():
+    if f"index:{index_path}" not in SELECTED:
+        continue
+    with fixture(f"index:{index_path}"):
         install()
         native_root = HOME / ".claude"
         success("git", "init", "-q", native_root)
@@ -325,7 +502,7 @@ for index_path in ("skills/domestique-claude/SKILL.md", "skills"):
         check("indexed" in p.stderr or "index validation" in p.stderr,
               ("bounded exact index query detects leaf/ancestor object", p.stderr))
 
-with fixture():
+for _ in cold_cases("history"):
     install()
     old = (CORE / "active").read_text().strip().split("=")[1]
     v2 = W / "v2.sh"
@@ -350,8 +527,10 @@ with fixture():
 
 # PATH command failure and races are real, triggered operations, no production
 # test hooks. Journals record completed unlinks, not the planned inventory.
-for fault in ("unlink", "leaf-edit", "manifest-directory", "manifest-edited", "journal-directory"):
-    with fixture():
+for fault in path_faults:
+    if f"path:{fault}" not in SELECTED:
+        continue
+    with fixture(f"path:{fault}"):
         install()
         owned = records()
         old_manifest = (CORE / "state/global-manifest").read_bytes()
@@ -466,9 +645,11 @@ for boundary_name, journal in (
     ("previous", "pending"), ("previous", "published"),
 ):
     for kind in ("edit", "symlink", "directory"):
-        with fixture():
-            install()
-            protected, before = protected_fixture()
+        case = fault_id("journal", (boundary_name, journal, kind))
+        if case not in SELECTED:
+            continue
+        with FAULT_FIXTURE.case("journal", case):
+            protected, before = FAULT_FIXTURE.protected
             core_before = {k: snapshot(dest(k)) for k in records() if k.startswith("core:")}
             victim = CORE / "state" / journal
             boundary = (HOME / ".claude/skills/domestique-claude/SKILL.md"
@@ -500,30 +681,17 @@ for boundary_name, journal in (
                 check((CORE / "state/previous").is_file(), "early fault retains previous")
             recovery_refuses()
 
+FAULT_FIXTURE.close()
 
 # Every required core leaf, including all six historical release leaves, is
 # rechecked after native deletion, not just active existence or helper execution.
-release_leaves = ("API", "SHA256SUMS", "roles/goal.md", "roles/implementer.md",
-                  "roles/orchestrator.md", "roles/reviewer.md")
-core_faults = [("native", "active", "missing"), ("native", "bin/resolve-core", "edit")]
-core_faults += [("native", f"{version}/{leaf}", "missing" if i % 2 else "edit")
-                for version in ("current", "old") for i, leaf in enumerate(release_leaves)]
-core_faults += [(boundary, leaf, kind)
-                for boundary in ("manifest", "published", "previous")
-                for leaf, kind in (("active", "missing"), ("bin/resolve-core", "edit"),
-                                   ("old/API", "edit"))]
-core_faults += [("native", "active", "repoint")]
 for boundary_name, leaf, kind in core_faults:
-    with fixture():
-        install()
-        old = (CORE / "active").read_text().strip().split("=")[1]
-        v2 = W / "v2.sh"
-        v2.write_text(DOM.read_text().replace("# Domestique private core: reviewer",
-                                            "# Domestique private core: reviewer test-v2"))
-        install(script=v2)
-        current = (CORE / "active").read_text().strip().split("=")[1]
-        check(old != current, "mutation fixture has actual retained release history")
-        protected, before = protected_fixture()
+    case = fault_id("core", (boundary_name, leaf, kind))
+    if case not in SELECTED:
+        continue
+    with FAULT_FIXTURE.case("core", case):
+        old, current = FAULT_FIXTURE.releases
+        protected, before = FAULT_FIXTURE.protected
         old_manifest = (CORE / "state/global-manifest").read_bytes()
         core_before = {k: snapshot(dest(k)) for k in records() if k.startswith("core:")}
         rel = leaf.replace("current/", f"releases/{current}/").replace("old/", f"releases/{old}/")
@@ -556,9 +724,10 @@ for boundary_name, leaf, kind in core_faults:
               ([victim] if kind == "edit" else []), "no changed core bytes copied")
         recovery_refuses()
 
+FAULT_FIXTURE.close()
 
 # Invalid grammar remains status 2 before writes, including all .10 combinations.
-with fixture():
+for _ in cold_cases("gates"):
     for args in (
         ("--uninstall", "--global", W), ("--uninstall", "--global", "--local", W),
         ("--uninstall", "--global", "--with-beads"),
@@ -584,4 +753,24 @@ with fixture():
     check("deprecated no-op" in p.stderr, "guest remains deprecated no-op")
 
 ast.parse(Path(__file__).read_text())
-print(f"global-uninstall: {COUNT} checks passed (current source; isolated, no native clients)")
+check(EXECUTED == [name for name in IDS if name in SELECTED],
+      "complete exact requested case inventory executed in original order")
+print(json.dumps({
+    "suite": "global-uninstall",
+    "scope": "PARTIAL" if ARGS.case else "FULL",
+    "baseline_inventory_commit": "0a34d678193186cd656d6ff1bfe04bef1e1e1793",
+    "source_sha256": {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
+                      for p in (DOM, Path(__file__).resolve(),
+                                ROOT / "test/global_uninstall_fixture.py",
+                                ROOT / "test/global_uninstall_fixture_tests.py")},
+    "fixture_mode": ARGS.fixture_mode,
+    "cases": EXECUTED,
+    "elapsed_seconds_including_setup_restore_cleanup": time.monotonic() - STARTED,
+    "setup_commands": SETUP_COMMANDS,
+    "fault_cases": FAULT_FIXTURE.samples,
+    "fault_cleanup_seconds": FAULT_FIXTURE.cleanup_seconds,
+}, sort_keys=True))
+if ARGS.case:
+    print(f"global-uninstall PARTIAL: {COUNT} checks passed; selected cases only")
+else:
+    print(f"global-uninstall: {COUNT} checks passed (current source; isolated, no native clients)")

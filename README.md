@@ -524,6 +524,45 @@ QUICK exit 0 is explicitly `QUICK_SUBSET_NOT_FULL_OFFLINE` with
 `full_offline_acceptance: false`; it cannot satisfy full .8 acceptance.
 Native-only also never implies offline coverage.
 
+**Global-uninstall fixture modes (test-only).** Direct invocation defaults to
+the complete original matrix: 7 cold provider unions, 7 subset/project/lifecycle
+cases, 4 retention variants, ownership/index/history/PATH faults and CLI gates,
+plus all 15 journal and 24 core faults. Only those last two groups reuse a
+production-created synthetic baseline, in memory at its original paths. Root
+identities, bytes, modes and mtimes are verified; there are no DB copies,
+transplanted manifests or cached production validators. Reset/cleanup requires
+all prior assertions and the no-native/network/Beads guard to pass; a failed
+eligible case retains its physical temporary evidence instead.
+
+```sh
+python3 -B -W error test/global-uninstall.py --list       # exact old-source case inventory
+python3 -B -W error test/global-uninstall.py --self-test  # fast synthetic isolation/CLI units
+# Reviewer-only representative selection; repeat with each fixture mode:
+python3 -B -W error test/global-uninstall.py --fixture-mode fresh --case core:native:current/API:edit --case core:previous:old/API:edit
+python3 -B -W error test/global-uninstall.py --fixture-mode reuse --case core:native:current/API:edit --case core:previous:old/API:edit
+```
+
+`--case` is exact and repeatable; unknown/duplicate IDs refuse before fixtures.
+Execution follows inventory order. List, self-test and selected runs explicitly
+report **PARTIAL**, which the unchanged acceptance parser rejects as full global
+completion. Self-tests also run by default. `--fixture-mode fresh` repeats the
+old genuine setup for the **same bodies**: journal = global install + two Git
+project inits/local installs; core additionally performs the real second-release
+upgrade and history check. Reuse performs that setup once per compatible group;
+restoration is verified before another mutation. Cold cases remain cold in both
+modes. Stdout JSON records the exact cases, source SHA-256 pins, actual fixture
+setup-command counts, per-fault durations and total elapsed time including
+self-tests, setup, restore and final cleanup (not just mutation time).
+
+Independent measurement uses the two commands above in **fresh/reuse/reuse/fresh**
+serial order: two matched pairs, **20 minutes total across all four runs**,
+including setup. Stop if the remaining budget cannot accommodate the sample;
+do not replace these cases with a proxy. Save JSON/stdout in session artifacts,
+not the repository. The target is at least 25% elapsed reduction; no result is
+claimed yet, and the historical 6920.20s/3173-check full baseline is not current
+wall-time equivalence. Run the entire changed global suite once only after
+independent correctness/measurement PASS; no native qualification is implied.
+
 **Private qualified Beads fixture (test-only).** The native Beads context,
 production and cleanup harnesses default to
 `/opt/homebrew/Cellar/beads/1.1.2/bin/beads`. If that file is absent, manually
