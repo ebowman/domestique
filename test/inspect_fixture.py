@@ -550,17 +550,38 @@ def private_fragments(entries):
     return forbidden
 
 
-def assert_private_output(case, stdout, stderr):
+def assert_private_output(case, stdout, stderr, *, path_fields=None):
     if len(stdout) + len(stderr) > MAX_INPUT_BYTES:
         raise AssertionError("report exceeds privacy oracle bound")
     try:
-        output = (stdout + stderr).decode("utf-8", errors="strict")
+        out = stdout.decode("utf-8", errors="strict")
+        err = stderr.decode("utf-8", errors="strict")
     except UnicodeError:
         raise AssertionError("invalid report encoding") from None
+    output = out + err
     if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in output):
         raise AssertionError("unescaped report control character")
     if str(case.project) in output and any(ord(c) < 32 for c in str(case.project)):
         raise AssertionError("raw control-character path exposed")
+    if path_fields is not None:
+        # CLI callers supply independent (line index, exact prefix, known path)
+        # witnesses. Exempt only that JSON token, never its suffix or stderr.
+        lines = out.split("\n")
+        seen = set()
+        for index, prefix, path in path_fields:
+            if (index in seen or not 0 <= index < len(lines) or prefix not in (
+                    "Requested directory: ", "Physical project scope: ",
+                    "  Directory: ", "    File: ")):
+                raise AssertionError("invalid expected path field location")
+            seen.add(index)
+            token = prefix + json.dumps(str(path), ensure_ascii=True)
+            line = lines[index]
+            if (not line.startswith(token) or
+                    (not line[len(token):].startswith("; ") if prefix == "    File: "
+                     else line != token)):
+                raise AssertionError("expected escaped path field mismatch")
+            lines[index] = prefix + '"<authorized-path>"' + line[len(token):]
+        output = "\n".join(lines) + err
     output = unescape_report(output)
     if SECRET.casefold() in output.casefold():
         raise AssertionError("private fixture value exposed")
@@ -569,8 +590,9 @@ def assert_private_output(case, stdout, stderr):
     snapshots = (case.session.pristine, case.before)
     paths = {str(case.session.root / rel) for snapshot in snapshots for rel in snapshot}
     paths.update((str(case.project), str(case.requested)))
-    for path in sorted(paths, key=len, reverse=True):
-        output = output.replace(path, " ")
+    if path_fields is None:
+        for path in sorted(paths, key=len, reverse=True):
+            output = output.replace(path, " ")
     forbidden = set().union(*(private_fragments(snapshot) for snapshot in snapshots))
     tokens = words(output)
     observed = {tokens[i:i + size] for size in range(1, 5)
@@ -1119,8 +1141,8 @@ class Case:
         else:
             path.unlink()
 
-    def accept(self, stdout=b"", stderr=b""):
-        assert_private_output(self, stdout, stderr)
+    def accept(self, stdout=b"", stderr=b"", *, path_fields=None):
+        assert_private_output(self, stdout, stderr, path_fields=path_fields)
         self.session.assert_no_calls()
         observed = self.session.snapshot()
         if observed != self.before:

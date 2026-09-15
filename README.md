@@ -32,6 +32,71 @@ Database retention/unchanged-only purge (.7) is implemented. Final acceptance
 distinguishes offline lifecycle coverage and qualified native observations from
 the remaining role/tool/MCP execution limitations; see the evidence below.
 
+## Read-only inspection from this checkout
+
+The local-checkout **private preview** supports inspection without setup. This
+is not a released v2 command. If your existing `dom2` alias points here:
+
+```sh
+dom2 --inspect
+dom2 --inspect /path/to/project
+dom2 /path/to/project --inspect
+# Without an alias:
+bash ./domestique.sh --inspect
+```
+
+The optional target defaults to the current directory. A Git root,
+subdirectory, or linked worktree resolves to its physical worktree root; a
+non-Git directory is inspected **only at that directory**, without guessing an
+ancestor project. An existing directory alias can resolve to its physical
+target. Missing/non-directory/unreadable targets cannot establish project
+absence; independently readable global evidence is still reported.
+
+The deterministic report separates **global preview availability** from
+**project-local providers and generations**. Global definitions alone do not
+mean a local installation exists. Provider rows retain normal, guest, mixed,
+or unknown mode; multiple generations remain separate rows with explicitly
+combined provider state. Partial or unknown evidence is never called clean.
+Comparison uses recorded installed snapshots/digests, not today's templates
+or Git status: even committed permission edits are customizations.
+
+Old installations without snapshots can be installed with **unknown**
+customization. Missing baselines also remain unknown. Digest-only preview
+baselines can identify a changed file but cannot recover metadata/instruction
+differences. Supported textual baselines can report those categories and
+known permission **field names**, never their values. These are filesystem
+observations, not proof of native discovery, readiness, effective permissions,
+or creation authority.
+
+The exact requested directory argument and resolved physical project scope are
+shown separately, quoted with control characters escaped. Each section prints
+its directory; `<project>/...` and `<global>/...` file paths are relative to those
+explicit roots. Path/scope fields are public, including user-chosen directory
+names. Reports omit raw configuration, native values, prompts, baseline contents,
+recorded version/ref values, exception payloads and diffs.
+
+Inspection requires an **existing Python 3.9+ with its standard library**;
+it never installs a runtime and refuses explicitly if one is unavailable.
+This requirement is added only to inspection; other operations retain their
+existing dependency contracts. Inspection makes no application writes,
+network/native-client/Beads calls, or database opens. Beads presence is
+metadata-only, not a runtime permission or readiness claim. It needs neither
+an installed global core nor a Beads runtime.
+
+Do not combine inspection with `--global`, `--local`, `--platform` (either
+spelling), `--dry-run`, `--force`, `--guest`, `--no-guest`, `--with-beads`,
+`--state-only`, `--uninstall`, or `--purge-beads`. Empty/extra targets,
+`--inspect=TARGET`, and unknown options are rejected. A trailing `--` is
+accepted, but arguments after it are rejected. `-h`/`--help` remains
+nonmutating, including with inspection.
+
+Exit **0** means a supported complete report, including absence, customization,
+or an unavailable old baseline; **1** means partial/mixed/unsafe/corrupt/
+unreadable/inconsistent evidence or a runtime failure; **2** means argument
+misuse. A failed scope does not hide independently readable evidence. The
+internal scanner/comparison records are reusable by the future migration
+planner; this command performs no migration, repair, JSON export, or raw diff.
+
 ## Setup: global first
 
 Use the **checked-out current preview script**, once per user, selecting the

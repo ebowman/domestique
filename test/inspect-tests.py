@@ -1,8 +1,8 @@
-"""hq-ln2.2/.3/.4/.5: collection, scanners and comparison; no public CLI.
+"""hq-ln2.2/.3/.4/.5/.6: collection, scanners, comparison and public CLI.
 
 One qualified fixture session (six offline installer calls), plus small owned
 fault fixtures. Failures retain evidence; success removes only owned fixtures.
-All reads execute the extractable payload, never source installer callbacks.
+CLI cases run the actual script; library cases execute the extractable payload.
 """
 import ast
 from contextlib import redirect_stderr, redirect_stdout
@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import stat
 import subprocess
@@ -1313,9 +1314,14 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn(b"invalid-target", result.stdout)
         self.assertNotIn(b"installing", result.stdout)
 
-    def test_no_public_dispatch_or_noninspection_python_dependency(self):
+    def test_safe_public_dispatch_and_noninspection_python_dependency(self):
         self.assertEqual(SOURCE.count('\ninspect_main() {'), 1)
-        self.assertNotIn("--inspect", SOURCE.replace(WRAPPER, ""))
+        result = self.guarded(lambda: subprocess.run(
+            ["/bin/bash", str(F.ROOT / "domestique.sh"), "--inspect", str(self.project)],
+            env=self.session.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10))
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"Project-local providers and generations", result.stdout)
+        self.assertFalse(result.stderr)
         # Preserve existing shell dependencies while making Python unusable.
         python = self.root / "bin/python3"
         python.write_text("#!/bin/sh\n: > " + shlex.quote(str(self.root / "calls/bd")) +
@@ -1327,6 +1333,385 @@ class BoundaryTests(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10))
         self.assertEqual(result.returncode, 0)
         self.assertFalse(result.stderr)
+
+
+def cli_sections(test, result, code):
+    """Parse stdout only: an error message is never an inspection report."""
+    test.assertEqual(result.returncode, code)
+    test.assertEqual(result.stderr, b"")
+    text = result.stdout.decode("utf-8")
+    test.assertTrue(text.startswith("Domestique inspection - "))
+    test.assertTrue(text.endswith(
+        f"Result: {'completed' if code == 0 else 'incomplete'}; exit={code}\n"))
+    test.assertNotRegex(text, r"[\x00-\x09\x0b-\x1f\x7f]")
+    _, global_text = text.split(
+        "\nGlobal preview availability (NOT project-local installation)\n", 1)
+    global_text, project_text = global_text.split(
+        "\nProject-local providers and generations\n", 1)
+    project_text, _ = project_text.split("\nAttention:\n", 1)
+    return global_text, project_text
+
+
+def cli_path_fields(test, output, requested, project, home):
+    """Independent exact path/location witnesses; never call the renderer."""
+    text = output.decode("utf-8")
+    lines = text.split("\n")
+    test.assertNotIn("path-sha256:", text)
+    witnesses = []
+
+    def directory(index, prefix, path):
+        expected = "unavailable" if path is None else json.dumps(str(path), ensure_ascii=True)
+        test.assertEqual(lines[index], prefix + expected)
+        if path is not None:
+            witnesses.append((index, prefix, str(path)))
+
+    directory(1, "Requested directory: ", requested)
+    directory(2, "Physical project scope: ", project)
+    global_start = lines.index("Global preview availability (NOT project-local installation)")
+    project_start = lines.index("Project-local providers and generations")
+    attention = lines.index("Attention:")
+    for kind, root, start, end in (
+            ("global", home, global_start, project_start),
+            ("project", project, project_start, attention)):
+        if root is None:
+            test.assertEqual(lines[start + 1], "  Scope unavailable; no absence conclusion.")
+            continue
+        directory(start + 1, "  Directory: ", root)
+        paths = {p for provider in F.PROVIDERS for p in PRIVATE_PATHS[kind, provider]}
+        if kind == "project":
+            paths.update(p for paths in LEGACY_PATHS.values() for p in paths)
+            paths.update(("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md",
+                          ".github/copilot-instructions.md"))
+        anchored = {"<" + kind + ">/" + p: p for p in paths}
+        for index in range(start + 2, end):
+            if not lines[index].startswith("    File: "):
+                continue
+            path, offset = json.JSONDecoder().raw_decode(lines[index][10:])
+            test.assertIn(path, anchored)
+            test.assertEqual(lines[index][10:10 + offset], json.dumps(path, ensure_ascii=True))
+            test.assertTrue(lines[index][10 + offset:].startswith("; status="))
+            # Every anchor identifies an actual fixture leaf (or its missing
+            # location), under the independently asserted readable scope root.
+            absolute = Path(root) / anchored[path]
+            test.assertEqual(str(absolute), str(root) + "/" + anchored[path])
+            if "; status=readable;" in lines[index]:
+                test.assertTrue(absolute.is_file())
+            witnesses.append((index, "    File: ", path))
+    return tuple(witnesses)
+
+
+class CLITests(unittest.TestCase):
+    # Small owned fault fixtures, NOT another cold installation cohort.
+    setUp = BoundaryTests.setUp
+    tearDown = BoundaryTests.tearDown
+
+    def cli(self, args, *, env=None, script=None, cwd=None):
+        before = self.session.snapshot()
+        result = subprocess.run(
+            ["/bin/bash", str(script or F.ROOT / "domestique.sh"), *map(str, args)],
+            cwd=cwd or self.project, env=env or self.session.env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        self.assertEqual(before, self.session.snapshot(), "owned state changed")
+        self.session.assert_no_calls()
+        if result.stdout.startswith(b"Domestique inspection - "):
+            target = next((str(a) for a in args if not str(a).startswith("--")),
+                          str(Path(cwd or self.project).resolve()))
+            resolved = Path(cwd or self.project) / target
+            project = str(resolved.resolve()) if resolved.is_dir() else None
+            fields = cli_path_fields(
+                self, result.stdout, target, project, (env or self.session.env)["HOME"])
+            case = types.SimpleNamespace(session=self.session, before=before,
+                                         project=project, requested=target)
+            self.session.pristine = before
+            F.assert_private_output(case, result.stdout, result.stderr, path_fields=fields)
+        else:
+            self.assertNotIn(F.SECRET.encode(), result.stdout + result.stderr)
+        return result
+
+    def misuse(self, args, env=None):
+        result = self.cli(args, env=env)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+        self.assertTrue(result.stderr.startswith(b"domestique inspect: "))
+        self.assertNotIn(F.SECRET.encode(), result.stderr)
+        self.assertNotIn(b"Provider:", result.stderr)
+
+    def test_every_explicit_conflict_both_orders_and_values(self):
+        conflicts = [(flag,) for flag in (
+            "--global", "--local", "--platform", "--dry-run", "--force", "--guest",
+            "--no-guest", "--with-beads", "--state-only", "--uninstall", "--purge-beads")]
+        conflicts += [("--local", str(self.project)), ("--local", ""),
+                      ("--platform", "claude"), ("--platform", ""), ("--platform", F.SECRET),
+                      ("--platform=",), ("--platform=all",), ("--platform=" + F.SECRET,)]
+        # No interpreter is available even for errors. This also catches
+        # --platform consuming --inspect as a value in the legacy parser.
+        env = dict(self.session.env, PATH=str(self.root / "bin"))
+        for conflict in conflicts:
+            for args in (("--inspect", *conflict), (*conflict, "--inspect"),
+                         (str(self.project), *conflict, "--inspect")):
+                with self.subTest(args=tuple(a if F.SECRET not in a else "<private>"
+                                             for a in args)):
+                    self.misuse(args, env)
+        self.misuse(("--platform", "--inspect", "--platform=claude"), env)
+        self.misuse(("--guest", "--no-guest", "--inspect"), env)
+        print(f"CLI conflicts: {len(conflicts) * 3 + 2} cases; all seven stubs guarded",
+              flush=True)
+
+    def test_malformed_arguments_and_invalid_targets(self):
+        malformed = [
+            ("--inspect", ""), ("", "--inspect"), ("--inspect", ".", "."),
+            (".", ".", "--inspect"), ("--inspect=" + F.SECRET,), ("--inspect=",),
+            ("--inspect", "--inspect"), ("--inspect", "--not-" + F.SECRET),
+            ("--not-" + F.SECRET, "--inspect"), ("--inspect", "--", "."),
+            ("--", "--inspect"), ("--inspect", "--", "--"), ("--inspect", "-"),
+        ]
+        for args in malformed:
+            with self.subTest(case=malformed.index(args)):
+                self.misuse(args)
+        for target in (self.root / F.SECRET, self.leaf):
+            result = self.cli(("--inspect", target))
+            global_text, project_text = cli_sections(self, result, 1)
+            self.assertIn("installation=absent", global_text)
+            self.assertIn("Scope unavailable; no absence conclusion.", project_text)
+            self.assertIn(b"invalid-target", result.stdout)
+        print(f"CLI malformed: {len(malformed)} misuse + 2 invalid filesystem targets", flush=True)
+
+    def test_help_wins_without_runtime_or_mutation(self):
+        env = dict(self.session.env, PATH=str(self.root / "bin"))
+        # Help uses the original cat dependency, not Python or preflight.
+        (self.root / "bin/cat").symlink_to("/bin/cat")
+        for args in (("--inspect", "--help"), ("-h", "--inspect"),
+                     ("--inspect", "--global", "-h"), ("--help", "--inspect=" + F.SECRET)):
+            result = self.cli(args, env=env)
+            self.assertEqual(result.returncode, 0)
+            self.assertFalse(result.stderr)
+            self.assertIn(b"dom2 --inspect", result.stdout)
+            self.assertNotIn(b"Provider:", result.stdout)
+
+    def test_absent_default_orders_alias_and_secret_control_paths(self):
+        weird = self.project / (F.SECRET + "\n\t\x1b[31mquote\"\nRequested directory: spoof")
+        weird.mkdir()
+        spaces = self.project / "ordinary project with spaces"
+        spaces.mkdir()
+        alias = self.project / "alias"
+        alias.symlink_to(weird)
+        count = 0
+        for target in (self.project, spaces, weird, alias):
+            for args in (("--inspect", target), (target, "--inspect"),
+                         ("--inspect",), ("--inspect", ".")):
+                result = self.cli(args, cwd=target)
+                global_text, project_text = cli_sections(self, result, 0)
+                self.assertIn("scope=directory-only", result.stdout.decode())
+                for section in (global_text, project_text):
+                    self.assertEqual(section.count("generation=none; installation=absent"), 3)
+                count += 1
+        for target in ("ordinary project with spaces", "./ordinary project with spaces",
+                       "alias", "./alias", weird.name):
+            self.cli(("--inspect", target))
+            count += 1
+        trailing = self.cli(("--inspect", "--"))
+        cli_sections(self, trailing, 0)
+        first = self.cli(("--inspect", self.project))
+        second = self.cli(("--inspect", self.project))
+        self.assertEqual(first.stdout, second.stdout)
+        print(f"CLI readable paths: {count + 3} cwd/dot/absolute/relative/alias/control cases", flush=True)
+
+    def test_duplicate_policy_blocks_actual_cli(self):
+        block = F.BEGIN + b"\n" + F.SECRET.encode() + b"\n" + F.END + b"\n"
+        (self.project / "CLAUDE.md").write_bytes(block + block)
+        result = self.cli(("--inspect", self.project))
+        _, project = cli_sections(self, result, 1)
+        self.assertIn('File: "<project>/CLAUDE.md"; status=corrupt;', project)
+        self.assertIn("multiple-policy-blocks (more than one managed block; "
+                      "inspect the reported policy file)", project)
+        self.assertNotIn("unrecognized-evidence", result.stdout.decode())
+        self.assertNotIn(F.SECRET.encode(), result.stdout)
+
+    def test_missing_unsupported_and_unexpected_runtime_actual_script(self):
+        env = dict(self.session.env, PATH=str(self.root / "bin"))
+        missing = self.cli(("--inspect",), env=env)
+        self.assertEqual((missing.returncode, missing.stdout, missing.stderr),
+                         (1, b"", b"domestique inspect: Python 3.9+ runtime unavailable\n"))
+        python = self.root / "bin/python3"
+        for code in (69, 1, 126):
+            python.write_text("#!/bin/sh\nprintf '%s' " + shlex.quote(F.SECRET) +
+                              f" >&2\nexit {code}\n")
+            python.chmod(0o700)
+            result = self.cli(("--inspect",), env=env)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, b"")
+            self.assertIn(b"runtime unavailable" if code == 69 else
+                          b"runtime-or-collection-failure", result.stderr)
+        python.unlink()
+        # Fault injection in a copy of the complete current shell artifact.
+        script = self.root / "sources/injected.sh"
+        for injection, expected in (
+                ("sys.version_info = (3, 8)\n", b"Python 3.9+ runtime unavailable"),
+                (f"raise RuntimeError({F.SECRET!r})\n", b"runtime-or-collection-failure")):
+            script.write_text(SOURCE.replace("import sys\n", "import sys\n" + injection, 1))
+            result = self.cli(("--inspect",), script=script)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, b"")
+            self.assertIn(expected, result.stderr)
+
+    def test_original_parser_controls_without_install_or_python(self):
+        baseline = self.session.source(
+            "parser-baseline", "096c72f10a3b5d60d5a4afe4f4c3a6cfd38819a2")
+        python = self.root / "bin/python3"
+        python.write_text("#!/bin/sh\n: > " + shlex.quote(str(self.root / "calls/bd")) +
+                          "\nexit 99\n")
+        python.chmod(0o700)
+        controls = [
+            ("--dry-run",), ("--dry-run", "--"), ("--dry-run", "--", "."),
+            (".", "--dry-run"), ("--local", ".", "--dry-run"),
+            ("--local",), ("--local", ""), ("",), (".", "."),
+            ("--platform",), ("--platform=",), ("--platform", "invalid"),
+            ("--global", "."), ("--no-guest",), ("--with-beads",),
+            ("--state-only",), ("--purge-beads",),
+            ("--uninstall", "--with-beads"), ("--guest", "--dry-run"),
+            ("--global", "--uninstall", "--dry-run"),
+        ]
+        controls += [("--global", "--uninstall", "--dry-run", "--platform=" + p)
+                     for p in ("claude", "codex", "copilot", "both",
+                               "claude-copilot", "codex-copilot", "all")]
+        for args in controls:
+            with self.subTest(args=args):
+                before = self.cli(args, script=baseline)
+                after = self.cli(args)
+                self.assertEqual((after.returncode, after.stdout, after.stderr),
+                                 (before.returncode, before.stdout, before.stderr))
+        print(f"Original parser: {len(controls)} byte-identical result controls; no Python", flush=True)
+
+
+class RendererTests(unittest.TestCase):
+    def test_explicit_fields_and_known_permission_names_only(self):
+        secret = F.SECRET + "\n\x1b"
+        file = I.FileEvidence("/project/" + secret, "readable",
+                              I.Baseline("snapshot", "valid", secret), "created-record",
+                              "different", "different", "same",
+                              ("tools", "model", secret), ("metadata-changed", secret))
+        generations = tuple(I.GenerationEvidence(g, (secret,), secret, secret) for g in (
+            "v1-snapshot-1", "private-preview-api-1"))
+        provider = I.ProviderRecord("claude", generations, "mixed", "mixed", "unknown",
+                                    (file,), ("multiple-generations", secret))
+        project = I.ScopeRecord("project", "/project", "mixed", "mixed", "unknown",
+                                (provider,))
+        core = I.CoreEvidence(secret, secret, "unknown", secret, (secret,), (secret,))
+        context = I.Context(secret, "/project", "non-git", "directory-only")
+        # These private objects must never be traversed or serialized.
+        private = object()
+        scan = I.PrivateScan((project,), core, None, (I.Diagnostic(secret, secret, secret),),
+                             1, private, private, context)
+        text = I.inspect_render(context, scan)
+        expected_file = ('    File: ' + json.dumps("/project/" + secret) +
+                         '; status=readable; baseline=snapshot/valid; comparison=different; '
+                         'metadata=different; instructions=same; permission-fields=tools')
+        self.assertIn(expected_file, text.split("\n"))
+        case = types.SimpleNamespace(
+            project="/project", requested=secret, before={},
+            session=types.SimpleNamespace(root=Path("/fixture"), pristine={}))
+        F.assert_private_output(case, text.encode(), b"", path_fields=(
+            (1, "Requested directory: ", secret),
+            (text.split("\n").index(expected_file), "    File: ", "/project/" + secret)))
+        self.assertNotIn("object at", text)
+        self.assertNotIn("model", text)
+        self.assertIn("permission-fields=tools", text)
+        self.assertEqual(text.count("(combined provider state)"), 2)
+        self.assertEqual(text.count("installation=mixed; mode=mixed; customization=unknown"), 3)
+        self.assertIn("unrecognized-evidence", text)
+        self.assertNotRegex(text, r"[\x00-\x09\x0b-\x1f\x7f]")
+        self.assertEqual(text, I.inspect_render(context, scan))
+
+    def test_report_reason_mapping_covers_engine_diagnostics(self):
+        # Audit actual engine vocabulary, including rare failure branches, not
+        # just fixture REASONS. Explicit exclusions are non-reason tokens or
+        # propagated programming errors, not an open-ended suffix heuristic.
+        engine = ast.parse(PAYLOAD.split("\nREPORT_REASONS =", 1)[0])
+        literals = {n.value for n in ast.walk(engine) if isinstance(n, ast.Constant)
+                    and isinstance(n.value, str)
+                    and re.fullmatch(r"[a-z]+(?:-[a-z]+)+", n.value)}
+        non_reasons = {
+            "argument-hint", "claude-copilot", "codex-copilot", "created-files",
+            "declared-owned", "declared-ready", "directory-only",
+            "disable-model-invocation", "dolt-embedded-cgo", "git-root",
+            "git-subdirectory", "guest-excludes", "historical-draft-copilot",
+            "last-touched", "legacy-policy", "legacy-pre-snapshot",
+            "legacy-scope-mismatch", "linked-worktree", "metadata-presence-only",
+            "non-git", "not-applicable", "not-assessed", "private-native",
+            "rev-parse", "synthetic-metadata-presence-only",
+            "unsupported-comparison-input", "user-invocable",
+        }
+        self.assertLessEqual(non_reasons, literals)
+        engine_reasons = literals - non_reasons
+        self.assertLessEqual(engine_reasons, I.REPORT_REASONS)
+        self.assertLessEqual(F.REASONS - {"cli-misuse"}, I.REPORT_REASONS)
+        self.assertEqual(I.report_reasons((F.SECRET,)), "unrecognized-evidence")
+        self.assertEqual(I.report_reasons(("future-reason\n" + F.SECRET,)),
+                         "unrecognized-evidence")
+        for reason in engine_reasons:
+            self.assertIn(reason, I.report_reasons((reason,)))
+        print(f"Renderer reasons: {len(engine_reasons)} engine literals audited; "
+              f"{len(non_reasons)} explicit non-reason exclusions", flush=True)
+
+    def test_exact_path_escaping_without_renderer_derived_expectations(self):
+        for path, expected in (
+                (".", '"."'), ("../ordinary project", '"../ordinary project"'),
+                ("/ordinary project", '"/ordinary project"'),
+                ('/space\n\t\x1b[31m"\\\r\x7f\u202e',
+                 r'"/space\n\t\u001b[31m\"\\\r\u007f\u202e"')):
+            with self.subTest(expected=expected):
+                self.assertEqual(I.report_path(path), expected)
+        self.assertEqual(I.report_path(None), "unavailable")
+
+
+class PathPrivacyTests(unittest.TestCase):
+    def test_exact_scoped_fields_only_never_native_payloads_or_spoofing(self):
+        root = Path("/synthetic-owned-evidence")
+        path = str(root / ("ordinary implementer " + F.SECRET + "\n\t\x1b[31m\""))
+        native = ('---\nname: implementer\ntools: Read, Write, Edit, Bash\n---\n'
+                  'You are an implementer. ' + F.SECRET)
+        entries = {"project/agents/implementer.md": F.Entry(
+            stat.S_IFREG | 0o600, 0, (0, 0, 1), native.encode())}
+        case = types.SimpleNamespace(project=path, requested=path, before=entries,
+                                     session=types.SimpleNamespace(root=root, pristine=entries))
+        prefix = "Requested directory: "
+        line = prefix + json.dumps(path)
+        fields = ((0, prefix, path),)
+        # Establish the old oracle's false positive on the legitimate field.
+        with self.assertRaisesRegex(AssertionError, "private fixture value"):
+            F.assert_private_output(case, (line + "\n").encode(), b"")
+        F.assert_private_output(case, (line + "\n").encode(), b"", path_fields=fields)
+        count = 0
+        for payload in (F.SECRET, "implementer", "Read", "You are an implementer.",
+                        "tools: Read, Write, Edit, Bash", "developer_instructions =",
+                        native, path, json.dumps(path)):
+            for stdout, stderr in (
+                    (line + "\n" + payload, ""),
+                    (line + "\n", payload),
+                    (payload + line, ""),
+                    (line + payload, ""),
+                    (line + "\n" + line, "")):
+                with self.assertRaises(AssertionError):
+                    F.assert_private_output(case, stdout.encode(), stderr.encode(),
+                                            path_fields=fields)
+                count += 1
+        for spoof in (
+                line.replace(F.SECRET, F.SECRET + "suffix"),
+                "extra " + line, prefix + path,
+                line.replace("Requested directory:", "Physical project scope:")):
+            with self.assertRaises(AssertionError):
+                F.assert_private_output(case, spoof.encode(), b"", path_fields=fields)
+            count += 1
+        file_path = "<project>/agents/implementer.md"
+        file_line = "    File: " + json.dumps(file_path) + "; status=readable"
+        file_fields = ((0, "    File: ", file_path),)
+        F.assert_private_output(case, file_line.encode(), b"", path_fields=file_fields)
+        for payload in (F.SECRET, "implementer", "tools: Read"):
+            with self.assertRaises(AssertionError):
+                F.assert_private_output(case, (file_line + "; detail=" + payload).encode(),
+                                        b"", path_fields=file_fields)
+            count += 1
+        print(f"Scoped path privacy: {count} payload/location/prefix/suffix negatives", flush=True)
 
 
 class QualifiedFixtureTests(unittest.TestCase):
@@ -1403,6 +1788,108 @@ class QualifiedFixtureTests(unittest.TestCase):
                 return  # Keep the first failed case; no cascading fixture use.
         type(self).complete = True
 
+
+    def test_y_public_cli_source_qualified_reports(self):
+        type(self).complete = False
+        names = (
+            "absent", "unrelated-native-agents", "v1-normal-all-including-draft-copilot",
+            "v1-guest-claude-codex", "v1-mixed-provider-modes", "pre-snapshot-no-git",
+            "v1-no-git", "default-current-directory", "v1-subdirectory",
+            "v1-linked-worktree", "path-with-spaces", "path-with-control-characters",
+            "private-global-and-local", "private-global-only",
+            "private-synthetic-beads-presence", "multiple-generations-one-provider",
+            "committed-permissions-customization", "adopted-baseline-not-ownership",
+            "claude-metadata-edit", "codex-metadata-edit", "copilot-metadata-edit",
+            "claude-both-edit", "missing-baseline", "corrupt-baseline",
+            "managed-file-missing", "invalid-encoding", "oversized-input",
+            "unsupported-metadata", "private-metadata-digest-only", "host-text-outside-policy",
+            "partial-markers", "mixed-markers", "unsafe-symlink", "unsafe-hardlink",
+            "unsafe-directory", "unsafe-fifo", "unsafe-socket", "unsafe-unreadable",
+            "normal-missing-manifest", "normal-corrupt-manifest",
+            "private-missing-manifest", "private-corrupt-manifest", "private-inconsistent-core",
+        )
+        for name in names:
+            with self.subTest(scenario=name):
+                case = self.session.begin(name)
+                expected = case.expected()
+                if name == "committed-permissions-customization":
+                    status = self.session.run(
+                        ["git", "-C", case.project, "status", "--porcelain"],
+                        env=case.env, operation="command")
+                    self.assertEqual(status.stdout, b"")
+                result = self.session.run(
+                    ["/bin/bash", F.ROOT / "domestique.sh", *case.argv()],
+                    cwd=case.requested, env=case.env, check=False)
+                sections = cli_sections(self, result, expected.exit_code)
+                self.assertIn("Context: " + expected.context + ";", result.stdout.decode())
+                path_fields = cli_path_fields(
+                    self, result.stdout, expected.requested_directory,
+                    expected.resolved_directory, expected.scopes[0].directory)
+                for section, scope in zip(sections, expected.scopes):
+                    oracle = (adopted_comparison_oracle(scope)
+                              if name == "adopted-baseline-not-ownership" and
+                              scope.scope == "project" else scope)
+                    self.assertIn("Summary: installation=" + oracle.installation +
+                                  "; mode=" + oracle.mode +
+                                  "; customization=" + oracle.customization, section)
+                    observed_rows = re.findall(
+                        r"^  Provider: (\S+); generation=(\S+); installation=(\S+); "
+                        r"mode=(\S+); customization=([a-z-]+)", section, re.M)
+                    wanted_rows = sorted(
+                        (p.provider, g, p.installation, p.mode, p.customization)
+                        for p in oracle.providers for g in (
+                            tuple(g.generation for g in p.generations) or ("none",)))
+                    self.assertEqual(sorted(observed_rows), wanted_rows)
+                    files = {}
+                    for line in section.splitlines():
+                        if not line.startswith("    File: "):
+                            continue
+                        path, end = json.JSONDecoder().raw_decode(line[10:])
+                        details = dict(part.split("=", 1) for part in
+                                       line[10 + end:].removeprefix("; ").split("; "))
+                        self.assertNotIn(path, files)
+                        files[path] = details
+                    for p in oracle.providers:
+                        for f in p.files:
+                            anchor = "<" + scope.scope + ">" + f.path[len(scope.directory):]
+                            actual = files[anchor]
+                            self.assertEqual(actual, dict(
+                                status=f.status, baseline=f.baseline.kind + "/" + f.baseline.status,
+                                comparison=f.comparison, metadata=f.metadata,
+                                instructions=f.instructions,
+                                **{"permission-fields": ",".join(f.permission_fields) or "none"}))
+                case.accept(result.stdout, result.stderr, path_fields=path_fields)
+                print("CLI source-qualified:", name, flush=True)
+            if self.session.active is not None:
+                return
+        # An independently damaged global scope must not hide legacy project
+        # evidence; poison references/paths never become report values.
+        for kind in ("invalid-core", "corrupt-global", "missing-core"):
+            case = self.session.begin("v1-normal-all-including-draft-copilot")
+            if kind == "invalid-core":
+                case.env["DOMESTIQUE_HOME"] = "relative/" + F.SECRET + "\x1b"
+            elif kind == "corrupt-global":
+                case.env.update(HOME=self.session.env["HOME"],
+                                DOMESTIQUE_HOME=self.session.env["DOMESTIQUE_HOME"])
+                manifest = Path(case.env["DOMESTIQUE_HOME"]) / "state/global-manifest"
+                manifest.write_text("core_root=/" + F.SECRET + "\n")
+            # missing-core is already the isolated historical scope.
+            case.before = self.session.snapshot()
+            result = self.session.run(
+                ["/bin/bash", F.ROOT / "domestique.sh", case.project, "--inspect"],
+                cwd=case.project, env=case.env, check=False)
+            _, project = cli_sections(self, result, 0 if kind == "missing-core" else 1)
+            self.assertIn("installation=installed; mode=normal; customization=unchanged", project)
+            self.assertEqual(project.count("generation="), 3)
+            path_fields = cli_path_fields(
+                self, result.stdout, str(case.project), str(case.project), case.env["HOME"])
+            case.accept(result.stdout, result.stderr, path_fields=path_fields)
+            print("CLI independent project:", kind, flush=True)
+        self.assertEqual(dict(self.session.counts), dict(
+            historical_normal=1, historical_guest=1, pre_snapshot=1, historical_adoption=1,
+            current_global=1, current_local=1, git_init=5, worktree_add=1))
+        print(f"CLI reports: {len(names) + 3} cases; same six-install cohort", flush=True)
+        type(self).complete = True
 
     def test_z_legacy_source_qualified_projection(self):
         # Reuse the SAME six cold installs as the boundary projection. The .1

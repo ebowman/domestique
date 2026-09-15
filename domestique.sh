@@ -15,8 +15,8 @@ MARKER_END='<!-- END domestique -->'
 GITEXCLUDE_MARKER_BEGIN='# BEGIN domestique (managed)'
 GITEXCLUDE_MARKER_END='# END domestique'
 
-# Internal only: no installer dispatch reaches this function. The single
-# DOM_INSPECT_PY payload is extractable without sourcing/running this script.
+# Inspection never enters installer/preflight dispatch. The single payload is
+# also extractable without sourcing/running this script.
 inspect_main() {
   if ! command -v python3 >/dev/null 2>&1; then
     printf '%s\n' 'domestique inspect: Python 3.9+ runtime unavailable' >&2
@@ -2021,26 +2021,177 @@ def inspect_compare(scan):
     return replace(scan, scopes=tuple(results), core=core, beads=beads, **changes)
 
 
+REPORT_REASONS = frozenset("""
+no-domestique-evidence unrelated-native-files installed-baseline
+old-baseline-unavailable baseline-missing baseline-corrupt baseline-unavailable
+baseline-not-ownership created-record metadata-changed instructions-changed
+file-changed digest-only-baseline host-text-excluded mixed-provider-modes
+mixed-mode-markers partial-policy-markers multiple-policy-blocks multiple-generations
+managed-file-missing mode-corrupt platforms-corrupt creation-record-corrupt
+manifest-incomplete-inventory not-allowlisted
+manifest-missing manifest-corrupt manifest-schema-unsupported manifest-inventory-corrupt
+core-inconsistent core-binding-mismatch project-binding-mismatch core-provenance-corrupt
+core-evidence-unavailable core-missing core-selector-missing core-selector-corrupt
+core-release-limit core-resource-unavailable core-api-unsupported core-content-edited
+core-provenance-missing core-helper-unsupported invalid-core-scope
+global-publication-pending local-publication-pending local-publication-incomplete
+receipt-missing receipt-corrupt receipt-unowned unrecorded-profile
+providers-none-retained beads-schema-unsupported beads-manifest-corrupt
+beads-metadata-only synthetic-beads-metadata-only beads-evidence-unavailable
+beads-attachment-pending invalid-encoding input-too-large crlf-difference
+unsafe-symlink unsafe-hardlink unsafe-directory unsafe-fifo unsafe-socket
+unsafe-parent unsafe-nonregular unreadable-file escaped-path invalid-target
+unsupported-metadata mode-unavailable root-discovery-unavailable root-discovery-limit
+unsafe-git-marker inconsistent-evidence depth-limit unsupported-input invalid-limits
+entry-limit byte-limit invalid-metadata-inventory collection-sealed unread-required-input
+""".split())
+REPORT_GENERATIONS = frozenset((
+    "legacy-pre-snapshot", "v1-snapshot-1", "historical-draft-copilot",
+    "private-preview-api-1",
+))
+REPORT_STATES = {
+    "installation": frozenset(("absent", "installed", "partial", "mixed", "unknown")),
+    "mode": frozenset(("normal", "guest", "mixed", "unknown")),
+    "customization": frozenset(("unchanged", "customized", "unknown", "not-applicable")),
+    "comparison": frozenset(("same", "different", "unknown", "not-applicable")),
+    "status": frozenset(("readable", "missing", "unsafe", "unreadable", "corrupt",
+                         "inconsistent", "unknown")),
+}
+
+
+def report_state(kind, value):
+    return value if value in REPORT_STATES[kind] else "unknown"
+
+
+def report_reasons(reasons):
+    # Map only engine-owned codes, never exception text or unrecognized values.
+    details = {"multiple-policy-blocks":
+               "multiple-policy-blocks (more than one managed block; inspect the reported policy file)"}
+    return ", ".join(sorted({details.get(r, r) if r in REPORT_REASONS else "unrecognized-evidence"
+                             for r in reasons})) or "none"
+
+
+def report_path(path):
+    if path is None or path == "":
+        return "unavailable"
+    return display(path)
+
+
+def report_file(path, scope, provider):
+    relative = path[len(scope.directory) + 1:] if path.startswith(
+        scope.directory + "/") else None
+    allowed = (set(private_inventory(scope.scope, provider))
+               if provider in PRIVATE_PROVIDERS else set())
+    if scope.scope == "project":
+        for name, _, native, policies, _ in LEGACY_LAYOUTS:
+            if name == provider:
+                allowed.update(native)
+                allowed.update(policies)
+    return (display("<" + scope.scope + ">/" + relative) if relative in allowed
+            else report_path(path))
+
+
+def inspect_render(context, scan):
+    """Public text only; no observation, digest, raw reference or object dump."""
+    lines = [
+        "Domestique inspection - local checkout PRIVATE PREVIEW (not released v2)",
+        "Requested directory: " + report_path(context.requested_directory),
+        "Physical project scope: " + report_path(context.resolved_directory),
+        "Context: " + (context.context if context.context in (
+            "git-root", "git-subdirectory", "linked-worktree", "non-git",
+            "invalid-target") else "unknown") + "; scope=" + (
+                context.scope if context.scope in ("worktree", "directory-only", "unresolved")
+                else "unknown"),
+        "Paths are quoted and escaped; <global>/<project> file anchors use each section's Directory.",
+        "Evidence only; no writes, database access or native readiness/effective-permission assessment.",
+    ]
+    for kind, heading in (
+            ("global", "Global preview availability (NOT project-local installation)"),
+            ("project", "Project-local providers and generations")):
+        lines.extend(("", heading))
+        scopes = tuple(s for s in scan.scopes if s.scope == kind)
+        if not scopes:
+            lines.append("  Scope unavailable; no absence conclusion.")
+        for scope in scopes:
+            lines.append("  Directory: " + report_path(scope.directory))
+            lines.append("  Summary: " + "; ".join(
+                key + "=" + report_state(key, getattr(scope, key))
+                for key in ("installation", "mode", "customization")))
+            lines.append("  Reasons: " + report_reasons(scope.reasons))
+            for provider in scope.providers:
+                name = provider.provider if provider.provider in PRIVATE_PROVIDERS else "unknown"
+                states = "; ".join(key + "=" + report_state(key, getattr(provider, key))
+                                   for key in ("installation", "mode", "customization"))
+                generations = tuple(sorted({
+                    g.generation if g.generation in REPORT_GENERATIONS else "unknown"
+                    for g in provider.generations})) or ("none",)
+                for generation in generations:
+                    lines.append("  Provider: " + name + "; generation=" + generation +
+                                 "; " + states + (
+                                     " (combined provider state)" if len(generations) > 1 else ""))
+                lines.append("    Reasons: " + report_reasons(provider.reasons))
+                for file in sorted(provider.files, key=lambda f: f.path):
+                    fields = sorted(set(file.permission_fields) & PERMISSION_FIELDS.get(
+                        name, frozenset()))
+                    baseline = (file.baseline.kind if file.baseline.kind in (
+                        "snapshot", "digest", "none") else "unknown") + "/" + (
+                            file.baseline.status if file.baseline.status in (
+                                "valid", "unavailable", "corrupt") else "unknown")
+                    lines.append("    File: " + report_file(file.path, scope, name) +
+                                 "; status=" + report_state("status", file.status) +
+                                 "; baseline=" + baseline + "; comparison=" +
+                                 report_state("comparison", file.comparison) +
+                                 "; metadata=" + report_state("comparison", file.metadata) +
+                                 "; instructions=" + report_state("comparison", file.instructions) +
+                                 "; permission-fields=" + (",".join(fields) or "none"))
+                    lines.append("      Reasons: " + report_reasons(file.reasons))
+        if kind == "global":
+            lines.append("  Core evidence: " + (scan.core.status if scan.core.status in (
+                "absent", "available", "partial", "unknown") else "unknown"))
+            lines.append("  Core reasons: " + report_reasons(scan.core.reasons))
+        elif scan.beads is not None:
+            # A manifest's declared-ready label is deliberately not a readiness claim.
+            presence = any(p.status != "missing" for p in scan.beads.presence)
+            lines.append("  Beads: " + ("metadata present" if presence else "no metadata observed") +
+                         "; database contents unopened; readiness not assessed")
+            lines.append("  Beads reasons: " + report_reasons(scan.beads.reasons))
+    attention = set(context.diagnostics + scan.diagnostics)
+    lines.extend(("", "Attention:"))
+    if not attention:
+        lines.append("  none")
+    for scope, reasons in sorted({
+            (d.scope if d.scope in ("global", "project", "core", "beads", "inspection") or
+             d.scope in tuple(k + ":" + p for k in ("global", "project")
+                              for p in PRIVATE_PROVIDERS) else "inspection",
+             report_reasons((d.code,))) for d in attention}):
+        lines.append("  " + scope + ": " + reasons)
+    lines.append("Result: " + ("completed" if scan.exit_code == 0 else "incomplete") +
+                 "; exit=" + str(scan.exit_code))
+    return "\n".join(lines) + "\n"
+
+
 def boundary_main(args):
-    # Temporary INTERNAL context smoke entrypoint, not the future public CLI.
-    if len(args) > 1:
-        print("domestique inspect: invalid-internal-request")
-        return 1
+    if len(args) > 1 or args and not args[0]:
+        return 2
     context = resolve_context(args[0] if args else None)
-    print("domestique inspect: scope=" + context.scope + "; context=" + context.context)
-    if context.resolved_directory is not None:
-        print("directory=" + display(context.resolved_directory))
-    for diagnostic in context.diagnostics:
-        print("project: " + diagnostic.code)
-    return 1 if context.diagnostics else 0
+    legacy = inspect_scan_legacy(context) if not context.diagnostics else None
+    scan = inspect_compare(inspect_scan_private(context, legacy=legacy))
+    print(inspect_render(context, scan), end="")
+    return scan.exit_code
 
 
 if __name__ == "__main__":
     # Expected filesystem/discovery failures are handled at their boundaries.
     # Unexpected faults propagate (also when extracted as a library). The shell
     # suppresses interpreter stderr/exception chains and reports nonzero status.
-    sys.exit(boundary_main(sys.argv[1:]))
+    # Distinguish a completed partial/misuse result from Python's exception rc=1.
+    sys.exit({0: 0, 1: 10, 2: 12}[boundary_main(sys.argv[1:])])
 DOM_INSPECT_PY
+  if [ "$inspect_rc" -eq 10 ]; then return 1; fi
+  if [ "$inspect_rc" -eq 12 ]; then
+    printf '%s\n' 'domestique inspect: invalid inspection arguments' >&2
+    return 2
+  fi
   if [ "$inspect_rc" -eq 69 ]; then
     printf '%s\n' 'domestique inspect: Python 3.9+ runtime unavailable' >&2
   elif [ "$inspect_rc" -ne 0 ]; then
@@ -6356,6 +6507,28 @@ usage() {
 Usage: domestique.sh --global [options]
        domestique.sh --local TARGET [options]
        domestique.sh [TARGET] [options]  (same private local operation; default .)
+       domestique.sh --inspect [TARGET]  (also TARGET --inspect; default current directory)
+
+Read-only inspection from this local checkout (PRIVATE PREVIEW, not released v2):
+  dom2 --inspect
+  dom2 --inspect /path/to/project
+  dom2 /path/to/project --inspect
+Here dom2 must already point at this checkout; no alias/setup is performed.
+Git roots, subdirectories and linked worktrees resolve to the physical worktree
+root. Non-Git targets inspect only that directory, not a guessed project root.
+Global preview availability is separate from project-local providers/generations.
+Unknown/old baselines stay unknown; partial/mixed evidence is never clean.
+Reports show installed-baseline changes, metadata/instructions and known permission
+FIELD NAMES only, not values or effective runtime permissions. Requested and physical
+directories are quoted/escaped; file scope anchors refer to each section's Directory.
+Inspection performs no setup, repair, migration, native calls, network or DB reads.
+Existing Python 3.9+ stdlib is required for inspection only; missing/unsupported
+runtime refuses without installation. Other operations keep their dependencies.
+Inspection rejects ALL installation/removal flags below, including both forms of
+--platform. No --inspect=TARGET, extra/empty targets, JSON/diff or model options.
+Help is nonmutating. Exit: 0 complete (including absent/customized/old unknown
+baseline), 1 partial/mixed/unsafe/unreadable/inconsistent evidence or runtime error,
+2 argument misuse. Independent readable scopes survive errors in another scope.
 
 IMPLEMENTED PREVIEW: definitions/profile lifecycle, NOT end-to-end readiness.
 Qualified private Beads initialization is supported with explicit
@@ -6441,6 +6614,59 @@ Claude 2.1.268 skills and ALL roles blocked, not evidence of product role absenc
 Versions observed only, not minimum support. .6 limited; .8 native execution open.
 EOF
 }
+
+# A separate early grammar leaves the original lifecycle parser byte-for-byte
+# intact, including its trailing -- behavior. Inspect intent and explicit
+# conflicts are recognized even in option-value positions; never use eventual
+# mutation booleans to decide whether inspection is safe.
+INSPECT_REQUESTED=0
+INSPECT_HELP=0
+for INSPECT_ARG in "$@"; do
+  case "$INSPECT_ARG" in
+    --inspect|--inspect=*) INSPECT_REQUESTED=1 ;;
+    -h|--help) INSPECT_HELP=1 ;;
+  esac
+done
+if [ "$INSPECT_REQUESTED" = 1 ]; then
+  if [ "$INSPECT_HELP" = 1 ]; then usage; exit 0; fi
+  INSPECT_TARGET=""
+  INSPECT_TARGET_EXPLICIT=0
+  INSPECT_SEEN=0
+  INSPECT_END=0
+  for INSPECT_ARG in "$@"; do
+    case "$INSPECT_ARG" in
+      --global|--local|--platform|--platform=*|--dry-run|--force|--guest|--no-guest|--with-beads|--state-only|--uninstall|--purge-beads)
+        printf '%s\n' 'domestique inspect: conflicts with installation/removal options' >&2
+        exit 2 ;;
+    esac
+    if [ "$INSPECT_END" = 1 ]; then
+      printf '%s\n' 'domestique inspect: unexpected arguments after --' >&2
+      exit 2
+    fi
+    case "$INSPECT_ARG" in
+      --inspect)
+        [ "$INSPECT_SEEN" = 0 ] || {
+          printf '%s\n' 'domestique inspect: repeated --inspect' >&2; exit 2;
+        }
+        INSPECT_SEEN=1 ;;
+      --) INSPECT_END=1 ;;
+      -*)
+        printf '%s\n' 'domestique inspect: invalid option; use --inspect [TARGET]' >&2
+        exit 2 ;;
+      *)
+        [ -n "$INSPECT_ARG" ] && [ "$INSPECT_TARGET_EXPLICIT" = 0 ] || {
+          printf '%s\n' 'domestique inspect: requires at most one nonempty target' >&2; exit 2;
+        }
+        INSPECT_TARGET="$INSPECT_ARG"; INSPECT_TARGET_EXPLICIT=1 ;;
+    esac
+  done
+  if [ "$INSPECT_TARGET_EXPLICIT" = 1 ]; then
+    inspect_main "$INSPECT_TARGET"
+  else
+    inspect_main
+  fi
+  exit $?
+fi
 
 TARGET_DIR=""
 TARGET_EXPLICIT=0
