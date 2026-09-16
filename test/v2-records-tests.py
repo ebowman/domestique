@@ -98,7 +98,9 @@ class TransactionTests(unittest.TestCase):
                         self.assertIn(target.encode(), out.stdout)
                         recovery = ("cleanup-pending" if event in ("complete", "before-clear-published")
                                     else "unknown" if event.startswith("clear-") else "pending")
-                        self.assertIn(("recovery=" + recovery).encode(), out.stdout)
+                        # Management deliberately does not load workflow bodies
+                        # for journal classification; the publisher still does.
+                        self.assertIn(b"recovery=unknown", out.stdout)
                         self.assertEqual(error.exception.recovery, recovery)
                 facts = fact_oracle(V.root(s))
                 if event == "written-launcher":
@@ -146,7 +148,7 @@ class TransactionTests(unittest.TestCase):
                 self.assertIn(expected.encode(), out.stdout)
                 recovery = ("cleanup-pending" if event == "complete" else "unknown"
                             if event in ("pending", "clear-published", "clear-previous") else "pending")
-                self.assertIn(("recovery=" + recovery).encode(), out.stdout)
+                self.assertIn(b"recovery=unknown", out.stdout)
                 self.assertEqual(error.exception.recovery, recovery)
                 if event not in ("pending", "clear-previous"):
                     rows = parse_record((V.root(s) / "state/previous").read_bytes())
@@ -187,19 +189,20 @@ class TransactionTests(unittest.TestCase):
                     for arg in ("version", "--version", "enable", "inspect", "update",
                                 "read", "start", "route", "bootstrap", "beads", "bind", "goal"):
                         out = s.run([V.launcher(s), arg], check=False)
-                        self.assertEqual((out.returncode, out.stdout), (1, b""))
+                        expected = 1 if arg in ("version", "--version", "enable", "inspect") else 2
+                        self.assertEqual((out.returncode, out.stdout), (expected, b""))
                     self.assertEqual(before, V.protected(s))
             publish_local(V.source(s), s.env, hook=witness)
             self.assertEqual(events, ["launcher-before-manifest", "manifest-before-active"])
 
     def test_static_help_has_no_filesystem_discovery(self):
-        from v2.runtime import launcher_main
-        with patch("v2.runtime.physical", side_effect=AssertionError("filesystem discovery")), \
-                patch("v2.runtime.runtime_read", side_effect=AssertionError("runtime discovery")), \
-                patch("v2.runtime.read", side_effect=AssertionError("file read")):
+        from v2.dispatcher import dispatch_main
+        with patch("v2.dispatcher.physical", side_effect=AssertionError("filesystem discovery")), \
+                patch("v2.dispatcher.management_read", side_effect=AssertionError("runtime discovery")), \
+                patch("v2.dispatcher.read", side_effect=AssertionError("file read")):
             for arg in ("--help", "-h", "help"):
                 with patch("sys.argv", ["domestique2", arg]):
-                    self.assertEqual(launcher_main("/unavailable", "/unavailable"), 0)
+                    self.assertEqual(dispatch_main("/unavailable", "/unavailable"), 0)
 
     def test_identity_race_release_collision_and_active_replacement_race(self):
         for event in ("before-release", "before-rename-active"):

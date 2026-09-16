@@ -4,6 +4,7 @@ No shell evaluation, native discovery, retries, permission repair or adoption.
 Only Python stdlib; the internal API requires an already available Python 3.9+.
 """
 import hashlib
+from contextlib import contextmanager, nullcontext
 import os
 from pathlib import Path
 import re
@@ -157,30 +158,46 @@ def checked_write(fd, path, data, before, guard):
         offset += count
 
 
-def write_created(fd, path, data, mode, guard):
+def write_created(fd, path, data, mode, guard, before=None):
     """The open descriptor, not the name or equal bytes, witnesses creation."""
     initial = os.fstat(fd)
+    need(before is None or attributes(initial) == before[0], "changed creation handoff")
     need(initial.st_uid == os.getuid() and stat.S_ISREG(initial.st_mode) and
          initial.st_nlink == 1 and initial.st_size == 0, "invalid creation witness")
     checked_write(fd, path, b"", (attributes(initial), b""), guard)
+    need(attributes(os.fstat(fd)) == attributes(initial) and
+         snapshot(path) == (attributes(initial), b""), "changed pre-chmod creation")
     os.fchmod(fd, mode)
     changed = os.fstat(fd)
     need(identity(changed)[:3] == identity(initial)[:3] and
          changed.st_mode == stat.S_IFREG | mode and changed.st_nlink == 1 and
-         changed.st_size == 0, "changed creation mode")
+         changed.st_size == 0 and changed.st_mtime_ns == initial.st_mtime_ns,
+         "changed creation mode")
     return checked_write(fd, path, data, (attributes(changed), b""), guard)
 
 
-def exclusive(path, data, mode, guard=None):
+def exclusive(path, data, mode, guard=None, watch=None):
     """O_EXCL is the single-leaf equivalent of global_link_new, without links."""
     safe(path)
     guard = guard or (lambda: safe(path))
     guard()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    fd = None
     try:
-        return write_created(fd, path, data, mode, guard)
+        with watch.namespace(Path(path).parent, entry_delta=1) if watch else nullcontext():
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+            before = (attributes(os.fstat(fd)), b"")
+        return write_created(fd, path, data, mode, guard, before)
     finally:
-        os.close(fd)
+        if fd is not None:
+            os.close(fd)
+
+
+def moved_witness(fd, before, links):
+    """A link/rename/unlink may change ctime/link count, not bytes or mtime."""
+    after = attributes(os.fstat(fd))
+    need(after[:4] == before[0][:4] and after[4] == links and
+         after[5:7] == before[0][5:7], "changed moved afterimage")
+    return after, before[1]
 
 
 class Watch:
@@ -190,12 +207,21 @@ class Watch:
         self.ancestors = {}
         self.boundary = boundary or (lambda: None)
 
-    def add(self, path):
-        path = Path(path)
-        self.paths[path] = snapshot(path)
+    def _observe(self, path):
+        # Bind ancestors before opening the leaf, never to a later replacement.
         for p in path.parents:
             if p.exists():
-                self.ancestors.setdefault(p, identity(p.lstat()))
+                current = identity(p.lstat())
+                need(self.ancestors.setdefault(p, current) == current,
+                     "changed ancestor identity")
+        return snapshot(path)
+
+    def add(self, path):
+        """Register before validation; revisiting cannot erase an earlier proof."""
+        path = Path(path)
+        current = self._observe(path)
+        need(self.paths.setdefault(path, current) == current, "changed preflight path")
+        return current
 
     def check(self):
         self.check_boundary()
@@ -213,14 +239,55 @@ class Watch:
                 need(identity(p.lstat()) == old[0][:4], "changed directory identity")
         self.boundary()
 
-    def advance(self, path):
-        """After a checked write, refresh just its parent and actual result."""
+    @contextmanager
+    def namespace(self, parent, entry_delta, directory_delta=0):
+        """Witness parent metadata at the namespace syscall, not after file I/O.
+
+        The caller checks its leaf preconditions separately (including the
+        two-link transition). Only this directory's namespace metadata can move.
+        """
+        parent = Path(parent)
+        self.check_boundary()
+        before = self.add(parent)
+        need(before is not None and before[1] is None, "missing publication parent")
+        fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            need(attributes(os.fstat(fd)) == before[0], "changed opened parent")
+            yield
+            after = (attributes(os.fstat(fd)), None)
+            # Unix directories count subdirectories; APFS counts all entries.
+            need(after[0][:4] == before[0][:4] and
+                 (after[0][4] - before[0][4] in (directory_delta, entry_delta) or
+                  after[0][4] == before[0][4] == 1), "changed publication parent")
+            self.advance(parent, after)
+        finally:
+            os.close(fd)
+
+    def mkdir(self, path, mode=0o700):
         path = Path(path)
-        parent = path.parent
-        if parent in self.paths and self.paths[parent] is not None:
-            old = self.paths[parent][0]
-            s = parent.lstat()
-            need((s.st_uid, s.st_dev, s.st_ino, s.st_mode) == old[:4],
-                 "changed publication parent")
-            self.paths[parent] = snapshot(parent)
         self.add(path)
+        self.check()
+        need(self.paths[path] is None, "directory creation collision")
+        fd = None
+        try:
+            with self.namespace(path.parent, entry_delta=1, directory_delta=1):
+                os.mkdir(path, mode)
+                fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                created = (attributes(os.fstat(fd)), None)
+            need(created[0][0] == os.getuid() and
+                 created[0][3] == stat.S_IFDIR | mode, "invalid directory creation")
+            with os.scandir(fd) as entries:
+                need(next(entries, None) is None, "nonempty directory creation")
+            self.advance(path, created)
+            return created
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def advance(self, path, witnessed):
+        """Bind an actual result; never acquire authority from a later pathname."""
+        path = Path(path)
+        need(self._observe(path) == witnessed, "changed witnessed publication")
+        self.paths[path] = witnessed
+        if witnessed is None:
+            self.ancestors.pop(path, None)

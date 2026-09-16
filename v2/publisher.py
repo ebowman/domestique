@@ -2,7 +2,8 @@
 
 publish_local(source, env, dry_run=False, hook=None) is the internal API.
 hook is a trusted test callback, never an environment/CLI escape or candidate.
-No recovery, native/project operation, fetch, official qualification or GC.
+No recovery, native/project operation or GC. Bootstrap supplies a trusted
+selection callback for official transport, after existing-state validation.
 """
 from contextlib import contextmanager
 import os
@@ -14,8 +15,8 @@ import sys
 import tempfile
 import uuid
 from .safe import (META_LIMIT, MAX_NUMBER, PAYLOAD_LIMIT, Refusal, Watch, attributes,
-                   checked_write, exclusive, write_created,
-                   identity, need, physical, read, safe, sha, snapshot, text_bounds)
+                   checked_write, exclusive, moved_witness, write_created,
+                   need, physical, read, safe, sha, snapshot, text_bounds)
 from .package import DIRS, LEAVES, inventory, payload_mode, verify_package
 from .records import (machine, manifest_bytes, previous_bytes, previous_read,
                       pending_bytes, published_header, fact_bytes, published_read)
@@ -70,8 +71,9 @@ def boundary(paths, env):
 def staging_area(temp, watch):
     """Only our closed staging inventory; never auto-delete across a new boundary."""
     watch.check_boundary()
-    staging = Path(tempfile.mkdtemp(prefix="domestique-v2-stage-", dir=temp))
-    watch.add(staging)
+    staging = temp / ("domestique-v2-stage-" + uuid.uuid4().hex)
+    created = watch.mkdir(staging)
+    watch.advance(staging, created)
     stage = staging / "package"
     cleaned = False
 
@@ -80,17 +82,18 @@ def staging_area(temp, watch):
         watch.check()
         for p in (*(stage / p for p in reversed(LEAVES)),
                   *(stage / d for d in reversed(DIRS)), stage, staging):
-            watch.check_boundary()
+            watch.check()
             need(snapshot(p) == watch.paths[p], "changed staging cleanup path")
             if os.path.lexists(p):
                 safe(p)
-                if p.is_dir():
-                    p.rmdir()
-                else:
-                    p.unlink()
-                watch.advance(p)
-                watch.paths.pop(p, None)
-                watch.ancestors.pop(p, None)
+                directory = p.is_dir()
+                with watch.namespace(p.parent, entry_delta=-1,
+                                     directory_delta=-1 if directory else 0):
+                    if directory:
+                        p.rmdir()
+                    else:
+                        p.unlink()
+                watch.advance(p, None)
         cleaned = True
 
     # An exception thrown at yield leaves private evidence untouched, with no
@@ -182,6 +185,13 @@ def plan(root, launcher, packages, selected, dispatcher, m, watch, framing):
 
     new = selected["release"] not in packages
     combined = dict(packages)
+    if selected["source_kind"] == "official":
+        need(all(p["official_version"] != selected["version"] or
+                 r == selected["release"] for r, p in packages.items()),
+             "conflicting retained official mapping")
+        # An actual verified official selection may qualify a retained local R.
+        # This changes only mapping metadata, never creation/baseline facts.
+        combined[selected["release"]] = selected
     if new:
         combined[selected["release"]] = selected
         release = root / "releases" / selected["release"]
@@ -210,6 +220,20 @@ def publish_local(source, env, dry_run=False, hook=None):
     trusted invocation environment, not candidate metadata.
     """
     hook = hook or (lambda event, path: None)
+    def select(packages):
+        path = str(source)
+        need("://" not in path, "only local package directories")
+        if not path.startswith("/"):
+            path = str(Path.cwd() / path)
+        candidate = verify_package(path)
+        hook("verified-source", Path(path))
+        return candidate
+    return _publish(select, env, dry_run, hook)
+
+
+def _publish(select, env, dry_run=False, hook=None):
+    """One publisher; select is trusted bootstrap logic, never candidate code."""
+    hook = hook or (lambda event, path: None)
     home, root, launcher = roots(env)
     dispatcher = launcher_bytes(root, home)
     pending_refusal(root)
@@ -217,10 +241,9 @@ def publish_local(source, env, dry_run=False, hook=None):
     watch.add(root)
     packages, old = {}, None
     if root.exists():
-        old, packages, existing = runtime_read(root, launcher, dispatcher)
+        old, packages, _ = runtime_read(root, launcher, dispatcher, watch=watch)
         runtime_inventory(root, packages)
-        watch.paths.update(existing.paths)
-        watch.ancestors.update(existing.ancestors)
+        watch.check()
     else:
         need(not os.path.lexists(launcher), "unowned launcher; equality is not ownership")
     for p in (launcher, root / "state", *(root / "state" / n for n in
@@ -233,12 +256,10 @@ def publish_local(source, env, dry_run=False, hook=None):
             ancestor = ancestor.parent
         need(os.access(ancestor, os.W_OK), "unwritable destination parent")
         watch.add(ancestor)
-    source = str(source)
-    need("://" not in source, "only local package directories")
-    if not source.startswith("/"):
-        source = str(Path.cwd()) + "/" + source
-    candidate = verify_package(source)
-    hook("verified-source", Path(source))
+    candidate = select(packages)
+    # A retained mapping is authorized by the original runtime/package proof.
+    # Refuse drift at this hand-off, before any staging or publication writes.
+    watch.check()
     temp = physical(env.get("TMPDIR", tempfile.gettempdir()))
     need(temp.is_dir() and temp != home and home not in temp.parents and
          temp != root and root not in temp.parents, "staging overlaps destination")
@@ -252,21 +273,21 @@ def publish_local(source, env, dry_run=False, hook=None):
     watch.add(temp)
     writing = False
     with staging_area(temp, watch) as (stage, clean_stage):
-        # Staging mutates this parent, not a destination preflight snapshot.
-        watch.paths.pop(temp)
-        watch.check_boundary()
-        stage.mkdir(mode=0o700)
-        watch.add(stage)
+        created = watch.mkdir(stage)
+        watch.advance(stage, created)
         for d in DIRS:
-            watch.check_boundary()
-            (stage / d).mkdir(mode=0o700)
-            watch.advance(stage / d)
+            created = watch.mkdir(stage / d)
+            watch.advance(stage / d, created)
         for p in LEAVES:
-            exclusive(stage / p, candidate["data"][p], payload_mode(p), watch.check_boundary)
-            watch.advance(stage / p)
-        watch.advance(stage)
-        selected = verify_package(stage, installed=True)
-        need(selected == candidate, "stage differs from verified input")
+            watch.check()
+            created = exclusive(stage / p, candidate["data"][p], payload_mode(p),
+                                watch.check_boundary, watch=watch)
+            watch.advance(stage / p, created)
+        selected = verify_package(stage, installed=True, watch=watch)
+        need(all(selected[k] == candidate[k] for k in ("release", "version", "data")),
+             "stage differs from verified input")
+        selected = dict(selected, source_kind=candidate["source_kind"],
+                        official_version=candidate["official_version"])
         hook("stage", stage)
         framing = missing_parents(root) + ([] if (root / "state").exists()
                                           else [root / "state"])
@@ -309,8 +330,8 @@ def publish_local(source, env, dry_run=False, hook=None):
                 hook("before-claim", p)
                 watch.check()
                 writing = True
-                os.mkdir(p, 0o700)
-                watch.advance(p)
+                created = watch.mkdir(p)
+                watch.advance(p, created)
                 hook("claim", p)
             m = machine(root, launcher)
             items, combined = plan(root, launcher, packages, selected, dispatcher,
@@ -330,8 +351,8 @@ def publish_local(source, env, dry_run=False, hook=None):
                 watch.check()
                 p = root / "state" / name
                 writing = True
-                exclusive(p, raw, 0o600, watch.check_boundary)
-                watch.advance(p)
+                created = exclusive(p, raw, 0o600, watch.check_boundary, watch=watch)
+                watch.advance(p, created)
                 hook(name, p)
 
             def append(phase, n, result, snap=None):
@@ -348,8 +369,8 @@ def publish_local(source, env, dry_run=False, hook=None):
                     os.close(fd)
                 published += raw
                 need(read(p, mode=0o600) == published, "journal append failed")
-                watch.advance(p)
-                need(watch.paths[p] == appended, "changed appended journal")
+                watch.advance(p, appended)
+                watch.check()
                 published_read(published, tx, pending, items)
 
             for n, i in enumerate(items, 1):
@@ -358,7 +379,7 @@ def publish_local(source, env, dry_run=False, hook=None):
                 watch.check()
                 if i["phase"] in ("launcher", "manifest", "active"):
                     verified = verify_package(root / "releases" / selected["release"],
-                                              installed=True)
+                                              installed=True, watch=watch)
                     need(verified["data"] == selected["data"], "final release changed")
                 if i["phase"] in ("manifest", "active"):
                     # Final creations and facts, not intent/equal bytes, authorize B.
@@ -366,37 +387,41 @@ def publish_local(source, env, dry_run=False, hook=None):
                     _, count = published_read(published, tx, pending, items)
                     need(count == n - 1, "missing creation facts")
                 watch.check()
-                created = None
                 if i["action"] == "mkdir":
-                    os.mkdir(p, i["mode"])
+                    created = watch.mkdir(p, i["mode"])
                 elif i["action"] == "create" and i["phase"] not in ("launcher", "active"):
-                    created = exclusive(p, i["data"], i["mode"], watch.check_boundary)
+                    created = exclusive(p, i["data"], i["mode"], watch.check_boundary,
+                                        watch=watch)
                 else:
-                    fd, name = tempfile.mkstemp(prefix=".publication-", dir=p.parent)
-                    tmp = Path(name)
+                    fd = None
                     try:
+                        with watch.namespace(p.parent, entry_delta=1):
+                            fd, name = tempfile.mkstemp(prefix=".publication-", dir=p.parent)
+                            tmp = Path(name)
+                            initial = (attributes(os.fstat(fd)), b"")
                         created = write_created(fd, tmp, i["data"], i["mode"],
-                                                watch.check_boundary)
-                        # Only directory mtime changed by our temporary afterimage.
-                        watch.advance(tmp)
-                        need(watch.paths[tmp] == created, "changed afterimage")
+                                                watch.check_boundary, initial)
+                        watch.advance(tmp, created)
                         watch.check()
                         hook("before-rename-" + i["phase"], p)
                         watch.check()
                         if i["action"] == "replace":
-                            os.replace(tmp, p)
+                            with watch.namespace(p.parent, entry_delta=-1):
+                                os.replace(tmp, p)
+                                created = moved_witness(fd, created, 1)
                         else:
                             # global_link_new pattern: atomic no-clobber final
                             # name, then remove our temporary link before verify.
                             # A partially written executable/selector is never visible.
-                            os.link(tmp, p, follow_symlinks=False)
+                            with watch.namespace(p.parent, entry_delta=1):
+                                os.link(tmp, p, follow_symlinks=False)
+                                linked_witness = moved_witness(fd, created, 2)
                             watch.check_boundary()
                             # The two links are our witnessed transition, not a
                             # general exception to single-link safe reads. Keep
                             # the original descriptor through byte/identity checks.
                             linked = os.fstat(fd)
-                            need(identity(linked) == created[0][:4] and
-                                 linked.st_nlink == 2 and linked.st_size == len(i["data"]),
+                            need(attributes(linked) == linked_witness[0],
                                  "changed linked afterimage")
                             with os.fdopen(fd, "rb", closefd=False) as stream:
                                 stream.seek(0)
@@ -406,29 +431,27 @@ def publish_local(source, env, dry_run=False, hook=None):
                             need(attributes(os.fstat(fd)) == attributes(linked) ==
                                  attributes(tmp.lstat()) == attributes(p.lstat()),
                                  "changed linked identity")
-                            tmp.unlink()
+                            with watch.namespace(p.parent, entry_delta=-1):
+                                tmp.unlink()
+                                created = moved_witness(fd, linked_witness, 1)
                         # Retain an absence watch: a new object at the old name
                         # must not be leaked by a falsely successful publication.
-                        watch.advance(tmp)
-                        need(watch.paths[tmp] is None, "afterimage name reoccupied")
-                        final = os.fstat(fd)
-                        need(identity(final) == created[0][:4] and final.st_nlink == 1,
-                             "changed final creation")
-                        created = (attributes(final), i["data"])
+                        watch.advance(tmp, None)
                     finally:
                         # No failure-time unlink/restore/adoption. Even an empty
                         # or partially written afterimage is manual evidence.
-                        os.close(fd)
-                watch.advance(p)
+                        if fd is not None:
+                            os.close(fd)
+                watch.advance(p, created)
                 snap = snapshot(p)
-                need(created is None or snap == created, "changed published identity/bytes")
+                need(snap == created, "changed published identity/bytes")
                 need(snap is not None and stat.S_IMODE(snap[0][3]) == i["mode"] and
                      snap[1] == i["data"], "post-publication verification")
                 hook("written-" + i["phase"], p)
                 append(i["phase"], n, {"mkdir": "directory-created", "create": "created",
                                       "replace": "replaced"}[i["action"]], snap)
                 hook("after-" + i["phase"], p)
-            actual, retained, checked = runtime_read(root, launcher, dispatcher)
+            actual, retained, checked = runtime_read(root, launcher, dispatcher, watch=watch)
             need(actual == selected["release"], "incorrect final selection")
             runtime_inventory(root, retained, ("pending", "previous", "published"))
             checked.check()
@@ -441,8 +464,9 @@ def publish_local(source, env, dry_run=False, hook=None):
                 hook("before-clear-" + name, root / "state" / name)
                 watch.check()
                 p = root / "state" / name
-                p.unlink()
-                watch.advance(p)
+                with watch.namespace(p.parent, entry_delta=-1):
+                    p.unlink()
+                watch.advance(p, None)
                 hook("clear-" + name, p)
             watch.check()
             return dict(runtime=actual, recovery="none", changed=True, dry_run=False)

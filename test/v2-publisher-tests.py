@@ -140,7 +140,11 @@ class PublisherTests(unittest.TestCase):
                         self.assertTrue(body.startswith("---\nname: domestique-v2-"))
                 self.assertNotIn("config", path)
         self.assertEqual(sum("orchestrator.md" in x for x in a), 1)
-        self.assertNotIn(b"format=1", b"".join(a.values()))
+        # The management payload now embeds the unchanged legacy inspector.
+        # Only inspection understands format 1; no legacy writer is bundled.
+        self.assertNotIn(b"format=1", b"".join(v for k, v in a.items()
+                                             if k != "domestique2.sh"))
+        self.assertNotIn(b"emit_policy()", a["domestique2.sh"])
 
     def test_provider_independence_native_and_three_git_projects_untouched(self):
         with fixture() as s:
@@ -224,7 +228,9 @@ class PublisherTests(unittest.TestCase):
                             ["beads"], ["bind"], ["goal"]):
                 for exe in (launcher(s), r / "bin/resolve-core", r / "domestique2.sh", r / "update2.sh"):
                     out = s.run([exe, *command], check=False)
-                    self.assertEqual((out.returncode, out.stdout), (1, b""))
+                    expected = 1 if command == ["enable"] or exe in (
+                        r / "bin/resolve-core", r / "update2.sh") else 2
+                    self.assertEqual((out.returncode, out.stdout), (expected, b""))
             env = dict(s.env, DOMESTIQUE_HOME=str(s.root / "alternate"))
             self.assertEqual(s.run([launcher(s), "version"], env=env, check=False).returncode, 1)
             (root(s) / "active").unlink()

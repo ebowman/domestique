@@ -14,31 +14,27 @@ def active_read(data, releases):
     return release
 
 
-def runtime_read(root, launcher, launcher_data):
+def runtime_read(root, launcher, launcher_data, watch=None):
     """Pending is not rollback or revocation. Never guess a missing selection."""
     root, launcher = physical(root), physical(launcher)
-    watch = Watch()
+    watch = watch if watch is not None else Watch()
     for p in (root, root / "state", root / "releases"):
+        watch.add(p)
         snap = snapshot(p)
         need(snap is not None and snap[1] is None and
              stat.S_IMODE(snap[0][3]) == 0o700, "missing/unsafe runtime directory")
-        watch.add(p)
-    need(read(launcher, mode=0o755) == launcher_data, "edited launcher")
     watch.add(launcher)
+    need(read(launcher, mode=0o755) == launcher_data, "edited launcher")
     m = machine(root, launcher)
-    raw = read(root / "state/runtime-manifest", mode=0o600)
     watch.add(root / "state/runtime-manifest")
+    raw = read(root / "state/runtime-manifest", mode=0o600)
 
     def load(r):
-        package = verify_package(root / "releases" / r, installed=True)
-        for p in (root / "releases" / r).rglob("*"):
-            watch.add(p)
-        watch.add(root / "releases" / r)
-        return package
+        return verify_package(root / "releases" / r, installed=True, watch=watch)
 
     releases = manifest_read(raw, m, launcher_data, load)
-    active = read(root / "active", mode=0o600)
     watch.add(root / "active")
+    active = read(root / "active", mode=0o600)
     selected = active_read(active, releases)
     watch.check()
     return selected, releases, watch
@@ -61,8 +57,11 @@ def launcher_main(root, home):
         elif xdg:
             need(physical(xdg) / "domestique/v2" == Path(root), "conflicting state override")
         launcher = home / ".local/bin/domestique2"
-        selected, releases, watch = runtime_read(root, launcher, read(launcher, mode=0o755))
-        recovery = recovery_state(Path(root), launcher, read(launcher, mode=0o755))
+        watch = Watch()
+        watch.add(launcher)
+        launcher_data = read(launcher, mode=0o755)
+        selected, releases, watch = runtime_read(root, launcher, launcher_data, watch=watch)
+        recovery = recovery_state(Path(root), launcher, launcher_data)
         watch.check()
         print("runtime=" + selected + " version=" + releases[selected]["version"] +
               " launcher_abi=2 recovery=" + recovery)

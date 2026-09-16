@@ -1,6 +1,6 @@
 """Closed format-2 local package verifier. Never executes input."""
 # Bundle imports are removed by build.py; source imports share these primitives.
-from .safe import (META_LIMIT, PAYLOAD_LIMIT, Refusal, need, path_value, physical,
+from .safe import (META_LIMIT, PAYLOAD_LIMIT, Refusal, Watch, need, path_value, physical,
                    read, sha, snapshot, stat, text_bounds, Path, re)
 
 ROLES = ("goal", "implementer", "orchestrator", "reviewer")
@@ -47,21 +47,38 @@ def inventory(root, leaves, directories):
     need(all(snapshot(p) == s for p, s in before.items()), "changed inventory")
 
 
-def verify_package(root, expected_version=None, installed=False):
+def verify_package(root, expected_version=None, installed=False, watch=None):
     root = physical(root)
+    watch = watch if watch is not None else Watch()
+    # Retained package authority must travel with these very observations, not
+    # a traversal/snapshot taken after the verifier returns its in-memory data.
+    for p in (root, *(root / d for d in DIRS)):
+        watch.add(p)
     inventory(root, LEAVES, DIRS)
     # Check the aggregate before allocating payload snapshots.
     need(sum((root / p).lstat().st_size for p in LEAVES) <= PAYLOAD_LIMIT,
          "expanded payload cap")
-    before = {p: snapshot(root / p) for p in (*DIRS, *LEAVES)}
+    for leaf in LEAVES:
+        watch.add(root / leaf)
     data = {}
     total = 0
     for leaf in LEAVES:
         data[leaf] = read(root / leaf, META_LIMIT if leaf in
                           ("PACKAGE", "SHA256SUMS") else PAYLOAD_LIMIT,
                           payload_mode(leaf) if installed else None)
+        need(data[leaf] == watch.paths[root / leaf][1], "changed package read bytes")
         total += len(data[leaf])
         need(total <= PAYLOAD_LIMIT, "expanded payload cap")
+    result = package_from_data(data, expected_version)
+    inventory(root, LEAVES, DIRS)
+    watch.check()
+    return result
+
+
+def package_from_data(data, expected_version=None):
+    """Same closed verifier for archive bytes and physical directory snapshots."""
+    need(tuple(sorted(data)) == LEAVES and
+         sum(len(value) for value in data.values()) <= PAYLOAD_LIMIT, "payload inventory/cap")
     text = text_bounds(data["PACKAGE"])
     lines = text.splitlines()
     need(len(lines) == 9 and lines[3].startswith("version="), "PACKAGE fields")
@@ -72,8 +89,5 @@ def verify_package(root, expected_version=None, installed=False):
     sums = b"".join((sha(data[p]) + "  " + p + "\n").encode()
                     for p in LEAVES if p != "SHA256SUMS")
     need(sums == data["SHA256SUMS"], "checksum inventory/digest mismatch")
-    inventory(root, LEAVES, DIRS)
-    need(all(snapshot(root / p) == old for p, old in before.items()),
-         "mutable package changed during verification")
     return {"release": "r-" + sha(sums), "version": version, "data": data,
             "source_kind": "local", "official_version": "-"}

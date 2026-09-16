@@ -82,6 +82,7 @@ CURRENT = (
     "inspect-fixture-tests.py", "inspect-tests.py",
     "version-boundary-tests.py",
     "v2-publisher-tests.py", "v2-records-tests.py",
+    "v2-bootstrap-tests.py",
 )
 # CURRENT includes tests of retained engine source, not just live public CLI.
 # Those scopes keep their cases but cannot qualify V2 publication/activation.
@@ -952,6 +953,10 @@ def validation(env, control=None, transcript=None):
         if control:
             control.check()
         ast.parse(path.read_text(), filename=str(path))
+    # Standalone trusted source, including its generated dispatcher renderer.
+    bootstrap = (ROOT / "install-v2.sh").read_text()
+    ast.parse(bootstrap.split("<<'DOMESTIQUE_V2_TRUSTED_PY'\n", 1)[1]
+              .split("\nDOMESTIQUE_V2_TRUSTED_PY\n", 1)[0])
     source = preview_fixture.source().decode()
     ast.parse(source.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0])
     ast.parse(source.split("<<'DOM_INSPECT_PY' || inspect_rc=$?\n", 1)[1]
@@ -993,7 +998,7 @@ def validation(env, control=None, transcript=None):
     out, err, rc = run(["git", "--no-pager", "diff", "--check"], env, 60)
     require(rc == 0, f"git diff --check: {out}{err}")
     return {"status": "PASS", "shell_files": len(shells), "emitted_helpers": 5,
-            "python_files": len(python_files), "embedded_python": 2,
+            "python_files": len(python_files), "embedded_python": 3,
             "shellcheck_warning_exceptions": 0}
 
 
@@ -1060,6 +1065,7 @@ def provenance(control):
                       ROOT / "docs/install-upgrade-design.md",
                       ROOT / "docs/v2-install-contract.md",
                       ROOT / "docs/v2-install-interfaces.md",
+                      ROOT / "docs/v2-bootstrap.md",
                       ROOT / "docs/v2-source-boundary.md"})
     hashes = {}
     for path in sources:

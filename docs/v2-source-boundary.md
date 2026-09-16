@@ -1,4 +1,18 @@
-# Source boundary: isolated local runtime (hq-5jc.4)
+# Source boundary: verified bootstrap (hq-1t9.2)
+
+Current functionality, compatibility decisions and source-closure limits are in
+[the bootstrap guide](v2-bootstrap.md). `install-v2.sh` is now a standalone
+verified runtime-only writer; installed help/version/legacy inspection work
+offline. Public update and all project/native activation remain unimplemented.
+Different existing help-only prototype launcher bytes are explicitly refused,
+not overwritten under a claim of stable ABI-2 compatibility.
+
+Public v1 and retained preview bytes remain unchanged. The following section is
+the **historical hq-5jc.4 checkpoint at 8b48b6a**, not a statement that today's
+bootstrap is still missing. Its complete test totals do not qualify changed
+bootstrap/publisher integration without fresh, source-bound scope evidence.
+
+## Historical isolated local-runtime checkpoint (hq-5jc.4)
 
 This is an intermediate checkout, not a release or the proposed installed CLI.
 `domestique2.sh --inspect [TARGET]` (also `TARGET --inspect`) preserves ln2's
