@@ -2,6 +2,14 @@
 
 ## Reading this document
 
+**Proposed next interface:** [V2 install/activation contract V2/1](v2-install-contract.md)
+freezes hq-1t9's inert machine install, required private project activation,
+whole-runtime workflow binding and named acceptance matrix. It is documentation
+only: no `install-v2.sh`/installed `domestique2` interface or published V2 URL is
+claimed. It does not change the current checkout `dom2` alias or the v1 channel.
+Use that contract for future hq-1t9 work; the implemented preview and historical
+boundaries below remain unchanged until their owning implementation tasks land.
+
 **Current authority is the implemented private preview on `epic/hq-b3q`,
 not the historical normal/guest installer.** The original Problem, sections
 1–7 and their residual-risk notes below describe historical three-way merge,
