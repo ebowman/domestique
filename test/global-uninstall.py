@@ -15,11 +15,12 @@ import shutil
 import subprocess
 import tempfile
 import time
+import preview_fixture
 
 from global_uninstall_fixture import SyntheticTree
 
 ROOT = Path(__file__).resolve().parent.parent
-DOM = ROOT / "domestique.sh"
+DOM = None  # Materialized only inside the owned fixture, not at import time.
 SETS = {"claude": {"claude"}, "codex": {"codex"}, "copilot": {"copilot"},
         "both": {"claude", "codex"}, "claude-copilot": {"claude", "copilot"},
         "codex-copilot": {"codex", "copilot"}, "all": {"claude", "codex", "copilot"}}
@@ -141,8 +142,9 @@ def clean(root):
 
 @contextmanager
 def fixture(case=None, *, managed=False):
-    global W, HOME, CORE, ENV, LOG
+    global W, HOME, CORE, ENV, LOG, DOM
     W = Path(tempfile.mkdtemp(prefix="domestique-remove-test-")).resolve()
+    DOM = preview_fixture.materialize(W)
     HOME, CORE = W / "home", W / "core"
     for name in ("home", "tmp", "forbidden"):
         (W / name).mkdir()
@@ -178,9 +180,9 @@ def success(*args, **kwargs):
     return p
 
 
-def install(selection="all", script=DOM):
+def install(selection="all", script=None):
     SETUP_COMMANDS["global_install"] += 1
-    success("/bin/bash", script, "--global", "--platform", selection)
+    success("/bin/bash", script or DOM, "--global", "--platform", selection)
 
 
 def remove(*args, status=0, **kwargs):
@@ -760,7 +762,8 @@ print(json.dumps({
     "scope": "PARTIAL" if ARGS.case else "FULL",
     "baseline_inventory_commit": "0a34d678193186cd656d6ff1bfe04bef1e1e1793",
     "source_sha256": {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest()
-                      for p in (DOM, Path(__file__).resolve(),
+                      for p in (ROOT / "domestique2.sh", Path(__file__).resolve(),
+                                ROOT / "test/preview_fixture.py",
                                 ROOT / "test/global_uninstall_fixture.py",
                                 ROOT / "test/global_uninstall_fixture_tests.py")},
     "fixture_mode": ARGS.fixture_mode,

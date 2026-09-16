@@ -13,9 +13,10 @@ import subprocess
 import sys
 import tempfile
 from unittest.mock import Mock, patch
+import preview_fixture
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = (ROOT / "domestique.sh").read_text()
+SOURCE = preview_fixture.source().decode()
 CODE = SOURCE.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0]
 NS = {}
 exec(CODE.split("\ntry:\n    main()", 1)[0], NS)
@@ -50,10 +51,11 @@ def help_tests():
         env = dict(HOME=str(work), DOMESTIQUE_HOME=str(work / "core"),
                    XDG_STATE_HOME=str(work / "state"), TMPDIR=str(work),
                    PATH="/usr/bin:/bin", LC_ALL="C")
-        for script in ("domestique.sh", "update.sh"):
+        for script in ("domestique2.sh", "update2.sh"):
+            retained = preview_fixture.materialize(work, script)
             before = snap(work)
             result = subprocess.run(
-                ["/bin/bash", str(ROOT / script), "--help"], cwd=work, env=env,
+                ["/bin/bash", str(retained), "--help"], cwd=work, env=env,
                 capture_output=True, text=True, timeout=30)
             text = " ".join(result.stdout.split())
             check(result.returncode == 0 and not result.stderr, script + " help succeeds")
@@ -67,7 +69,7 @@ def help_tests():
                                               "never home, root policy, settings, skills, or Beads")),
                   script + " help has no universal unsupported claim")
             check(snap(work) == before, script + " help has zero fixture writes")
-            if script == "domestique.sh":
+            if script == "domestique2.sh":
                 check("exact digest-pinned" in text and "not every 1.1.2 build qualifies" in text,
                       "help limits support to the pinned artifact")
                 check("No new PROJECT adapters/local profiles" in text,

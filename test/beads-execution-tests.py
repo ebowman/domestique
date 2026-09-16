@@ -20,7 +20,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
-CODE = (ROOT / "domestique.sh").read_text().split("<<'DOM_BEADS_PY'\n", 1)[1].split(
+CODE = (ROOT / "domestique2.sh").read_text().split("<<'DOM_BEADS_PY'\n", 1)[1].split(
     "\nDOM_BEADS_PY", 1)[0]
 NS = {}
 exec(CODE.split("\ntry:\n    main()", 1)[0], NS)
@@ -643,7 +643,7 @@ os.close(probe)
             driver = (f"FUNCTIONAL_SECONDS={FUNCTIONAL_SECONDS}\n"
                       f"READINESS_SECONDS={READINESS_SECONDS}\n" + driver)
             result = self.natural("import sys; exec(" + repr(driver.replace(
-                "sys.argv[1]", repr(str(ROOT / "domestique.sh"))).replace(
+                "sys.argv[1]", repr(str(ROOT / "domestique2.sh"))).replace(
                 "sys.argv[2]", repr(temp))) + ")", timeout=FUNCTIONAL_SECONDS)
             self.assertEqual((result.returncode, result.stderr), (0, ""))
 

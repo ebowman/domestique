@@ -44,7 +44,7 @@ class FixtureTests(unittest.TestCase):
 
     def test_immutable_default_and_production_pin(self):
         self.assertEqual(F.DEFAULT, Path("/opt/homebrew/Cellar/beads/1.1.2/bin/beads"))
-        source = (HERE.parent / "domestique.sh").read_text()
+        source = (HERE.parent / "domestique2.sh").read_text()
         self.assertIn('PIN = "' + F.SHA256 + '"', source)
         self.assertEqual(F.SHA256,
                          "cb77069648d90fef8876f775d647997beb7bb0ab5461509394c29d5bf14b7c42")

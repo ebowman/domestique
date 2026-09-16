@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import global_path_baseline as oracle
+import preview_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("acceptance", ROOT / "test/acceptance.py")
@@ -27,7 +28,7 @@ class Paths(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="dom-path-")
         cls.work = Path(cls.temp.name).resolve()
         cls.env = runner.environment(cls.work)
-        current = (ROOT / "domestique.sh").read_text()
+        current = preview_fixture.source().decode()
         cls.sources = []
         for name, source in (("old", oracle.baseline(current)), ("new", current)):
             p = cls.work / (name + ".sh")
@@ -161,7 +162,7 @@ class Paths(unittest.TestCase):
         self.leaf.parent.chmod(0o700)
 
     def test_immutable_baseline_fails_closed(self):
-        current = (ROOT / "domestique.sh").read_text()
+        current = preview_fixture.source().decode()
         original = oracle.FIXTURE.read_text()
         # No Git invocation: this exact helper-only delta works in shallow trees.
         old = oracle.baseline(current)

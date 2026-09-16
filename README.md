@@ -1,5 +1,38 @@
 # domestique
 
+## Source split checkpoint (hq-5jc.3)
+
+**No V2 package has been installed, published or activated by this change.**
+The checked-out artifacts now have separate meanings:
+
+| Source | Current behavior |
+| --- | --- |
+| [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Public **v1**, restored byte-for-byte from locally verified `main`/`origin/main` at `4de726c2e38e731c67f5f37d4a16206d7b3d99af`. Claude/Codex normal/guest behavior and the old updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics remain unchanged. Draft Copilot is not this released channel. |
+| [`domestique2.sh`](domestique2.sh) | Source-only transition: reviewed read-only `--inspect` and help. **All installation/removal/activation operations refuse.** The format-1 preview engine is retained for fixture extraction/reuse, not executable setup through this entrypoint. |
+| [`update2.sh`](update2.sh) | Fail-closed transition: accepts explicit source/version selection syntax but **refuses all updates**, before candidate execution, fetch or destination writes. No default source; nonempty legacy source environment override refuses. Shell files, including this checkout's scripts, are not V2 packages. |
+
+The frozen [V2/1 contract](docs/v2-install-contract.md) and
+[normative interfaces](docs/v2-install-interfaces.md) remain **proposed**:
+quiet publisher, package verifier/bootstrap, installed `domestique2` and private
+project activation are downstream work. Reserved runtime `S/v2`, project
+`.domestique-private/v2/`, format-2 records and `domestique-v2-P...` native IDs
+must never adopt format-1 preview state. See the
+[source boundary and fixture qualification](docs/v2-source-boundary.md).
+
+**Human alias action:** the existing `dom2` alias points to an old
+`domestique.sh` outside this project. It was not changed and does not imply a
+working new interface. To use this inspector, manually point it at this
+checkout's `domestique2.sh`, or use the explicit command below. Neither `dom`,
+shell startup, personal models nor native configuration was changed.
+
+### Retained qualification history
+
+The b3q/ln2 observations and limits below remain completed history, **not V2/1
+installation or native qualification**. Below the inspection section, setup/
+update/removal examples describe the pre-split source at `020c05c`/`58732cc`,
+where `domestique.sh` still meant the preview. **Do not execute those historical
+commands against today's public v1 paths or treat them as a V2 install guide.**
+
 Private orchestration definitions for **Claude Code, Codex CLI, and GitHub
 Copilot CLI**: an orchestrator plans bounded work, an implementer executes it,
 and a fresh reviewer independently checks the result. The intended plan of
@@ -35,14 +68,15 @@ the remaining role/tool/MCP execution limitations; see the evidence below.
 ## Read-only inspection from this checkout
 
 The local-checkout **private preview** supports inspection without setup. This
-is not a released v2 command. If your existing `dom2` alias points here:
+is not a released v2 command. Only after manually updating your `dom2` alias
+to this checkout's **`domestique2.sh`**:
 
 ```sh
 dom2 --inspect
 dom2 --inspect /path/to/project
 dom2 /path/to/project --inspect
 # Without an alias:
-bash ./domestique.sh --inspect
+bash ./domestique2.sh --inspect
 ```
 
 The optional target defaults to the current directory. A Git root,
@@ -133,7 +167,7 @@ failure. Six successful events plus completed cohort qualification establish
 actual setup; measured elapsed time can show whether the earlier 120-second
 cap was insufficient, but cannot diagnose a host/API/sleep cause.
 
-The inspection suite invokes the actual `bash domestique.sh --inspect` entrypoint
+The inspection suite invokes the actual `bash domestique2.sh --inspect` entrypoint
 for every named frozen matrix case, including invalid targets and CLI misuse,
 plus independently damaged-global and traversal cases. It retains the earlier
 collection/scanner/comparison, parser-control and escaped-path privacy oracles.
@@ -165,10 +199,11 @@ focused scopes do not establish whole-epic native or GA readiness, and default
 QUICK remains explicitly **not full offline acceptance**. A final independent
 gate must qualify the frozen candidate; no passing totals are assumed here.
 
-## Setup: global first
+## Historical preview setup: global first (not current commands)
 
-Use the **checked-out current preview script**, once per user, selecting the
-client you actually use:
+Before the source split, the reviewed preview used these commands. They are
+retained as history only; today `domestique.sh` is v1 and `domestique2.sh`
+explicitly refuses installation. Do not install from these examples:
 
 ```sh
 bash ./domestique.sh --global --platform copilot
@@ -223,9 +258,10 @@ policy, settings, index, hooks, `.gitignore` or Beads.
 index-only), unknown, corrupt, unsafe or symlinked state refuses even with
 `--force`. Identical bytes alone never prove ownership.
 
-### Updates from this checkout
+### Historical preview updates (not current commands)
 
-Until published, always specify the local source:
+The pre-split preview required a local source as below. Today's `update2.sh`
+does not fetch or apply anything, even with an explicit source:
 
 ```sh
 bash ./update.sh --source ./domestique.sh --global
@@ -234,7 +270,7 @@ bash ./update.sh --source ./domestique.sh --local /absolute/project
 bash ./update.sh --source ./domestique.sh --global --dry-run
 ```
 
-The updater defaults to remote **main**, not this preview. `--source PATH/URL`
+The retained preview updater defaulted to remote **main**, not this preview. `--source PATH/URL`
 or `DOMESTIQUE_UPDATE_SOURCE` overrides that default. It previews first and
 does not apply after **any** failed preview. Scope/selection semantics match
 the installer; it is update-only, not an uninstall wrapper. There are no

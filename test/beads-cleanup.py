@@ -18,7 +18,8 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = (ROOT / "domestique.sh").read_text()
+import preview_fixture
+SOURCE = preview_fixture.source().decode()
 CODE = SOURCE.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0]
 NS = {}
 exec(CODE.split("\ntry:\n    main()", 1)[0], NS)

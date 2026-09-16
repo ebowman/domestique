@@ -33,9 +33,17 @@ import tempfile
 import time
 from typing import Literal, Optional, Tuple
 import unittest
+import importlib.util
 
 
 ROOT = Path(__file__).resolve().parent.parent
+# This module is also loaded by absolute path in isolated acceptance probes,
+# where test/ is intentionally not added to sys.path. Load the exact helper;
+# never resolve an ambient/foreign module or alter the caller's import path.
+_preview_spec = importlib.util.spec_from_file_location(
+    "_domestique_retained_preview", ROOT / "test/preview_fixture.py")
+preview_fixture = importlib.util.module_from_spec(_preview_spec)
+_preview_spec.loader.exec_module(preview_fixture)
 HISTORICAL_PIN = "b60feef4d0d41b8d99b7afec68dd5e6ef648b027"
 PRE_SNAPSHOT_PIN = "69f39c468b65335d05260b8c5bc4653a7cf3c9f3"
 FORBIDDEN = ("bd", "beads", "claude", "codex", "copilot", "curl", "wget")
@@ -472,7 +480,7 @@ def test_inventory(name):
 
 
 def qualification_sources():
-    paths = ("domestique.sh", "README.md", "test/inspect_fixture.py",
+    paths = ("domestique2.sh", "update2.sh", "README.md", "test/preview_fixture.py", "test/inspect_fixture.py",
              "test/inspect-tests.py", "test/inspect-fixture-tests.py",
              "test/acceptance.py", "test/acceptance-tests.py")
     return {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in paths}
@@ -933,13 +941,14 @@ class FixtureSession:
         raw = older.read_bytes()
         if b"snapshot_format" in raw or b"SNAPSHOT_BASE" in raw:
             raise FixtureOperationError("pinned older source is not pre-snapshot")
-        current = ROOT / "domestique.sh"
+        # Format-1 fixtures from the retained source, never a V2 installation.
+        current = preview_fixture.materialize(self.root / "sources")
         revision = self.run(["git", "-C", ROOT, "rev-parse", "HEAD"],
                             operation="source-revision").stdout
         if re.fullmatch(rb"[0-9a-f]{40}\n?", revision) is None:
             raise operation_error("source-revision", "invalid-output")
         revision = revision.decode("ascii").strip()
-        self.origins["current"] = Origin("current-private-preview", revision,
+        self.origins["current"] = Origin("retained-private-preview", revision,
                                         hashlib.sha256(current.read_bytes()).hexdigest(),
                                         str(current))
         self.projects = {name: self.project(name, git=name in (
@@ -1155,7 +1164,7 @@ class Case:
         expected = self.expected()
         cwd = (self.project if expected.context in ("invalid-target", "cli-misuse")
                else self.requested)
-        return (("/bin/bash", str(ROOT / "domestique.sh"), *self.argv()), cwd, expected)
+        return (("/bin/bash", str(ROOT / "domestique2.sh"), *self.argv()), cwd, expected)
 
     def prepare(self):
         s, p, mutation = self.session, self.project, self.scenario.mutation

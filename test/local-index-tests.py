@@ -22,7 +22,7 @@ class Index(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="dom-index-")
         cls.work = Path(cls.temp.name).resolve()
         cls.env = runner.environment(cls.work)
-        cls.current = (ROOT / "domestique.sh").read_text()
+        cls.current = runner.preview_fixture.source().decode()
         cls.sources = []
         for label, source in (("old", oracle.baseline(cls.current)), ("new", cls.current)):
             path = cls.work / (label + ".sh")

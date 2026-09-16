@@ -9,9 +9,9 @@ import re
 import subprocess
 import tempfile
 import tomllib
+import preview_fixture
 
 ROOT = Path(__file__).resolve().parent.parent
-DOM, UP = ROOT / "domestique.sh", ROOT / "update.sh"
 COUNT = 0
 
 
@@ -81,6 +81,9 @@ def guard(p, diagnostic):
 
 with tempfile.TemporaryDirectory() as temp:
     W = Path(temp).resolve()
+    DOM = preview_fixture.materialize(W)
+    UP = preview_fixture.materialize(W, "update2.sh")
+    print("RETAINED PREVIEW ENGINE: not public V2 installation coverage")
     HOME, CORE = W / "home", W / "core"
     HOME.mkdir()
     (W / "tmp").mkdir()

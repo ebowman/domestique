@@ -25,7 +25,7 @@ from unittest.mock import patch
 import inspect_fixture as F
 
 
-SOURCE = (F.ROOT / "domestique.sh").read_text()
+SOURCE = (F.ROOT / "domestique2.sh").read_text()
 PAYLOAD = SOURCE.split("<<'DOM_INSPECT_PY' || inspect_rc=$?\n", 1)[1].split(
     "\nDOM_INSPECT_PY", 1)[0]
 WRAPPER = SOURCE[SOURCE.index("\ninspect_main() {") + 1:SOURCE.index(
@@ -1317,7 +1317,7 @@ class BoundaryTests(unittest.TestCase):
     def test_safe_public_dispatch_and_noninspection_python_dependency(self):
         self.assertEqual(SOURCE.count('\ninspect_main() {'), 1)
         result = self.guarded(lambda: subprocess.run(
-            ["/bin/bash", str(F.ROOT / "domestique.sh"), "--inspect", str(self.project)],
+            ["/bin/bash", str(F.ROOT / "domestique2.sh"), "--inspect", str(self.project)],
             env=self.session.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10))
         self.assertEqual(result.returncode, 0)
         self.assertIn(b"Project-local providers and generations", result.stdout)
@@ -1329,7 +1329,7 @@ class BoundaryTests(unittest.TestCase):
         python.chmod(0o700)
         env = self.session.env
         result = self.guarded(lambda: subprocess.run(
-            ["/bin/bash", str(F.ROOT / "domestique.sh"), "--help"], env=env,
+            ["/bin/bash", str(F.ROOT / "domestique2.sh"), "--help"], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10))
         self.assertEqual(result.returncode, 0)
         self.assertFalse(result.stderr)
@@ -1530,7 +1530,7 @@ class MatrixCLIAssemblyTests(unittest.TestCase):
             with self.subTest(scenario=row.name):
                 case = self.model_case(row)
                 argv, cwd, expected = case.cli_invocation()
-                self.assertEqual(argv[:2], ("/bin/bash", str(F.ROOT / "domestique.sh")))
+                self.assertEqual(argv[:2], ("/bin/bash", str(F.ROOT / "domestique2.sh")))
                 self.assertEqual(argv[2:], F.bind(row.argv, {
                     "project": str(case.project), "requested": str(case.requested)}))
                 self.assertEqual(expected, F.bind(row.record, {
@@ -1651,7 +1651,7 @@ class MatrixCLIAssemblyTests(unittest.TestCase):
             result.skipped.append((self, "synthetic"))
             self.assertEqual(report()["coverage"], "INCOMPLETE_INSPECTION_SCOPE")
             result.skipped.clear()
-            source["domestique.sh"] = "0" * 64
+            source["domestique2.sh"] = "0" * 64
             self.assertEqual(report()["coverage"], "INCOMPLETE_INSPECTION_SCOPE")
 
 class CLITests(unittest.TestCase):
@@ -1662,7 +1662,7 @@ class CLITests(unittest.TestCase):
     def cli(self, args, *, env=None, script=None, cwd=None):
         before = self.session.snapshot()
         result = subprocess.run(
-            ["/bin/bash", str(script or F.ROOT / "domestique.sh"), *map(str, args)],
+            ["/bin/bash", str(script or F.ROOT / "domestique2.sh"), *map(str, args)],
             cwd=cwd or self.project, env=env or self.session.env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         self.assertEqual(before, self.session.snapshot(), "owned state changed")
@@ -1825,6 +1825,9 @@ class CLITests(unittest.TestCase):
             self.assertIn(expected, result.stderr)
 
     def test_original_parser_controls_without_install_or_python(self):
+        # Preserved parser controls belong to the retained format-1 engine,
+        # not the now gated public V2 writer. The inspection CLI stays public.
+        retained = F.preview_fixture.materialize(self.root / "sources")
         baseline = self.session.source(
             "parser-baseline", "096c72f10a3b5d60d5a4afe4f4c3a6cfd38819a2")
         python = self.root / "bin/python3"
@@ -1847,7 +1850,7 @@ class CLITests(unittest.TestCase):
         for args in controls:
             with self.subTest(args=args):
                 before = self.cli(args, script=baseline)
-                after = self.cli(args)
+                after = self.cli(args, script=retained)
                 self.assertEqual((after.returncode, after.stdout, after.stderr),
                                  (before.returncode, before.stdout, before.stderr))
         print(f"Original parser: {len(controls)} byte-identical result controls; no Python", flush=True)
@@ -2095,7 +2098,7 @@ class QualifiedFixtureTests(unittest.TestCase):
             # missing-core is already the isolated historical scope.
             case.before = self.session.snapshot()
             result = self.session.run(
-                ["/bin/bash", F.ROOT / "domestique.sh", case.project, "--inspect"],
+                ["/bin/bash", F.ROOT / "domestique2.sh", case.project, "--inspect"],
                 cwd=case.project, env=case.env, check=False)
             _, project = cli_sections(self, result, 0 if kind == "missing-core" else 1)
             self.assertIn("installation=installed; mode=normal; customization=unchanged", project)
@@ -3645,7 +3648,7 @@ class PrivateBoundaryTests(unittest.TestCase):
             valid.replace(key, "claude:../" + F.SECRET))
         case.before = self.session.snapshot()
         result = self.session.run(
-            ["/bin/bash", F.ROOT / "domestique.sh", "--inspect", self.project],
+            ["/bin/bash", F.ROOT / "domestique2.sh", "--inspect", self.project],
             cwd=self.project, env=case.env, check=False)
         global_text, project = cli_sections(self, result, 1)
         self.assertIn("manifest-inventory-corrupt", project)

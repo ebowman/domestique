@@ -851,8 +851,8 @@ class AcceptanceTests(unittest.TestCase):
         matrix = [row.name for row in f.MATRIX]
         cli = matrix + list(f.CLI_EXTRA_CASES) if name == "inspect-tests.py" else []
         sources = f.qualification_sources()
-        origins = {key: dict(label="current-private-preview" if key == "current" else key,
-                              revision=revision, sha256=sources["domestique.sh"] if key == "current"
+        origins = {key: dict(label="retained-private-preview" if key == "current" else key,
+                              revision=revision, sha256=A.preview_fixture.sha256() if key == "current"
                               else "a" * 64, installer="/synthetic/" + key)
                    for key, revision in (("historical", f.HISTORICAL_PIN),
                                          ("pre-snapshot", f.PRE_SNAPSHOT_PIN),
@@ -969,7 +969,7 @@ class AcceptanceTests(unittest.TestCase):
                 lambda r: r.update(scope="native-ready"),
                 lambda r: r.update(suite="acceptance-tests.py"),
                 lambda r: r.update(source_unchanged=False),
-                lambda r: r["source_sha256"].update({"domestique.sh": "0" * 64}),
+                lambda r: r["source_sha256"].update({"domestique2.sh": "0" * 64}),
                 lambda r: r["unittest"].update(run=1),
                 lambda r: r["unittest"].update(run=True),
                 lambda r: r["unittest"].update(skips=1),
@@ -2031,15 +2031,16 @@ class AcceptanceTests(unittest.TestCase):
         self.assertIn("not started", queued["diagnostic"])
         self.assertNotIn("exit", queued)
 
-    def test_current_help_describes_retained_attachment_without_writes(self):
+    def test_retained_preview_help_describes_attachment_without_writes(self):
         with tempfile.TemporaryDirectory() as temp:
             work = Path(temp).resolve()
             env = A.environment(work)
+            retained = A.preview_fixture.materialize(work)
             def snapshot():
                 return [(str(p.relative_to(work)), p.read_bytes() if p.is_file() else None)
                         for p in sorted(work.rglob("*"))]
             before = snapshot()
-            out, err, rc = A.execute(["/bin/bash", str(A.ROOT / "domestique.sh"), "--help"], env, 30)
+            out, err, rc = A.execute(["/bin/bash", str(retained), "--help"], env, 30)
             self.assertEqual((err, rc), ("", 0))
             self.assertIn("Successful Beads purge still retains\n"
                           "the valid private attachment and its exclusion for reuse.", out)

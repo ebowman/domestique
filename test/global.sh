@@ -2,10 +2,11 @@
 # Native global lifecycle tests: no network, client invocation, or real HOME.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-DOM="$ROOT/domestique.sh"
-UP="$ROOT/update.sh"
 WORK="$(mktemp -d)"; WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
+DOM="$(python3 -B "$ROOT/test/preview_fixture.py" "$WORK" domestique2.sh)"
+UP="$(python3 -B "$ROOT/test/preview_fixture.py" "$WORK" update2.sh)"
+echo "RETAINED PREVIEW ENGINE: not public V2 installation coverage"
 mkdir "$WORK/never-call"
 for forbidden in curl wget bd claude codex copilot; do
   printf '#!/usr/bin/env bash\nprintf "forbidden runtime call\\n" >&2\nexit 99\n' > "$WORK/never-call/$forbidden"

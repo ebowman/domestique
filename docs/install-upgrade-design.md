@@ -2,6 +2,15 @@
 
 ## Reading this document
 
+**Source split checkpoint (hq-5jc.3):** public `domestique.sh`/`update.sh` now
+preserve verified released v1. The reviewed preview body and inspector live in
+[`domestique2.sh`](../domestique2.sh); its mutating dispatch is gated.
+[`update2.sh`](../update2.sh) also refuses publication/candidate execution.
+Below, preview commands and diagnostics naming the old scripts are historical
+at `020c05c`/`58732cc`, **not instructions for today's public v1 files**.
+See [current source status](v2-source-boundary.md) and [README](../README.md).
+No runtime/project/native namespace migration is implemented by the split.
+
 **Proposed next interface:** [V2 install/activation contract V2/1](v2-install-contract.md)
 freezes hq-1t9's inert machine install, required private project activation,
 whole-runtime workflow binding and named acceptance matrix. It is documentation

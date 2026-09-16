@@ -68,6 +68,7 @@ def inspection_fixture():
 
 
 INSPECTION = inspection_fixture()
+preview_fixture = INSPECTION.preview_fixture
 SPEC = importlib.util.spec_from_file_location("beads_fixture", ROOT / "test/beads_fixture.py")
 F = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(F)
@@ -79,7 +80,15 @@ CURRENT = (
     "local-index-tests.py", "native-supervision-tests.py", "beads-fixture-tests.py",
     "beads-execution-tests.py",
     "inspect-fixture-tests.py", "inspect-tests.py",
+    "version-boundary-tests.py",
 )
+# CURRENT includes tests of retained engine source, not just live public CLI.
+# Those scopes keep their cases but cannot qualify V2 publication/activation.
+RETAINED_PREVIEW = frozenset((
+    "private-core.sh", "global.sh", "local-preflight.sh", "local-profiles.sh",
+    "global-uninstall.py", "local-uninstall.py", "beads-guard.py",
+    "beads-private.py", "beads-cleanup.py",
+))
 HISTORICAL = ("codex.sh", "copilot.sh", "guest.sh", "uninstall.sh", "upgrade.sh")
 QUICK = ("private-core.sh", "native-discovery-tests.py", "beads-native-context-tests.py",
          "acceptance-tests.py", "global-path-tests.py", "local-index-tests.py",
@@ -262,7 +271,9 @@ def offline_report(name, stdout, stderr, rc):
     require(int(matches[0]) > 0, "empty suite")
     if name in INSPECTION.QUALIFICATION_SUITES:
         return inspection_report(name, stdout, int(matches[0]))
-    return {"status": "PASS", "checks": int(matches[0])}
+    return {"status": "PASS", "checks": int(matches[0]),
+            **({"scope": "retained-preview-engine-not-v2-installation"}
+               if name in RETAINED_PREVIEW else {})}
 
 
 def inspection_report(name, stdout, tests_run):
@@ -344,14 +355,14 @@ def inspection_report(name, stdout, tests_run):
         origin = origins[key]
         require(type(origin) is dict and set(origin) == {"label", "revision", "sha256", "installer"},
                 "invalid inspection source origin")
-        require(origin["label"] == ("current-private-preview" if key == "current" else key)
+        require(origin["label"] == ("retained-private-preview" if key == "current" else key)
                 and text(origin["installer"]) and Path(origin["installer"]).is_absolute()
                 and type(origin["sha256"]) is str
                 and re.fullmatch(r"[0-9a-f]{64}", origin["sha256"]) is not None
                 and type(origin["revision"]) is str
                 and re.fullmatch(r"[0-9a-f]{40}", origin["revision"]) is not None
                 and (origin["revision"] == revision if revision else
-                     origin["sha256"] == report["source_sha256"]["domestique.sh"]),
+                     origin["sha256"] == preview_fixture.sha256()),
                 "unqualified inspection source origin")
     tools = cohort["tools"]
     require(type(tools) is dict and set(tools) == {"python3", "bash", "git"},
@@ -929,7 +940,7 @@ def validation(env, control=None):
         if control:
             control.check()
         ast.parse(path.read_text(), filename=str(path))
-    source = (ROOT / "domestique.sh").read_text()
+    source = preview_fixture.source().decode()
     ast.parse(source.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0])
     ast.parse(source.split("<<'DOM_INSPECT_PY' || inspect_rc=$?\n", 1)[1]
               .split("\nDOM_INSPECT_PY", 1)[0])

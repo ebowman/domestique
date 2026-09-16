@@ -10,9 +10,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import preview_fixture
 
 ROOT = Path(__file__).resolve().parent.parent
-DOM = ROOT / "domestique.sh"
 SETS = {"claude": {"claude"}, "codex": {"codex"}, "copilot": {"copilot"},
         "both": {"claude", "codex"}, "claude-copilot": {"claude", "copilot"},
         "codex-copilot": {"codex", "copilot"}, "all": {"claude", "codex", "copilot"}}
@@ -132,9 +132,8 @@ try:
     # Bash keeps a byte offset into its script while a long operation runs.
     # Freeze the exact current source so concurrent development cannot splice
     # a later parser/dispatch block into an already-running test invocation.
-    source = DOM.read_bytes()
-    DOM = W / "domestique.sh"
-    DOM.write_bytes(source)
+    DOM = preview_fixture.materialize(W)
+    print("RETAINED PREVIEW ENGINE: not public V2 installation coverage")
     HOME, CORE, LOG = W / "home", W / "core", W / "forbidden-log"
     for name in ("home", "tmp", "forbidden"):
         (W / name).mkdir()

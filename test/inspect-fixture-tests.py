@@ -253,6 +253,7 @@ class ContractTests(unittest.TestCase):
                                      "setup: io-or-format-failure")
         # Even rc=0 is not sufficient evidence of a valid Git revision.
         with patch.object(session, "source", return_value=Path("/synthetic-source")), \
+                patch.object(F.preview_fixture, "materialize", return_value=Path("/synthetic-preview")), \
                 patch.object(Path, "read_bytes", return_value=b"synthetic older source"), \
                 patch.object(session, "run", return_value=subprocess.CompletedProcess(
                     (), 0, F.SECRET.encode(), b"")):
@@ -490,7 +491,7 @@ class RealFixtureTests(unittest.TestCase):
                                      "invalid target must not be a supported directory alias")
                 argv, cwd, wanted = case.cli_invocation()
                 self.assertTrue(cwd.is_dir(), "CLI launch must use an executable cwd")
-                self.assertEqual(argv, ("/bin/bash", str(F.ROOT / "domestique.sh"), *case.argv()))
+                self.assertEqual(argv, ("/bin/bash", str(F.ROOT / "domestique2.sh"), *case.argv()))
                 self.assertEqual(wanted, record)
                 # Every error fixture retains an independent readable provider
                 # witness, except absent/CLI/invalid-target which have none.

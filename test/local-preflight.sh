@@ -2,9 +2,10 @@
 # Executable internal-local API tests; no native client, network, or real HOME.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-DOM="$ROOT/domestique.sh"
 WORK="$(mktemp -d)"; WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
+DOM="$(python3 -B "$ROOT/test/preview_fixture.py" "$WORK" domestique2.sh)"
+echo "RETAINED PREVIEW ENGINE: not public V2 installation coverage"
 mkdir "$WORK/home" "$WORK/tmp" "$WORK/forbidden"
 export HOME="$WORK/home" TMPDIR="$WORK/tmp" DOMESTIQUE_HOME="$WORK/core"
 unset XDG_STATE_HOME

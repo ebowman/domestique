@@ -2,10 +2,11 @@
 # Focused Core API 1 renderer/resolver coverage; native discovery is .8 work.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DOM="$ROOT/domestique.sh"
 PASS=0 FAIL=0
 check() { local d="$1"; shift; if "$@"; then PASS=$((PASS + 1)); else printf 'FAIL: %s\n' "$d" >&2; FAIL=$((FAIL + 1)); fi; }
 WORK="$(mktemp -d)"; WORK="$(cd "$WORK" && pwd -P)"; trap 'rm -rf "$WORK"' EXIT
+DOM="$(python3 -B "$ROOT/test/preview_fixture.py" "$WORK" domestique2.sh)"
+echo "RETAINED PREVIEW ENGINE: not public V2 installation coverage"
 
 EXTRACT="$WORK/emitter-definitions.sh"
 awk '/^usage\(\)/ { exit } { print }' "$DOM" > "$EXTRACT"

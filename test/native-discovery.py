@@ -391,13 +391,19 @@ class Harness:
         self.result("installer-global", "STATIC_ONLY", untouched_repos=["A", "B"])
 
     def install(self, *args):
+        # This harness qualifies the retained preview's global advertisements,
+        # never V2/1 project-only discovery. Do not use the public gated writer.
+        import preview_fixture
+        retained = self.work / "retained-domestique2.sh"
+        if not retained.exists():
+            retained = preview_fixture.materialize(self.work)
         # Fixture setup is separate from the native metadata-command budget.
         budget = 120
         operation = ("local fixture installation" if "--local" in args else
                      "global fixture installation")
         argv = [self.tools["sandbox-exec"], "-p",
                 sandbox_profile(self.work, self.tools, installer=True),
-                "/bin/bash", ROOT / "domestique.sh", *args]
+                "/bin/bash", retained, *args]
         started = time.monotonic()
         try:
             result = run(argv, self.work, self.env, timeout=budget)

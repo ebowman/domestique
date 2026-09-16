@@ -59,7 +59,9 @@ def experiment():
             count += 1
             return result
 
-        dom = ["bash", str(ROOT / "domestique.sh")]
+        # Native qualification here belongs to the retained preview, not V2.
+        import preview_fixture
+        dom = ["bash", str(preview_fixture.materialize(work))]
         run([*dom, "--global", "--platform", "all"])
         core = work / "core"
         helper = core / "bin/resolve-core"

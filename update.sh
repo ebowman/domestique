@@ -1,137 +1,88 @@
 #!/usr/bin/env bash
 # update.sh — fetch the latest domestique.sh from GitHub and re-run it
-# against an explicit global or private local scope. This is intentionally
-# thin: ownership, pristine-only refresh and publication live in domestique.sh.
+# against a target directory, reusing the existing 3-way-merge install path
+# (see docs/install-upgrade-design.md §5). This is intentionally a thin
+# wrapper: all merge/backup/conflict logic lives in domestique.sh itself.
 set -euo pipefail
 
 DEFAULT_SOURCE="https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh"
 
 usage() {
   cat <<EOF
-Usage: update.sh --global [options]
-       update.sh --local TARGET [options]
-       update.sh [TARGET] [options]  (private local; default .)
+Usage: update.sh [TARGET_DIR] [options]
 
-IMPLEMENTED PREVIEW: definitions/profile lifecycle, NOT end-to-end readiness.
-Default source is main, NOT this preview; draft #11 lacks these changes too.
-Use this checkout until published:
-  bash ./update.sh --source ./domestique.sh --global
-  bash ./update.sh --source ./domestique.sh --local /absolute/project
-Fetches $DEFAULT_SOURCE unless overridden.
-Always previews first; ANY failed preview prevents apply.
-  --source PATH/URL  Override source (also DOMESTIQUE_UPDATE_SOURCE).
-  --platform P  claude, codex, copilot, both, claude-copilot, codex-copilot, all
-                both = Claude+Codex; all = all three; other pairs as named.
-                Additive union, reused when omitted; fresh default Claude.
-  --dry-run     Preview only.
-  --force       Does not override edited/unknown private native assets.
-  --guest       Deprecated warning-only no-op; --no-guest is invalid.
-  --with-beads  Explicit --local TARGET only; qualified private embedded DB init.
-  --state-only  Requires --local TARGET --with-beads; no --platform.
-                No new profiles; preserves existing edited profiles.
-  --help, -h    Help.
-Local requires an existing Git top-level and compatible global core; no
-implicit global writes. Beads requires the observed Darwin arm64 Beads 1.1.2
-CGO embedded artifact, existing Python 3.9+ and macOS sandbox-exec. Other versions,
-platforms/backends refuse before project writes. Dry-run has no DB calls or
-destination writes. Native operations use a private non-Git context and actual
-OS sandbox; --sandbox alone only disables auto-push. Existing host .beads is
-never adopted. Every workflow operation requires the installed controlled
-resolve-core beads dispatcher with literal core/project/release bindings.
-No unsafe init/rollback, setup, arbitrary flags or force bypass.
-Definitions/routing can load; full native role/tool/MCP execution is unverified.
-No implicit client/plugin/auth/environment/MCP setup. This wrapper only updates;
-use domestique.sh --uninstall --global for owned-only global removal, or
-domestique.sh --uninstall --local TARGET for local removal (Beads retained by default).
-Removal retains edited selected providers whole, nonzero even force. No live
-backups/merges. Local last-profile removal retains providers=none/private exclusion.
-Global final removal leaves unproven empty containers; see README safe manual
-empty-core reconciliation before reinstall. Local --purge-beads requires all
-initial DB/context/export hashes unchanged and no remaining provider; stop raw
-writers first. Cleanup never queries bd and needs neither core nor bd. This
-updater remains update-only and accepts no uninstall/purge options.
-No model, MCP, or tool options are accepted; customize native metadata locally.
-Edited metadata requires native reload/trust/core-protocol confirmation; automatic
-refresh refuses untouched, even force. Global core updates do not rewrite locals.
+Fetches the latest domestique.sh (default source:
+  $DEFAULT_SOURCE
+) and runs it against TARGET_DIR (default: current directory), reusing the
+existing 3-way-merge install/upgrade logic. Safe to run periodically:
+  1. Runs a --dry-run pass first and prints what would change.
+  2. Unless --dry-run was passed to this updater, applies for real.
+
+Options:
+  --source <path|url>  Override the source domestique.sh (local file path or
+                        URL). Also settable via DOMESTIQUE_UPDATE_SOURCE.
+  --dry-run            Only show the preview; do not apply.
+  --force              Pass through to domestique.sh (discard local edits,
+                        take upstream verbatim; see domestique.sh --help).
+  --platform <value>   Pass through the install platform: claude, codex, or
+                        both. When omitted, domestique.sh reuses its persisted
+                        platform set (or defaults to Claude on a first run).
+  --guest              Pass through to domestique.sh. Claude uses
+                        CLAUDE.local.md; Codex uses skills-only guest mode and
+                        leaves root AGENTS files untouched. Prior guest mode
+                        is sticky through provider-owned state, so repeat
+                        updates normally do not need this flag.
+  --no-guest           Pass through to domestique.sh: convert an existing
+                        guest install back to normal (see domestique.sh
+                        --help for what is and isn't auto-migrated).
+  --help, -h           Show this help.
+
+Exit codes (propagated from the underlying domestique.sh run):
+  0  everything applied cleanly (or already up to date — a clean no-op).
+  1  operational refusal (e.g. missing target dir).
+  2  invocation error (bad options passed to the underlying script).
+  3  one or more files ended in conflict/error during merge — needs a human.
+  4  could not obtain a valid domestique.sh from the given source.
 EOF
 }
 
 TARGET_DIR=""
-TARGET_EXPLICIT=0
 SOURCE="${DOMESTIQUE_UPDATE_SOURCE:-$DEFAULT_SOURCE}"
 UPDATER_DRY_RUN=0
 FORCE=0
 GUEST=0
 NO_GUEST=0
 PLATFORM=""
-PLATFORM_EXPLICIT=0
-GLOBAL=0
-LOCAL=0
-WITH_BEADS=0
-STATE_ONLY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --global) GLOBAL=1 ;;
-    --with-beads) WITH_BEADS=1 ;;
-    --state-only) STATE_ONLY=1 ;;
-    --local)
-      [ "$#" -ge 2 ] && [ -n "$2" ] && [ "$TARGET_EXPLICIT" = 0 ] ||
-        { echo "--local requires one target" >&2; exit 2; }
-      case "$2" in -*) echo "Invalid --local target" >&2; exit 2;; esac
-      LOCAL=1; TARGET_EXPLICIT=1; TARGET_DIR="$2"; shift;;
     --source)
-      [ $# -ge 2 ] && [ -n "$2" ] || { echo "Missing argument for --source" >&2; exit 2; }
-      case "$2" in -*) echo "Invalid --source" >&2; exit 2;; esac
+      [ $# -ge 2 ] || { echo "Missing argument for --source" >&2; exit 2; }
       SOURCE="$2"; shift ;;
     --source=*) SOURCE="${1#--source=}" ;;
     --dry-run) UPDATER_DRY_RUN=1 ;;
     --force)   FORCE=1 ;;
     --platform)
       [ $# -ge 2 ] || { echo "Missing argument for --platform" >&2; exit 2; }
-      PLATFORM="$2"; PLATFORM_EXPLICIT=1; shift ;;
-    --platform=*) PLATFORM="${1#--platform=}"; PLATFORM_EXPLICIT=1 ;;
+      PLATFORM="$2"; shift ;;
+    --platform=*) PLATFORM="${1#--platform=}" ;;
     --guest)     GUEST=1 ;;
     --no-guest)  NO_GUEST=1 ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *)
-      [ -n "$1" ] || { echo "Empty target" >&2; exit 2; }
-      TARGET_EXPLICIT=1
       if [ -z "$TARGET_DIR" ]; then TARGET_DIR="$1"
       else echo "Unexpected argument: $1" >&2; exit 2; fi
       ;;
   esac
   shift
 done
-[ -n "$SOURCE" ] || { echo "Empty --source" >&2; exit 2; }
-[ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
-  { echo "Invalid target/options; --no-guest is unsupported" >&2; exit 2; }
-[ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM" ] ||
-  { echo "Empty --platform" >&2; exit 2; }
-[ "$STATE_ONLY" = 0 ] || {
-  [ "$LOCAL$WITH_BEADS$GLOBAL$PLATFORM_EXPLICIT" = 1100 ] ||
-    { echo "--state-only requires explicit --local TARGET --with-beads and no --platform/--global" >&2; exit 2; }
-}
-[ "$WITH_BEADS" = 0 ] || {
-  [ "$LOCAL$GLOBAL" = 10 ] ||
-    { echo "--with-beads requires explicit --local TARGET, not bare/positional or --global" >&2; exit 2; }
-}
-TARGET_ARGS=()
-if [ "$GLOBAL" = 1 ]; then
-  [ "$LOCAL" = 0 ] && [ "$TARGET_EXPLICIT" = 0 ] && [ "$#" = 0 ] && [ "$NO_GUEST" = 0 ] ||
-    { echo "Invalid --global scope/target/options" >&2; exit 2; }
-  [ "$PLATFORM_EXPLICIT" = 0 ] || [ -n "$PLATFORM" ] ||
-    { echo "Empty --platform" >&2; exit 2; }
-else
-  TARGET_DIR="${TARGET_DIR:-.}"
-  TARGET_ARGS+=(--local "$TARGET_DIR")
-fi
+TARGET_DIR="${TARGET_DIR:-.}"
 
 case "$PLATFORM" in
-  ""|claude|codex|copilot|both|all|claude-copilot|codex-copilot) : ;;
-  *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, copilot, both, or all)" >&2; exit 2 ;;
+  ""|claude|codex|both) : ;;
+  *) echo "Invalid --platform value: $PLATFORM (expected claude, codex, or both)" >&2; exit 2 ;;
 esac
 
 WORK_DIR="$(mktemp -d)"
@@ -170,26 +121,21 @@ if ! bash -n "$FETCHED"; then
   exit 4
 fi
 
-# Pass scope and provider intent through; omitted selection reuses that
-# scope's persisted union. --guest is only a deprecated warning-producing alias.
+# Passed through to the fetched domestique.sh verbatim. Note: even if
+# neither --guest nor --no-guest is given here, a target that was previously
+# guest-installed stays in guest mode on its own — domestique.sh detects each
+# provider's sticky mode marker and keeps guest mode without help from
+# update.sh. These flags exist for explicitly setting/converting mode here.
 FORCE_ARGS=()
-[ "$GLOBAL" -eq 1 ] && FORCE_ARGS+=(--global)
 [ "$FORCE" -eq 1 ] && FORCE_ARGS+=(--force)
 [ "$GUEST" -eq 1 ] && FORCE_ARGS+=(--guest)
 [ "$NO_GUEST" -eq 1 ] && FORCE_ARGS+=(--no-guest)
 [ -n "$PLATFORM" ] && FORCE_ARGS+=(--platform "$PLATFORM")
-[ "$WITH_BEADS" = 1 ] && FORCE_ARGS+=(--with-beads)
-[ "$STATE_ONLY" = 1 ] && FORCE_ARGS+=(--state-only)
 
 echo
 echo "--- Preview (dry run) ---"
 rc=0
-bash "$FETCHED" --dry-run "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" || rc=$?
-
-if [ "$rc" -ne 0 ]; then
-  echo "domestique update: preview failed; not applying." >&2
-  exit "$rc"
-fi
+bash "$FETCHED" --dry-run "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "$TARGET_DIR" || rc=$?
 
 if [ "$UPDATER_DRY_RUN" -eq 1 ]; then
   echo
@@ -200,7 +146,7 @@ fi
 echo
 echo "--- Applying ---"
 rc=0
-bash "$FETCHED" "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}" || rc=$?
+bash "$FETCHED" "${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"}" "$TARGET_DIR" || rc=$?
 
 echo
 case "$rc" in

@@ -25,7 +25,7 @@ def main(restore=baseline, prefix="dom-path-timing-"):
     with tempfile.TemporaryDirectory(prefix=prefix) as tmp:
         work = Path(tmp).resolve()
         env = runner.environment(work)
-        current = (ROOT / "domestique.sh").read_text()
+        current = runner.preview_fixture.source().decode()
         timings = {}
         completed = 0
         for label, source in (("before", restore(current)), ("after", current)):
