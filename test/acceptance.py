@@ -81,6 +81,7 @@ CURRENT = (
     "beads-execution-tests.py",
     "inspect-fixture-tests.py", "inspect-tests.py",
     "version-boundary-tests.py",
+    "v2-publisher-tests.py", "v2-records-tests.py",
 )
 # CURRENT includes tests of retained engine source, not just live public CLI.
 # Those scopes keep their cases but cannot qualify V2 publication/activation.
@@ -930,12 +931,23 @@ def environment(work, native=False, suite=None):
     return env
 
 
-def validation(env, control=None):
+def validation(env, control=None, transcript=None):
     def run(argv, env, timeout):
-        return execute(argv, env, timeout, control)
+        entry = {"command": [str(a) for a in argv], "timeout": timeout}
+        if transcript is not None:
+            transcript.append(entry)
+        try:
+            out, err, rc = execute(argv, env, timeout, control)
+            entry.update(stdout=out, stderr=err, exit=rc)
+            return out, err, rc
+        except Exception as exc:
+            entry.update(error=type(exc).__name__, stdout=getattr(exc, "output", None),
+                         stderr=getattr(exc, "stderr", None),
+                         exit=getattr(exc, "returncode", None))
+            raise
 
     shells = sorted([*ROOT.glob("*.sh"), *ROOT.glob("test/*.sh")])
-    python_files = sorted(ROOT.glob("test/*.py"))
+    python_files = sorted([*ROOT.glob("test/*.py"), *ROOT.glob("v2/*.py")])
     for path in python_files:
         if control:
             control.check()
@@ -954,17 +966,33 @@ def validation(env, control=None):
         env, 60)
     require(rc == 0, f"resolver emission: {err}")
     helper.write_text(out)
-    for path in [*shells, helper]:
+    # Trusted deterministic V2 bundles, not mutable package/candidate execution.
+    generated = [Path(env["TMPDIR"]) / ("v2-" + name) for name in
+                 ("launcher", "domestique2.sh", "update2.sh", "resolve-core")]
+    program = (
+        "import sys; from pathlib import Path; "
+        f"sys.path.insert(0, {str(ROOT)!r}); "
+        "from v2.build import launcher_bytes, package_data; "
+        f"Path({str(generated[0])!r}).write_bytes(launcher_bytes("
+        "Path('/synthetic/core/v2'), Path('/synthetic/home'))); "
+        "data = package_data('2.0.0'); " +
+        "; ".join(f"Path({str(path)!r}).write_bytes(data[{leaf!r}])"
+                  for path, leaf in zip(generated[1:],
+                                        ("domestique2.sh", "update2.sh", "bin/resolve-core")))
+    )
+    out, err, rc = run([PYTHON, "-I", "-S", "-B", "-c", program], env, 60)
+    require(rc == 0, f"V2 deterministic bundle emission: {err}")
+    for path in [*shells, helper, *generated]:
         out, err, rc = run(["/bin/bash", "-n", str(path)], env, 60)
         require(rc == 0, f"Bash syntax {path}: {err}")
     out, err, rc = run(["shellcheck", "--severity=warning", "--format=json",
-                       *map(str, shells), str(helper)], env, 120)
+                       *map(str, shells), str(helper), *map(str, generated)], env, 120)
     require(rc in (0, 1), f"ShellCheck error: {err}")
     diagnostics = json.loads(out)
     require(rc == 0 and diagnostics == [], f"ShellCheck exit {rc}, warnings: {diagnostics}")
     out, err, rc = run(["git", "--no-pager", "diff", "--check"], env, 60)
     require(rc == 0, f"git diff --check: {out}{err}")
-    return {"status": "PASS", "shell_files": len(shells), "emitted_helpers": 1,
+    return {"status": "PASS", "shell_files": len(shells), "emitted_helpers": 5,
             "python_files": len(python_files), "embedded_python": 2,
             "shellcheck_warning_exceptions": 0}
 
@@ -1028,7 +1056,11 @@ def provenance(control):
     """Content pin includes uncommitted runner/tests, not just an old HEAD."""
     sources = sorted({*ROOT.glob("*.sh"), *ROOT.glob("test/*.py"),
                       *ROOT.glob("test/*.sh"), ROOT / "README.md",
-                      ROOT / "docs/install-upgrade-design.md"})
+                      *ROOT.glob("v2/*.py"), *ROOT.glob("v2/roles/*.md"),
+                      ROOT / "docs/install-upgrade-design.md",
+                      ROOT / "docs/v2-install-contract.md",
+                      ROOT / "docs/v2-install-interfaces.md",
+                      ROOT / "docs/v2-source-boundary.md"})
     hashes = {}
     for path in sources:
         control.check()
@@ -1195,7 +1227,12 @@ def main():
                     env["DOM_TEST_DIAG"] = str(artifacts / "global-progress.tsv")
                 print(f"START {category} {name}", flush=True)
                 if name == "syntax-lint-ast-diff":
-                    result.update(validation(env, local))
+                    transcript = []
+                    try:
+                        result.update(validation(env, local, transcript))
+                    finally:
+                        (artifacts / (key + ".commands.json")).write_text(
+                            json.dumps(transcript, indent=2) + "\n")
                     local.check()
                     return result
                 argv = (["/bin/bash"] if name.endswith(".sh") else [PYTHON, "-B", "-W", "error"])

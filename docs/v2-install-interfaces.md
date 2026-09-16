@@ -1,17 +1,15 @@
 # V2/1 record and native-metadata interfaces
 
-**PROPOSED, NOT IMPLEMENTED.** [V2/1 contract](v2-install-contract.md) appendix,
-frozen by hq-1t9.1 at `020c05c`; **sole wire-schema/metadata-admission authority**.
+**PARTIALLY IMPLEMENTED, NOT PUBLISHED.** The internal local publisher implements
+machine A/B/D; project binding/admission/recovery remain future owners' work.
+[V2/1 contract](v2-install-contract.md) appendix, frozen by hq-1t9.1 at `020c05c`; **sole wire-schema/metadata-admission authority**.
 The parent owns CLI, inventories, effects, trust, privacy and acceptance.
-`format=2` is not preview format 1. No extension negotiation, generic record
-engine or new command; writer, guard, recovery and inspector share these rules.
+`format=2` is not preview format 1. No extension negotiation, generic record engine or new command; writer, guard, recovery and inspector share these rules.
 
 ## A. Common record grammar
 
-Unless explicitly excepted, a record is UTF-8 without BOM, LF-terminated
-`key=value` lines, no blank lines/comments, in the order specified below.
-Notation `I`, `K`, `M` expands to ordered lines; brackets/alternatives in this
-document are notation, never literal wire bytes. Singletons occur exactly once;
+Unless explicitly excepted, a record is UTF-8 without BOM, LF-terminated `key=value` lines, no blank lines/comments, in the order specified below.
+Notation `I`, `K`, `M` expands to ordered lines; brackets/alternatives are notation, never literal wire bytes. Singletons occur exactly once;
 only explicitly repeated blocks repeat. Unknown, missing, duplicate, reordered,
 truncated, extra or unsupported-version fields refuse the whole record.
 No shell sourcing, interpolation, JSON/YAML inference or escape decoding.
@@ -22,8 +20,8 @@ No shell sourcing, interpolation, JSON/YAML inference or escape decoding.
   `MODE` is four octal digits, no special bits; `X` is 32 lowercase hex
   transaction-ID digits, freshly chosen and not reused in extant scope evidence.
   `P` is `claude|codex|copilot`; provider sets use that order, no duplicates.
-* Values are literal, case-sensitive. Paths contain no Unicode controls
-  (U+0000..001F, U+007F..009F) or `=`; absolute paths are canonical physical,
+* Values are literal, case-sensitive. Paths contain no Unicode controls (U+0000..001F,
+  U+007F..009F) or `=`; absolute paths are canonical physical,
   no trailing slash, `//`, `.` or `..` components. Relative paths have no leading
   slash or such components. Spaces, quotes, backslashes and colons are literal.
   Parse `PATH:H:MODE` from the right; never split a path on every colon.
@@ -44,15 +42,25 @@ No shell sourcing, interpolation, JSON/YAML inference or escape decoding.
   compare device/inode, size, mode and nanosecond mtime/ctime where available.
   Before each write/unlink and before releasing guarded output, repeat identity,
   current-byte hash, index and safe-path checks relevant to that scope.
-  A change during validation refuses, never retries by adopting new bytes.
-  There is no hostile same-owner writer, native sandbox or fsync guarantee.
+  Machine publication rechecks exact Git/native overlap ancestors, including existing parents, at every creation/write/link/rename/unlink and final success; never caches absence.
+  Changed boundaries stop publication and cleanup writes, retaining partial evidence.
+  Machine file writes use checked OS I/O, including partial-write/EINTR rechecks;
+  error/close cannot flush latent bytes after refusal. Bytes already written before
+  the first observed boundary remain evidence, not a zero-side-effect claim.
+  Failed temporary machine afterimages are retained without automatic unlink or
+  restoration, even if empty or apparently equal; their names confer no cleanup
+  authority. Successful no-clobber link cleanup checks the original open inode,
+  exact bytes/mode/link count and current boundaries before removing its temporary
+  link. Changed or unwitnessed objects remain for manual reconciliation with
+  pending/unknown status; no creation fact is inferred from them.
+  A change during validation refuses, never retries by adopting new bytes. There is no hostile same-owner writer, native sandbox or fsync guarantee.
 
 `I` = `worktree_root`, `git_dir`, `git_common_dir` (absolute paths), then
 `worktree_dev`, `worktree_ino`, `git_dir_dev`, `git_dir_ino`, `git_common_dev`,
 `git_common_ino`, `owner_uid` (D), as defined by parent §3.
 `K` = `core_root=G`, `core_api=1`, `adapter_abi=2`, `activation_format=2`,
-`helper_abi=2`. `M` = `core_root=G`, `core_dev=D`, `core_ino=D`,
-`owner_uid=D`, `launcher_path=$HOME/.local/bin/domestique2`, `launcher_abi=2`.
+`helper_abi=2`. `M` = `core_root=G`, `core_dev=D`, `core_ino=D`, `owner_uid=D`,
+`launcher_path=$HOME/.local/bin/domestique2`, `launcher_abi=2`.
 Machine records must agree on M; project I/K and binding machine inode fields
 must agree with the independently validated machine, not an ambient root.
 
@@ -67,17 +75,13 @@ No native preimages, values, source paths, credentials or project lists in G.
 
 ## B. Runtime manifest
 
-Path **`G/state/runtime-manifest`**. Writers: hq-5jc.4/hq-1t9.2/.3;
-readers: launcher/guards hq-1t9.2/.4 and inspector hq-1t9.6.
+Path **`G/state/runtime-manifest`**. Writers: hq-5jc.4/hq-1t9.2/.3; readers: launcher/guards hq-1t9.2/.4 and inspector hq-1t9.6.
 Ordered lines: `format=2`, `scope=runtime`, M, `core_api=1`, `adapter_abi=2`,
 `activation_format=2`, `helper_abi=2`, then launcher created/baseline pair
 (absolute launcher path), then release blocks ordered by R, then checksum.
-Each block is `release=R`, `version=V`, `source_kind=local|official`,
-`official_version=V|-`, all payload created/baseline pairs, `end_release=R`.
-Payload paths are **`releases/R/<payload>`**, in ASCII order, with exactly
-the parent's closed inventory including `PACKAGE` and `SHA256SUMS`.
-Executable payload/launcher modes are `0755`; other payloads are `0644`.
-Metadata records/active are `0600`; owned private state directories are `0700`.
+Each block: `release=R`, `version=V`, `source_kind=local|official`, `official_version=V|-`, all payload created/baseline pairs, `end_release=R`.
+Payload paths are **`releases/R/<payload>`**, in ASCII order, with exactly the parent's closed inventory including `PACKAGE` and `SHA256SUMS`.
+Executable payload/launcher modes are `0755`; other payloads are `0644`. Metadata records/active are `0600`; owned private state directories are `0700`.
 
 R equals the exact SHA256SUMS digest; every listed baseline must match that
 verified package, and every retained immutable payload must match its creation
@@ -291,11 +295,14 @@ Exclude-edited matches only edit-exclude and its full before/after contract.
 Retirement manifest created/replaced reports the actual §E-derived digest,
 never the sentinel. Other file-result hashes must equal their planned H.
 
-PHASE order: machine `release,manifest,launcher,active,complete`;
+PHASE order: machine `release,launcher,manifest,active,complete`;
 enable `exclusions,native,manifest,receipt,complete`;
 disable `revocation,native,receipt,exclusions,manifest,complete`;
 retire `native,manifest,complete`. Mkdir uses its child's phase; launcher
-parents use launcher. Initial J/ancestor claims are framing, performed
+parents use launcher. A compatible existing launcher has no items/writes.
+First-install exclusive final launcher creation and postverification precede its manifest created/baseline assertion; intent never supplies this pair.
+Before manifest/active exist, version/operations refuse unavailable without selecting staging or guessing a release. Static help alone is discovery-free
+exit 0, not runtime certification (parent §1). Initial J/ancestor claims are framing, performed
 exclusively after preflight; a crash before valid framing is unknown partial,
 never creation authority. Skip empty phases, not required work. Disable appends
 selected-provider revocation facts before any deletion; pending already blocks
@@ -303,9 +310,11 @@ all project workflows. Manifest disabled status persists revocation after clear.
 Publish receipts/active last as in parent §4; revalidate actual final state
 before committed, then unlink published, previous, pending in that order.
 
-A valid prefix plus torn/missing final fact is **pending failure**, not a
+A valid prefix plus syntactically possible torn/missing final fact is **pending failure**, not a
 completed removal/creation. Reconcile only its complete hash-valid prefix;
 an action without its fact is ambiguous even if bytes equal intent/are absent.
+Apply §A byte/line/UTF-8/control limits to all observed bytes before prefix classification, including torn suffixes;
+impossible fields/values/checksum prefixes are unknown, not extensions or ignored tails. Preserve exact bytes.
 An exclude rename without its fact is likewise ambiguous, not block ownership.
 Valid committed plus leftover journal files is **cleanup-pending**, not a
 mutating no-op. Orphan/malformed/checksum-mismatched/cross-identity files are

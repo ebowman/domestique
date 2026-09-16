@@ -1,8 +1,10 @@
 # domestique
 
-## Source split checkpoint (hq-5jc.3)
+## Internal local-runtime checkpoint (hq-5jc.4)
 
-**No V2 package has been installed, published or activated by this change.**
+**No V2 release is published; no real HOME installation or project activation
+was performed.** An internal, tested local publisher now exists; the public
+bootstrap/installed management CLI is not ready.
 The checked-out artifacts now have separate meanings:
 
 | Source | Current behavior |
@@ -10,14 +12,26 @@ The checked-out artifacts now have separate meanings:
 | [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Public **v1**, restored byte-for-byte from locally verified `main`/`origin/main` at `4de726c2e38e731c67f5f37d4a16206d7b3d99af`. Claude/Codex normal/guest behavior and the old updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics remain unchanged. Draft Copilot is not this released channel. |
 | [`domestique2.sh`](domestique2.sh) | Source-only transition: reviewed read-only `--inspect` and help. **All installation/removal/activation operations refuse.** The format-1 preview engine is retained for fixture extraction/reuse, not executable setup through this entrypoint. |
 | [`update2.sh`](update2.sh) | Fail-closed transition: accepts explicit source/version selection syntax but **refuses all updates**, before candidate execution, fetch or destination writes. No default source; nonempty legacy source environment override refuses. Shell files, including this checkout's scripts, are not V2 packages. |
+| [`v2/`](v2/) | Trusted Python 3.9+ stdlib development APIs: deterministic 12-leaf package emission, strict local verifier, machine-only publication and minimal trusted stable version/availability protocol. All three inert native-template factories share four core policies. No native files, projects, client settings or Beads operations. |
 
 The frozen [V2/1 contract](docs/v2-install-contract.md) and
-[normative interfaces](docs/v2-install-interfaces.md) remain **proposed**:
-quiet publisher, package verifier/bootstrap, installed `domestique2` and private
-project activation are downstream work. Reserved runtime `S/v2`, project
+[normative interfaces](docs/v2-install-interfaces.md) are **partially implemented**:
+the local package/publisher path implements format-2 runtime `S/v2` and
+`$HOME/.local/bin/domestique2`. Bootstrap fetch/parser, installed management,
+guarded project activation and usable native loaders remain downstream work.
+Project
 `.domestique-private/v2/`, format-2 records and `domestique-v2-P...` native IDs
 must never adopt format-1 preview state. See the
 [source boundary and fixture qualification](docs/v2-source-boundary.md).
+
+The internal interface is `v2.build.emit_package(destination, "2.MINOR.PATCH")`
+then `v2.publisher.publish_local(package_directory, explicit_environment,
+dry_run=False)`. It is for trusted future bootstrap integration, **not a public
+setup command**. Local checksums are corruption checks, not publisher
+authentication. The stable launcher can report verified `version`; unsupported
+activation/body/delegation/Beads paths stop before execution. Installation adds
+no global native advertisements, but does **not** remove or certify quiet any
+old global definitions already on the machine. No release download URL exists.
 
 **Human alias action:** the existing `dom2` alias points to an old
 `domestique.sh` outside this project. It was not changed and does not imply a

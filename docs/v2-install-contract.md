@@ -1,7 +1,10 @@
 # Proposed V2 install and activation contract
 
 Contract **V2/1**, frozen by **hq-1t9.1**, 2026-09-16; baseline `020c05c`.
-**PROPOSED, NOT IMPLEMENTED OR PUBLISHED.** Acceptance authority for hq-1t9's
+**NOT PUBLISHED; PARTIALLY IMPLEMENTED.** hq-5jc.4 implements the internal
+local package/publisher API, not the bootstrap, installed management CLI or
+activation. See [source boundary](v2-source-boundary.md).
+Acceptance authority for hq-1t9's
 install-once/project-opt-in boundary, not runnable setup instructions. The
 [README](../README.md) and [design history](install-upgrade-design.md) describe
 the implemented preview and historical installations, not this proposed CLI.
@@ -321,8 +324,13 @@ Pending refuses mutating reruns (project-pending also blocks workflow entry);
 no automatic lock takeover/resume.
 
 Machine order: verify entire staged release; exclusively claim its final
-directory; populate no-clobber; verify final inventory; publish provenance/
-manifest and (first install only) launcher; atomically rename active **last**.
+directory; populate no-clobber; verify final inventory; exclusively create and
+postverify the final launcher on first install; publish provenance/manifest;
+atomically rename active **last**. Universal phases are
+`release,launcher,manifest,active,complete`; a valid existing launcher phase
+has no writes. Manifest creation pairs assert witnessed final creations,
+never launcher intent. Before manifest/active exists, version and operational commands must refuse unavailable, never select staging or certify runtime.
+Static help alone remains exit 0 with no filesystem discovery (§1); this is usage, not installation readiness or successful runtime publication.
 Complete old releases remain forever in this scope. Project enable order:
 preflight all selected providers; journal; protect exclusions; publish native
 leaves; manifest; receipts last; revalidate; clear pending last. Guards refuse
@@ -438,7 +446,7 @@ templates. Synthetic Beads metadata is preservation evidence only.
 | `V2-ROOTS-LAUNCHER` | hq-1t9.2 | Default/XDG/DOMESTIQUE_HOME, empty/relative/unsafe/overlapping roots, spaces/quotes, alternate root conflict, identical-unowned or edited launcher, missing dependency; no PATH/startup/dom/dom2 changes or auto-install. |
 | `V2-SOURCE-EXACT` | hq-1t9.2 | Local package and stub official fetch exercise selector precedence, absent/both selectors, legacy env refusal, no latest/main, pinned version match, retained offline selection and local relocation. |
 | `V2-SOURCE-REFUSE` | hq-1t9.2 | Wrong major/version/API/ABI; missing/corrupt/digest-mismatched/truncated/oversize payload, malicious archive paths/links/duplicates/extras, timeout/offline/redirect refusal; previous launcher/active usable, candidate execution marker absent. |
-| `V2-PUBLISH-FAULTS` | hq-5jc.4, hq-1t9.2 | Inject failure at stage, directory claim, leaf publication, manifest, launcher, before/after active rename and journal clear; appendix A/B/D field/order/checksum/phase tests, chunk 4000/4001-byte boundaries, missing/extra/reordered/truncated chunks and aggregate byte/line/item overflow refuse before writes; torn facts/orphans/stale identity distinguish pending/cleanup/unknown; exact old/new active truth, creation versus intent, metadata-only snapshots. |
+| `V2-PUBLISH-FAULTS` | hq-5jc.4, hq-1t9.2 | Inject failure at stage, directory claim, leaf publication, launcher, manifest, before/after active rename and journal clear; fresh launcher version/operations refuse before manifest/active, static help alone stays discovery-free exit 0; fresh Git/native/identity boundary changes stop all further writes/cleanup and success, including existing parents; appendix A/B/D field/order/checksum/phase tests, chunk 4000/4001-byte boundaries, missing/extra/reordered/truncated chunks and aggregate byte/line/item overflow refuse before writes; validate all torn suffix bytes before pending/unknown classification; exact old/new active truth, creation versus intent, metadata-only snapshots. |
 | `V2-ENABLE-AC` | hq-5jc.7 | A and C get only table-native thin payloads/receipts/exclusions; B and G unchanged; explicit core absence refuses without HOME writes. Existing host exclude accepts only owned-block append with full before/after hashes and outside bytes/mode preserved; absent exclude uses exclusive create, matching preexisting patterns remain unowned/unchanged. |
 | `V2-SELECTORS` | hq-5jc.7 | Seven fresh selections and seven additions to each of seven existing nonempty sets (49), selector omission on fresh/nonempty/disabled state, both excludes Copilot, all includes it, duplicate/refusal cases; exact provider union/IDs. Reuse one qualified cohort, not 49 cold installs. |
 | `V2-IDEMPOTENCE-METADATA` | hq-5jc.7 | Exact rerun no writes; every appendix F admitted field/shape and its invalid/protected counterpart, including three distinct MCP grammars, goal controls and sidecar interface edits; admitted bytes retained without pristine-base advance or secret copies; unsupported/fork/ABI edits refuse intact. |
@@ -487,7 +495,6 @@ Source at `020c05c`: [domestique.sh](../domestique.sh) inventories, `emit_privat
 [inspect_fixture.py](../test/inspect_fixture.py) pins, six phases, privacy/preservation.
 Today's six-file core excludes its resolver; adapters read bodies before routing, not V2 guards.
 
-hq-1t9.1 checks docs/links, source/owner/branch coverage and `git diff --check`,
-not implementation/tests, Beads, publication, aliases or unrelated defects.
+hq-1t9.1 checks docs/links, source/owner/branch coverage and `git diff --check`, not implementation/tests, Beads, publication, aliases or unrelated defects.
 Owners must satisfy this contract or return a reviewed change; hq-1t9.11 owns final
 review, hq-5jc migration/Beads/full execution. No native mapping or implementation is claimed here.
