@@ -187,8 +187,8 @@ class PreviewProjectTests(unittest.TestCase):
                 self.assertIn("await the caller", body)
                 self.assertIn("or run this locator autonomously", body)
             baseline = snapshot(self.area), snapshot(self.home)
-            self.assertIn("forthcoming hq-iyu.4", self.run_raw(
-                ["bash", "-p", "-c", command], self.b, 1))
+            self.assertIn("Beads readiness: NOT CHECKED", self.run_raw(
+                ["bash", "-p", "-c", command], self.b))
             self.assertEqual((snapshot(self.area), snapshot(self.home)), baseline)
         # Common ignores affect discovery in Git, not project activation.
         self.assertEqual(len(self.git(self.a, "check-ignore", *PATHS).splitlines()), 6)

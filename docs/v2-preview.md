@@ -1,10 +1,11 @@
 # Small Copilot-first preview
 
-**MACHINE + PROJECT DEFINITION LIFECYCLE IMPLEMENTED / WORKFLOWS NOT READY.**
-The hq-iyu.2–.3 source implements installation, explicit update, offline
-version/help, and Copilot-only project enable/disable with dry-run.
-Inspect and project/Beads/native workflows are not implemented under this
-contract. The later native acceptance demonstration is still required.
+**SHARED WORKFLOWS IMPLEMENTED / NATIVE NOT END-TO-END QUALIFIED.**
+The hq-iyu.2–.4 source implements installation, explicit update, offline
+version/help, Copilot-only project enable/disable with dry-run, and thin shared
+workflow/context loading with an explicit external-Beads readiness step.
+Inspect is still unavailable. The later native acceptance demonstration is
+required; no native client, model or real database was used for this task.
 Documentation, local fixture tests, source checkout, old passing logs and
 discoverable metadata do not establish workflow readiness.
 
@@ -28,15 +29,16 @@ the last independent FAIL, which predates those edits.
 
 The runtime is small repository-owned `preview/` source and a thin stable
 command. Native project-local adapters are thin loaders; shared workflow
-instructions remain downstream work. Neither the historical package runtime nor ABI3
+instructions live in `preview/workflows/` (common plus small entry/role sections).
+Neither the historical package runtime nor ABI3
 payload/transport is on this execution path. `install-v2.sh` has been replaced
 for **this preview contract only**; it no longer accepts the historical package
 bootstrap grammar and does not migrate its installations.
 
 ## Commands and availability
 
-The hq-iyu.2 and hq-iyu.3 rows below are implemented. Inspection and workflow
-names return an explicit unavailable error, not legacy fallback or successful
+The hq-iyu.2–.4 rows below are implemented. Inspection returns an explicit
+unavailable error, not legacy fallback. Instruction loading is not native
 workflow execution. `REV` must explicitly resolve to a commit in
 the trusted source; there is no default branch selection or implicit download.
 
@@ -46,7 +48,7 @@ the trusted source; there is no default branch selection or implicit download.
 | `domestique2 update --ref REV` | Prepare a revision from the recorded source, then switch the owned current pointer; no project rewrites. | hq-iyu.2 |
 | `domestique2 enable [TARGET] [--dry-run]` | Install five local Copilot definitions at the exact physical Git worktree root. Omitted target requires cwd itself to be that root. | hq-iyu.3 |
 | `domestique2 disable [TARGET] [--dry-run]` | Revoke the receipt, remove only unchanged owned definitions, retain edits and report partial removal. | hq-iyu.3 |
-| `domestique2 workflow TYPE --project ROOT` | Reserved thin-loader shape; currently refuses with explicit forthcoming-workflow guidance. | hq-iyu.4 |
+| `domestique2 workflow TYPE --project ROOT` | Load shared instructions/context without Beads; bare goal/roles give non-authorizing setup guidance. Optional `--ready` explicitly checks existing user Beads. | hq-iyu.4 |
 | `domestique2 inspect [TARGET]` | Read-only shared-revision and selected-project ownership report; omitted target uses the current worktree. | hq-iyu.5 |
 | `domestique2 --inspect [TARGET]` | Alias of `inspect [TARGET]`, not an installation or repair operation. | hq-iyu.5 |
 | `domestique2 version` / `domestique2 --version` | Report the selected source revision offline. | hq-iyu.2 |
@@ -134,7 +136,7 @@ automatic recovery, cleanup of unknown leftovers, rollback engine or GC.
 Single-writer, non-hostile local operation is required; power-loss durability
 and hostile concurrent-owner atomicity are not promised.
 
-For future workflow code, `preview.machine.resolve_source(root)` is the small
+For callers outside the installed entry, `preview.machine.resolve_source(root)` is the small
 read-only internal API returning one checked absolute revision `Path`. Retain
 that path for the whole workflow and delegated roles rather than reading
 `current` again. Retained revision CLI help/version also remain callable by
@@ -145,8 +147,9 @@ their immutable path; management updates must use the current launcher.
 Run only the new scope, not the historical ABI suites:
 
 ```sh
-python3 -B -W error test/preview-machine-tests.py
-python3 -B -W error test/preview-project-tests.py
+python3 -B -Werror test/preview-workflow-tests.py
+python3 -B -Werror test/preview-project-tests.py
+python3 -B -Werror test/preview-machine-tests.py
 bash -n install-v2.sh
 bash -n preview/launcher.sh
 shellcheck --severity=warning install-v2.sh preview/launcher.sh
@@ -160,8 +163,15 @@ source/project/native writes. The project module uses one installed local
 runtime cohort and A/B repositories: exact footprint, literal loader commands,
 dry-run/no-op, preservation through shared update, partial revocation, ordinary
 collisions/permissions/write failure, and linked-common ambiguity.
-These are definition/machine-lifecycle checks, with no native/model/network/Beads
-calls or real HOME installation. Static emitted-command checks are not native
+Run these three modules SERIAL, in owned temporary fixtures (not simultaneous
+30-second subprocess cohorts). The workflow module uses installed immutable
+revisions, unchanged `.3` locators and a fake `bd` recording exact argv/cwd/exit/
+effects. It checks default no-DB loads, explicit intent/readiness, refusal paths,
+literal context, customization and retained old role sources after update.
+Its scripted claim/role-load/review-label/commit/close transcript is NOT actual
+native implementation, review, model dispatch or a real database lifecycle.
+There are no native/model/network/real-Beads calls or real HOME installation.
+Static emitted-command checks are not native
 discovery or workflow proof. Historical ABI/bootstrap/inspector suites are not
 part of this qualification stage.
 
@@ -189,7 +199,7 @@ Only these five local Copilot definitions and the single JSON receipt
 - `.github/agents/domestique-v2-copilot-implementer.agent.md`
 - `.github/agents/domestique-v2-copilot-reviewer.agent.md`
 
-#### Thin loader contract for hq-iyu.4
+#### Shared thin loader commands
 
 Each definition references the absolute stable installed launcher with this
 simple command shape (paths are literal shell-quoted, including spaces, quotes
@@ -200,12 +210,48 @@ ABSOLUTE_LAUNCHER workflow TYPE --project ABSOLUTE_PHYSICAL_ROOT
 ```
 
 TYPE is `ordinary`, `decompose`, `goal`, `implementer` or `reviewer`. These
-commands currently validate grammar and the machine runtime, then return **1**
-with explicit `forthcoming hq-iyu.4` guidance; they execute no native or Beads
-actions. This is a reserved command shape, not a new launcher ABI or an engine.
+commands validate grammar, machine runtime and active exact project identity,
+then return shared instructions or setup guidance; by default they execute no
+native or Beads actions. This implements the reserved shape, not a new public
+ABI freeze, native runner or workflow engine.
 The wrappers request shared instructions and report load errors, rather than
-baking a permanent stop prompt into a local file. Future shared code can
-therefore work without replacing locally edited wrappers.
+baking a permanent stop prompt into a local file. Existing owned `.3` wrappers
+therefore work after a central update without replacement or rebaselining.
+
+Optional flags are ordinary bounded argv data (unknown/duplicate/empty/malformed
+arguments return **2**; missing action/role context or prerequisite returns **1**):
+
+| Option | Meaning |
+| --- | --- |
+| `--ready` | Explicit consent to run existing `bd --version` and `bd -C ROOT status` in ROOT, up to 20 seconds each. No task is automatically executed. |
+| `--brief TEXT` | Literal bounded planning/task description, at most 16 KiB characters, newlines preserved. Decompose readiness requires it. |
+| `--task ID` | One explicit bounded bead ID for ordinary action or delegated role; ordinary readiness also requires a brief. |
+| `--epic ID --domestique-goal` | Goal only: transport the actual user's explicit Domestique goal request plus one epic. Neither flag alone grants loop authority. |
+| `--source ABSOLUTE_CLI` | Must equal this invocation's immutable `releases/REV/preview/cli.py` path exactly; mandatory for actual roles. Never a source override. |
+| `--role-id EXACT_ID` | Mandatory for actual roles, exactly the selected local implementer/reviewer ID. |
+| `--implementer-model ID` / `--reviewer-model ID` | Optional literal ephemeral requested model strings; no persistent settings/capability claim. |
+| `--confirm-native` | Caller asserts fresh native exact-ID/capability confirmation of customized files before `--ready`; not automatic metadata admission or native proof. |
+
+Bare goal is SETUP ONLY, not a loop body or Beads readiness. Its rendered
+instructions tell the native caller to forward the user's explicit epic through
+the retained command, e.g. `python3 -I -S -B ABSOLUTE_IMMUTABLE_CLI workflow goal
+--project ROOT --source ABSOLUTE_IMMUTABLE_CLI --epic USER_EPIC --domestique-goal
+--ready`. The original `.3` locator need not know newer flags. If the user did
+not explicitly request Domestique goal, ask and stop rather than infer intent
+from native goal/autopilot or planning. An explicit gated goal load without
+`--ready` can read policy, but cannot act before requested readiness.
+
+Bare role locators return ROLE LOCATOR ONLY, with no role body or workflow start.
+Actual role loads require caller-supplied `--project`, `--task`, `--brief`,
+`--source` and `--role-id`; rendered role commands contain the exact immutable
+source/project/role IDs and literal task/brief (or clearly labeled placeholders).
+Replace placeholders from the SAME retained assignment, not current. The native
+caller/role compares task, project, source and exact ID against that assignment
+and stops on mismatch. These plain fields are not authenticated session tokens;
+the loader cannot infer a caller's unexpressed intended task. Roles do not
+independently sample current or invoke readiness to start a new workflow.
+JSON display escapes literal context; shell command examples use literal quoting
+and preserve newlines. Never eval them or serialize them into persistent settings.
 
 Frontmatter contains only these exact `name` / `description` pairs:
 
@@ -222,9 +268,15 @@ Domestique goal request naming an epic, not native goal/autopilot. No model,
 tool, MCP defaults or permission grants are emitted. Delegated roles await the
 caller's bounded task and retained source context; their locator is for the
 caller, not permission to start a workflow or resolve `current` independently.
-hq-iyu.4 must use one retained source revision for the workflow and roles and
-require a valid matching receipt with `state == "active"` before workflow
-actions. Definition installation alone is **not operational workflow readiness**.
+The loader uses the immutable path already selected once by the launcher; it
+never resolves current again. It requires the matching active project receipt,
+root/Git/common identities, machine binding, five exact native IDs and all five
+owned files before operational instructions. Missing/revoked/moved/copied/foreign,
+nested-root or missing-role contexts refuse without Beads or fallback.
+Customized definitions are marked, never parsed or rewritten; fresh native
+confirmation is required before action. Edited raw locators are trusted user
+code, outside hostile-loader guarantees. Definition installation alone is
+**not operational workflow readiness**.
 
 #### Ordinary ownership and removal
 
@@ -241,7 +293,7 @@ The bounded JSON receipt's `kind` is `domestique-copilot-preview`. It records:
 - `token`, `exclusion`: exact six-line-pattern block plus delimiters, original
   prefix length/hash, optional separator newline, exclude identity and
   `planned` / `present` / `removed` state.
-- `state`: `partial-enable`, `active` or `disabled`. Only `active` permits future
+- `state`: `partial-enable`, `active` or `disabled`. Only `active` permits
   workflow use; partial disable keeps the disabled receipt and original hashes.
 
 All receipt paths are restricted to the closed native/state leaf and parent
@@ -318,26 +370,41 @@ or erase cached native context. Use fresh clients when qualifying discovery.
 
 ## Workflows, dependencies and inspection
 
-The following workflow behavior belongs to **hq-iyu.4, not this implementation**.
-Native project-local ordinary/decompose/goal entrypoints will use the activated
+Shared policy/context loading is implemented in **hq-iyu.4**; execution remains
+the native caller's job, not a Python loop manager. Entry instructions use the activated
 project, exact local role IDs and the same immutable source revision.
 Decompose plans through the existing user-managed `bd` CLI without coding.
 Only explicit **Domestique goal plus an epic** authorizes its sequential loop;
 native Copilot goal/autopilot, ordinary entry and natural-language planning do
 not authorize queue draining. One bounded task is in flight, with an independent
 review before close/commit, one commit per bead on a dedicated branch, explicit
-stop conditions and no automatic push or merge.
+stop conditions and no automatic push or merge. Ordinary stops after one bounded
+explicitly assigned bead. Goal also defaults to one reviewed bead; only an
+explicit larger user bound can continue, never more than 15 per session.
+One fix pass at most. Clean worktree/index and dedicated known non-default
+branch are required, with exact reviewed-path staging only. Never close an
+unpassed bead. No-ready plus unfinished descendants means BLOCKED, not complete.
 
 Beads is external and user-managed. Missing `bd`, missing configured project
 state or an actual CLI failure stops with prerequisite guidance, not an empty
 queue or success fallback. Definition loading and install/update/enable/disable/
 inspect never initialize, open, convert or manage a database. Only explicitly
 requested workflow actions call normal `bd`; a `.beads` directory alone is not
-proof of operational readiness. There is no private DB bridge or backend setup.
+proof of operational readiness. Requested readiness requires a local `.beads`
+discovery anchor to avoid accidental ancestor discovery AND successful normal
+CLI version/status calls; no private schema or file-content test. Existing
+project/user configuration remains bd's responsibility, including backend
+selection. For the subprocess only, remove ambient `GIT_*`, `BEADS_*`, `BD_*`
+overrides; env-only retargeted setups must be configured explicitly by the user
+for this project instead. No config is read out or repaired by the loader.
+Command failure/timeout refuses before delegation and reports command/exit while
+withholding raw potentially sensitive output. There is no private DB bridge or
+backend setup. Shared instructions run normal scoped create/show/ready/list/dep/
+update/close directly after explicit consent/readiness; errors stop honestly.
 
 Models, tools and MCP remain native or ephemeral session choices. Install no
 model defaults, questionnaire or registry. Honor explicitly supported OpenAI
-role selections; unavailable requested choices stop rather than silently
+role selections with actual native exact-ID/capability confirmation; unavailable requested choices stop rather than silently
 switching models/vendors. Do not alter authentication, trust or client settings.
 
 The forthcoming hq-iyu.5 inspect command will report the selected shared revision, target activation, unchanged/
@@ -351,11 +418,12 @@ client/model/MCP; unreadable and partial states remain honest unknowns.
 The preserved `.claude/commands/decompose.md`, `.claude/commands/goal.md`,
 `.claude/agents/implementer.md` and `.claude/agents/reviewer.md` are ignored local
 source material, absent from `19deeab`. Preservation/hashes are not blanket
-approval. Independently review portable policy text before adapting it into
-repository-owned shared instructions in hq-iyu.4. Replace obsolete vendor/model
-bindings, full historical-suite requirements and old queue-authority rules
-with this bounded plan. Do not copy complete ignored configuration or activate
-these Claude files in the new worktree.
+approval. hq-iyu.4 independently reviewed these four texts; the hashes and
+keep/drop decisions are in `preview/workflows/provenance.md`. Adapted shared
+policy replaces obsolete vendor/model bindings, full historical-suite mandates,
+broad staging, export/database commits and false no-ready completion/queue
+authority. No ignored configuration was copied into native project files or
+activated as Claude policy in this worktree.
 
 For hq-iyu.5, selected read-only helpers in `domestique2.sh`'s `inspect_main`
 (for example `git_root`, `resolve_context`, `stamp`, `display` and report

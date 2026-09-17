@@ -1,12 +1,14 @@
 # domestique
 
-## Small preview — project definitions implemented, workflows NOT READY (hq-iyu)
+## Small preview — shared workflows implemented; native NOT END-TO-END QUALIFIED
 
 The [Copilot/macOS preview contract](docs/v2-preview.md) now has a small,
 repository-owned `preview/` installer, offline version/help and explicit local
 Git update, plus explicit Copilot-only project enable/disable and dry-run.
-Inspection and native/Beads workflows remain unavailable; installed definitions
-and local fixtures do **not** establish workflow readiness.
+Shared ordinary/decompose/goal and delegated-role instructions now load from that
+source. Explicit `--ready` checks existing user-managed Beads; no private bridge.
+Inspection remains unavailable. Installed definitions and fake-CLI fixtures do
+**not** establish native discovery, model dispatch or end-to-end qualification.
 Requires existing **Bash, Git and Python 3.9+** (not the macOS developer-tools
 Python stub); nothing installs dependencies or changes aliases/PATH.
 
@@ -19,6 +21,9 @@ bash -p ./install-v2.sh --source "/path/to/trusted checkout" --ref REV
 "$HOME/.local/bin/domestique2" update --ref NEXT_REV
 "$HOME/.local/bin/domestique2" enable "/physical/project root" --dry-run
 "$HOME/.local/bin/domestique2" enable "/physical/project root"
+"$HOME/.local/bin/domestique2" workflow decompose --project "/physical/project root"
+# Only on an explicit user planning request (opens user-managed Beads):
+"$HOME/.local/bin/domestique2" workflow decompose --project "/physical/project root" --brief "Plan one bounded change" --ready
 "$HOME/.local/bin/domestique2" disable "/physical/project root" --dry-run
 "$HOME/.local/bin/domestique2" disable "/physical/project root"
 ```
@@ -59,15 +64,39 @@ worktrees share ignore effects, not activation: only one preview activation
 per common repository is supported, and ambiguous blocks are retained/refused.
 
 Thin loaders reference `ABSOLUTE_LAUNCHER workflow TYPE --project ABSOLUTE_ROOT`.
-This reserved command shape currently **refuses** pending hq-iyu.4; it is not a
-workflow engine or native-execution proof. Goal is explicit-only; delegated
-roles await caller context. No model/tool/MCP defaults or grants. Beads remains
-an existing user-managed prerequisite: no initialization, database opening or
-workflow actions occur in this lifecycle.
+Existing `.3` locators keep working without rewriting native files or creation
+hashes. Default loads never invoke Beads. Bare goal supplies setup guidance that
+forwards the user's explicit epic to a retained-source command with `--epic ID
+--domestique-goal --ready`; native goal/autopilot/natural planning is not consent.
+Role locators alone load no role body: the caller supplies explicit project/task/
+brief/exact role ID and its original immutable `preview/cli.py` path. All later
+calls keep that source, even after update; only a new workflow samples current.
+
+Before any operational body, validate the active receipt, exact root/Git/machine
+binding and presence of all five owned definitions. Customized bytes remain
+opaque/preserved and need fresh native exact-ID/capability confirmation before
+`--ready --confirm-native`; that assertion is not native proof. No global fallback.
+`--ready` runs bounded normal `bd --version` and project-scoped `status`, requiring
+local project discovery state plus actual success, not just `.beads` presence.
+Ambient Git/Beads retargeting is removed for those subprocesses. The user configures
+Beads separately; no init, backend management, migration or automatic repair.
+Install/load/help/inspect/enable/disable/update never open a database.
+
+Decompose plans only. Ordinary handles one explicitly assigned bounded bead.
+Only explicit Domestique goal plus an epic authorizes its bounded serial
+implementer → fresh-reviewer cycle, one bead by default, one fix pass, exact
+reviewed-path staging/one local commit per passed bead on a clean dedicated
+non-default branch; never push/merge or close unpassed work. No ready work with
+unfinished descendants means **BLOCKED**, not complete.
+Models/tools/MCP stay native/session-local, installed models unset. Optional
+`--implementer-model` / `--reviewer-model` are literal ephemeral requests; actual
+native exact OpenAI ID/capability confirmation is required, unavailable means
+stop without substitution. See the contract for complete optional loader flags.
 
 Targeted local-only checks:
-`python3 -B -W error test/preview-project-tests.py` and
-`python3 -B -W error test/preview-machine-tests.py`.
+Run serially: `python3 -B -Werror test/preview-workflow-tests.py`,
+`python3 -B -Werror test/preview-project-tests.py`, then
+`python3 -B -Werror test/preview-machine-tests.py`.
 See the contract for grammar, exit codes and acceptance limits.
 The ABI2 checkpoint below is **retained history**, not this preview's runtime or
 acceptance gate. The separate original-worktree ABI3 experiment remains

@@ -4,8 +4,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 from machine import Refusal, check_install, parse_pairs, update
-from native import DEFINITIONS
 from project import arguments as project_arguments, operate
+from workflow import arguments as workflow_arguments, render
 
 HELP = """Usage: domestique2 [help | --help | version | --version]
        domestique2 update --ref REV
@@ -16,7 +16,18 @@ Existing Bash, Git and Python 3.9+ required; dependencies are never installed.
 Project TARGET defaults to cwd; must be the exact physical Git worktree root.
 Copilot definitions only; edited files preserved, partial disable returns 1.
 inspect and --inspect are reserved and unavailable.
-workflow TYPE --project ROOT is reserved; Copilot/Beads workflows are NOT READY.
+workflow TYPE --project ROOT loads shared instructions without invoking Beads.
+TYPE: ordinary | decompose | goal | implementer | reviewer.
+Optional --ready explicitly checks existing bd --version and project status.
+ordinary action: --task ID --brief TEXT; decompose action: --brief TEXT.
+goal action: --epic ID --domestique-goal (actual explicit user intent required).
+roles: --source ABSOLUTE_IMMUTABLE_CLI --task ID --brief TEXT --role-id EXACT_ID.
+Optional --source retains that same CLI for subsequent calls of any type.
+Optional --implementer-model ID / --reviewer-model ID are ephemeral requests;
+native exact-ID/capability confirmation required, never fallback/substitution.
+Customized definitions: fresh native confirmation before --ready --confirm-native.
+Bare goal/role locators return non-authorizing setup guidance, not role/loop bodies.
+Native end-to-end qualification is NOT READY; inspect remains unavailable.
 No native global definitions, startup, PATH, alias, model or Beads setup."""
 
 
@@ -33,9 +44,7 @@ def main(args):
             target, dry_run = project_arguments(args[1:])
         elif args[0] == "workflow":
             command = "workflow"
-            if (len(args) != 4 or args[1] not in DEFINITIONS or args[2] != "--project" or
-                    not args[3] or not Path(args[3]).is_absolute()):
-                raise ValueError("expected workflow TYPE --project ABSOLUTE_ROOT")
+            kind, options = workflow_arguments(args[1:])
         elif args[0] in ("inspect", "--inspect"):
             if len(args) > 2 or (len(args) == 2 and
                                  (not args[1] or args[1].startswith("-"))):
@@ -61,9 +70,7 @@ def main(args):
             print("domestique-preview: " + message, file=sys.stderr if code else sys.stdout)
             return code
         elif command == "workflow":
-            print("domestique-preview: workflow unavailable; forthcoming hq-iyu.4; "
-                  "definitions are not operational workflow readiness.", file=sys.stderr)
-            return 1
+            print(render(kind, options, source, root, receipt), end="")
         elif command in ("version", "--version"):
             print(f"domestique-preview {source.name}")
         else:
