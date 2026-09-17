@@ -1,30 +1,59 @@
 # domestique
 
-## New small preview — NOT IMPLEMENTED / NOT READY (hq-iyu)
+## Small preview — machine lifecycle implemented, workflows NOT READY (hq-iyu)
 
-The separate [Copilot/macOS preview design](docs/v2-preview.md) proposes a
-trusted Git-ref installation, shared workflows and explicit project-local
-enable/disable. Its commands are **proposed until their owning beads land**;
-the scripts currently in this checkout do not implement that interface.
-The ABI2 checkpoint and older framework claims below are retained history,
-not availability or acceptance evidence for this new preview. The separate
-uncommitted ABI3 experiment is unreviewed/incomplete and is not its runtime.
-Released Claude/Codex **v1** (`domestique.sh` / `update.sh`) remains unchanged.
+The [Copilot/macOS preview contract](docs/v2-preview.md) now has a small,
+repository-owned `preview/` installer, offline version/help and explicit local
+Git update. Project enable/disable, inspection and native/Beads workflows remain
+unavailable; these machine-side fixtures do **not** establish workflow readiness.
+Requires existing **Bash, Git and Python 3.9+** (not the macOS developer-tools
+Python stub); nothing installs dependencies or changes aliases/PATH.
 
-## Verified bootstrap checkpoint (hq-1t9.2)
+From a checkout containing the new entrypoint:
+
+```sh
+bash -p ./install-v2.sh --source "/path/to/trusted checkout" --ref REV
+"$HOME/.local/bin/domestique2" version
+"$HOME/.local/bin/domestique2" help
+"$HOME/.local/bin/domestique2" update --ref NEXT_REV
+```
+
+Both install selections and the update ref are required. The selected **commit**
+must contain the new preview CLI/runtime; uncommitted files are not revision
+content. No implicit branch, fetch from a remote, download or `git pull`.
+The recorded local source is user-managed. Version/help keep working if it moves
+or disappears; update refuses until that recorded source is available again.
+
+Only `${XDG_DATA_HOME:-$HOME/.local/share}/domestique-preview` and the stable
+`$HOME/.local/bin/domestique2` are installed. Updates prepare standalone revisions
+before atomically switching the owned `current` pointer; old paths are retained.
+This assumes a cooperative single writer, not hostile-writer protection.
+Unknown/dirty destinations and old ABI2/3 installations refuse, even if an
+unowned launcher has identical bytes. No adoption, migration, force, GC, automatic
+recovery, shell startup edits or project/native setup.
+
+Targeted local-only check: `python3 -B -W error test/preview-machine-tests.py`.
+See the contract for grammar, exit codes and acceptance limits.
+The ABI2 checkpoint below is **retained history**, not this preview's runtime or
+acceptance gate. The separate original-worktree ABI3 experiment remains
+unreviewed/incomplete. Released Claude/Codex **v1** (`domestique.sh` / `update.sh`)
+remains unchanged.
+
+## Historical verified bootstrap checkpoint (hq-1t9.2)
 
 **No V2 release is published; no real HOME installation or project activation
-was performed.** A standalone runtime-only bootstrap and offline installed
-help/version/legacy-inspection interface now exist. Update, activation and
-global retirement remain unimplemented. See the [bounded bootstrap guide](docs/v2-bootstrap.md).
-The checked-out artifacts now have separate meanings:
+was performed.** At that checkpoint a standalone runtime-only bootstrap and
+offline help/version/legacy-inspection interface existed. Its update, activation
+and global retirement were unimplemented. See the historical
+[bounded bootstrap guide](docs/v2-bootstrap.md).
+These artifact meanings are historical, except for the explicitly replaced entrypoint:
 
 | Source | Current behavior |
 | --- | --- |
 | [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Public **v1**, restored byte-for-byte from locally verified `main`/`origin/main` at `4de726c2e38e731c67f5f37d4a16206d7b3d99af`. Claude/Codex normal/guest behavior and the old updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics remain unchanged. Draft Copilot is not this released channel. |
 | [`domestique2.sh`](domestique2.sh) | Source-only transition: reviewed read-only `--inspect` and help. **All installation/removal/activation operations refuse.** The format-1 preview engine is retained for fixture extraction/reuse, not executable setup through this entrypoint. |
 | [`update2.sh`](update2.sh) | Fail-closed transition: accepts explicit source/version selection syntax but **refuses all updates**, before candidate execution, fetch or destination writes. No default source; nonempty legacy source environment override refuses. Shell files, including this checkout's scripts, are not V2 packages. |
-| [`install-v2.sh`](install-v2.sh) | Standalone trusted bootstrap: exactly one pinned `--version` or physical local-package-directory `--source`; optional `--dry-run`. Publishes only the shared runtime and owned stable command. Official asset names are a future contract, not an available-release claim. |
+| [`install-v2.sh`](install-v2.sh) | **Replaced on this preview branch** by the thin `--source CHECKOUT --ref REV` entrypoint above. The historical package/`--version`/`--dry-run` bootstrap interface no longer applies to this artifact. This is not automatic migration of existing installs. |
 | [`v2/`](v2/) | Trusted Python 3.9+ stdlib development APIs: deterministic 12-leaf package emission, strict local verifier, machine-only publication and minimal trusted stable version/availability protocol. All three inert native-template factories share four core policies. No native files, projects, client settings or Beads operations. |
 
 The frozen [V2/1 contract](docs/v2-install-contract.md) and

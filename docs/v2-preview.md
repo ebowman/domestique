@@ -1,10 +1,11 @@
 # Small Copilot-first preview
 
-**NEW PREVIEW NOT IMPLEMENTED / NOT READY.** This is the product scope and
-proposed command contract for hq-iyu, not an installation guide for today's
-scripts. The commands below become usable only when their owning tasks land
-and the native acceptance demonstration passes. Documentation, source checkout,
-old passing logs and discoverable metadata do not establish workflow readiness.
+**MACHINE LIFECYCLE IMPLEMENTED / WORKFLOWS NOT READY.** The hq-iyu.2 source
+implements installation, explicit update and offline version/help. Enable,
+disable, inspect and project/Beads/native workflows are not implemented under
+this contract. The later native acceptance demonstration is still required.
+Documentation, local fixture tests, source checkout, old passing logs and
+discoverable metadata do not establish workflow readiness.
 
 ## Boundary and source
 
@@ -24,18 +25,21 @@ acceptance. The uncommitted ABI3 experiment in the original worktree is
 **unreviewed/incomplete**; its apparent qualification successes do not replace
 the last independent FAIL, which predates those edits.
 
-The new runtime will be small repository-owned `preview/` source, a thin stable
-command, native project-local adapters and one shared workflow source.
-Neither the historical package runtime nor ABI3 payload/transport is on that
-future execution path. No runtime source is added by this documentation step.
+The machine runtime is small repository-owned `preview/` source and a thin stable
+command. Native project-local adapters and shared workflow instructions remain
+downstream work. Neither the historical package runtime nor ABI3
+payload/transport is on this execution path. `install-v2.sh` has been replaced
+for **this preview contract only**; it no longer accepts the historical package
+bootstrap grammar and does not migrate its installations.
 
-## Proposed commands
+## Commands and availability
 
-All commands in this table are **proposed, not currently available under this
-contract**. `REV` must explicitly resolve to a commit in the trusted source;
-there is no default branch selection or implicit download.
+Only the hq-iyu.2 rows below are implemented. All other rows remain proposed;
+their reserved names currently return an explicit unavailable error, not legacy
+fallback or successful activation. `REV` must explicitly resolve to a commit in
+the trusted source; there is no default branch selection or implicit download.
 
-| Proposed invocation | Routine behavior | Owning task |
+| Invocation (availability by owning task) | Routine behavior | Owning task |
 | --- | --- | --- |
 | `install-v2.sh --source CHECKOUT --ref REV` | Install the selected trusted local Git source revision and stable command; no project activation. | hq-iyu.2 |
 | `domestique2 update --ref REV` | Prepare a revision from the recorded source, then switch the owned current pointer; no project rewrites. | hq-iyu.2 |
@@ -46,12 +50,61 @@ there is no default branch selection or implicit download.
 | `domestique2 version` / `domestique2 --version` | Report the selected source revision offline. | hq-iyu.2 |
 | `domestique2 help` / `domestique2 --help` | Describe only supported commands and prerequisite boundaries. | hq-iyu.2 |
 
+### Install and update the machine source
+
+Provide existing Bash, Git and Python 3.9+ with its standard library. The macOS
+developer-tools Python stub is not accepted. If a prerequisite is missing,
+provide it separately; the preview never installs tools or opens setup/auth
+flows. This is a source entrypoint, not a standalone downloadable installer:
+
+```sh
+bash -p ./install-v2.sh --source "/path/to/trusted checkout" --ref REV
+"$HOME/.local/bin/domestique2" --version
+"$HOME/.local/bin/domestique2" --help
+"$HOME/.local/bin/domestique2" update --ref NEXT_REV
+```
+
+`CHECKOUT` must be an existing local Git checkout root (linked worktrees are
+allowed); its physical path is recorded. Both install options are mandatory,
+each exactly once, in either order. Update accepts exactly `--ref REV`.
+Install also accepts `help` or `--help` alone; bare installed `domestique2`
+prints help. Version/help accept no extra arguments. Reserved `enable`,
+`disable`, `inspect` and `--inspect` accept at most one literal target and
+report unavailable. Unknown/duplicate/empty options, flags in value positions
+and extra arguments are misuse. Quote paths with spaces or shell literals;
+arguments and JSON receipts are never evaluated or sourced.
+
+Exit **0** means complete or canonical same-commit no-op; **1** means refusal,
+unavailable functionality or an operational/prerequisite error; **2** means
+argument misuse, rejected before installation/update effects.
+
+Selection uses normal Git commit resolution, not working-tree bytes: the
+selected commit must include the new `preview/cli.py`, runtime and matching
+launcher source. Preview Python and launcher syntax are checked without
+executing candidate setup or hooks. Revisions with symlinks or submodules are
+refused; this small implementation requires complete regular-file Git content.
+Uncommitted source edits are not installed. Only trusted, runnable source is
+supported; syntax checks are not a sandbox or proof of arbitrary program
+behavior. Git operations isolate ambient repository/config/template settings
+and disable hooks, optional index writes, maintenance and remote protocols.
+
 The install location is
 `${XDG_DATA_HOME:-$HOME/.local/share}/domestique-preview`; the stable executable
 is `$HOME/.local/bin/domestique2`. Installation writes only owned source
-revision directories, the current pointer and that command. No shell startup,
+revision directories, small JSON creation receipts, the current pointer and
+that command (creating missing owned parents as necessary). No shell startup,
 PATH, aliases, default branch, native global definitions or project registry
 are changed. Existing `dom`/`dom2` aliases may still invoke older scripts.
+Existing legitimate `.local/bin` contents are preserved.
+
+Each `releases/COMMIT` is a standalone shallow Git checkout, with no alternates
+or live source dependency. `current` is a relative symlink to a retained
+revision; the stable launcher selects it once and dispatches the revision's CLI.
+New CLI behavior ships through the Git ref/update, not a regenerated command
+dispatcher. Version/help work offline even when the original checkout has moved
+or disappeared. Update then reports the missing recorded source and preserves
+the selected revision. Restore that source path to update again; source refresh
+is user-managed, with no implicit fetch from a remote.
 
 Missing source/ref, dirty or foreign destinations, unsafe paths, an unowned
 command collision or incompatible experimental installation cause refusal.
@@ -60,6 +113,44 @@ Do not adopt even identical unowned files. No force, automatic migration,
 failure retains the old selection. Retain prior revisions, without garbage
 collection. Updates affect the next workflow; running workflows and delegated
 roles retain one immutable source revision resolved once at workflow entry.
+Revisions are immutable by convention: ordinary Git status/HEAD checks detect
+managed edits, and creation receipts distinguish owned paths from identical
+unowned files. Do not edit these checkouts. Validation checks the selected and
+requested revisions, not every historical checkout on every invocation.
+Repeat install of the same source/commit is a no-op; a different installed
+selection requires `update --ref`, not a reinstall.
+
+Known collisions and write-permission failures are checked before preparation.
+An ordinary preparation failure cleans only this operation's own temporary
+files. If preparation completed but the pointer switch failed, the old pointer
+remains selected and the prepared owned revision may remain; there is no
+automatic recovery, cleanup of unknown leftovers, rollback engine or GC.
+Single-writer, non-hostile local operation is required; power-loss durability
+and hostile concurrent-owner atomicity are not promised.
+
+For future workflow code, `preview.machine.resolve_source(root)` is the small
+read-only internal API returning one checked absolute revision `Path`. Retain
+that path for the whole workflow and delegated roles rather than reading
+`current` again. Retained revision CLI help/version also remain callable by
+their immutable path; management updates must use the current launcher.
+
+### Bounded machine validation
+
+Run only the new scope, not the historical ABI suites:
+
+```sh
+python3 -B -W error test/preview-machine-tests.py
+bash -n install-v2.sh
+bash -n preview/launcher.sh
+shellcheck --severity=warning install-v2.sh preview/launcher.sh
+```
+
+The single stdlib unittest module uses one tiny local Git cohort (two runnable
+commits and one deliberately incomplete commit) and disposable HOME/XDG paths.
+It covers offline dispatch, real behavior change, retained old paths, same-ref
+no-ops, failed preparation, dirty/foreign collisions, literal arguments and no
+source/project/native writes. This is machine-lifecycle evidence only, with no
+native/model/network/Beads calls or real HOME installation.
 
 ## Explicit project ownership
 
@@ -160,4 +251,4 @@ workflow without rewriting adapters; edits survive, disable retains customized
 files and inspect reports reality. Static fixtures are not this proof. Without
 bounded native/model consent or a necessary prerequisite, report **BLOCKED /
 NOT READY**, never fabricate usability. This checkpoint runs no future-feature
-tests and performs no native/model/installation demonstration.
+workflow tests and performs no native/model or real-HOME demonstration.
