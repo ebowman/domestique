@@ -1,5 +1,16 @@
 # domestique
 
+## New small preview — NOT IMPLEMENTED / NOT READY (hq-iyu)
+
+The separate [Copilot/macOS preview design](docs/v2-preview.md) proposes a
+trusted Git-ref installation, shared workflows and explicit project-local
+enable/disable. Its commands are **proposed until their owning beads land**;
+the scripts currently in this checkout do not implement that interface.
+The ABI2 checkpoint and older framework claims below are retained history,
+not availability or acceptance evidence for this new preview. The separate
+uncommitted ABI3 experiment is unreviewed/incomplete and is not its runtime.
+Released Claude/Codex **v1** (`domestique.sh` / `update.sh`) remains unchanged.
+
 ## Verified bootstrap checkpoint (hq-1t9.2)
 
 **No V2 release is published; no real HOME installation or project activation
