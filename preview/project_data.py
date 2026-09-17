@@ -68,14 +68,14 @@ def load(path, project, installation):
     files, directories = record.get("files"), record.get("directories")
     need(type(files) is dict and files.keys() <= set(LEAVES.values()), "invalid created paths")
     for value in files.values():
-        need(type(value) is dict and valid_identity(value.get("identity")) and
+        need(type(value) is dict and "sha256" in value and valid_identity(value.get("identity")) and
              (value.get("sha256") is None or
               (type(value["sha256"]) is str and HASH.fullmatch(value["sha256"]))),
              "invalid native creation data")
     need(type(directories) is dict and directories.keys() <= PARENTS and
          all(valid_identity(v) for v in directories.values()), "invalid created directories")
     exclusion = record.get("exclusion")
-    need(type(exclusion) is dict and
+    need(type(exclusion) is dict and "identity" in exclusion and
          exclusion.get("state") in ("planned", "present", "removed") and
          (exclusion.get("identity") is None or valid_identity(exclusion["identity"])) and
          type(exclusion.get("prefix_size")) is int and 0 <= exclusion["prefix_size"] <= LIMIT and

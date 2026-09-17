@@ -7,7 +7,8 @@ repository-owned `preview/` installer, offline version/help and explicit local
 Git update, plus explicit Copilot-only project enable/disable and dry-run.
 Shared ordinary/decompose/goal and delegated-role instructions now load from that
 source. Explicit `--ready` checks existing user-managed Beads; no private bridge.
-Inspection remains unavailable. Installed definitions and fake-CLI fixtures do
+Read-only `inspect` reports the selected revision and target ownership footprint.
+Installed definitions and fake-CLI fixtures do
 **not** establish native discovery, model dispatch or end-to-end qualification.
 Requires existing **Bash, Git and Python 3.9+** (not the macOS developer-tools
 Python stub); nothing installs dependencies or changes aliases/PATH.
@@ -21,9 +22,14 @@ bash -p ./install-v2.sh --source "/path/to/trusted checkout" --ref REV
 "$HOME/.local/bin/domestique2" update --ref NEXT_REV
 "$HOME/.local/bin/domestique2" enable "/physical/project root" --dry-run
 "$HOME/.local/bin/domestique2" enable "/physical/project root"
+"$HOME/.local/bin/domestique2" inspect "/physical/project root"
+# Exact synonym; omitted target means cwd itself must be the physical Git root:
+"$HOME/.local/bin/domestique2" --inspect "/physical/project root"
 "$HOME/.local/bin/domestique2" workflow decompose --project "/physical/project root"
 # Only on an explicit user planning request (opens user-managed Beads):
 "$HOME/.local/bin/domestique2" workflow decompose --project "/physical/project root" --brief "Plan one bounded change" --ready
+# Only for an explicit Domestique goal request naming this epic:
+"$HOME/.local/bin/domestique2" workflow goal --project "/physical/project root" --epic EPIC_ID --domestique-goal --ready
 "$HOME/.local/bin/domestique2" disable "/physical/project root" --dry-run
 "$HOME/.local/bin/domestique2" disable "/physical/project root"
 ```
@@ -93,8 +99,30 @@ Models/tools/MCP stay native/session-local, installed models unset. Optional
 native exact OpenAI ID/capability confirmation is required, unavailable means
 stop without substitution. See the contract for complete optional loader flags.
 
+After enable, definition edits or disable, restart/use a **fresh Copilot client**
+and confirm the exact skill/role IDs before use; no hot reload is promised.
+For planning, ask “Use Domestique decompose to plan this change” or explicitly
+select `/domestique-v2-copilot-decompose`. For the bounded loop, explicitly ask
+“Use Domestique goal for epic EPIC_ID” and select `/domestique-v2-copilot-goal`.
+Native goal/autopilot is not this entry and does not authorize it. These are
+intended native entries, not native discovery or execution proof.
+
+Inspection never installs, repairs, opens Beads, invokes a native/model/MCP
+client or changes exclusions. It compares original **creation hashes**, including
+across shared updates; it does not parse native metadata or infer permissions.
+Missing/corrupt/incompatible ownership or unreadable evidence remains partial/
+unknown (**1**); absent preview and complete observations, including customization,
+return **0**. Legacy named markers/references and tracked evidence are reported
+only at the selected root; arbitrary provider containers are not installations,
+untracked is not proof of guest mode, and other/global legacy state is unknown.
+Source checkout, installed machine, project filesystem discovery and operational
+readiness are separate: inspect establishes neither effective client loading nor
+workflow readiness. Use the explicit installed path; existing `dom`/`dom2`
+aliases were not changed and do not imply preview access.
+
 Targeted local-only checks:
-Run serially: `python3 -B -Werror test/preview-workflow-tests.py`,
+Run serially: `python3 -B -Werror test/preview-inspect-tests.py`,
+`python3 -B -Werror test/preview-workflow-tests.py`,
 `python3 -B -Werror test/preview-project-tests.py`, then
 `python3 -B -Werror test/preview-machine-tests.py`.
 See the contract for grammar, exit codes and acceptance limits.
@@ -140,11 +168,12 @@ activation/body/delegation/Beads paths stop before execution. Installation adds
 no global native advertisements, but does **not** remove or certify quiet any
 old global definitions already on the machine. No published V2 release is asserted.
 
-**Human alias action:** the existing `dom2` alias points to an old
+**Alias boundary:** the existing `dom2` alias points to an old
 `domestique.sh` outside this project. It was not changed and does not imply a
-working new interface. To use this inspector, manually point it at this
-checkout's `domestique2.sh`, or use the explicit command below. Neither `dom`,
-shell startup, personal models nor native configuration was changed.
+working new interface. Use the installed absolute path in the preview guide
+above, or the explicit retained source-only command below for that historical
+inspector. Neither `dom`, shell startup, personal models nor native configuration
+was changed.
 
 ### Retained qualification history
 
@@ -186,18 +215,16 @@ Database retention/unchanged-only purge (.7) is implemented. Final acceptance
 distinguishes offline lifecycle coverage and qualified native observations from
 the remaining role/tool/MCP execution limitations; see the evidence below.
 
-## Read-only inspection from this checkout
+## Historical source-only inspection (not the installed preview)
 
-The local-checkout **private preview** supports inspection without setup. This
-is not a released v2 command. Only after manually updating your `dom2` alias
-to this checkout's **`domestique2.sh`**:
+The retained **`domestique2.sh`** supports its historical inspection without
+setup. This is not the installed `domestique2 inspect` interface described above
+or a released v2 command; its different target/discovery rules below apply only
+to the retained source-only inspector:
 
 ```sh
-dom2 --inspect
-dom2 --inspect /path/to/project
-dom2 /path/to/project --inspect
-# Without an alias:
 bash ./domestique2.sh --inspect
+bash ./domestique2.sh --inspect /path/to/project
 ```
 
 The optional target defaults to the current directory. A Git root,

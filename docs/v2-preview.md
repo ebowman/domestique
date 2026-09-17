@@ -1,10 +1,11 @@
 # Small Copilot-first preview
 
 **SHARED WORKFLOWS IMPLEMENTED / NATIVE NOT END-TO-END QUALIFIED.**
-The hq-iyu.2–.4 source implements installation, explicit update, offline
+The hq-iyu.2–.5 source implements installation, explicit update, offline
 version/help, Copilot-only project enable/disable with dry-run, and thin shared
 workflow/context loading with an explicit external-Beads readiness step.
-Inspect is still unavailable. The later native acceptance demonstration is
+Read-only inspection reports the selected revision and target footprint.
+The later hq-iyu.6 native acceptance demonstration is
 required; no native client, model or real database was used for this task.
 Documentation, local fixture tests, source checkout, old passing logs and
 discoverable metadata do not establish workflow readiness.
@@ -37,8 +38,8 @@ bootstrap grammar and does not migrate its installations.
 
 ## Commands and availability
 
-The hq-iyu.2–.4 rows below are implemented. Inspection returns an explicit
-unavailable error, not legacy fallback. Instruction loading is not native
+The hq-iyu.2–.5 rows below are implemented. Inspection is read-only, not legacy
+fallback or repair. Instruction loading is not native
 workflow execution. `REV` must explicitly resolve to a commit in
 the trusted source; there is no default branch selection or implicit download.
 
@@ -49,7 +50,7 @@ the trusted source; there is no default branch selection or implicit download.
 | `domestique2 enable [TARGET] [--dry-run]` | Install five local Copilot definitions at the exact physical Git worktree root. Omitted target requires cwd itself to be that root. | hq-iyu.3 |
 | `domestique2 disable [TARGET] [--dry-run]` | Revoke the receipt, remove only unchanged owned definitions, retain edits and report partial removal. | hq-iyu.3 |
 | `domestique2 workflow TYPE --project ROOT` | Load shared instructions/context without Beads; bare goal/roles give non-authorizing setup guidance. Optional `--ready` explicitly checks existing user Beads. | hq-iyu.4 |
-| `domestique2 inspect [TARGET]` | Read-only shared-revision and selected-project ownership report; omitted target uses the current worktree. | hq-iyu.5 |
+| `domestique2 inspect [TARGET]` | Read-only shared-revision and selected-project ownership report; omitted target requires cwd itself to be the exact physical Git root. | hq-iyu.5 |
 | `domestique2 --inspect [TARGET]` | Alias of `inspect [TARGET]`, not an installation or repair operation. | hq-iyu.5 |
 | `domestique2 version` / `domestique2 --version` | Report the selected source revision offline. | hq-iyu.2 |
 | `domestique2 help` / `domestique2 --help` | Describe only supported commands and prerequisite boundaries. | hq-iyu.2 |
@@ -75,8 +76,8 @@ Install also accepts `help` or `--help` alone; bare installed `domestique2`
 prints help. Version/help accept no extra arguments. Enable/disable accept
 at most one nonempty literal target followed by optional `--dry-run`, exactly
 once and last. There is no `--platform`, force, adoption or migration switch.
-Reserved `inspect` and `--inspect` accept at most one literal target and report
-unavailable. Unknown/duplicate/empty options, flags in value positions
+`inspect` and `--inspect` accept at most one nonempty literal target, no flags.
+Unknown/duplicate/empty options, flags in value positions
 and extra arguments are misuse. Quote paths with spaces or shell literals;
 arguments and JSON receipts are never evaluated or sourced.
 
@@ -148,6 +149,7 @@ Run only the new scope, not the historical ABI suites:
 
 ```sh
 python3 -B -Werror test/preview-workflow-tests.py
+python3 -B -Werror test/preview-inspect-tests.py
 python3 -B -Werror test/preview-project-tests.py
 python3 -B -Werror test/preview-machine-tests.py
 bash -n install-v2.sh
@@ -163,13 +165,19 @@ source/project/native writes. The project module uses one installed local
 runtime cohort and A/B repositories: exact footprint, literal loader commands,
 dry-run/no-op, preservation through shared update, partial revocation, ordinary
 collisions/permissions/write failure, and linked-common ambiguity.
-Run these three modules SERIAL, in owned temporary fixtures (not simultaneous
+Run these four modules SERIAL, in owned temporary fixtures (not simultaneous
 30-second subprocess cohorts). The workflow module uses installed immutable
 revisions, unchanged `.3` locators and a fake `bd` recording exact argv/cwd/exit/
 effects. It checks default no-DB loads, explicit intent/readiness, refusal paths,
 literal context, customization and retained old role sources after update.
 Its scripted claim/role-load/review-label/commit/close transcript is NOT actual
 native implementation, review, model dispatch or a real database lifecycle.
+The six-case inspector scope reuses the project cohort and isolated fake
+executables: absence/aliases, active/customized across template update, missing
+owned file, older/ambiguous evidence, invalid/partial receipts and exclusions,
+and refused/unreadable targets. Byte/mode/path snapshots protect fixtures before
+and after reads. Deterministic PermissionError tests are mock I/O proof, not
+privileged-host filesystem permission or native acceptance proof.
 There are no native/model/network/real-Beads calls or real HOME installation.
 Static emitted-command checks are not native
 discovery or workflow proof. Historical ABI/bootstrap/inspector suites are not
@@ -186,6 +194,7 @@ Managed machine release checkouts cannot be activated.
 ```sh
 "$HOME/.local/bin/domestique2" enable "/physical/project root" --dry-run
 "$HOME/.local/bin/domestique2" enable "/physical/project root"
+"$HOME/.local/bin/domestique2" inspect "/physical/project root"
 "$HOME/.local/bin/domestique2" disable "/physical/project root" --dry-run
 "$HOME/.local/bin/domestique2" disable "/physical/project root"
 ```
@@ -407,11 +416,77 @@ model defaults, questionnaire or registry. Honor explicitly supported OpenAI
 role selections with actual native exact-ID/capability confirmation; unavailable requested choices stop rather than silently
 switching models/vendors. Do not alter authentication, trust or client settings.
 
-The forthcoming hq-iyu.5 inspect command will report the selected shared revision, target activation, unchanged/
-customized/missing owned files and legacy v1/experimental presence or unknown
-state. Compare with receipt creation hashes, not current templates. It does not
-repair, modify exclusions, scan the whole machine, open Beads or invoke a native
-client/model/MCP; unreadable and partial states remain honest unknowns.
+### Exact Copilot entry and fresh clients
+
+After enabling, editing definitions or disabling, restart/use a fresh Copilot
+client and confirm the exact local skill/role IDs. Neither cached discovery nor
+hot reload is guaranteed. In that client, natural planning can request
+“Use Domestique decompose to plan this bounded change”; the explicit namespaced
+entry is `/domestique-v2-copilot-decompose`. Planning does not authorize coding.
+For the loop, request “Use Domestique goal for epic EPIC_ID” and explicitly select
+`/domestique-v2-copilot-goal`; native goal/autopilot is not Domestique goal.
+These intended native entries still require hq-iyu.6 acceptance, not an assertion
+that a particular installed client discovers them.
+
+Exact standalone loader forms (substitute your actual project, brief and epic):
+
+```sh
+# Read-only instruction load: no Beads call.
+"$HOME/.local/bin/domestique2" workflow decompose --project "/physical/project root"
+# Explicit planning request; checks existing user-configured bd, never initializes it.
+"$HOME/.local/bin/domestique2" workflow decompose --project "/physical/project root" --brief "Plan one bounded change" --ready
+# Explicit Domestique goal request plus epic; not native autopilot consent.
+"$HOME/.local/bin/domestique2" workflow goal --project "/physical/project root" --epic EPIC_ID --domestique-goal --ready
+```
+
+Model choices belong to this native session, not install/update metadata.
+Optional loader `--implementer-model ID` and `--reviewer-model ID` carry literal
+ephemeral requests only; confirm actual native exact OpenAI IDs/capabilities
+before dispatch. An unavailable requested choice means stop, never substitute
+a model/vendor or change global defaults/trust. No client or model is invoked
+by these loaders; `--ready` alone calls existing Beads for prerequisites.
+
+### Read-only inspect
+
+```sh
+"$HOME/.local/bin/domestique2" inspect "/physical/project root"
+"$HOME/.local/bin/domestique2" --inspect "/physical/project root"
+# From the exact physical Git root only:
+"$HOME/.local/bin/domestique2" inspect
+```
+
+Inspection requires a valid installed machine, not merely a source checkout.
+It reports machine/current's checked selected revision (also from a retained
+old CLI), the target's receipt state and exact five definition paths, and the
+recorded exclusion contribution without changing it. Original creation hashes
+and identities determine unchanged/customized/replaced/missing statuses, never
+updated templates. An active receipt with missing/unreadable/tracked files or
+invalid exclusions reports partial/unknown, not pristine activation. Corrupt,
+incompatible, copied or missing receipts never grant ownership to leftover files.
+A partial/disabled receipt remains partial even when remaining files match.
+
+Unavailable, non-Git, bare, subdirectory, unsafe, symlinked and unreadable targets
+refuse explicitly, without inferring absence or searching for another project.
+Exit **0** means complete target ownership observations, including absent preview
+or customized files; **1** means refusal or partial/unknown ownership; **2** means
+misuse. Legacy classification limitations alone do not change a complete preview
+ownership report's exit. Errors withhold raw metadata and Git diagnostics;
+paths are escaped. Reads do not require target/exclusion write permission.
+
+Legacy observations reuse the existing bounded lifecycle marker paths and
+policy/command anchors only. Named legacy/experimental footprints or Domestique
+references are evidence, not proof of a complete installed generation. Actual
+indexed evidence is labeled tracked; untracked is **not proof of guest mode**.
+Claude/Codex/Copilot containers alone are ambiguous, not installed Domestique.
+Other legacy presence, generation, customization and guest mode remain unknown;
+there is no ancestor/global scan, legacy baseline, metadata parser or registry.
+
+Inspection separates source checkout, installed machine and target filesystem
+discovery from effective native client loading and **workflow readiness: NOT
+CHECKED**. It never installs, repairs, changes exclusions, opens Beads or invokes
+native/model/MCP clients; it makes no effective-permission or readiness inference.
+Use the explicit installed path above: unchanged old `dom`/`dom2` aliases may
+still reach older scripts, not this preview.
 
 ## Portable reuse and acceptance limits
 
@@ -425,11 +500,11 @@ broad staging, export/database commits and false no-ready completion/queue
 authority. No ignored configuration was copied into native project files or
 activated as Claude policy in this worktree.
 
-For hq-iyu.5, selected read-only helpers in `domestique2.sh`'s `inspect_main`
-(for example `git_root`, `resolve_context`, `stamp`, `display` and report
-formatting helpers) are candidates for individual review/adaptation. This is
-not approval to import the whole inspector, its customization classifiers, the
-legacy setup engine or ABI3 `v2/handoff.py` / `v2/workflow_protocol.py`.
+The hq-iyu.5 inspector uses existing preview receipt/Git/read-only validation
+helpers in a small `preview/footprint.py`. Bounded review of retained `display`,
+`stamp`, `git_root` and `resolve_context` informed escaped paths and honest
+unreadable handling; no historical inspector/framework was imported. Exact-root
+preview conventions apply, not the retained inspector's alias/ancestor discovery.
 
 Deferred/out of scope: generated executable bundles, launcher ABIs, packet or
 observation engines, custom YAML/TOML classifiers, project/model registries,

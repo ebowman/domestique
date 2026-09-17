@@ -134,7 +134,7 @@ class PreviewWorkflowTests(unittest.TestCase):
                 self.assertNotIn("## Explicit Domestique goal", output)
         for args in (("help",), ("inspect", self.a), ("enable", self.a),
                      ("disable", self.a, "--dry-run")):
-            self.command(*args, code=1 if args[0] == "inspect" else 0)
+            self.command(*args)
         self.assertEqual(PF.snapshot(self.a), before)
         self.assertEqual(self.calls(), [])
         for args in (("--ready",), ("--epic", "fixture-epic", "--ready"),

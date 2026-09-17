@@ -6,16 +6,22 @@ sys.path.insert(0, str(Path(__file__).parent))
 from machine import Refusal, check_install, parse_pairs, update
 from project import arguments as project_arguments, operate
 from workflow import arguments as workflow_arguments, render
+from footprint import report
 
 HELP = """Usage: domestique2 [help | --help | version | --version]
        domestique2 update --ref REV
        domestique2 enable [TARGET] [--dry-run]
        domestique2 disable [TARGET] [--dry-run]
+       domestique2 inspect [TARGET] | --inspect [TARGET]
+Source entrypoint: bash -p ./install-v2.sh --source CHECKOUT --ref REV
+Select a trusted committed revision containing this preview; uncommitted edits
+are not installed. Source checkout alone is not machine/project activation.
 Update uses the recorded trusted LOCAL Git checkout; no fetch from a remote.
 Existing Bash, Git and Python 3.9+ required; dependencies are never installed.
 Project TARGET defaults to cwd; must be the exact physical Git worktree root.
 Copilot definitions only; edited files preserved, partial disable returns 1.
-inspect and --inspect are reserved and unavailable.
+inspect is read-only: selected revision, activation, creation hashes, legacy evidence.
+Unknown/partial ownership returns 1; no repair or native/readiness inference.
 workflow TYPE --project ROOT loads shared instructions without invoking Beads.
 TYPE: ordinary | decompose | goal | implementer | reviewer.
 Optional --ready explicitly checks existing bd --version and project status.
@@ -24,10 +30,14 @@ goal action: --epic ID --domestique-goal (actual explicit user intent required).
 roles: --source ABSOLUTE_IMMUTABLE_CLI --task ID --brief TEXT --role-id EXACT_ID.
 Optional --source retains that same CLI for subsequent calls of any type.
 Optional --implementer-model ID / --reviewer-model ID are ephemeral requests;
-native exact-ID/capability confirmation required, never fallback/substitution.
+native exact-ID/capability confirmation required; unavailable means stop,
+never fallback/substitution.
 Customized definitions: fresh native confirmation before --ready --confirm-native.
 Bare goal/role locators return non-authorizing setup guidance, not role/loop bodies.
-Native end-to-end qualification is NOT READY; inspect remains unavailable.
+Restart/use a fresh Copilot client after definition changes; verify exact IDs.
+Natural Domestique decompose or /domestique-v2-copilot-decompose plans only.
+Explicit Domestique goal + epic uses /domestique-v2-copilot-goal; no implicit loop.
+Native end-to-end qualification is NOT READY.
 No native global definitions, startup, PATH, alias, model or Beads setup."""
 
 
@@ -49,9 +59,8 @@ def main(args):
             if len(args) > 2 or (len(args) == 2 and
                                  (not args[1] or args[1].startswith("-"))):
                 raise ValueError("expected at most one literal target")
-            print(f"domestique-preview: {args[0]} unavailable; forthcoming task, no activation.",
-                  file=sys.stderr)
-            return 1
+            command = "inspect"
+            target = args[1] if len(args) == 2 else None
         else:
             raise ValueError("unsupported arguments")
     except ValueError as exc:
@@ -62,7 +71,11 @@ def main(args):
     root = source.parent.parent
     try:
         receipt = check_install(root, source)
-        if command == "update":
+        if command == "inspect":
+            code, message = report(target, root, receipt)
+            print(message)
+            return code
+        elif command == "update":
             changed, revision = update(root, source, receipt, ref)
             print(f"domestique-preview {'updated' if changed else 'unchanged'} {revision}")
         elif command in ("enable", "disable"):
@@ -77,6 +90,12 @@ def main(args):
             print(HELP)
         return 0
     except (Refusal, OSError, ValueError) as exc:
+        if command == "inspect":
+            print("domestique-preview: inspect refused: installed machine/current unavailable, "
+                  "unsafe or incompatible; use the installed launcher. "
+                  "Source checkout is not installation; activation/readiness unknown.",
+                  file=sys.stderr)
+            return 1
         print(f"domestique-preview: refused: {exc}", file=sys.stderr)
         return 1
 
