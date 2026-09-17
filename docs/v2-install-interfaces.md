@@ -1,7 +1,10 @@
 # V2/1 record and native-metadata interfaces
 
 **PARTIALLY IMPLEMENTED, NOT PUBLISHED.** The internal local publisher implements
-machine A/B/D; project binding/admission/recovery remain future owners' work.
+machine A/B/D. hq-1t9.4 adds internal project A/C, enable-plan D primitives and F
+admission with generated guarded helpers; public native enable/loaders, disable
+and recovery reconciliation remain their operation owners' work. See the
+[internal activation boundary](v2-source-boundary.md#internal-activation-checkpoint-hq-1t94).
 [V2/1 contract](v2-install-contract.md) appendix, frozen by hq-1t9.1 at `020c05c`; **sole wire-schema/metadata-admission authority**.
 The parent owns CLI, inventories, effects, trust, privacy and acceptance.
 `format=2` is not preview format 1. No extension negotiation, generic record engine or new command; writer, guard, recovery and inspector share these rules.

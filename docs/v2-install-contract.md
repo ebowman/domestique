@@ -2,8 +2,10 @@
 
 Contract **V2/1**, frozen by **hq-1t9.1**, 2026-09-16; baseline `020c05c`.
 **NOT PUBLISHED; PARTIALLY IMPLEMENTED.** hq-5jc.4 implements the internal
-local package/publisher API, not the bootstrap, installed management CLI or
-activation. See [source boundary](v2-source-boundary.md).
+local package/publisher API; hq-1t9.2 adds the verified bootstrap/management
+boundary and hq-1t9.4 the internal project records/preflight/guarded helper.
+Public provider enable/loaders remain hq-5jc.7, not this internal checkpoint.
+See [source boundary](v2-source-boundary.md).
 Acceptance authority for hq-1t9's
 install-once/project-opt-in boundary, not runnable setup instructions. The
 [README](../README.md) and [design history](install-upgrade-design.md) describe
@@ -421,7 +423,11 @@ No universal quiet claim on unprobed boundaries.
 
 ## 6. Named acceptance matrix and bounded gate
 
-Every row is a **future requirement, not an executed test or native PASS**.
+These rows are **requirements, not by themselves executed tests or native PASS**.
+The CURRENT `v2-project-tests.py` scope exercises the internal
+`V2-GUARD-STATES`, `V2-PHYSICAL-BOUNDARY` and `V2-PREFLIGHT-COLLISIONS`
+boundaries using actual fixture-owned publication and generated installed helpers.
+It does not qualify public enable, native discovery or the final epic gate.
 The owner must register each named case/subcase in existing fixtures and the
 final hq-1t9.11 gate, without a new framework. `P` below means the preservation/
 privacy oracle: snapshot owned HOME/runtime, A/C/B, Git common-dir/index/

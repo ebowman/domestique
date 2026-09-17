@@ -1,9 +1,9 @@
-# Source boundary: verified bootstrap (hq-1t9.2)
+# Source boundary: internal project guards (hq-1t9.4)
 
 Current functionality, compatibility decisions and source-closure limits are in
 [the bootstrap guide](v2-bootstrap.md). `install-v2.sh` is now a standalone
 verified runtime-only writer; installed help/version/legacy inspection work
-offline. Public update and all project/native activation remain unimplemented.
+offline. Public update and public project/native activation remain unimplemented.
 Different existing help-only prototype launcher bytes are explicitly refused,
 not overwritten under a claim of stable ABI-2 compatibility.
 
@@ -11,6 +11,97 @@ Public v1 and retained preview bytes remain unchanged. The following section is
 the **historical hq-5jc.4 checkpoint at 8b48b6a**, not a statement that today's
 bootstrap is still missing. Its complete test totals do not qualify changed
 bootstrap/publisher integration without fresh, source-bound scope evidence.
+
+## Internal activation checkpoint (hq-1t9.4)
+
+This checkpoint adds a working **internal** activation boundary, not a public
+provider-enable transaction or native-readiness claim. Installed `enable`
+continues to return explicit unsupported status. Factory STOP loaders are
+unchanged; hq-5jc.7 owns their guarded serialization, public transaction driver
+and actual native-facing handoff. A fixture can publish legitimate prerequisites
+through the internal primitives; equal native files cannot supply ownership.
+
+* `v2.project_identity.project_identity(target, invocation=False)` requires an
+  exact physical Git top-level for activation; invocation resolves the nearest
+  root from a nonsymlink subdirectory. I binds worktree, Git-dir/common-dir
+  paths, device/inode and UID. Nested roots, moved/copied/recreated roots,
+  linked siblings and relocated runtime identities are not inherited/adopted.
+* `v2.project_records` implements the closed A/C manifest, receipt and ephemeral
+  whole-provider BINDING encodings. Inventories include all five/six leaves,
+  not just roles. Receipt/generation/pristine T stay fixed on compatible enabled
+  reruns; disabled-to-enabled increments with overflow refusal.
+* `v2.project_preflight.project_preflight(W, G, providers)` returns a read-only
+  `ProjectPlan` with original witnesses and `check()`. It checks native/index/
+  old-authority collisions, private modes, independently resolved common
+  `info/exclude`, exact qualified block provenance and effective ignore patterns.
+  Missing ordinary info refuses **before** journal/directory publication.
+  Actual write destinations qualify their nearest existing creation parents,
+  including W, state/routing, and both exclusion rename parents, before framing.
+  Publication rechecks permissions along with the original witnesses at every
+  effect. Read-only workflows/no-ops do not demand writes on host containers or
+  unchanged exclusions; frozen private-state modes still apply.
+  `plan.exclusion["shared_effect"]` reports linked-worktree exclusion scope;
+  that effect is not activation. Shared ambiguity refuses without sibling scans.
+* `v2.project_publication.ActivationPublication(plan)` freezes bounded
+  previous/pending/maximum facts before writes. `begin()` claims framing;
+  `apply_next()` performs one fixed allowlisted effect and records its actual
+  successful fact; `finish()` verifies final state, commits and clears
+  published/previous/pending last. No-op has no items or writes.
+  No caller-supplied native bytes/creation claims, native replacement, rollback,
+  automatic recovery or public enable driver are supplied. Manifest/receipt
+  assertions follow successful native/exclusion facts, never intended equality.
+  `project_previous_read` and `project_pending_read` validate against the exact
+  frozen plan/snapshots; `project_facts_read`/`project_facts_prefix` distinguish
+  complete facts from possible torn prefixes, not independent repair authority.
+  Journal leftovers always block project workflows and mutating reruns.
+  Every OS-effect boundary retains all original native/provider, state/receipt,
+  exclusion, core/helper, directory and Git/index observations. Only witnessed
+  completed effects advance expectations. During checked I/O, the existing
+  `safe.checked_write` validates its one open destination's exact partial bytes
+  and inode; its callback checks every other observation. Short writes/EINTR
+  repeat both checks. Namespace guards check the full set. Refusal leaves honest
+  partial evidence, with no later writes, buffered flush or automatic cleanup;
+  this is observation-bound preservation, not hostile-writer atomicity.
+* `v2.admission.admit(P, leaf, live, pristine)` implements appendix F in memory,
+  returning admitted **field names only**. All other bytes compare exactly
+  against retained T. It never renders, copies, logs or evaluates metadata.
+* `v2.guards.verified_helper(G, W, P, binding=None)` is the body-free
+  pre-execution handoff: authenticate T (or explicitly bound R), return the
+  immutable path/bytes and original guard for the caller's final recheck.
+  The generated installed `bin/resolve-core` implements exact
+  `start G W P SKILL`, `read G W P ROLE BINDING`,
+  `route G W P ROLE BINDING`. `guarded_start` samples active once **after**
+  activation, then rechecks that original selector snapshot. Bound operations
+  verify their complete explicit R with its same-R helper and never open active.
+  T verification is body-free; body opens occur only after project validation.
+  All live leaf hashes, physical identity, receipt/generation and the original
+  watch are rechecked before body reads and output. Machine-pending does not
+  revoke an intact bound R; project-pending or revocation does.
+
+Only the immutable helper/package closure changes; deterministic bootstrap and
+stable launcher bytes, v1/preview artifacts and factory STOP payloads remain
+unchanged. No `.beads`, host policy/settings, index/hooks or `.gitignore` writes;
+no clients/models/network/DB calls. Goal additionally requires its goal entry;
+the guarded workflow still requires one literal explicit epic and separately
+qualified Beads/native capabilities.
+
+CURRENT `v2-project-tests.py` uses the existing owned FixtureSession and a small
+two-release installed cohort in physical OS-temp roots outside Git/native
+ancestors. Actual exclusive publication supplies positive ownership. Tests run
+the installed Bash helper and the exact same generated Python bytes under
+test-only OS-open auditing (no installed-byte modifications) to witness body
+and active opens. Snapshots cover fixture HOME/runtime, providers, other projects,
+Git/common metadata and the existing synthetic Beads sentinel. Permission/UID,
+all bound leaves, metadata shapes, parser corruption, stale bindings, exclusion
+ownership, partial facts and creation-race cases are bounded offline evidence.
+The fixture UID-mismatch probe substitutes the invoking UID; it does not chown.
+
+This is **not** native discovery, permission/capability confirmation, a sandbox,
+cached-context erasure, or a claim that metadata cannot be discovered in native
+ancestors. Public payloads, disable, update integration, independent recovery/
+inspection, native qualification and the final 1200-second epic gate remain
+their assigned owners' work. Historical sections below retain their original
+checkpoint limits; they are not current activation implementation status.
 
 ## Historical isolated local-runtime checkpoint (hq-5jc.4)
 

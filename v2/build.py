@@ -73,14 +73,31 @@ def bootstrap_bytes():
     return python_shell(program + "\nsys.exit(bootstrap_main())\n")
 
 
+def helper_bytes():
+    # This closure is immutable inside R, NOT part of the stable launcher or
+    # standalone bootstrap. Embed the exact existing dispatcher renderer for
+    # body-free machine provenance; do not fork the launcher schema/bytes.
+    source = (SOURCE / "build.py").read_text()
+    rendering = "\n".join(ast.get_source_segment(source, n) for n in ast.parse(source).body
+                          if isinstance(n, ast.FunctionDef) and
+                          n.name in ("python_shell", "launcher_bytes"))
+    program = bundle(("safe", "package", "records", "cli", "dispatcher",
+                      "project_records", "project_identity", "admission"))
+    program += f"\ndef dispatcher_program():\n    return {dispatcher_program()!r}\n" + rendering
+    program += "\n" + bundle(("guard_core", "project_preflight", "guards"))
+    program += "\nsys.exit(helper_main(sys.argv[2:], sys.argv[1]))\n"
+    # Python stdin scripts otherwise lose their actual installed executable path.
+    # $0 is one literal argv; no eval, sourcing, environment or active fallback.
+    return python_shell(program).replace(b'- "$@" <<', b'- "$0" "$@" <<', 1)
+
+
 def package_data(version):
     refusal = (b"#!/bin/bash\n"
                b"printf '%s\\n' 'domestique2: unsupported; activation/management unavailable' >&2\n"
                b"exit 1\n")
     data = {"PACKAGE": package_header(version),
             "domestique2.sh": management_bytes(), "update2.sh": refusal,
-            # No bind/read/route/bootstrap/Beads old-policy bypass.
-            "bin/resolve-core": refusal}
+            "bin/resolve-core": helper_bytes()}
     for role in ROLES:
         data["roles/" + role + ".md"] = (SOURCE / "roles" / (role + ".md")).read_bytes()
     for provider in PROVIDERS:

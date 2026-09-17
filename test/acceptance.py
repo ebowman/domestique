@@ -83,6 +83,7 @@ CURRENT = (
     "version-boundary-tests.py",
     "v2-publisher-tests.py", "v2-records-tests.py",
     "v2-bootstrap-tests.py",
+    "v2-project-tests.py",
 )
 # CURRENT includes tests of retained engine source, not just live public CLI.
 # Those scopes keep their cases but cannot qualify V2 publication/activation.
