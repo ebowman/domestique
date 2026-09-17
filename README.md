@@ -1,11 +1,12 @@
 # domestique
 
-## Small preview — machine lifecycle implemented, workflows NOT READY (hq-iyu)
+## Small preview — project definitions implemented, workflows NOT READY (hq-iyu)
 
 The [Copilot/macOS preview contract](docs/v2-preview.md) now has a small,
 repository-owned `preview/` installer, offline version/help and explicit local
-Git update. Project enable/disable, inspection and native/Beads workflows remain
-unavailable; these machine-side fixtures do **not** establish workflow readiness.
+Git update, plus explicit Copilot-only project enable/disable and dry-run.
+Inspection and native/Beads workflows remain unavailable; installed definitions
+and local fixtures do **not** establish workflow readiness.
 Requires existing **Bash, Git and Python 3.9+** (not the macOS developer-tools
 Python stub); nothing installs dependencies or changes aliases/PATH.
 
@@ -16,6 +17,10 @@ bash -p ./install-v2.sh --source "/path/to/trusted checkout" --ref REV
 "$HOME/.local/bin/domestique2" version
 "$HOME/.local/bin/domestique2" help
 "$HOME/.local/bin/domestique2" update --ref NEXT_REV
+"$HOME/.local/bin/domestique2" enable "/physical/project root" --dry-run
+"$HOME/.local/bin/domestique2" enable "/physical/project root"
+"$HOME/.local/bin/domestique2" disable "/physical/project root" --dry-run
+"$HOME/.local/bin/domestique2" disable "/physical/project root"
 ```
 
 Both install selections and the update ref are required. The selected **commit**
@@ -30,9 +35,39 @@ before atomically switching the owned `current` pointer; old paths are retained.
 This assumes a cooperative single writer, not hostile-writer protection.
 Unknown/dirty destinations and old ABI2/3 installations refuse, even if an
 unowned launcher has identical bytes. No adoption, migration, force, GC, automatic
-recovery, shell startup edits or project/native setup.
+recovery or shell startup edits. Machine install/update never activate projects.
 
-Targeted local-only check: `python3 -B -W error test/preview-machine-tests.py`.
+Project commands require the **exact physical Git worktree root** (default cwd
+must itself be the root, not a subdirectory or symlink). They install only three
+`domestique-v2-copilot{,-decompose,-goal}` skills and two
+`domestique-v2-copilot-{implementer,reviewer}` agents under `.github`, plus
+`.domestique-private/copilot-preview.json`. The receipt binds physical root,
+Git/common identities, installed launcher and original creation hashes. Only
+these six paths receive an owned Git-common `info/exclude` block; host bytes
+and preexisting matching lines stay unowned. `.beads`, index, hooks, settings,
+`.gitignore` and root policy are untouched.
+
+Repeat enable preserves customized local metadata **and bodies byte-for-byte**,
+without parsing/approving them or advancing original hashes, including across
+shared updates. Disable revokes the receipt before deleting only unchanged owned
+files. Edited/unowned/tracked/unsafe leftovers remain with **1 / PARTIAL** and a
+disabled receipt; resolve them yourself and repeat disable before re-enabling.
+Complete/no-op returns **0**, misuse **2**. Dry-run writes nothing and reports
+the same refusal or predicted partial result. No identical-file adoption.
+Missing ordinary Git-common `info/` refuses; no automatic repair. Linked
+worktrees share ignore effects, not activation: only one preview activation
+per common repository is supported, and ambiguous blocks are retained/refused.
+
+Thin loaders reference `ABSOLUTE_LAUNCHER workflow TYPE --project ABSOLUTE_ROOT`.
+This reserved command shape currently **refuses** pending hq-iyu.4; it is not a
+workflow engine or native-execution proof. Goal is explicit-only; delegated
+roles await caller context. No model/tool/MCP defaults or grants. Beads remains
+an existing user-managed prerequisite: no initialization, database opening or
+workflow actions occur in this lifecycle.
+
+Targeted local-only checks:
+`python3 -B -W error test/preview-project-tests.py` and
+`python3 -B -W error test/preview-machine-tests.py`.
 See the contract for grammar, exit codes and acceptance limits.
 The ABI2 checkpoint below is **retained history**, not this preview's runtime or
 acceptance gate. The separate original-worktree ABI3 experiment remains

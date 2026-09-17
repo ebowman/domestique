@@ -252,8 +252,11 @@ class PreviewMachineTests(unittest.TestCase):
                      ("inspect", "one", "two"), ("enable", "--force")):
             self.command(*args, code=2)
             self.assertEqual(snapshot(self.home), before)
-        for name in ("enable", "disable", "inspect", "--inspect"):
+        for name in ("inspect", "--inspect"):
             self.assertIn("unavailable", self.command(name, "literal ' $target; with spaces", code=1))
+            self.assertEqual(snapshot(self.home), before)
+        for name in ("enable", "disable"):
+            self.assertIn("refused", self.command(name, "literal ' $target; with spaces", code=1))
             self.assertEqual(snapshot(self.home), before)
 
     def test_fresh_collisions_and_unsafe_parents(self):
