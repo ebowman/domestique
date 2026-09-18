@@ -35,8 +35,15 @@ never fallback/substitution.
 Customized definitions: fresh native confirmation before --ready --confirm-native.
 Bare goal/role locators return non-authorizing setup guidance, not role/loop bodies.
 Restart/use a fresh Copilot client after definition changes; verify exact IDs.
-Natural Domestique decompose or /domestique-v2-copilot-decompose plans only.
-Explicit Domestique goal + epic uses /domestique-v2-copilot-goal; no implicit loop.
+Copilot: /dom-decompose plans only; /dom-goal EPIC_ID requires explicit intent.
+Compatibility: /domestique-v2-copilot-decompose and /domestique-v2-copilot-goal EPIC_ID.
+Fresh enable installs seven definitions. Legacy five-definition activations stay
+unchanged on update/repeat enable; review each customized file before safe
+disable/re-enable to obtain short names. Shared updates do not rewrite metadata.
+Released v1 Claude: /dom-decompose, /dom-goal EPIC_ID (also /decompose, /goal).
+Released v1 Codex: $dom-decompose, $dom-goal EPIC_ID (or /skills selection);
+compatibility: $domestique-decompose, $domestique-goal EPIC_ID.
+Loading/matching a skill alone is never unattended authority.
 Native end-to-end qualification is NOT READY.
 No native global definitions, startup, PATH, alias, model or Beads setup."""
 

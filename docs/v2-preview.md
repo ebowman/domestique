@@ -10,7 +10,7 @@ at `ad80706` completed real decompose and a direct retained-CLI one-bead goal
 with independent review and Beads closure. Its goal skill invocation failed,
 then a separate read-only native probe loaded the corrected project-local goal
 skill successfully. The full cycle predates the two-line template visibility
-fix; core workflow code is unchanged. This is not a new full-cycle rerun,
+fix; shared workflow instruction bodies are unchanged. This is not a new full-cycle rerun,
 all-entry discovery or end-to-end skill-entry qualification.
 Documentation, local fixture tests, source checkout, old passing logs and
 discoverable metadata alone do not establish a project's workflow readiness.
@@ -20,8 +20,9 @@ discoverable metadata alone do not establish a project's workflow readiness.
 Support the observed macOS environment and Copilot first: install once from a
 trusted, explicitly selected Git revision, explicitly enable one project, and
 update the shared workflow source once. Released Claude/Codex v1
-`domestique.sh` and `update.sh`, including their existing updater semantics,
-remain unchanged. No promise of other-platform or other-provider v2 parity.
+`domestique.sh` now adds compatible short public names; its existing lifecycle
+and `update.sh` transport semantics remain unchanged. No promise of other-platform
+or other-provider v2 parity.
 
 This separate branch starts at `19deeab511000ff72322c231d17cb3a8c80d8641`.
 Completed history, the historical ABI2 baseline, and existing experimental
@@ -52,7 +53,7 @@ the trusted source; there is no default branch selection or implicit download.
 | --- | --- | --- |
 | `install-v2.sh --source CHECKOUT --ref REV` | Install the selected trusted local Git source revision and stable command; no project activation. | hq-iyu.2 |
 | `domestique2 update --ref REV` | Prepare a revision from the recorded source, then switch the owned current pointer; no project rewrites. | hq-iyu.2 |
-| `domestique2 enable [TARGET] [--dry-run]` | Install five local Copilot definitions at the exact physical Git worktree root. Omitted target requires cwd itself to be that root. | hq-iyu.3 |
+| `domestique2 enable [TARGET] [--dry-run]` | Fresh: install seven local Copilot definitions at the exact physical Git worktree root. Existing five-definition layouts are preserved. Omitted target requires cwd itself to be that root. | hq-iyu.3 + compatible public names |
 | `domestique2 disable [TARGET] [--dry-run]` | Revoke the receipt, remove only unchanged owned definitions, retain edits and report partial removal. | hq-iyu.3 |
 | `domestique2 workflow TYPE --project ROOT` | Load shared instructions/context without Beads; bare goal/roles give non-authorizing setup guidance. Optional `--ready` explicitly checks existing user Beads. | hq-iyu.4 |
 | `domestique2 inspect [TARGET]` | Read-only shared-revision and selected-project ownership report; omitted target requires cwd itself to be the exact physical Git root. | hq-iyu.5 |
@@ -177,7 +178,7 @@ effects. It checks default no-DB loads, explicit intent/readiness, refusal paths
 literal context, customization and retained old role sources after update.
 Its scripted claim/role-load/review-label/commit/close transcript is NOT actual
 native implementation, review, model dispatch or a real database lifecycle.
-The six-case inspector scope reuses the project cohort and isolated fake
+The eight-case inspector scope reuses the project cohort and isolated fake
 executables: absence/aliases, active/customized across template update, missing
 owned file, older/ambiguous evidence, invalid/partial receipts and exclusions,
 and refused/unreadable targets. Byte/mode/path snapshots protect fixtures before
@@ -188,6 +189,17 @@ HOME installation.
 Static emitted-command checks are not native
 discovery or workflow proof. Historical ABI/bootstrap/inspector suites are not
 part of this qualification stage.
+
+For the additive public-name change, run the related existing runners serially:
+`bash test/codex.sh --current` (19 scenarios, including Claude/Codex names),
+`bash test/guest.sh --current` (14 scenarios), then
+`python3 -B -Werror test/preview-project-tests.py` (7 tests),
+`python3 -B -Werror test/preview-workflow-tests.py` (7 tests), and
+`python3 -B -Werror test/preview-inspect-tests.py` (8 tests).
+The shell runners without `--current` remain historical fixtures.
+The prior five-definition lifecycle/block and prior v1 installer are frozen from
+`654414025554defe9eeef50c39b14a87326088b8`, not reconstructed from new constants.
+This is naming/compatibility evidence only; no native model probe is required.
 
 ## Explicit project ownership
 
@@ -205,7 +217,7 @@ Managed machine release checkouts cannot be activated.
 "$HOME/.local/bin/domestique2" disable "/physical/project root"
 ```
 
-Only these five local Copilot definitions and the single JSON receipt
+Only these seven local Copilot definitions and the single JSON receipt
 `.domestique-private/copilot-preview.json` belong to activation:
 
 - `.github/skills/domestique-v2-copilot/SKILL.md`
@@ -213,6 +225,12 @@ Only these five local Copilot definitions and the single JSON receipt
 - `.github/skills/domestique-v2-copilot-goal/SKILL.md`
 - `.github/agents/domestique-v2-copilot-implementer.agent.md`
 - `.github/agents/domestique-v2-copilot-reviewer.agent.md`
+- `.github/skills/dom-decompose/SKILL.md`
+- `.github/skills/dom-goal/SKILL.md`
+
+The last two are thin public wrappers for the same `decompose`/`goal` CLI types,
+not new roles or workflows. Original five-definition activations keep their exact
+inventory and exclusion contribution until explicit safe disable/re-enable.
 
 #### Shared thin loader commands
 
@@ -277,6 +295,8 @@ Frontmatter contains only these exact `name` / `description` pairs:
 | `domestique-v2-copilot-goal` | Load an explicitly requested Domestique epic workflow. |
 | `domestique-v2-copilot-implementer` | Implement one caller-assigned Domestique task. |
 | `domestique-v2-copilot-reviewer` | Independently review one caller-assigned Domestique task. |
+| `dom-decompose` | Load Domestique planning instructions without coding. |
+| `dom-goal` | Load an explicitly requested Domestique epic workflow. |
 
 Goal is model-loadable, but execution still requires an explicit
 Domestique goal request naming an epic, not native goal/autopilot. No model,
@@ -285,8 +305,8 @@ caller's bounded task and retained source context; their locator is for the
 caller, not permission to start a workflow or resolve `current` independently.
 The loader uses the immutable path already selected once by the launcher; it
 never resolves current again. It requires the matching active project receipt,
-root/Git/common identities, machine binding, five exact native IDs and all five
-owned files before operational instructions. Missing/revoked/moved/copied/foreign,
+root/Git/common identities, machine binding, five stable internal native IDs and all
+recorded owned files (seven fresh, five legacy) before operational instructions. Missing/revoked/moved/copied/foreign,
 nested-root or missing-role contexts refuse without Beads or fallback.
 Customized definitions are marked, never parsed or rewritten; fresh native
 confirmation is required before action. Edited raw locators are trusted user
@@ -301,11 +321,14 @@ The bounded JSON receipt's `kind` is `domestique-copilot-preview`. It records:
   directory, each with device/inode identity (copied/moved/foreign roots refuse).
 - `installation`: machine root identity and stable launcher path, identity and
   hash; `native_ids`: the five exact names, independent of selected source ref.
+- `inventory`: `public-names` for fresh seven-definition activations; absent for
+  the original five-definition layout. No other inventories are accepted, no
+  adoption or rebaselining occurs, and internal `native_ids` stay unchanged.
 - `files`: only created native relative paths, their creation identities and
   original SHA-256 hashes (`null` only for a known incomplete write).
 - `directories`: only created parents and their identities; `receipt_identity`
   identifies this state file, not a foreign identical copy.
-- `token`, `exclusion`: exact six-line-pattern block plus delimiters, original
+- `token`, `exclusion`: exact eight-pattern block (original six for legacy) plus delimiters, original
   prefix length/hash, optional separator newline, exclude identity and
   `planned` / `present` / `removed` state.
 - `state`: `partial-enable`, `active` or `disabled`. Only `active` permits
@@ -349,10 +372,10 @@ Never rewrite root instructions, settings, hooks, the index or tracked
 `.gitignore`; never initialize, open or hide `.beads`.
 
 The only Git exclusion change is an exact owned contribution to the Git-common
-`info/exclude` for exactly the five native files and receipt, never entire
+`info/exclude` for exactly the recorded native files and receipt, never entire
 containers or `.beads`. An appended block uses
-`# domestique-copilot-preview BEGIN TOKEN` / `END TOKEN` delimiters and six
-root-anchored literal patterns. Preserve host bytes and mode, including
+`# domestique-copilot-preview BEGIN TOKEN` / `END TOKEN` delimiters and eight
+root-anchored literal patterns (six in legacy receipts). Preserve host bytes and mode, including
 preexisting matching lines (unowned). Missing ordinary common `info/` or unsafe/
 unwritable exclusions refuse before publication, without Git-admin repair.
 An absent `exclude` file may be created; disable never deletes that file.
@@ -424,19 +447,37 @@ switching models/vendors. Do not alter authentication, trust or client settings.
 
 ### Exact Copilot entry and fresh clients
 
+Shared public names use portable hyphenated Agent Skills names:
+
+| Client | Planning only | Explicit goal |
+| --- | --- | --- |
+| Claude, released v1 | `/dom-decompose` | `/dom-goal EPIC_ID` |
+| Codex, released v1 | `$dom-decompose` | `$dom-goal EPIC_ID` (or `/skills` selection) |
+| Copilot, this preview | `/dom-decompose` | `/dom-goal EPIC_ID` |
+
+Compatibility entries stay supported: Claude `/decompose`, `/goal`; Codex
+`$domestique-decompose`, `$domestique-goal`; Copilot
+`/domestique-v2-copilot-decompose`, `/domestique-v2-copilot-goal`.
+Ordinary/bootstrap names, internal role IDs, models and provider-native policy
+are unchanged. Both Codex goal entries retain `allow_implicit_invocation: false`;
+both Copilot goal entries permit model loading, never implicit loop authority.
+
 After enabling, editing definitions or disabling, restart/use a fresh Copilot
 client and confirm the exact local skill/role IDs. Neither cached discovery nor
 hot reload is guaranteed. In that client, natural planning can request
 “Use Domestique decompose to plan this bounded change”; the explicit namespaced
-entry is `/domestique-v2-copilot-decompose`. Planning does not authorize coding.
+entry is `/dom-decompose`. Planning does not authorize coding.
 For the loop, request “Use Domestique goal for epic EPIC_ID” and explicitly select
-`/domestique-v2-copilot-goal`; native goal/autopilot is not Domestique goal.
-The decompose skill was exercised in the bounded demonstration below, but the
+`/dom-goal EPIC_ID`; native goal/autopilot is not Domestique goal.
+The compatibility decompose skill was exercised in the bounded demonstration below, but the
 goal skill returned `Skill not found: domestique-v2-copilot-goal`. The caller
 recovered with the explicit retained CLI, not a successful goal skill load.
 The separate read-only probe below confirmed corrected goal skill-tool loading,
 not execution of its instructions or a new goal loop.
 Your client must discover its own local definitions and approve required access.
+Short-name naming/ownership tests are offline fixture evidence only, not new
+model/native execution evidence. The unchanged workflow bodies retain the
+separate historical qualification limits below; no all-client v2 claim is made.
 
 Copilot shell-command approval and file-path approval are separate. Approve
 only the necessary project, shared installation and installed Python paths
@@ -446,6 +487,23 @@ account for the interpreter's resolved location when it is a symlink.
 Session-local `--add-dir` is one supported way to grant directory access.
 The installer does not change global trust or permissions, and blanket
 `--allow-all` access is not required.
+
+### Refresh existing five-definition activations
+
+The new source accepts original receipts, fixed five-name `native_ids` and their
+**original exact six-pattern exclusion blocks**. Workflow guards, inspect and
+disable use that recorded layout. Update/repeat enable preserve it and report
+legacy layout; they do not falsely claim short names were added.
+
+After a shared-source update, inspect the project and review each customized
+adapter before explicitly disabling and re-enabling to obtain the seven-file
+layout. Disable removes only unchanged owned files; edited adapters remain and
+produce partial disable. Preserve and reconcile each customization yourself,
+complete disable, then freshly enable and deliberately reapply appropriate
+reviewed edits. Do not delete private customizations to force reactivation.
+Restart the native client and confirm IDs. Shared-source updates do not rewrite
+local metadata, change creation hashes or migrate aliases in place.
+Released v1 users obtain aliases via existing ordinary installer/merge semantics.
 
 ### Existing goal skill metadata
 
@@ -506,7 +564,8 @@ by these loaders; `--ready` alone calls existing Beads for prerequisites.
 
 Inspection requires a valid installed machine, not merely a source checkout.
 It reports machine/current's checked selected revision (also from a retained
-old CLI), the target's receipt state and exact five definition paths, and the
+old CLI), the target's receipt state and recorded definition paths (seven fresh,
+five legacy), and the
 recorded exclusion contribution without changing it. Original creation hashes
 and identities determine unchanged/customized/replaced/missing statuses, never
 updated templates. An active receipt with missing/unreadable/tracked files or

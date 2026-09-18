@@ -13,10 +13,10 @@ import subprocess
 import sys
 
 from machine import Refusal, need, safe
-from native import DEFINITIONS, LEAVES, ROLES
+from native import DEFINITIONS, ENTRIES, ROLES
 from project import (installation_identity, leaf_status, project_identity,
                      tracked_paths)
-from project_data import RECEIPT, load
+from project_data import RECEIPT, inventory, load
 
 VALUES = ("--project", "--source", "--task", "--brief", "--epic", "--role-id",
           "--implementer-model", "--reviewer-model")
@@ -65,7 +65,7 @@ def activation(target, machine_root, machine_receipt):
     tracked = tracked_paths(root)
     need(RECEIPT not in tracked, "tracked preview receipt is not private activation")
     statuses = {kind: leaf_status(root, leaf, record["files"][leaf], tracked)
-                for kind, leaf in LEAVES.items()}
+                for kind, leaf in inventory(record).items()}
     need("missing" not in statuses.values(), "missing owned native definition/role; no fallback")
     return root, statuses
 
@@ -124,7 +124,7 @@ def render(kind, options, source, machine_root, machine_receipt):
         need(kind != "ordinary" or all(k in options for k in ("--task", "--brief")),
              "ordinary readiness requires one explicit bounded task and brief")
         need(kind != "decompose" or "--brief" in options, "planning readiness requires a brief")
-    customized = [DEFINITIONS[k][0] for k, value in statuses.items() if value != "unchanged"]
+    customized = [ENTRIES[k][0] for k, value in statuses.items() if value != "unchanged"]
     if customized and options.get("--ready"):
         need(options.get("--confirm-native"),
              "customized native definitions preserved; require fresh native confirmation of exact IDs/"

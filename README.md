@@ -19,13 +19,31 @@ now permits goal skill model loading. On 2026-09-18 a separate read-only native
 probe loaded its exact corrected project-local body successfully using Copilot
 CLI 1.0.86, `gpt-6-astra` / `openai-responses`: 10.05175 AI credits in 12.408678
 seconds. The earlier full workflow used 175.97425 cumulative credits in 174.31
-seconds and predates the two-line template visibility fix; core workflow code is
-unchanged. The new probe proves skill discovery/loading only, not a rerun of the
+seconds and predates the two-line template visibility fix; shared workflow
+instruction bodies are unchanged. That probe proves skill discovery/loading only, not a rerun of the
 full cycle or activation lifecycle.
 This is a bounded preview result, not a published release or qualification of
 every client, model, provider or platform.
 Requires existing **Bash, Git and Python 3.9+** (not the macOS developer-tools
 Python stub); nothing installs dependencies or changes aliases/PATH.
+
+### Shared public names
+
+| Client | Planning only | Explicit named epic |
+| --- | --- | --- |
+| Claude (released v1 installer) | `/dom-decompose` | `/dom-goal EPIC_ID` |
+| Codex (released v1 installer) | `$dom-decompose` | `$dom-goal EPIC_ID` |
+| Copilot (this project-local preview) | `/dom-decompose` | `/dom-goal EPIC_ID` |
+
+Codex also supports `/skills` selection. Compatibility entries remain:
+Claude `/decompose`, `/goal`; Codex `$domestique-decompose`, `$domestique-goal`;
+Copilot `/domestique-v2-copilot-decompose`, `/domestique-v2-copilot-goal`.
+Goal still needs an explicit request naming the epic; loading/matching a skill
+alone never authorizes unattended work. Ordinary/bootstrap entries, role IDs,
+per-client models and native invocation policies are unchanged. These additive
+names do **not** imply full Claude/Codex v2 parity. Naming/ownership evidence is
+offline regression coverage, not new native execution qualification; the earlier
+workflow-body demonstration above remains its separate, bounded evidence.
 
 From a checkout containing the new entrypoint:
 
@@ -63,12 +81,12 @@ unowned launcher has identical bytes. No adoption, migration, force, GC, automat
 recovery or shell startup edits. Machine install/update never activate projects.
 
 Project commands require the **exact physical Git worktree root** (default cwd
-must itself be the root, not a subdirectory or symlink). They install only three
-`domestique-v2-copilot{,-decompose,-goal}` skills and two
+must itself be the root, not a subdirectory or symlink). Fresh activation installs five
+skills (`dom-decompose`, `dom-goal`, `domestique-v2-copilot{,-decompose,-goal}`) and two
 `domestique-v2-copilot-{implementer,reviewer}` agents under `.github`, plus
 `.domestique-private/copilot-preview.json`. The receipt binds physical root,
 Git/common identities, installed launcher and original creation hashes. Only
-these six paths receive an owned Git-common `info/exclude` block; host bytes
+these eight paths receive an owned Git-common `info/exclude` block; host bytes
 and preexisting matching lines stay unowned. `.beads`, index, hooks, settings,
 `.gitignore` and root policy are untouched.
 
@@ -83,6 +101,16 @@ Missing ordinary Git-common `info/` refuses; no automatic repair. Linked
 worktrees share ignore effects, not activation: only one preview activation
 per common repository is supported, and ambiguous blocks are retained/refused.
 
+Existing five-definition Copilot receipts and their original six-pattern
+exclusion blocks remain valid. Update/repeat enable do not add aliases or rewrite
+local metadata; they report the legacy layout. To obtain short names, update the
+shared source, inspect and review **each customized file**, then explicitly
+disable/re-enable. Unchanged files are removable; partial disable retains edits.
+Preserve/reconcile those edits yourself before completing disable and fresh enable;
+never discard custom files merely to force a refresh. Restart the client afterward.
+Released v1 installations can gain aliases through the ordinary existing installer
+rerun/merge behavior; the updater transport and lifecycle are unchanged.
+
 Thin loaders reference `ABSOLUTE_LAUNCHER workflow TYPE --project ABSOLUTE_ROOT`.
 Existing `.3` locators keep working without rewriting native files or creation
 hashes. Default loads never invoke Beads. Bare goal supplies setup guidance that
@@ -93,7 +121,7 @@ brief/exact role ID and its original immutable `preview/cli.py` path. All later
 calls keep that source, even after update; only a new workflow samples current.
 
 Before any operational body, validate the active receipt, exact root/Git/machine
-binding and presence of all five owned definitions. Customized bytes remain
+binding and presence of every recorded owned definition (seven fresh, five legacy). Customized bytes remain
 opaque/preserved and need fresh native exact-ID/capability confirmation before
 `--ready --confirm-native`; that assertion is not native proof. No global fallback.
 `--ready` runs bounded normal `bd --version` and project-scoped `status`, requiring
@@ -116,8 +144,8 @@ stop without substitution. See the contract for complete optional loader flags.
 After enable, definition edits or disable, restart/use a **fresh Copilot client**
 and confirm the exact skill/role IDs before use; no hot reload is promised.
 For planning, ask “Use Domestique decompose to plan this change” or explicitly
-select `/domestique-v2-copilot-decompose`. For the bounded loop, explicitly ask
-“Use Domestique goal for epic EPIC_ID” and select `/domestique-v2-copilot-goal`.
+select `/dom-decompose`. For the bounded loop, explicitly ask
+“Use Domestique goal for epic EPIC_ID” and select `/dom-goal EPIC_ID`.
 Native goal/autopilot is not this entry and does not authorize it. Corrected
 goal skill loading was separately confirmed in the bounded read-only probe.
 Existing adapters are not rewritten by update or repeat enable; see the
@@ -147,7 +175,7 @@ See the contract for grammar, exit codes and acceptance limits.
 The ABI2 checkpoint below is **retained history**, not this preview's runtime or
 acceptance gate. The separate original-worktree ABI3 experiment remains
 unreviewed/incomplete. Released Claude/Codex **v1** (`domestique.sh` / `update.sh`)
-remains unchanged.
+now adds compatible short names; its lifecycle and updater transport remain unchanged.
 
 ## Historical verified bootstrap checkpoint (hq-1t9.2)
 
@@ -160,7 +188,7 @@ These artifact meanings are historical, except for the explicitly replaced entry
 
 | Source | Current behavior |
 | --- | --- |
-| [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Public **v1**, restored byte-for-byte from locally verified `main`/`origin/main` at `4de726c2e38e731c67f5f37d4a16206d7b3d99af`. Claude/Codex normal/guest behavior and the old updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics remain unchanged. Draft Copilot is not this released channel. |
+| [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Public **v1**, historically restored byte-for-byte from locally verified `main`/`origin/main` at `4de726c2e38e731c67f5f37d4a16206d7b3d99af`; the installer now adds the compatible public names above. Claude/Codex normal/guest lifecycle and the old updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics remain unchanged. Draft Copilot is not this released channel. |
 | [`domestique2.sh`](domestique2.sh) | Source-only transition: reviewed read-only `--inspect` and help. **All installation/removal/activation operations refuse.** The format-1 preview engine is retained for fixture extraction/reuse, not executable setup through this entrypoint. |
 | [`update2.sh`](update2.sh) | Fail-closed transition: accepts explicit source/version selection syntax but **refuses all updates**, before candidate execution, fetch or destination writes. No default source; nonempty legacy source environment override refuses. Shell files, including this checkout's scripts, are not V2 packages. |
 | [`install-v2.sh`](install-v2.sh) | **Replaced on this preview branch** by the thin `--source CHECKOUT --ref REV` entrypoint above. The historical package/`--version`/`--dry-run` bootstrap interface no longer applies to this artifact. This is not automatic migration of existing installs. |

@@ -32,7 +32,7 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 
 ## Work tracking: beads
 - The plan of record lives in beads (`bd`), not in markdown TODO lists.
-- Decompose a goal into an epic + bounded tasks with dependencies using `/decompose`.
+- Decompose a goal into an epic + bounded tasks with dependencies using `/dom-decompose` (compatibility: `/decompose`).
 - Select the next unit of work with `bd ready` — it returns only unblocked, actionable tasks.
 - Record durable insight with `bd remember "<insight>"`. Do not create MEMORY.md files.
 
@@ -49,9 +49,9 @@ Plans, bead descriptions, and delegation briefs are executed by a separate model
 4. Adjudicate. Weigh the reviewer's verdict against the implementer's summary: if they agree the work is done, close the bead and commit its changes (one commit, bead id in the message); if the reviewer reports gaps, reopen the bead or file a follow-up and route the fix back to the implementer. Read the diff yourself only when the two reports conflict or the verdict is ambiguous — delegating the review is the point.
 5. **Stop and report to the human before dispatching the next task.** Do not drain the queue unattended unless explicitly told to.
 
-## Unattended epic mode (/goal)
+## Unattended epic mode (/dom-goal; compatibility: /goal)
 - The default remains **stop-and-report between beads** (rule 5 of the Delegation loop above). Nothing changes that by itself.
-- A `/goal <epic-id>` invocation is the **only** thing that authorizes continuous, unattended dispatch across an epic's beads. That authorization is scoped to the named epic, expires the instant the epic completes or any stop condition fires, and never carries over to another epic or a later session.
+- An explicit `/dom-goal <epic-id>` or `/goal <epic-id>` invocation is the **only** thing that authorizes continuous, unattended dispatch across an epic's beads. Loading instructions alone is not authorization. That authorization is scoped to the named epic, expires the instant the epic completes or any stop condition fires, and never carries over to another epic or a later session.
 - Unattended runs happen on a **dedicated epic branch** and never commit to the default branch — the human reviews and merges that branch by hand; the loop never merges or pushes.
 - The core invariants still hold even while unattended: **one bead in flight at a time, one commit per bead, and never close a bead the reviewer didn't pass.**
 - For the full loop mechanics and the complete list of stop conditions, see `.claude/commands/goal.md` — they are not restated here.
@@ -165,6 +165,8 @@ argument-hint: <epic-id>
 
 Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
 
+Require an explicit `/dom-goal <epic-id>` or compatibility `/goal <epic-id>` request naming the epic in `$ARGUMENTS`. Merely loading these instructions is not unattended authority; if the epic or explicit request is missing, ask and stop.
+
 ## Branch isolation (load-bearing)
 Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
 
@@ -258,7 +260,7 @@ DOM_EOF
 
 # The base skill is both the explicit guest-mode bootstrap (`$domestique`) and
 # the implicit match for the ordinary dispatch/landing prompts. It deliberately
-# does not authorize unattended epic draining; only domestique-goal does that.
+# does not authorize unattended epic draining; only an explicit named goal does.
 emit_codex_skill() { cat <<'DOM_EOF'
 ---
 name: domestique
@@ -285,7 +287,7 @@ For each requested bead:
    actions currently authorized. Otherwise route at most the requested fix
    work back to the implementer or stop for the operator.
 7. Stop and report before dispatching another bead. Only an explicit
-   `$domestique-goal <epic-id>` invocation lifts this rule.
+   `$dom-goal <epic-id>` or `$domestique-goal <epic-id>` invocation lifts this rule.
 
 In guest installs, never commit domestique state or push host-repository work.
 When asked to "land the plane", file loose follow-up beads, run the final
@@ -297,7 +299,7 @@ DOM_EOF
 emit_codex_decompose_skill() { cat <<'DOM_EOF'
 ---
 name: domestique-decompose
-description: Decompose a goal or specification into a dependency-ordered beads epic with bounded tasks. Use when explicitly invoked as $domestique-decompose or when the user asks for domestique/beads decomposition; planning only, never implementation.
+description: Decompose a goal or specification into a dependency-ordered beads epic with bounded tasks. Use when explicitly invoked as $dom-decompose or $domestique-decompose or when the user asks for domestique/beads decomposition; planning only, never implementation.
 ---
 
 # Decompose into beads
@@ -317,14 +319,15 @@ DOM_EOF
 emit_codex_goal_skill() { cat <<'DOM_EOF'
 ---
 name: domestique-goal
-description: Explicitly drain one named beads epic using domestique's bounded implementer-reviewer loop on an isolated branch. Use only when the user explicitly invokes $domestique-goal with an epic id; never infer this unattended authorization.
+description: Explicitly drain one named beads epic using domestique's bounded implementer-reviewer loop on an isolated branch. Use only when the user explicitly invokes $dom-goal or $domestique-goal with an epic id; never infer this unattended authorization.
 ---
 
 # Unattended epic execution
 
-The explicit `$domestique-goal <epic-id>` invocation is the sole authorization
+An explicit `$dom-goal <epic-id>` or `$domestique-goal <epic-id>` invocation is the sole authorization
 to continue between beads. It applies only to that epic and expires on
 completion, a stop condition, or after 15 closed beads.
+Merely loading or implicitly matching this skill is not unattended authority.
 
 Before work, require an epic id and create/switch to a dedicated epic branch.
 Never work on the default branch, merge, or push. Then repeat the sequential
@@ -353,19 +356,31 @@ policy:
 DOM_EOF
 }
 
+# Public names reuse the same workflow bodies and native invocation policy.
+emit_codex_dom_decompose_skill() {
+  emit_codex_decompose_skill | sed 's/^name: domestique-decompose$/name: dom-decompose/'
+}
+emit_codex_dom_goal_skill() {
+  emit_codex_goal_skill | sed 's/^name: domestique-goal$/name: dom-goal/'
+}
+emit_codex_dom_goal_metadata() {
+  emit_codex_goal_metadata | sed 's/[$]domestique-goal/$dom-goal/'
+}
+
 # Normal Codex sessions receive this as a managed root AGENTS policy block.
 # Guest Codex deliberately installs no root policy and instead bootstraps via
 # the self-contained $domestique skill, leaving host AGENTS files untouched.
 emit_codex_policy() { cat <<'DOM_EOF'
 # Domestique orchestration policy (Codex)
 
-This session is the orchestrator. Use `$domestique-decompose` for planning,
+This session is the orchestrator. Use `$dom-decompose` (compatibility: `$domestique-decompose`) for planning,
 then follow the `$domestique` sequential implementer → wait → reviewer → wait
 loop for each bead. Stop and report between beads.
 
-Only an explicit `$domestique-goal <epic-id>` invocation authorizes unattended
+Only an explicit `$dom-goal <epic-id>` or `$domestique-goal <epic-id>` invocation authorizes unattended
 epic execution. Codex's built-in `/goal` is a different product feature and
 does not grant domestique's branch/commit authority by itself.
+Merely loading or implicitly matching a skill is not unattended authority.
 
 Use beads as the durable plan of record (`bd ready`, `bd remember`), write
 precise numbered briefs, keep one bead in flight, and keep subagent returns
@@ -384,11 +399,12 @@ directory). Claude is the compatibility default; Codex uses native surfaces:
   CLAUDE.md                        orchestration policy (in a managed block)
   .claude/agents/implementer.md    implementer subagent
   .claude/agents/reviewer.md       reviewer subagent
-  .claude/commands/decompose.md    /decompose command
-  .claude/commands/goal.md         /goal command
+  .claude/commands/dom-decompose.md /dom-decompose (also /decompose)
+  .claude/commands/dom-goal.md      /dom-goal EPIC_ID (also /goal EPIC_ID)
   AGENTS.md or AGENTS.override.md  Codex policy (normal mode, managed block)
   .codex/agents/*.toml             Codex implementer and reviewer
-  .agents/skills/domestique*/      Codex workflow skills
+  .agents/skills/dom-*/            Codex $dom-decompose / $dom-goal EPIC_ID
+  .agents/skills/domestique*/      Codex bootstrap and compatibility skills
 
 Options:
   --platform <p> Select claude, codex, or both. A fresh selector-less install
@@ -543,14 +559,14 @@ configure_provider() {
       POLICY_EMITTER="emit_policy"
       POLICY_LABEL="CLAUDE.md"
       POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
-      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/dom-decompose.md,.claude/commands/dom-goal.md"
       ;;
     codex)
       SNAPSHOT_DIR="$TARGET_DIR/.codex/.domestique"
       POLICY_EMITTER="emit_codex_policy"
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
-      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
+      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml,.agents/skills/dom-decompose/SKILL.md,.agents/skills/dom-goal/SKILL.md,.agents/skills/dom-goal/agents/openai.yaml"
       ;;
   esac
   SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
@@ -671,6 +687,9 @@ write_codex_guest_ownership() {
     [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
     [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
     [ "${CODEX_PREEXIST_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/agents/openai.yaml\n'
+    [ "${CODEX_PREEXIST_DOM_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-decompose/SKILL.md\n'
+    [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
+    [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
   } > "$staged"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "record exact Codex guest ownership -> $ownership"
@@ -703,6 +722,8 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.claude/agents/reviewer.md" emit_reviewer
       install_plain "$TARGET_DIR/.claude/commands/decompose.md" emit_decompose
       install_plain "$TARGET_DIR/.claude/commands/goal.md" emit_goal
+      install_plain "$TARGET_DIR/.claude/commands/dom-decompose.md" emit_decompose
+      install_plain "$TARGET_DIR/.claude/commands/dom-goal.md" emit_goal
       ;;
     codex)
       install_plain "$TARGET_DIR/.codex/agents/implementer.toml" emit_codex_implementer
@@ -711,6 +732,9 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" emit_codex_decompose_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" emit_codex_goal_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" emit_codex_goal_metadata
+      install_plain "$TARGET_DIR/.agents/skills/dom-decompose/SKILL.md" emit_codex_dom_decompose_skill
+      install_plain "$TARGET_DIR/.agents/skills/dom-goal/SKILL.md" emit_codex_dom_goal_skill
+      install_plain "$TARGET_DIR/.agents/skills/dom-goal/agents/openai.yaml" emit_codex_dom_goal_metadata
       write_codex_guest_ownership
       ;;
   esac
@@ -859,7 +883,7 @@ POLICY_DEST="CLAUDE.md"
 POLICY_EMITTER="emit_policy"
 POLICY_LABEL="CLAUDE.md"
 POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
-MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md"
+MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/dom-decompose.md,.claude/commands/dom-goal.md"
 
 # ---------------------------------------------------------------------------
 # Base snapshot / manifest. The existing merge implementation is provider
@@ -1372,7 +1396,7 @@ install_git_exclude() {
   if command -v git >/dev/null 2>&1; then
     local trackme tracked_paths=".beads"
     [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths="CLAUDE.local.md .claude $tracked_paths"
-    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal $tracked_paths"
+    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal .agents/skills/dom-decompose .agents/skills/dom-goal $tracked_paths"
     for trackme in $tracked_paths; do
       if git -C "$target" ls-files --error-unmatch "$trackme" >/dev/null 2>&1; then
         echo "Warning: $trackme is already tracked in $target — a git exclude entry cannot hide a tracked path. Run 'git rm --cached -r $trackme' if you want it hidden." >&2
@@ -1400,6 +1424,9 @@ install_git_exclude() {
         [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
         [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
         [ "${CODEX_PREEXIST_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/agents/openai.yaml\n'
+        [ "${CODEX_PREEXIST_DOM_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-decompose/SKILL.md\n'
+        [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
+        [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
       fi
     fi
     if { [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.claude/.domestique/beads-owned" ]; } ||
@@ -1598,12 +1625,17 @@ claude|.claude/.domestique|.claude/agents/implementer.md|emit_implementer
 claude|.claude/.domestique|.claude/agents/reviewer.md|emit_reviewer
 claude|.claude/.domestique|.claude/commands/decompose.md|emit_decompose
 claude|.claude/.domestique|.claude/commands/goal.md|emit_goal
+claude|.claude/.domestique|.claude/commands/dom-decompose.md|emit_decompose
+claude|.claude/.domestique|.claude/commands/dom-goal.md|emit_goal
 codex|.codex/.domestique|.codex/agents/implementer.toml|emit_codex_implementer
 codex|.codex/.domestique|.codex/agents/reviewer.toml|emit_codex_reviewer
 codex|.codex/.domestique|.agents/skills/domestique/SKILL.md|emit_codex_skill
 codex|.codex/.domestique|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
 codex|.codex/.domestique|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
 codex|.codex/.domestique|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
+codex|.codex/.domestique|.agents/skills/dom-decompose/SKILL.md|emit_codex_dom_decompose_skill
+codex|.codex/.domestique|.agents/skills/dom-goal/SKILL.md|emit_codex_dom_goal_skill
+codex|.codex/.domestique|.agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata
 UNINSTALL_FILES
 
   # --- 2. managed policy blocks for selected providers --------------------
@@ -1822,6 +1854,9 @@ UNINSTALL_POLICIES
       rmdir "$target/.agents/skills/domestique-goal/agents" 2>/dev/null || true
       rmdir "$target/.agents/skills/domestique-goal" 2>/dev/null || true
       rmdir "$target/.agents/skills/domestique-decompose" 2>/dev/null || true
+      rmdir "$target/.agents/skills/dom-goal/agents" 2>/dev/null || true
+      rmdir "$target/.agents/skills/dom-goal" 2>/dev/null || true
+      rmdir "$target/.agents/skills/dom-decompose" 2>/dev/null || true
       rmdir "$target/.agents/skills/domestique" 2>/dev/null || true
       rmdir "$target/.agents/skills" 2>/dev/null || true
       rmdir "$target/.agents" 2>/dev/null || true
@@ -1898,12 +1933,18 @@ CODEX_PREEXIST_BASE_SKILL=0
 CODEX_PREEXIST_DECOMPOSE_SKILL=0
 CODEX_PREEXIST_GOAL_SKILL=0
 CODEX_PREEXIST_GOAL_META=0
+CODEX_PREEXIST_DOM_DECOMPOSE_SKILL=0
+CODEX_PREEXIST_DOM_GOAL_SKILL=0
+CODEX_PREEXIST_DOM_GOAL_META=0
 [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] && ! codex_exclude_was_owned '.codex/agents/implementer.toml' && CODEX_PREEXIST_IMPL=1
 [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] && ! codex_exclude_was_owned '.codex/agents/reviewer.toml' && CODEX_PREEXIST_REVIEWER=1
 [ -e "$TARGET_DIR/.agents/skills/domestique/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique/SKILL.md' && CODEX_PREEXIST_BASE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-decompose/SKILL.md' && CODEX_PREEXIST_DECOMPOSE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-goal/SKILL.md' && CODEX_PREEXIST_GOAL_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" ] && ! codex_exclude_was_owned '.agents/skills/domestique-goal/agents/openai.yaml' && CODEX_PREEXIST_GOAL_META=1
+[ -e "$TARGET_DIR/.agents/skills/dom-decompose/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/dom-decompose/SKILL.md' && CODEX_PREEXIST_DOM_DECOMPOSE_SKILL=1
+[ -e "$TARGET_DIR/.agents/skills/dom-goal/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/dom-goal/SKILL.md' && CODEX_PREEXIST_DOM_GOAL_SKILL=1
+[ -e "$TARGET_DIR/.agents/skills/dom-goal/agents/openai.yaml" ] && ! codex_exclude_was_owned '.agents/skills/dom-goal/agents/openai.yaml' && CODEX_PREEXIST_DOM_GOAL_META=1
 if [ "$SELECT_CLAUDE" -eq 1 ]; then
   configure_provider claude
   resolve_provider_mode

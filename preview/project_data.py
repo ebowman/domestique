@@ -8,12 +8,11 @@ import stat
 import tempfile
 
 from machine import identity, need, safe
-from native import DEFINITIONS, LEAVES
+from native import CORE_LEAVES, DEFINITIONS, LEAVES
 
 KIND = "domestique-copilot-preview"
 RECEIPT = ".domestique-private/copilot-preview.json"
 PATHS = (*LEAVES.values(), RECEIPT)
-PARENTS = {str(p) for leaf in PATHS for p in Path(leaf).parents if str(p) != "."}
 MARKER = b"# domestique-copilot-preview "
 LIMIT = 1024 * 1024
 HASH = re.compile(r"[0-9a-f]{64}")
@@ -47,10 +46,18 @@ def valid_identity(value):
             all(type(n) is int and n >= 0 for n in value))
 
 
+def inventory(record):
+    """Only two known layouts; absent discriminator is the original five."""
+    if "inventory" not in record:
+        return CORE_LEAVES
+    need(record["inventory"] == "public-names", "incompatible native inventory")
+    return LEAVES
+
+
 def block(record):
     token = record["token"]
     return (f"# {KIND} BEGIN {token}\n" +
-            "".join(f"/{leaf}\n" for leaf in PATHS) +
+            "".join(f"/{leaf}\n" for leaf in (*inventory(record).values(), RECEIPT)) +
             f"# {KIND} END {token}\n").encode()
 
 
@@ -66,13 +73,16 @@ def load(path, project, installation):
     need(type(record.get("token")) is str and
          re.fullmatch(r"[0-9a-f]{32}", record["token"]), "invalid exclusion token")
     files, directories = record.get("files"), record.get("directories")
-    need(type(files) is dict and files.keys() <= set(LEAVES.values()), "invalid created paths")
+    leaves = inventory(record)
+    need(type(files) is dict and files.keys() <= set(leaves.values()), "invalid created paths")
     for value in files.values():
         need(type(value) is dict and "sha256" in value and valid_identity(value.get("identity")) and
              (value.get("sha256") is None or
               (type(value["sha256"]) is str and HASH.fullmatch(value["sha256"]))),
              "invalid native creation data")
-    need(type(directories) is dict and directories.keys() <= PARENTS and
+    parents = {str(p) for leaf in (*leaves.values(), RECEIPT)
+               for p in Path(leaf).parents if str(p) != "."}
+    need(type(directories) is dict and directories.keys() <= parents and
          all(valid_identity(v) for v in directories.values()), "invalid created directories")
     exclusion = record.get("exclusion")
     need(type(exclusion) is dict and "identity" in exclusion and
@@ -83,7 +93,7 @@ def load(path, project, installation):
          exclusion.get("separator") in ("", "\n") and exclusion.get("block") == block(record).decode(),
          "invalid exclusion contribution")
     need(record["state"] != "active" or
-         (set(files) == set(LEAVES.values()) and
+         (set(files) == set(leaves.values()) and
           all(v["sha256"] is not None for v in files.values()) and exclusion["state"] == "present"),
          "incomplete active receipt")
     return record

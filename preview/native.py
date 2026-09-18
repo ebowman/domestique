@@ -1,4 +1,4 @@
-"""Five thin Copilot definitions. No native execution or workflow implementation."""
+"""Five core definitions and two public aliases; no workflow implementation."""
 import shlex
 
 DEFINITIONS = {
@@ -9,16 +9,22 @@ DEFINITIONS = {
     "reviewer": ("domestique-v2-copilot-reviewer", "Independently review one caller-assigned Domestique task."),
 }
 ROLES = ("implementer", "reviewer")
+ALIASES = {"dom-decompose": "decompose", "dom-goal": "goal"}
+ENTRIES = {**DEFINITIONS, **{
+    name: (name, DEFINITIONS[kind][1]) for name, kind in ALIASES.items()
+}}
 LEAVES = {
     kind: (f".github/agents/{name}.agent.md" if kind in ROLES else
            f".github/skills/{name}/SKILL.md")
-    for kind, (name, _) in DEFINITIONS.items()
+    for kind, (name, _) in ENTRIES.items()
 }
+CORE_LEAVES = {kind: LEAVES[kind] for kind in DEFINITIONS}
 
 
 def templates(launcher, project):
     result = {}
-    for kind, (name, description) in DEFINITIONS.items():
+    for entry, (name, description) in ENTRIES.items():
+        kind = ALIASES.get(entry, entry)
         text = f"---\nname: {name}\ndescription: {description}\n"
         text += "---\n\n"
         command = shlex.join([str(launcher), "workflow", kind, "--project", str(project)])
@@ -44,5 +50,5 @@ def templates(launcher, project):
             "If loading fails, report that failure; do not invent a local fallback.\n"
             "Definition discovery alone does not establish operational workflow readiness.\n"
         )
-        result[LEAVES[kind]] = text.encode()
+        result[LEAVES[entry]] = text.encode()
     return result

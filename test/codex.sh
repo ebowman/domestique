@@ -4,7 +4,7 @@
 # reports PASS/FAIL, and the harness exits non-zero if any scenario failed.
 # No external test framework and no network access are required.
 #
-# Run: bash test/codex.sh
+# Run: bash test/codex.sh --current (released v1); omit for frozen history.
 #
 # Intentionally does NOT use `set -e`: scenarios exercise failure-sensitive
 # installer paths and should collect every failed assertion before exiting.
@@ -23,8 +23,13 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
-# shellcheck source=test/historical-fixture.sh
-source "$SCRIPT_DIR/historical-fixture.sh"
+if [ "${1:-}" = "--current" ]; then
+  export HOME="$WORKROOT/current-home"
+  mkdir -p "$HOME"
+else
+  # shellcheck source=test/historical-fixture.sh
+  source "$SCRIPT_DIR/historical-fixture.sh"
+fi
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -646,6 +651,117 @@ scenario_beads_provider_routing() {
   check "surviving exclude retains .beads" grep -qxF '.beads/' "$g/.git/info/exclude"
 }
 
+scenario_public_names() {
+  local mode t rc kind entry rel before policy
+  for mode in normal guest; do
+    t="$WORKROOT/public-$mode"; mkdir -p "$t"
+    git_init "$t"
+    if [ "$mode" = guest ]; then
+      "$DOM" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
+      policy="$t/CLAUDE.local.md"
+    else
+      "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
+      policy="$t/CLAUDE.md"
+    fi
+    check "$mode install" test "$rc" -eq 0
+    for kind in decompose goal; do
+      check "Claude $kind shared body" cmp -s "$t/.claude/commands/$kind.md" "$t/.claude/commands/dom-$kind.md"
+      check "Claude arguments literal" grep -qF '$ARGUMENTS' "$t/.claude/commands/dom-$kind.md"
+      for entry in "dom-$kind" "domestique-$kind"; do
+        rel=".agents/skills/$entry/SKILL.md"
+        check "exact Codex name $entry" assert_skill_name "$t/$rel" "$entry"
+        check "Codex invocation content" grep -qF "\$dom-$kind" "$t/$rel"
+        check "Codex compatibility content" grep -qF "\$domestique-$kind" "$t/$rel"
+        if [ "$kind" = goal ]; then
+          check "explicit-only $entry" grep -qF 'allow_implicit_invocation: false' "$t/.agents/skills/$entry/agents/openai.yaml"
+          check "default prompt $entry" grep -qF "\$$entry with an explicit epic id." "$t/.agents/skills/$entry/agents/openai.yaml"
+          check "no implicit authority $entry" grep -qF 'Merely loading or implicitly matching' "$t/$rel"
+        fi
+      done
+    done
+    check "Claude policy short authority" grep -qF '/dom-goal <epic-id>' "$policy"
+    check "Claude policy legacy authority" grep -qF '/goal <epic-id>' "$policy"
+    if [ "$mode" = guest ]; then
+      check "all new paths private" bash -c 'test -z "$(git -C "$1" status --porcelain --untracked-files=all)"' _ "$t"
+      for rel in .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
+        check "owned guest alias $rel" grep -qxF "$rel" "$t/.codex/.domestique/guest-excludes"
+        check "excluded guest alias $rel" grep -qxF "$rel" "$t/.git/info/exclude"
+      done
+    else
+      check "Codex policy short authority" grep -qF '$dom-goal <epic-id>' "$t/AGENTS.md"
+      check "Codex policy legacy authority" grep -qF '$domestique-goal <epic-id>' "$t/AGENTS.md"
+    fi
+    before="$(treehash "$t")"
+    "$DOM" "$t" >/dev/null 2>&1; rc=$?
+    check "rerun succeeds" test "$rc" -eq 0
+    check "rerun byte-identical" test "$before" = "$(treehash "$t")"
+    for rel in .claude/commands/dom-goal.md .agents/skills/dom-goal/SKILL.md; do
+      printf '\nUser customization\n' >> "$t/$rel"
+    done
+    "$DOM" "$t" >/dev/null 2>&1; rc=$?
+    check "edited rerun succeeds" test "$rc" -eq 0
+    for rel in .claude/commands/dom-goal.md .agents/skills/dom-goal/SKILL.md; do
+      check "rerun preserves $rel" grep -qxF 'User customization' "$t/$rel"
+    done
+    "$DOM" "$t" --uninstall >/dev/null 2>&1; rc=$?
+    check "uninstall succeeds" test "$rc" -eq 0
+    check "unchanged Claude alias removed" test ! -e "$t/.claude/commands/dom-decompose.md"
+    check "unchanged Codex alias removed" test ! -e "$t/.agents/skills/dom-decompose/SKILL.md"
+    check "unchanged Codex metadata removed" test ! -e "$t/.agents/skills/dom-goal/agents/openai.yaml"
+    for rel in .claude/commands/dom-goal.md .agents/skills/dom-goal/SKILL.md; do
+      check "edited alias retained by v1 rename" bash -c 'grep -qxF "User customization" "$1".uninstalled.*' _ "$t/$rel"
+    done
+  done
+}
+
+scenario_public_name_host_collisions() {
+  local t="$WORKROOT/public-host" rel rc before
+  mkdir -p "$t"; git_init "$t"
+  for rel in .claude/commands/dom-goal.md .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
+    mkdir -p "$(dirname "$t/$rel")"
+    printf 'host customization\n' > "$t/$rel"
+  done
+  "$DOM" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
+  check "collision install preserves via helpers" test "$rc" -eq 0
+  "$DOM" "$t" >/dev/null 2>&1
+  for rel in .claude/commands/dom-goal.md .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
+    check "host bytes preserved $rel" grep -qxF 'host customization' "$t/$rel"
+  done
+  for rel in .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
+    check "host alias stays visible" bash -c '! git -C "$1" check-ignore -q "$2"' _ "$t" "$rel"
+  done
+  before="$(filehash "$t/.agents/skills/dom-goal/SKILL.md")"
+  "$DOM" "$t" --uninstall >/dev/null 2>&1; rc=$?
+  check "host collision uninstall" test "$rc" -eq 0
+  check "unowned Codex alias kept in place" test "$before" = "$(filehash "$t/.agents/skills/dom-goal/SKILL.md")"
+  check "host Claude alias kept by existing rename behavior" bash -c 'grep -qxF "host customization" "$1".uninstalled.*' _ "$t/.claude/commands/dom-goal.md"
+}
+
+scenario_previous_install_adds_public_names() {
+  local t="$WORKROOT/previous-install" old="$WORKROOT/previous-domestique.sh" rc rel
+  mkdir -p "$t"; git_init "$t"
+  git -C "$REPO_DIR" show 654414025554defe9eeef50c39b14a87326088b8:domestique.sh > "$old"
+  bash "$old" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
+  check "frozen previous install" test "$rc" -eq 0
+  check "previous install had no short skill" test ! -e "$t/.agents/skills/dom-goal"
+  check "previous install had no short command" test ! -e "$t/.claude/commands/dom-goal.md"
+  printf '\nUser role edit\n' >> "$t/$IMPL_REL"
+  "$DOM" "$t" >/dev/null 2>&1; rc=$?
+  check "ordinary rerun adds aliases" test "$rc" -eq 0
+  check "role customization preserved" grep -qxF 'User role edit' "$t/$IMPL_REL"
+  check "Claude alias added" cmp -s "$t/.claude/commands/goal.md" "$t/.claude/commands/dom-goal.md"
+  for rel in .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
+    check "alias exists after upgrade" test -f "$t/$rel"
+    check "new alias guest ownership" grep -qxF "$rel" "$t/.codex/.domestique/guest-excludes"
+    check "new alias guest exclusion" grep -qxF "$rel" "$t/.git/info/exclude"
+  done
+  # Existing v1 policy merge deliberately leaves a visible CLAUDE.local.md
+  # backup. Do not broaden excludes or change that lifecycle for alias naming.
+  check "upgrade exposes only existing policy-backup behavior" bash -c '
+    ! git -C "$1" status --porcelain --untracked-files=all | grep -v "^?? CLAUDE.local.md.bak."
+  ' _ "$t"
+}
+
 echo "domestique Codex test harness"
 echo
 
@@ -665,6 +781,11 @@ run_scenario "guest visibility ownership"                 scenario_guest_visibil
 run_scenario "updater platform forwarding"                scenario_updater_platform_forwarding
 run_scenario "active AGENTS.override routing"              scenario_active_agents_override
 run_scenario "uninstall requires ownership evidence"      scenario_uninstall_requires_ownership_evidence
+if [ "${1:-}" = "--current" ]; then
+  run_scenario "cross-client public entries and unchanged-only removal" scenario_public_names
+  run_scenario "public entry host collisions" scenario_public_name_host_collisions
+  run_scenario "previous guest install gains public names" scenario_previous_install_adds_public_names
+fi
 
 echo
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

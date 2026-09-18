@@ -11,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "preview"))
-from native import DEFINITIONS, LEAVES
+from native import ALIASES, DEFINITIONS, LEAVES
 from project_data import RECEIPT
 
 # Reuse only the existing installed-cohort Git/argv/snapshot helpers, not its tests.
@@ -119,6 +119,7 @@ class PreviewWorkflowTests(unittest.TestCase):
     def test_definition_loading_and_old_locators_no_bd(self):
         before = PF.snapshot(self.a)
         for kind, leaf in LEAVES.items():
+            kind = ALIASES.get(kind, kind)
             body = (self.a / leaf).read_text()
             locator = body.split("```sh\n")[1].split("\n```")[0]
             self.assertEqual(shlex.split(locator),
@@ -261,6 +262,23 @@ class PreviewWorkflowTests(unittest.TestCase):
         self.assertNotIn(model, fake_available)
         self.assertIn("exact dispatch cannot be confirmed", output)
         self.assertEqual(role.read_bytes(), customized)
+        self.assertEqual((self.a / RECEIPT).read_bytes(), self.record)
+
+    def test_public_alias_guards(self):
+        for alias in ALIASES:
+            leaf = self.a / LEAVES[alias]
+            original = leaf.read_bytes()
+            leaf.write_bytes(original + b"\nCustomized alias\n")
+            output = self.load("goal")
+            self.assertIn("SETUP ONLY", output)
+            self.assertIn(alias, output)
+            self.load("goal", "--epic", "fixture-epic", "--domestique-goal", "--ready", code=1)
+            self.assertEqual(self.calls(), [])
+            leaf.unlink()
+            self.assertIn("missing owned native", self.load("ordinary", code=1))
+            self.assertEqual(self.calls(), [])
+            # Fixture-only recreation (may be classified replaced); no repair.
+            leaf.write_bytes(original)
         self.assertEqual((self.a / RECEIPT).read_bytes(), self.record)
 
     def test_explicit_goal_bounded_transcript_and_blocked_not_complete(self):

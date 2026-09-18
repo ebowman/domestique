@@ -8,7 +8,7 @@ import uuid
 
 from machine import Refusal, git, identity, make_parents, need, safe, writable_directory
 from native import DEFINITIONS, LEAVES, templates
-from project_data import (KIND, LIMIT, MARKER, PATHS, RECEIPT, block, load,
+from project_data import (KIND, LIMIT, MARKER, PATHS, RECEIPT, block, inventory, load,
                           read_bytes, regular, save, sha)
 
 LEGACY_STATE = (
@@ -26,6 +26,8 @@ POLICIES = ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md",
 COMMAND_ANCHORS = {
     ".claude/commands/decompose.md": b"Decompose the following into a beads work graph:",
     ".claude/commands/goal.md": b"Drive epic $ARGUMENTS to completion, unattended",
+    ".claude/commands/dom-decompose.md": b"Decompose the following into a beads work graph:",
+    ".claude/commands/dom-goal.md": b"Drive epic $ARGUMENTS to completion, unattended",
 }
 
 
@@ -175,12 +177,14 @@ def enable(root, project, installation, record, tracked, dry_run):
         need(record["state"] == "active", "partial/revoked preview; finish disable before enabling")
         exclusion_remainder(path, data, record)
         statuses = {leaf: leaf_status(root, leaf, record["files"][leaf], tracked)
-                    for leaf in LEAVES.values()}
+                    for leaf in inventory(record).values()}
         need("missing" not in statuses.values(), "missing owned definition; no repair, use disable")
         customized = [leaf for leaf, status in statuses.items() if status != "unchanged"]
         return 0, ("dry-run: " if dry_run else "") + (
             "definitions unchanged" if not customized else
             "definitions customized (preserved, not approved): " + ", ".join(customized)
+        ) + ("; legacy five-definition layout; disable/re-enable after customization review "
+             "to add /dom-decompose and /dom-goal" if "inventory" not in record else ""
         ) + "; workflows NOT READY"
     need(MARKER not in data, "foreign/shared preview exclusion; no sibling activation or adoption")
     for leaf in LEAVES.values():
@@ -190,9 +194,9 @@ def enable(root, project, installation, record, tracked, dry_run):
                  f"unowned native skill directory: {Path(leaf).parent}")
     need(len(data) + 2048 <= LIMIT, "exclude too large for bounded contribution")
     if dry_run:
-        return 0, "dry-run: would install five Copilot definitions and receipt; workflows NOT READY"
+        return 0, "dry-run: would install seven Copilot definitions and receipt; workflows NOT READY"
     record = {
-        "kind": KIND, "state": "partial-enable", "project": project,
+        "kind": KIND, "state": "partial-enable", "project": project, "inventory": "public-names",
         "installation": installation, "native_ids": {k: v[0] for k, v in DEFINITIONS.items()},
         "token": uuid.uuid4().hex, "files": {}, "directories": {},
         "exclusion": {"state": "planned", "identity": identity(path) if path.exists() else None,
@@ -228,13 +232,13 @@ def enable(root, project, installation, record, tracked, dry_run):
         except OSError:
             pass  # Last durable partial receipt remains; unknown assets are never adopted.
         return 1, f"PARTIAL definition installation: {exc}; use disable; workflows NOT READY"
-    return 0, "installed five Copilot definitions (not operational workflow readiness); workflows NOT READY"
+    return 0, "installed seven Copilot definitions (not operational workflow readiness); workflows NOT READY"
 
 
 def disable(root, project, record, tracked, dry_run):
     reasons, eligible = [], []
     # Preflight every leaf and exclusion before revoking or deleting anything.
-    for leaf in LEAVES.values():
+    for leaf in (inventory(record) if record else LEAVES).values():
         try:
             status = leaf_status(root, leaf, record["files"].get(leaf) if record else None, tracked)
             if status == "unchanged":

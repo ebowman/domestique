@@ -8,7 +8,7 @@ from machine import Refusal, git, identity, need, resolve_source, safe
 from native import LEAVES
 from project import (COMMAND_ANCHORS, LEGACY_STATE, POLICIES, exclusion_remainder,
                      installation_identity, project_identity, tracked_paths)
-from project_data import LIMIT, MARKER, RECEIPT, load, read_bytes, regular, sha
+from project_data import LIMIT, MARKER, RECEIPT, inventory, load, read_bytes, regular, sha
 
 
 def display(path):
@@ -125,7 +125,11 @@ def report(target, machine_root, machine_receipt):
         partial = True
         receipt_status = "unknown (unreadable, corrupt, incompatible or foreign receipt/index)"
     rows.append(f"Receipt {display(RECEIPT)}: {receipt_status}")
-    for leaf in LEAVES.values():
+    if record and "inventory" not in record:
+        rows.append("Native inventory: legacy five-definition layout; short names not installed "
+                    "by this activation; "
+                    "review customizations before disable/re-enable.")
+    for leaf in (inventory(record) if record else LEAVES).values():
         try:
             status = created_status(root, leaf, record["files"].get(leaf) if record else None, tracked)
         except (Refusal, OSError, ValueError):

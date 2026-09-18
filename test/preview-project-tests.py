@@ -16,7 +16,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "preview"))
 import project as P
-from native import DEFINITIONS, LEAVES, templates
+from native import ALIASES, ENTRIES, LEAVES, templates
 from project_data import RECEIPT, PATHS
 
 
@@ -55,6 +55,16 @@ class PreviewProjectTests(unittest.TestCase):
         cls.repo(cls.source)
         shutil.copytree(ROOT / "preview", cls.source / "preview")
         shutil.copyfile(ROOT / "install-v2.sh", cls.source / "install-v2.sh")
+        # Freeze the actual prior five-definition lifecycle and exact block,
+        # not today's constants with two files removed after activation.
+        frozen = "654414025554defe9eeef50c39b14a87326088b8"
+        names = ("native.py", "project_data.py", "project.py", "workflow.py", "footprint.py")
+        current = {name: (cls.source / "preview" / name).read_bytes() for name in names}
+        for name in names:
+            old = subprocess.check_output(
+                ["git", "--no-pager", "-C", str(ROOT), "show", f"{frozen}:preview/{name}"],
+                env=cls.env)
+            (cls.source / "preview" / name).write_bytes(old)
         # Historical goal metadata must remain owned bytes, not be migrated.
         native = cls.source / "preview/native.py"
         current_native = native.read_text()
@@ -66,7 +76,8 @@ class PreviewProjectTests(unittest.TestCase):
         cls.git(cls.source, "add", ".")
         cls.git(cls.source, "commit", "-m", "legacy goal metadata fixture")
         cls.legacy = cls.git(cls.source, "rev-parse", "HEAD").strip()
-        native.write_text(current_native)
+        for name, data in current.items():
+            (cls.source / "preview" / name).write_bytes(data)
         cls.git(cls.source, "add", ".")
         cls.git(cls.source, "commit", "-m", "project runtime fixture")
         cls.first = cls.git(cls.source, "rev-parse", "HEAD").strip()
@@ -185,9 +196,10 @@ class PreviewProjectTests(unittest.TestCase):
         for kind, leaf in LEAVES.items():
             data = (self.a / leaf).read_text()
             front, body = data[4:].split("---\n", 1)
-            name, description = DEFINITIONS[kind]
+            name, description = ENTRIES[kind]
+            workflow_kind = ALIASES.get(kind, kind)
             expected = f"name: {name}\ndescription: {description}\n"
-            if kind == "goal":
+            if workflow_kind == "goal":
                 # Metadata permits model loading; the body still gates intent.
                 self.assertNotIn("disable-model-invocation", front)
                 self.assertIn("explicit Domestique goal request naming an epic", body)
@@ -195,7 +207,7 @@ class PreviewProjectTests(unittest.TestCase):
             self.assertEqual(front, expected)  # No models/tools/MCP/default grants.
             command = body.split("```sh\n")[1].split("\n```")[0]
             self.assertEqual(shlex.split(command),
-                             [str(self.launcher), "workflow", kind, "--project", str(self.a)])
+                             [str(self.launcher), "workflow", workflow_kind, "--project", str(self.a)])
             if kind in ("implementer", "reviewer"):
                 self.assertIn("await the caller", body)
                 self.assertIn("or run this locator autonomously", body)
@@ -204,7 +216,7 @@ class PreviewProjectTests(unittest.TestCase):
                 ["bash", "-p", "-c", command], self.b))
             self.assertEqual((snapshot(self.area), snapshot(self.home)), baseline)
         # Common ignores affect discovery in Git, not project activation.
-        self.assertEqual(len(self.git(self.a, "check-ignore", *PATHS).splitlines()), 6)
+        self.assertEqual(len(self.git(self.a, "check-ignore", *PATHS).splitlines()), 8)
         self.command("disable")
         self.assertEqual(snapshot(self.a), before)
         self.unchanged_call("disable")
@@ -223,6 +235,20 @@ class PreviewProjectTests(unittest.TestCase):
         self.host = snapshot(self.home)
         self.command("enable", self.a)
         receipt = self.receipt()
+        self.assertNotIn("inventory", receipt)
+        old_paths = [
+            ".github/skills/domestique-v2-copilot/SKILL.md",
+            ".github/skills/domestique-v2-copilot-decompose/SKILL.md",
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md",
+            ".github/agents/domestique-v2-copilot-implementer.agent.md",
+            ".github/agents/domestique-v2-copilot-reviewer.agent.md",
+        ]
+        self.assertEqual(set(receipt["files"]), set(old_paths))
+        token = receipt["token"]
+        self.assertEqual(receipt["exclusion"]["block"],
+                         f"# domestique-copilot-preview BEGIN {token}\n" +
+                         "".join("/" + p + "\n" for p in [*old_paths, RECEIPT]) +
+                         f"# domestique-copilot-preview END {token}\n")
         goal = self.a / LEAVES["goal"]
         old_goal = goal.read_bytes()
         self.assertIn(b"disable-model-invocation: true\n", old_goal)
@@ -236,6 +262,21 @@ class PreviewProjectTests(unittest.TestCase):
         self.host = snapshot(self.home)  # Only this explicit machine update may change it.
         self.assertIn("customized", self.unchanged_call("enable", self.a))
         self.assertEqual(self.receipt(), receipt, "creation hashes never advance after update")
+        self.assertIn("legacy five-definition layout", self.unchanged_call("enable", self.a))
+        inspected = self.unchanged_call("inspect", self.a)
+        self.assertIn("legacy five-definition layout", inspected)
+        self.assertIn("Preview activation: active", inspected)
+        self.assertEqual(inspected.count(": unchanged"), 4)
+        self.assertIn("SETUP ONLY", self.unchanged_call("workflow", "goal", "--project", self.a))
+        self.assertIn("Beads readiness: NOT CHECKED",
+                      self.unchanged_call("workflow", "decompose", "--project", self.a))
+        for alias in ALIASES:
+            self.assertFalse((self.a / LEAVES[alias]).exists())
+        unowned = self.a / LEAVES["dom-decompose"]
+        unowned.parent.mkdir(parents=True)
+        unowned.write_bytes(b"Unowned short-name adapter\n")
+        self.assertIn("legacy five-definition layout", self.unchanged_call("enable", self.a))
+        self.assertEqual(self.receipt(), receipt, "no alias adoption on legacy repeat enable")
         self.assertEqual(goal.read_bytes(), old_goal, "owned legacy metadata is not rewritten")
         self.assertEqual(role.read_bytes(), edited)
         self.unchanged_call("disable", self.a, "--dry-run", code=1)
@@ -251,9 +292,55 @@ class PreviewProjectTests(unittest.TestCase):
         self.assertEqual(role.read_bytes(), edited)
         role.unlink()  # Explicit fixture-owner cleanup of the retained local edit.
         self.command("disable", self.a)
+        self.assertEqual(unowned.read_bytes(), b"Unowned short-name adapter\n")
+        self.unchanged_call("enable", self.a, code=1)
+        unowned.unlink()  # Fixture owner resolves the unrelated alias collision.
+        unowned.parent.rmdir()
         self.command("enable", self.a)
         self.assertNotIn(b"disable-model-invocation", goal.read_bytes())
+        self.assertEqual(len(self.receipt()["files"]), 7)
         self.command("disable", self.a)
+
+    def test_public_alias_collisions_and_partial_removal(self):
+        for alias in ALIASES:
+            leaf = self.a / LEAVES[alias]
+            leaf.parent.mkdir(parents=True)
+            for collision in ("identical", "tracked", "index-only", "symlink"):
+                with self.subTest(alias=alias, collision=collision):
+                    if collision == "symlink":
+                        leaf.symlink_to(self.a / "host.txt")
+                    else:
+                        leaf.write_bytes(templates(self.launcher, self.a)[LEAVES[alias]])
+                    if collision in ("tracked", "index-only"):
+                        self.git(self.a, "add", "--", LEAVES[alias])
+                        if collision == "index-only":
+                            leaf.unlink()
+                    self.unchanged_call("enable", code=1)
+                    self.unchanged_call("enable", "--dry-run", code=1)
+                    if collision in ("tracked", "index-only"):
+                        self.git(self.a, "rm", "--cached", "--", LEAVES[alias])
+                    if leaf.exists() or leaf.is_symlink():
+                        leaf.unlink()
+            self.unchanged_call("enable", code=1)  # Empty unowned skill dir is a collision.
+            leaf.parent.rmdir()
+        self.command("enable")
+        leaf = self.a / LEAVES["dom-goal"]
+        leaf.write_bytes(leaf.read_bytes() + b"\nUser customization\n")
+        edited = leaf.read_bytes()
+        receipt = self.receipt()
+        self.assertIn("customized", self.unchanged_call("enable"))
+        self.assertEqual(self.receipt(), receipt)
+        self.assertIn("customized", self.unchanged_call("inspect"))
+        self.assertIn("PARTIAL", self.command("disable", code=1))
+        self.assertEqual(leaf.read_bytes(), edited)
+        self.assertFalse((self.a / LEAVES["dom-decompose"]).exists())
+        self.assertEqual(self.receipt()["state"], "disabled")
+        self.unchanged_call("disable", "--dry-run", code=1)
+        self.command("disable", code=1)
+        self.assertEqual(leaf.read_bytes(), edited)
+        self.assertEqual(self.receipt()["files"], receipt["files"])
+        leaf.unlink()  # Fixture owner explicitly resolves retained customization.
+        self.command("disable")
 
     def test_collisions_and_exact_grammar(self):
         leaf = self.a / LEAVES["implementer"]
@@ -357,7 +444,7 @@ class PreviewProjectTests(unittest.TestCase):
         self.assertFalse((self.a / RECEIPT).exists())
         self.unchanged_call("enable", self.a, code=1)
         self.unchanged_call("disable", self.a, code=1)
-        self.assertEqual(len(self.git(self.a, "check-ignore", *PATHS).splitlines()), 6)
+        self.assertEqual(len(self.git(self.a, "check-ignore", *PATHS).splitlines()), 8)
         exclude = self.a / ".git/info/exclude"
         original = exclude.read_bytes()
         for kind in ("duplicate", "edited", "foreign"):

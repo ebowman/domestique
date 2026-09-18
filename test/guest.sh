@@ -4,7 +4,7 @@
 # sandbox, reports PASS/FAIL per scenario, prints a final tally, and exits
 # non-zero if any scenario failed. No external test framework, no network.
 #
-# Run: bash test/guest.sh
+# Run: bash test/guest.sh --current (released v1); omit for frozen history.
 #
 # Conventions follow test/upgrade.sh exactly: scratch dirs via mktemp -d,
 # check()/run_scenario() helpers, collect-then-report (never exit early on a
@@ -23,8 +23,13 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
-# shellcheck source=test/historical-fixture.sh
-source "$SCRIPT_DIR/historical-fixture.sh"
+if [ "${1:-}" = "--current" ]; then
+  export HOME="$WORKROOT/current-home"
+  mkdir -p "$HOME"
+else
+  # shellcheck source=test/historical-fixture.sh
+  source "$SCRIPT_DIR/historical-fixture.sh"
+fi
 
 PASS_COUNT=0
 FAIL_COUNT=0

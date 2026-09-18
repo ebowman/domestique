@@ -64,7 +64,7 @@ class PreviewInspectTests(unittest.TestCase):
                 self.assertIn("Preview activation: absent", output)
                 self.assertIn("Selected shared revision (current):", output)
                 self.assertIn("Workflow readiness: NOT CHECKED", output)
-                self.assertEqual(output.count("absent (not owned)"), 5)
+                self.assertEqual(output.count("absent (not owned)"), 7)
             for tail in (("",), ("--dry-run",), (self.a, "extra"), (self.a, "--ready")):
                 self.inspect(form, *tail, code=2)
         before = PF.snapshot(self.base)
@@ -78,7 +78,7 @@ class PreviewInspectTests(unittest.TestCase):
         record = (self.a / RECEIPT).read_bytes()
         output = self.inspect("inspect")
         self.assertIn("Preview activation: active", output)
-        self.assertEqual(output.count(": unchanged"), 5)
+        self.assertEqual(output.count(": unchanged"), 7)
         # Inspection requires reads, not lifecycle write permission.
         readonly = (self.a, self.a / ".github/agents", self.a / ".git/info/exclude")
         modes = {path: path.stat().st_mode & 0o777 for path in readonly}
@@ -97,7 +97,7 @@ class PreviewInspectTests(unittest.TestCase):
         self.command("update", "--ref", self.second)
         output = self.inspect("inspect", self.a)
         self.assertIn(self.second, output)
-        self.assertEqual(output.count(": unchanged"), 4)
+        self.assertEqual(output.count(": unchanged"), 6)
         self.assertIn(": customized", output)
         self.assertEqual((self.a / RECEIPT).read_bytes(), record)
         # Even a retained old CLI reports machine/current, not its own source as current.
@@ -182,6 +182,25 @@ class PreviewInspectTests(unittest.TestCase):
                     self.assertNotIn("Traceback", output)
                     self.assertNotIn("KeyError", output)
                     self.assertNotIn("PRIVATE-RECEIPT", output)
+
+    def test_closed_inventory_discriminator(self):
+        self.command("enable")
+        path = self.a / RECEIPT
+        original = path.read_bytes()
+        for layout in (None, "unknown", "missing"):
+            record = json.loads(original)
+            if layout == "missing":
+                del record["inventory"]  # Cannot relabel seven files as legacy five.
+            else:
+                record["inventory"] = layout
+            path.write_text(json.dumps(record))
+            output = self.inspect("inspect", code=1)
+            self.assertIn("Receipt " + F.display(RECEIPT) + ": unknown", output)
+            for args in (("enable",), ("disable",),
+                         ("workflow", "goal", "--project", self.a)):
+                before = PF.snapshot(self.base)
+                self.command(*args, code=1)
+                self.assertEqual(PF.snapshot(self.base), before)
 
     def test_unavailable_unsafe_and_unreadable_targets(self):
         sub = self.a / "sub"

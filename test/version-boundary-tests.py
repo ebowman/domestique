@@ -14,6 +14,7 @@ import inspect_fixture as F
 import preview_fixture as P
 
 V1_PIN = "4de726c2e38e731c67f5f37d4a16206d7b3d99af"
+PRE_NAMES_PIN = "654414025554defe9eeef50c39b14a87326088b8"
 PREVIEW_PIN = "58732cc"
 URL = "https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh"
 
@@ -50,7 +51,16 @@ class VersionBoundaryTests(unittest.TestCase):
             for name in ("domestique.sh", "update.sh"):
                 old = s.run(["git", "-C", F.ROOT, "show", V1_PIN + ":" + name]).stdout
                 actual = (F.ROOT / name).read_bytes()
-                self.assertEqual(actual, old)
+                # The restoration was byte-identical at the frozen checkpoint.
+                # Current v1 adds public names; updater transport stays pinned.
+                restored = s.run(["git", "-C", F.ROOT, "show",
+                                  PRE_NAMES_PIN + ":" + name]).stdout
+                self.assertEqual(restored, old)
+                if name == "update.sh":
+                    self.assertEqual(actual, old)
+                else:
+                    self.assertIn(b".claude/commands/dom-goal.md", actual)
+                    self.assertIn(b".agents/skills/dom-goal/SKILL.md", actual)
                 preview = s.run(["git", "-C", F.ROOT, "show", PREVIEW_PIN + ":" + name]).stdout
                 artifact = name.replace(".sh", "2.sh")
                 self.assertEqual(P.source(artifact), preview)
@@ -75,11 +85,15 @@ class VersionBoundaryTests(unittest.TestCase):
                 self.assertIn(F.BEGIN, (repo / policy).read_bytes())
                 for leaf in (".claude/agents/implementer.md", ".claude/agents/reviewer.md",
                              ".claude/commands/decompose.md", ".claude/commands/goal.md",
+                             ".claude/commands/dom-decompose.md", ".claude/commands/dom-goal.md",
                              ".codex/agents/implementer.toml", ".codex/agents/reviewer.toml",
                              ".agents/skills/domestique/SKILL.md",
                              ".agents/skills/domestique-decompose/SKILL.md",
                              ".agents/skills/domestique-goal/SKILL.md",
-                             ".agents/skills/domestique-goal/agents/openai.yaml"):
+                             ".agents/skills/domestique-goal/agents/openai.yaml",
+                             ".agents/skills/dom-decompose/SKILL.md",
+                             ".agents/skills/dom-goal/SKILL.md",
+                             ".agents/skills/dom-goal/agents/openai.yaml"):
                     self.assertTrue((repo / leaf).is_file(), leaf)
                 for provider in ("claude", "codex"):
                     state = repo / ("." + provider) / ".domestique"
