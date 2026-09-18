@@ -129,12 +129,23 @@ class PreviewWorkflowTests(unittest.TestCase):
                 self.assertIn("ROLE LOCATOR ONLY", output)
                 self.assertNotIn("## Delegated", output)
             if kind == "goal":
+                self.assertNotIn("disable-model-invocation", body.split("---\n")[1])
                 self.assertIn("SETUP ONLY", output)
+                self.assertIn("no goal loop or queue authority", output)
+                self.assertIn("Native goal/autopilot/natural planning alone is not that intent", output)
                 self.assertIn("--domestique-goal --ready", output)
                 self.assertNotIn("## Explicit Domestique goal", output)
         for args in (("help",), ("inspect", self.a), ("enable", self.a),
                      ("disable", self.a, "--dry-run")):
             self.command(*args)
+        self.assertEqual(PF.snapshot(self.a), before)
+        self.assertEqual(self.calls(), [])
+        for args in (("--epic", "fixture-epic"), ("--domestique-goal",)):
+            self.assertIn("SETUP ONLY", self.load("goal", *args))
+        output = self.load("goal", "--epic", "fixture-epic", "--domestique-goal")
+        self.assertIn("Beads readiness: NOT CHECKED; no bd invoked.", output)
+        self.assertIn("successful\nretained readiness before selecting work", output)
+        self.assertIn("--domestique-goal --ready", output)
         self.assertEqual(PF.snapshot(self.a), before)
         self.assertEqual(self.calls(), [])
         for args in (("--ready",), ("--epic", "fixture-epic", "--ready"),

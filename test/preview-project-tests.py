@@ -55,6 +55,18 @@ class PreviewProjectTests(unittest.TestCase):
         cls.repo(cls.source)
         shutil.copytree(ROOT / "preview", cls.source / "preview")
         shutil.copyfile(ROOT / "install-v2.sh", cls.source / "install-v2.sh")
+        # Historical goal metadata must remain owned bytes, not be migrated.
+        native = cls.source / "preview/native.py"
+        current_native = native.read_text()
+        native.write_text(current_native.replace(
+            '        text += "---\\n\\n"',
+            '        if kind == "goal":\n'
+            '            text += "disable-model-invocation: true\\n"\n'
+            '        text += "---\\n\\n"'))
+        cls.git(cls.source, "add", ".")
+        cls.git(cls.source, "commit", "-m", "legacy goal metadata fixture")
+        cls.legacy = cls.git(cls.source, "rev-parse", "HEAD").strip()
+        native.write_text(current_native)
         cls.git(cls.source, "add", ".")
         cls.git(cls.source, "commit", "-m", "project runtime fixture")
         cls.first = cls.git(cls.source, "rev-parse", "HEAD").strip()
@@ -176,7 +188,8 @@ class PreviewProjectTests(unittest.TestCase):
             name, description = DEFINITIONS[kind]
             expected = f"name: {name}\ndescription: {description}\n"
             if kind == "goal":
-                expected += "disable-model-invocation: true\n"
+                # Metadata permits model loading; the body still gates intent.
+                self.assertNotIn("disable-model-invocation", front)
                 self.assertIn("explicit Domestique goal request naming an epic", body)
                 self.assertIn("Native goal/autopilot", body)
             self.assertEqual(front, expected)  # No models/tools/MCP/default grants.
@@ -206,8 +219,14 @@ class PreviewProjectTests(unittest.TestCase):
         self.assertEqual(snapshot(self.b), b_before)
 
     def test_z_customized_partial_and_source_update(self):
+        self.command("update", "--ref", self.legacy)
+        self.host = snapshot(self.home)
         self.command("enable", self.a)
         receipt = self.receipt()
+        goal = self.a / LEAVES["goal"]
+        old_goal = goal.read_bytes()
+        self.assertIn(b"disable-model-invocation: true\n", old_goal)
+        self.unchanged_call("enable", self.a)
         role = self.a / LEAVES["implementer"]
         # Arbitrary user bytes (including malformed metadata) are opaque.
         role.write_bytes(b"---\nname: user override\nmodel: [unparsed\n---\n$local body ' edits\n\xff")
@@ -217,6 +236,7 @@ class PreviewProjectTests(unittest.TestCase):
         self.host = snapshot(self.home)  # Only this explicit machine update may change it.
         self.assertIn("customized", self.unchanged_call("enable", self.a))
         self.assertEqual(self.receipt(), receipt, "creation hashes never advance after update")
+        self.assertEqual(goal.read_bytes(), old_goal, "owned legacy metadata is not rewritten")
         self.assertEqual(role.read_bytes(), edited)
         self.unchanged_call("disable", self.a, "--dry-run", code=1)
         self.assertIn("receipt revoked", self.command("disable", self.a, code=1))
@@ -224,6 +244,7 @@ class PreviewProjectTests(unittest.TestCase):
         self.assertEqual(self.receipt()["state"], "disabled")
         self.assertEqual(self.receipt()["files"], receipt["files"])
         self.assertFalse((self.a / LEAVES["reviewer"]).exists())
+        self.assertFalse(goal.exists(), "unchanged legacy goal is removable by its creation hash")
         self.unchanged_call("enable", self.a, code=1)
         partial = self.command("disable", self.a, code=1)
         self.assertIn("customized", partial)
@@ -231,6 +252,7 @@ class PreviewProjectTests(unittest.TestCase):
         role.unlink()  # Explicit fixture-owner cleanup of the retained local edit.
         self.command("disable", self.a)
         self.command("enable", self.a)
+        self.assertNotIn(b"disable-model-invocation", goal.read_bytes())
         self.command("disable", self.a)
 
     def test_collisions_and_exact_grammar(self):

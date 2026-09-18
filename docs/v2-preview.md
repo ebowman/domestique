@@ -1,14 +1,19 @@
 # Small Copilot-first preview
 
-**SHARED WORKFLOWS IMPLEMENTED / NATIVE NOT END-TO-END QUALIFIED.**
+**COPILOT/MACOS PREVIEW: RETAINED-CLI WORKFLOW AND SEPARATE GOAL SKILL LOAD DEMONSTRATED.**
 The hq-iyu.2–.5 source implements installation, explicit update, offline
 version/help, Copilot-only project enable/disable with dry-run, and thin shared
 workflow/context loading with an explicit external-Beads readiness step.
 Read-only inspection reports the selected revision and target footprint.
-The later hq-iyu.6 native acceptance demonstration is
-required; no native client, model or real database was used for this task.
+The [2026-09-18 native demonstration](#bounded-native-qualification-2026-09-18)
+at `ad80706` completed real decompose and a direct retained-CLI one-bead goal
+with independent review and Beads closure. Its goal skill invocation failed,
+then a separate read-only native probe loaded the corrected project-local goal
+skill successfully. The full cycle predates the two-line template visibility
+fix; core workflow code is unchanged. This is not a new full-cycle rerun,
+all-entry discovery or end-to-end skill-entry qualification.
 Documentation, local fixture tests, source checkout, old passing logs and
-discoverable metadata do not establish workflow readiness.
+discoverable metadata alone do not establish a project's workflow readiness.
 
 ## Boundary and source
 
@@ -178,7 +183,8 @@ owned file, older/ambiguous evidence, invalid/partial receipts and exclusions,
 and refused/unreadable targets. Byte/mode/path snapshots protect fixtures before
 and after reads. Deterministic PermissionError tests are mock I/O proof, not
 privileged-host filesystem permission or native acceptance proof.
-There are no native/model/network/real-Beads calls or real HOME installation.
+These offline modules make no native/model/network/real-Beads calls or real
+HOME installation.
 Static emitted-command checks are not native
 discovery or workflow proof. Historical ABI/bootstrap/inspector suites are not
 part of this qualification stage.
@@ -272,7 +278,7 @@ Frontmatter contains only these exact `name` / `description` pairs:
 | `domestique-v2-copilot-implementer` | Implement one caller-assigned Domestique task. |
 | `domestique-v2-copilot-reviewer` | Independently review one caller-assigned Domestique task. |
 
-Goal additionally has `disable-model-invocation: true` and requires an explicit
+Goal is model-loadable, but execution still requires an explicit
 Domestique goal request naming an epic, not native goal/autopilot. No model,
 tool, MCP defaults or permission grants are emitted. Delegated roles await the
 caller's bounded task and retained source context; their locator is for the
@@ -425,8 +431,51 @@ hot reload is guaranteed. In that client, natural planning can request
 entry is `/domestique-v2-copilot-decompose`. Planning does not authorize coding.
 For the loop, request “Use Domestique goal for epic EPIC_ID” and explicitly select
 `/domestique-v2-copilot-goal`; native goal/autopilot is not Domestique goal.
-These intended native entries still require hq-iyu.6 acceptance, not an assertion
-that a particular installed client discovers them.
+The decompose skill was exercised in the bounded demonstration below, but the
+goal skill returned `Skill not found: domestique-v2-copilot-goal`. The caller
+recovered with the explicit retained CLI, not a successful goal skill load.
+The separate read-only probe below confirmed corrected goal skill-tool loading,
+not execution of its instructions or a new goal loop.
+Your client must discover its own local definitions and approve required access.
+
+Copilot shell-command approval and file-path approval are separate. Approve
+only the necessary project, shared installation and installed Python paths
+through the client's normal permission controls. An allowed Python command can
+still be denied when its executable path lies outside the allowed directories;
+account for the interpreter's resolved location when it is a symlink.
+Session-local `--add-dir` is one supported way to grant directory access.
+The installer does not change global trust or permissions, and blanket
+`--allow-all` access is not required.
+
+### Existing goal skill metadata
+
+Fresh activations from the corrected source omit
+`disable-model-invocation: true` on the Copilot goal skill. Old activations set
+that model-loading prohibition; the recorded model registry omitted the goal
+even though the request was explicit.
+Normal skill discovery is not loop authority: the wrapper still requires an
+explicit user Domestique goal request naming an epic, and the bare loader is
+read-only **SETUP ONLY**, with no Beads calls or queue authority. Operational
+use still requires actual user intent, `--domestique-goal`, `--epic` and successful
+`--ready`; native goal/autopilot is not authorization.
+
+Shared-source update and repeat enable preserve existing owned metadata
+byte-for-byte, including this old flag and private customizations. They do not
+migrate wrappers. After updating to the corrected source, unchanged definitions
+can be disabled and freshly enabled to receive the new metadata. If definitions
+are customized, disable retains those files and may report partial cleanup;
+do not discard private edits to force reactivation. Alternatively, manually
+review the local goal `SKILL.md` and remove only that metadata restriction,
+preserving the explicit-intent wording. Manual edits remain customizations
+against the original creation hashes and require fresh native confirmation
+before operational `--confirm-native` use. Reload/restart the client and check
+the exact skill ID; no hot reload is promised.
+
+Metadata checks or read-only `copilot skill list --json` results are only
+catalog evidence, not proof that the model's skill tool can load this entry.
+The separately authorized native probe below supplied that narrow confirmation
+through an actual skill-tool call and matching injected project-local body.
+It did not execute the loader, establish readiness or exercise activation.
 
 Exact standalone loader forms (substitute your actual project, brief and epic):
 
@@ -488,6 +537,88 @@ native/model/MCP clients; it makes no effective-permission or readiness inferenc
 Use the explicit installed path above: unchanged old `dom`/`dom2` aliases may
 still reach older scripts, not this preview.
 
+## Bounded native qualification (2026-09-18)
+
+The hq-iyu.6 demonstration used a disposable installation and project, a fresh
+Copilot caller session, and explicitly initialized user-managed Beads. Database
+initialization was test setup, not installer behavior.
+
+| Observation | Result |
+| --- | --- |
+| Runtime source | `ad807064b8b18f89ab60a0cf8e4149ab308bac15` |
+| Environment | macOS, Copilot CLI 1.0.86, Beads 1.2.2 |
+| Native models | Explicit `gpt-6-astra` for caller, implementer and reviewer |
+| Native wall time | 174.31 seconds across planning, goal and both roles |
+| Native usage | 175.97425 cumulative AI credits, 24 model requests |
+| Run limits | 200-credit soft cap and 300-second wall limit |
+
+Native decompose created one epic and one child without changing code or the
+Git index. The attempt-9 goal skill tool returned
+`Skill not found: domestique-v2-copilot-goal`; the available-skills registry
+listed ordinary/decompose but not goal. The caller recovered through the
+explicit retained CLI with Domestique intent, epic and readiness flags.
+That direct-CLI goal then dispatched
+`domestique-v2-copilot-implementer` and a fresh
+`domestique-v2-copilot-reviewer`, both with the requested native model. The
+reviewer independently read the actual file and performed the bounded checks.
+Only after its PASS did the caller commit the single expected file and close
+the child. The disposable epic stayed open; there was no push or merge.
+The fixture and its activation were removed after evidence capture, and project
+B received no definitions.
+
+The generator correction removes only the Copilot goal's
+`disable-model-invocation: true` restriction for new activations; intent and
+readiness gates remain. The full workflow run at `ad80706` predates this
+two-line template visibility fix; core workflow code is unchanged. Offline
+regressions and the older run do not themselves prove corrected skill loading.
+
+A separate **2026-09-18 read-only goal-entry probe** used one fresh actual
+Copilot invocation and exact freshly emitted candidate definitions in a unique
+disposable Git project. This was explicitly an emitted-template discovery
+fixture, not an installation/activation or lifecycle test.
+
+| Entry-probe observation | Result |
+| --- | --- |
+| Candidate generator | `preview/native.py` SHA-256 `350db6bb92d914a542a185d19fb2fa1af68134483b4f4c59737238a2ae8356df` |
+| Environment / actual model provider | macOS, Copilot CLI 1.0.86; `gpt-6-astra` / `openai-responses` |
+| Actual skill tool | One `domestique-v2-copilot-goal` execution start and successful completion |
+| Injected context | `skill.invoked` identified the unique project-local path; body and delivered-context SHA-256 matched the exact candidate output |
+| Native wall time | 12.408678 seconds from process launch |
+| Native usage | 10.05175 AI credits, 2 model requests; separate from attempt 9 |
+| Run limits | 30-credit soft cap, one 60-second monotonic deadline; no retry or substitution |
+
+Only `skill` was available; MCP servers were disabled session-locally.
+The explicit read-only instruction prohibited executing the skill body or
+locator. No shell, readiness, Beads, goal, delegation or file-change actions
+ran. The fixture's byte/mode/path/identity snapshot was unchanged, and its
+owned root was removed after evidence capture. No permission or trust changes
+were required. This resolves corrected goal discovery/loading only: the full
+decompose/goal/roles cycle was **not rerun** after the metadata fix.
+
+The companion lifecycle demonstration covered install, inspection, shared
+update visible to the next workflow without adapter rewrites, retained source
+paths, customization preservation and unchanged-only disable. It is separate
+from the real native model exercise, not a substitute for it.
+
+The earlier full workflow run restricted its tool catalog to 13 needed built-ins
+using Copilot's session-local `--available-tools`: `bash`, `read_bash`,
+`stop_bash`, `list_bash`, `view`, `rg`, `glob`, `apply_patch`, `task`, `skill`,
+`read_agent`, `write_agent` and `list_agents`. This reduced tool-schema context
+from an earlier 132-tool, 36,343-token catalog to 4,283 tokens. It is an optional
+validation profile, not an installed tool default or a requirement to remove
+your integrations. No global model, MCP, trust or authentication settings were
+changed.
+
+The workflow table's usage is attempt 9's final cumulative figure, including
+planning and both roles; do not add the planning subtotal again. It excludes
+earlier failed attempts and the separately tabulated entry probe. Prior failed
+costs and unknowns remain separate. A soft credit cap is not a guaranteed billing
+ceiling.
+This result is not a readiness flag stored in receipts: default instruction
+loading and inspection still do not prove that another client, project or model
+can execute the workflow. No real HOME installation, release publication,
+Claude/Codex v2 parity or exhaustive platform/model qualification is asserted.
+
 ## Portable reuse and acceptance limits
 
 The preserved `.claude/commands/decompose.md`, `.claude/commands/goal.md`,
@@ -512,13 +643,13 @@ private DB management, global retirement, automatic ABI2/3 migration, native
 hot reload, release signing/distribution and exhaustive platform/provider
 matrices. Deferred work is not a preview release dependency.
 
-Readiness requires the later, explicitly consent-gated small native
-demonstration in a fresh isolated Copilot session: A discovers the exact local
-skills/roles; decompose creates a small plan without coding; explicit goal
-completes one bounded bead with requested native models and independent review.
-Untouched B receives no definitions. A shared update is used by the next
-workflow without rewriting adapters; edits survive, disable retains customized
-files and inspect reports reality. Static fixtures are not this proof. Without
-bounded native/model consent or a necessary prerequisite, report **BLOCKED /
-NOT READY**, never fabricate usability. This checkpoint runs no future-feature
-engine tests and performs no native/model or real-HOME demonstration.
+The earlier bounded demonstration supplies evidence for decompose and the
+retained-CLI goal/custom-role/review/commit/closure path. The separate native
+probe supplies corrected goal skill discovery/loading evidence, not a new
+full-cycle run. Static fixtures or catalog listing alone establish neither.
+These results do not qualify the deferred framework or imply that preexisting
+ancestor/global client definitions are hidden or removed.
+Further native demonstrations require explicit bounded
+consent and available prerequisites. Without either, report **BLOCKED /
+NOT READY**, never fabricate usability. The preview does not install into the
+real HOME or publish a release as part of qualification.

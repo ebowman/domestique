@@ -1,6 +1,6 @@
 # domestique
 
-## Small preview — shared workflows implemented; native NOT END-TO-END QUALIFIED
+## Small Copilot/macOS preview — retained-CLI workflow and separate goal skill load demonstrated
 
 The [Copilot/macOS preview contract](docs/v2-preview.md) now has a small,
 repository-owned `preview/` installer, offline version/help and explicit local
@@ -10,6 +10,20 @@ source. Explicit `--ready` checks existing user-managed Beads; no private bridge
 Read-only `inspect` reports the selected revision and target ownership footprint.
 Installed definitions and fake-CLI fixtures do
 **not** establish native discovery, model dispatch or end-to-end qualification.
+A separate [native demonstration](docs/v2-preview.md#bounded-native-qualification-2026-09-18)
+at `ad80706` completed real decompose and an explicit retained-CLI goal,
+GPT-6 Astra implementation and independent review, one local commit and Beads
+closure on macOS with Copilot CLI 1.0.86. The goal skill invocation failed
+(`Skill not found`); the caller recovered through the retained CLI. The generator
+now permits goal skill model loading. On 2026-09-18 a separate read-only native
+probe loaded its exact corrected project-local body successfully using Copilot
+CLI 1.0.86, `gpt-6-astra` / `openai-responses`: 10.05175 AI credits in 12.408678
+seconds. The earlier full workflow used 175.97425 cumulative credits in 174.31
+seconds and predates the two-line template visibility fix; core workflow code is
+unchanged. The new probe proves skill discovery/loading only, not a rerun of the
+full cycle or activation lifecycle.
+This is a bounded preview result, not a published release or qualification of
+every client, model, provider or platform.
 Requires existing **Bash, Git and Python 3.9+** (not the macOS developer-tools
 Python stub); nothing installs dependencies or changes aliases/PATH.
 
@@ -104,8 +118,12 @@ and confirm the exact skill/role IDs before use; no hot reload is promised.
 For planning, ask “Use Domestique decompose to plan this change” or explicitly
 select `/domestique-v2-copilot-decompose`. For the bounded loop, explicitly ask
 “Use Domestique goal for epic EPIC_ID” and select `/domestique-v2-copilot-goal`.
-Native goal/autopilot is not this entry and does not authorize it. These are
-intended native entries, not native discovery or execution proof.
+Native goal/autopilot is not this entry and does not authorize it. Corrected
+goal skill loading was separately confirmed in the bounded read-only probe.
+Existing adapters are not rewritten by update or repeat enable; see the
+[legacy goal metadata guidance](docs/v2-preview.md#existing-goal-skill-metadata).
+The recorded demonstration does not replace discovery and permission approval
+in your own client; shell-command approval and file-path approval are separate.
 
 Inspection never installs, repairs, opens Beads, invokes a native/model/MCP
 client or changes exclusions. It compares original **creation hashes**, including

@@ -20,8 +20,6 @@ def templates(launcher, project):
     result = {}
     for kind, (name, description) in DEFINITIONS.items():
         text = f"---\nname: {name}\ndescription: {description}\n"
-        if kind == "goal":
-            text += "disable-model-invocation: true\n"
         text += "---\n\n"
         command = shlex.join([str(launcher), "workflow", kind, "--project", str(project)])
         if kind in ROLES:
