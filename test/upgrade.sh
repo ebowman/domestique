@@ -4,7 +4,7 @@
 # mktemp -d sandbox, reports PASS/FAIL per scenario, prints a final tally,
 # and exits non-zero if any scenario failed. No external test framework.
 #
-# Run: bash test/upgrade.sh
+# Run: bash test/upgrade.sh --current (v1); omit for frozen history.
 #
 # Intentionally does NOT use `set -e`: scenarios expect nonzero exit codes
 # (conflicts exit 3) and we want to keep running all scenarios even if one
@@ -23,8 +23,13 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
-# shellcheck source=test/historical-fixture.sh
-source "$SCRIPT_DIR/historical-fixture.sh"
+if [ "${1:-}" = "--current" ]; then
+  export HOME="$WORKROOT/current-home"
+  mkdir -p "$HOME"
+else
+  # shellcheck source=test/historical-fixture.sh
+  source "$SCRIPT_DIR/historical-fixture.sh"
+fi
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -440,6 +445,45 @@ scenario_predates_emitter_change_conflict() {
   fi
 }
 
+scenario_configured_pair_upgrade() {
+  local t="$WORKROOT/configured-pair"; mkdir -p "$t"
+  check "install" "$DOM" "$t"
+  check "synthetic configured-pair fixture" python3 "$SCRIPT_DIR/fixtures/claude-configured-pair.py" "$t"
+  cp "$t/$IMPL_REL" "$WORKROOT/configured-implementer"
+  cp "$t/.claude/agents/reviewer.md" "$WORKROOT/configured-reviewer"
+  cp "$t/$BASE_IMPL_REL" "$WORKROOT/original-base"
+  check "repeat install" "$DOM" "$t"
+  check "repeat preserves implementer bytes" cmp -s "$WORKROOT/configured-implementer" "$t/$IMPL_REL"
+  check "repeat preserves reviewer bytes" cmp -s "$WORKROOT/configured-reviewer" "$t/.claude/agents/reviewer.md"
+  check "repeat preserves pristine base" cmp -s "$WORKROOT/original-base" "$t/$BASE_IMPL_REL"
+  check "real three-way upstream upgrade" "$V2" "$t"
+  check "upstream merges without losing configured bytes; marker becomes stale" python3 - "$t" "$WORKROOT" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+root, scratch = map(Path, sys.argv[1:])
+i = (root / ".claude/agents/implementer.md").read_bytes()
+r = (root / ".claude/agents/reviewer.md").read_bytes()
+old = (scratch / "configured-implementer").read_bytes()
+expected = old.replace(b"Blockers or decisions the orchestrator should know about",
+                       b"Blockers or decisions the orchestrator should know about (v2)")
+assert i == expected
+assert r == (scratch / "configured-reviewer").read_bytes()
+marker_line = i.splitlines(keepends=True)[1]
+marker = json.loads(marker_line.removeprefix(b"# domestique-model-setup: "))
+assert marker["implementer_sha256"] == hashlib.sha256(old.replace(marker_line, b"", 1)).hexdigest()
+assert marker["implementer_sha256"] != hashlib.sha256(i.replace(marker_line, b"", 1)).hexdigest()
+assert marker["reviewer_sha256"] == hashlib.sha256(r).hexdigest()
+base = (root / ".claude/.domestique/base/.claude/agents/implementer.md").read_bytes()
+original_base = (scratch / "original-base").read_bytes()
+assert base == original_base.replace(b"Blockers or decisions the orchestrator should know about",
+                                     b"Blockers or decisions the orchestrator should know about (v2)")
+assert b"domestique-model-setup:" not in base
+assert b"LOCAL IMPLEMENTER INSTRUCTIONS" not in base
+PY
+}
+
 # ---------------------------------------------------------------------------
 echo "domestique upgrade test harness"
 echo "repo: $REPO_DIR"
@@ -457,6 +501,9 @@ run_scenario "--dry-run makes no writes"                        scenario_dry_run
 run_scenario "adopt then upgrade merges (plain)"                scenario_adopt_then_upgrade_merges_plain
 run_scenario "adopt then upgrade merges (CLAUDE.md block)"      scenario_adopt_then_upgrade_merges_claude_md
 run_scenario "predates-emitter-change conflict"                 scenario_predates_emitter_change_conflict
+if [ "${1:-}" = "--current" ]; then
+  run_scenario "configured role pair three-way preservation (real installer)" scenario_configured_pair_upgrade
+fi
 
 echo
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

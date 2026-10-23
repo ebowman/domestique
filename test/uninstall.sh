@@ -4,7 +4,7 @@
 # sandbox, reports PASS/FAIL per scenario, prints a final tally, and exits
 # non-zero if any scenario failed. No external test framework, no network.
 #
-# Run: bash test/uninstall.sh
+# Run: bash test/uninstall.sh --current (v1); omit for frozen history.
 #
 # Conventions follow test/guest.sh and test/upgrade.sh: single mktemp
 # WORKROOT with an EXIT-trap cleanup, check()/run_scenario() harness,
@@ -27,8 +27,13 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
-# shellcheck source=test/historical-fixture.sh
-source "$SCRIPT_DIR/historical-fixture.sh"
+if [ "${1:-}" = "--current" ]; then
+  export HOME="$WORKROOT/current-home"
+  mkdir -p "$HOME"
+else
+  # shellcheck source=test/historical-fixture.sh
+  source "$SCRIPT_DIR/historical-fixture.sh"
+fi
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -684,6 +689,31 @@ echo "domestique uninstall test harness"
 echo "repo: $REPO_DIR"
 echo
 
+scenario_configured_pair_uninstall() {
+  local t="$WORKROOT/configured-pair"; mkdir -p "$t"
+  git_init "$t"
+  check "guest install" "$DOM" "$t" --guest
+  check "synthetic configured-pair fixture" python3 "$SCRIPT_DIR/fixtures/claude-configured-pair.py" "$t"
+  cp "$t/$IMPL_REL" "$WORKROOT/configured-implementer"
+  cp "$t/$REVIEWER_REL" "$WORKROOT/configured-reviewer"
+  check "real uninstall" "$DOM" "$t" --uninstall
+  check "both configured roles preserved byte-for-byte as existing uninstall backups" python3 - "$t" "$WORKROOT" <<'PY'
+from pathlib import Path
+import sys
+root, scratch = map(Path, sys.argv[1:])
+for role in ("implementer", "reviewer"):
+    path = root / f".claude/agents/{role}.md"
+    assert not path.exists()
+    backups = list(path.parent.glob(path.name + ".uninstalled.*"))
+    assert len(backups) == 1
+    original = scratch / f"configured-{role}"
+    assert backups[0].read_bytes() == original.read_bytes()
+    assert backups[0].stat().st_mode == original.stat().st_mode
+assert not (root / ".claude/.domestique").exists()
+assert not (root / ".beads").exists()
+PY
+}
+
 run_scenario "plain round-trip"                                 scenario_plain_roundtrip
 run_scenario "guest round-trip"                                 scenario_guest_roundtrip
 run_scenario "modified .claude/ file kept (.uninstalled.<TS>)"  scenario_modified_file_kept
@@ -707,6 +737,9 @@ run_scenario "marker refusal: inverted order"                    scenario_marker
 run_scenario "marker refusal: guest variant (CLAUDE.local.md)"   scenario_marker_guest_variant
 run_scenario "guard/strip consistency: BEGIN with trailing space" scenario_guard_trailing_space
 run_scenario "prunes only empty dirs"                            scenario_prune_only_empty_dirs
+if [ "${1:-}" = "--current" ]; then
+  run_scenario "configured roles retained on uninstall (real installer)" scenario_configured_pair_uninstall
+fi
 
 echo
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

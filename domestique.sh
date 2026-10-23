@@ -27,8 +27,14 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 
 ## Roles
 - **You (main session, planning model):** decompose work, hold the plan, delegate implementation and review, adjudicate the results, decide what's next. Write code yourself only for trivial one-line edits.
-- **`implementer` subagent (Sonnet):** executes one bounded task at a time in its own context and reports back a summary.
-- **`reviewer` subagent (Opus):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. A stronger, non-peer check than the implementer. Does not fix anything; reviewing is its only job.
+- **`implementer` subagent (selected role model):** executes one bounded task at a time in its own context and reports back a summary.
+- **`reviewer` subagent (selected role model):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. Both roles may use the same model; independence requires a fresh reviewer context, not a stronger model. Does not fix anything; reviewing is its only job.
+
+## Role model gate (before Beads or delegation)
+- Claude native entries `/dom-decompose` and `/dom-goal` (aliases `/decompose`, `/goal`) share the setup protocol in their installed command bodies and the same two role files/marker. Generated defaults are suggestions, never confirmation.
+- Ordinary bounded delegation must first validate the confirmed pair and native readiness using that protocol, read-only. If unconfigured or stale, STOP and direct the human to `/dom-decompose configure role models`; do not start another questionnaire or call Beads. Instruction/bootstrap loading alone neither starts setup nor authorizes goal work; do not infer the active harness from directories.
+- Explicit `/dom-decompose configure role models` (or `/decompose configure role models`) is reserved for setup-only reconfiguration, not a planning brief. Saving consumes the request: fresh client session and explicit reinvocation are required, with no automatic goal continuation.
+- Before dispatch, verify exact local role loading and effective model/effort/override evidence for this session. Unknown or substituted selections mean STOP, never fallback. Send no conflicting spawn model/effort overrides. Native dispatch qualification is separate from emitted instruction tests.
 
 ## Work tracking: beads
 - The plan of record lives in beads (`bd`), not in markdown TODO lists.
@@ -135,18 +141,176 @@ Keep it small. The orchestrator's context is the constraint — return a verdict
 DOM_EOF
 }
 
+# One instruction body, embedded verbatim in both command families and aliases.
+# This is a native assistant protocol, not an installer-time settings engine.
+emit_claude_model_setup() { cat <<'DOM_EOF'
+## Claude first-use role setup — mandatory gate
+
+Run this gate BEFORE any Beads command (including readiness/create/claim),
+planning, code, branch changes or dispatch. This native command explicitly
+identifies the harness as `claude`. Bind ROOT to the exact physical Git worktree
+root of this invocation; if cwd is not that root, or identity is ambiguous,
+STOP and ask for an explicit invocation there. Never search ancestors for
+another installation, infer another harness, or configure a sibling worktree.
+Standalone instruction loading is read-only, not permission to run setup.
+
+### Read-only preflight and confirmation state
+Use only ROOT/.claude/agents/implementer.md and
+ROOT/.claude/agents/reviewer.md, with existing scoped management evidence:
+ROOT/.claude/.domestique/manifest and the corresponding pristine files at
+ROOT/.claude/.domestique/base/.claude/agents/{implementer,reviewer}.md.
+Require a readable, bounded, unambiguous snapshot_format=1 manifest whose
+comma-separated files inventory contains each exact role path once; if a
+platform field is present it must be `claude`. Older Claude manifests may omit
+platform. Both pristine bases must exist. This is snapshot/three-way ownership,
+NOT historical inode proof. Current owned customized bytes may be confirmed
+while preserving unrelated bytes and original pristine bases. Missing or
+unmanaged evidence, ambiguous ownership or unsafe paths mean STOP; use the
+existing explicit install lifecycle/human repair, never adopt through setup.
+
+Validate both roles and management evidence before proposing changes: bounded
+UTF-8 regular files (at most 1 MiB each), no symlinks in any path component,
+no hardlinked files (link count must be one), fixed paths confined to ROOT,
+readable metadata and writable role parents. Record current device/inode,
+modes and complete bytes of both roles and evidence for operation-local rechecks.
+Require one well-formed YAML frontmatter block per role, with unique top-level
+scalar model/effort fields if present. Reject duplicate keys, nested/aliased/
+multiline or otherwise ambiguous field syntax, malformed metadata, and
+duplicate/misplaced setup markers for human repair. Never whole-file format.
+
+The only completion marker is a single comment immediately after the opening
+implementer frontmatter delimiter: `# domestique-model-setup: JSON`.
+Reviewer must contain no setup marker. JSON has exactly these keys:
+`v` (integer 1), `project` (absolute physical ROOT), `harness` (`claude`),
+`implementer_sha256`, `reviewer_sha256` (lowercase 64-character SHA-256 hex).
+Hash complete role byte sequences, removing only that entire marker line from
+implementer; hash reviewer unchanged. Validate JSON types/unique keys, root,
+harness and BOTH digests, plus ownership, at every entry.
+
+No marker (including pristine generated defaults), a stale hash, a copied/moved
+project or an interrupted setup is unconfirmed. Show both current choices for
+explicit reconfirmation; never complete a partial pair silently. Any manual edit
+to model, effort or instructions invalidates confirmation. An unchanged confirmed
+pair means NO questionnaire and NO writes, including confirmed inheritance:
+proceed only through the native readiness checks below. Explicit decompose
+request `configure role models` always uses the same two-role question instead.
+Aliases share exactly this pair and marker, never separate consent.
+
+### Native evidence — no invented API or paid probe
+Before saving, use supported evidence from the installed client's documented
+capabilities/current selectable models and efforts to establish that BOTH
+proposed selections are supported and available with the required role tools.
+Display the evidence and its limits. Check applicable native precedence and
+overrides using supported, non-secret evidence; do not edit client settings.
+For Claude, invocation model precedes role frontmatter, then subagent environment
+default, then parent; `inherit` selects parent. Force-model settings, spawn hooks
+and allowlists may override/substitute. Effort order is environment override,
+invocation effort, role effort, then session. Verify the installed version's
+behavior rather than assuming this order is universal.
+Unknown support/availability, incompatible effort, unresolved inheritance/alias,
+or an override that defeats the selection means STOP before writes, with the
+role and reason. No fallback or silent default substitution; no paid probe.
+
+After saving, require a fresh client session and explicit reinvocation. Before
+any workflow action on a confirmed pair, discover the exact project-local
+`implementer` and `reviewer` role IDs and verify that these exact files loaded.
+Check session-resolved model AND effort, tools, provider restrictions and
+selection/override evidence before task dispatch. Send no conflicting spawn
+model/effort override; ephemeral model requests are assertions, not persistence:
+a conflict stops and offers explicit reconfiguration. Inheritance is consent to
+native resolution, not a pinned model; resolve/check it anew every session.
+If exact loading/effective selection or prevention of silent substitution cannot
+be verified with supported native evidence, STOP without workflow or writes.
+A catalog, file syntax, user assertion or marker alone is not dispatch proof.
+Do not invent a verification API or promise pre-observation knowledge.
+Actual observed role dispatch/reload qualification is separate, budget-gated
+work (hq-7sm.6); static emitted-protocol/lifecycle tests do not qualify runtime.
+That later observation is not a prerequisite to writing this protocol or saving
+choices with supported pre-save evidence, and does not authorize a paid call here.
+
+### One question for BOTH roles; mandatory consent
+Show ROOT / claude, both exact paths, current model and effort values (including
+absent fields and native inheritance semantics), and any tracked-file effects.
+Ask in one form:
+> Configure Domestique roles? Implementer: exact model ID or native inheritance,
+> plus confirmed effort or inherited effort. Reviewer: exact model ID or native
+> inheritance, plus confirmed effort or inherited effort.
+> Save the displayed minimal diff to these two files? Save setup only / Cancel.
+
+Use current client choices, not a shipped model menu. Both roles may use the same
+model; always use a fresh reviewer context. Existing Claude aliases may be kept
+only with displayed native resolution and explicit confirmation; new explicit
+choices require exact IDs. Existing effort is NOT silently approved when changing
+models: explicitly confirm it or choose supported effort/inheritance independently.
+Write `model: "inherit"` for native model inheritance; omit effort for inherited
+effort (native resolution, not necessarily the selected model's default).
+Missing model fields/generated defaults are not consent.
+
+Prepare both outputs in memory and show the ACTUAL complete proposed diff
+(including marker), existing settings, inherited semantics and tracked-file
+consequences before explicit Save setup only consent. If selections change,
+redisplay the diff and obtain consent to that exact diff. Consent to a goal is
+not consent to save settings. Cancel, incomplete/missing values, or noninteractive
+setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
+Noninteractive callers may only use an already confirmed pair after readiness
+checks; otherwise report the interactive setup/reinvoke action and STOP.
+
+### Lossless bounded publication, setup only
+Reject control characters/newlines in model/effort inputs. Serialize inserted
+YAML values as JSON-quoted strings and marker JSON with a JSON serializer, never
+shell interpolation/eval. Patch only selected scalar value spans, necessary
+field additions/removals and the marker; preserve ALL unrelated bytes, comments,
+line endings and modes. When removing effort retain any unrelated inline comment
+as a comment. If a lossless bounded patch cannot be established, STOP for manual
+resolution. Never modify tools, permissions, parent/global configuration,
+pristine bases, manifest, guest exclusions, repository instructions or Beads.
+
+Preflight both outputs and ownership together. Immediately before publication,
+recheck safe paths, current identities, modes and bytes of both roles/evidence;
+any change means STOP/re-prompt, not overwrite. Under cooperative single-writer
+operation, use same-directory temporary files and atomic per-file replacement,
+preserving original modes. Recheck expected state before each replacement:
+1. Invalidate any old implementer completion marker first (remove only its line).
+2. Write the reviewer update.
+3. Publish implementer with the new pair marker LAST.
+This is NOT a two-file transaction or hostile-writer guarantee. Re-read both
+outputs, verify exact approved bytes/modes and marker hashes before reporting
+success. Any failure stops, reports exactly which paths changed and any unknown
+state, and grants NO workflow authority. Retain user bytes; clean only this
+operation's known temporary files. No rollback, journal or silent repair.
+Retry uses the same explicit two-role preflight/question over current bytes.
+
+Every successful first confirmation/reconfiguration is SETUP ONLY: no planning
+beads, claim, code, dispatch, branch/commit or goal cycle. End with a fresh client
+session and the explicit `/dom-decompose` (alias `/decompose`) or
+`/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) invocation to repeat. The initiating
+goal request is consumed, NOT queued for automatic continuation.
+Before later goal execution, ALL tracked/index dirtiness, including setup
+changes, requires human disposition: never auto-stage, commit, stash, discard
+or hide it. Guest mode retains existing local-only exclusions and uninstall
+preservation. Updates use existing three-way snapshots, never reset pristine
+bases to configured bytes; changed bytes invalidate confirmation. Uninstall
+preserves modified roles under existing semantics; reinstall implies no consent.
+
+## End role setup gate — continue only for an unchanged confirmed, ready pair
+DOM_EOF
+}
+
 emit_decompose() { cat <<'DOM_EOF'
 ---
 description: Decompose a goal or spec into a beads epic with bounded, dependency-ordered tasks.
-argument-hint: <goal, or path to a spec file>
+argument-hint: <goal, path to a spec file, or configure role models>
 ---
+DOM_EOF
+  emit_claude_model_setup
+  cat <<'DOM_EOF'
 
 Decompose the following into a beads work graph: $ARGUMENTS
 
 Rules for a good decomposition:
 - Create one epic for the goal:
   `bd create "<goal>" -t epic -p 1 --description "<why + high-level design>"`
-- Break it into **bounded tasks** — each completable by a fresh Sonnet session in a single pass. A task has one clear deliverable and a testable done-criterion. If it needs more than that, split it.
+- Break it into **bounded tasks** — each completable by a fresh implementer context using the selected role model in a single pass. A task has one clear deliverable and a testable done-criterion. If it needs more than that, split it.
   `bd create "<task>" -t task -p <2-3> --parent <epic-id> --description "<input, output, done-criteria>"`
 - Wire real dependencies so `bd ready` only ever surfaces work that can actually start:
   `bd dep add <blocked-id> <blocker-id>`   # blocked depends on blocker
@@ -162,13 +326,16 @@ emit_goal() { cat <<'DOM_EOF'
 description: Drain a beads epic to completion unattended — dedicated branch, one bead per commit, reviewer-gated, bounded loop.
 argument-hint: <epic-id>
 ---
+DOM_EOF
+  emit_claude_model_setup
+  cat <<'DOM_EOF'
 
 Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
 
 Require an explicit `/dom-goal <epic-id>` or compatibility `/goal <epic-id>` request naming the epic in `$ARGUMENTS`. Merely loading these instructions is not unattended authority; if the epic or explicit request is missing, ask and stop.
 
 ## Branch isolation (load-bearing)
-Before touching anything, create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
+Only after the role setup gate passes without setup writes, check ALL tracked/index dirtiness (including configured role files). If dirty, stop for human disposition; never auto-stage, commit, stash, discard or hide it. Then create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
 
 ## Per-cycle loop
 For each cycle:

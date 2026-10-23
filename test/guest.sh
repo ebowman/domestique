@@ -482,6 +482,122 @@ scenario_mixed_dir_plain_merge() {
   check "--no-guest removed the mode marker" test ! -e "$t/$MODE_MARKER_REL"
 }
 
+# Static assertions over REAL installed output; not assistant/native execution.
+scenario_claude_setup_protocol() {
+  local t="$WORKROOT/setup-protocol"; mkdir -p "$t"
+  git_init "$t"
+  check "guest installer succeeds" "$DOM" "$t" --guest
+  check "installed protocol/aliases (static, not native qualification)" python3 - "$t" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+commands = root / ".claude/commands"
+decompose = (commands / "dom-decompose.md").read_text()
+goal = (commands / "dom-goal.md").read_text()
+assert decompose == (commands / "decompose.md").read_text()
+assert goal == (commands / "goal.md").read_text()
+start = "## Claude first-use role setup — mandatory gate"
+end = "## End role setup gate — continue only for an unchanged confirmed, ready pair"
+def body(text):
+    assert text.count(start) == text.count(end) == 1
+    return text.split(start)[1].split(end)[0]
+setup = body(decompose)
+assert setup == body(goal), "one shared setup body"
+for text, action in ((decompose, "Decompose the following"),
+                     (goal, "Drive epic $ARGUMENTS")):
+    assert text.index(end) < text.index(action), "gate before workflow"
+
+# State/consent paths, including repeat, inheritance, owned customization.
+for phrase in (
+    "BEFORE any Beads command (including readiness/create/claim)",
+    "harness as `claude`", "exact physical Git worktree",
+    "ROOT/.claude/.domestique/manifest",
+    "base/.claude/agents/{implementer,reviewer}.md",
+    "snapshot_format=1", "NOT historical inode proof",
+    "Missing or\nunmanaged evidence",
+    "Current owned customized bytes may be confirmed",
+    "original pristine bases", "no symlinks in any path component",
+    "link count must be one", "at most 1 MiB each",
+    "unique top-level\nscalar model/effort", "duplicate/misplaced setup markers",
+    "immediately after the opening\nimplementer frontmatter delimiter",
+    "`# domestique-model-setup: JSON`", "Reviewer must contain no setup marker",
+    "`v` (integer 1)", "`project`", "`harness`",
+    "`implementer_sha256`, `reviewer_sha256`", "removing only that entire marker line",
+    "BOTH digests", "JSON types/unique keys",
+    "pristine generated defaults", "copied/moved",
+    "Any manual edit", "NO questionnaire and NO writes",
+    "including confirmed inheritance", "request `configure role models`",
+    "Show ROOT / claude", "current model and effort values",
+    "Both roles may use the same\nmodel", "fresh reviewer context",
+    "existing settings, inherited semantics and tracked-file",
+    "explicitly confirm it", 'Write `model: "inherit"`',
+    "omit effort for inherited", "new explicit\nchoices require exact IDs",
+    "displayed native resolution and explicit confirmation",
+    "ACTUAL complete proposed diff", "Save setup only / Cancel",
+    "Cancel, incomplete/missing values, or noninteractive",
+    "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
+    "Noninteractive callers may only use an already confirmed pair",
+    "JSON-quoted strings", "JSON serializer", "control characters/newlines",
+    "preserve ALL unrelated bytes, comments", "line endings and modes",
+    "lossless bounded patch cannot be established, STOP",
+    "recheck safe paths, current identities, modes and bytes",
+    "same-directory temporary files", "atomic per-file replacement",
+    "NOT a two-file transaction", "verify exact approved bytes/modes",
+    "reports exactly which paths changed", "NO workflow authority",
+    "no planning\nbeads, claim, code, dispatch, branch/commit or goal cycle",
+    "fresh client\nsession", "NOT queued for automatic continuation",
+    "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
+):
+    assert phrase in setup, phrase
+assert setup.index("1. Invalidate") < setup.index("2. Write the reviewer")
+assert setup.index("2. Write the reviewer") < setup.index("3. Publish implementer")
+
+# Support and dispatch evidence are distinct; unknowns stop, no invented API.
+for phrase in (
+    "Before saving, use supported evidence", "supported and available",
+    "Force-model settings, spawn hooks", "Effort order is environment override",
+    "Unknown support/availability", "STOP before writes",
+    "After saving, require a fresh client session",
+    "verify that these exact files loaded", "session-resolved model AND effort",
+    "Send no conflicting spawn", "a conflict stops",
+    "STOP without workflow or writes", "not dispatch proof",
+    "Do not invent a verification API", "no paid probe",
+    "Actual observed role dispatch/reload qualification is separate",
+    "static emitted-protocol/lifecycle tests do not qualify runtime",
+):
+    assert phrase in setup, phrase
+policy = (root / "CLAUDE.local.md").read_text()
+assert "Ordinary bounded delegation" in policy
+assert "read-only" in policy
+assert "STOP and direct the human to `/dom-decompose configure role models`" in policy
+assert "selected role model" in policy
+assert "Sonnet" not in policy + decompose and "Opus" not in policy
+assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create or switch")
+for role in ("implementer", "reviewer"):
+    assert b"domestique-model-setup:" not in (root / f".claude/agents/{role}.md").read_bytes()
+assert not (root / ".beads").exists(), "installer must not initialize Beads"
+PY
+}
+
+scenario_guest_configured_roles() {
+  local t="$WORKROOT/setup-guest"; mkdir -p "$t"
+  git_init "$t"
+  check "guest install" "$DOM" "$t" --guest
+  local exclude_before i_before r_before base_before
+  exclude_before="$(filehash "$t/.git/info/exclude")"
+  base_before="$(filehash "$t/.claude/.domestique/base/.claude/agents/implementer.md")"
+  check "synthetic configured-pair fixture" python3 "$SCRIPT_DIR/fixtures/claude-configured-pair.py" "$t"
+  i_before="$(filehash "$t/.claude/agents/implementer.md")"
+  r_before="$(filehash "$t/.claude/agents/reviewer.md")"
+  check "guest repeat install" "$DOM" "$t"
+  check "configured implementer unchanged" test "$i_before" = "$(filehash "$t/.claude/agents/implementer.md")"
+  check "configured reviewer unchanged" test "$r_before" = "$(filehash "$t/.claude/agents/reviewer.md")"
+  check "original pristine base unchanged" test "$base_before" = "$(filehash "$t/.claude/.domestique/base/.claude/agents/implementer.md")"
+  check "guest excludes unchanged" test "$exclude_before" = "$(filehash "$t/.git/info/exclude")"
+  check "configured guest remains local-only" bash -c '[ -z "$(git -C "$1" status --porcelain)" ]' _ "$t"
+}
+
 # ---------------------------------------------------------------------------
 echo "domestique guest-mode test harness"
 echo "repo: $REPO_DIR"
@@ -501,6 +617,10 @@ run_scenario "--no-guest --dry-run keeps the marker"            scenario_no_gues
 run_scenario "tracked CLAUDE.local.md warning"                  scenario_tracked_path_warning
 run_scenario "upstream merge (guest, CLAUDE.local.md)"          scenario_guest_upstream_merge
 run_scenario "mixed-dir: plain merge unaffected by guest"       scenario_mixed_dir_plain_merge
+if [ "${1:-}" = "--current" ]; then
+  run_scenario "Claude setup emitted protocol (static assertions)" scenario_claude_setup_protocol
+  run_scenario "configured roles guest lifecycle (real installer)" scenario_guest_configured_roles
+fi
 
 echo
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

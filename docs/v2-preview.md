@@ -406,14 +406,18 @@ sandboxing or invisibility. Existing ancestor/global definitions may still
 advertise Domestique; enabling or disabling this preview does not retire them
 or erase cached native context. Use fresh clients when qualifying discovery.
 
-## First-use role models — future contract, NOT SHIPPED (hq-7sm.1)
+## First-use role models — Claude protocol implemented, native unqualified
 
-This section specifies the small follow-on UX, **not current behavior or native
-qualification**. Today `domestique.sh` emits hardcoded Claude model defaults and
-Codex model/effort defaults; `preview/native.py` emits no Copilot models.
+The accepted contract (hq-7sm.1) below is implemented for Claude as an **emitted
+native assistant protocol** in `domestique.sh` (hq-7sm.2), not a standalone
+settings engine or native runtime qualification. One shared setup body gates
+canonical/legacy decompose and goal; ordinary policy redirects unconfirmed
+delegation to setup. Generated Claude model defaults remain suggestions, not
+consent. Codex and Copilot setup adapters are still pending:
+`domestique.sh` emits Codex model/effort defaults; `preview/native.py` emits no Copilot models.
 `preview/workflow.py` transports ephemeral requests, and
 `preview/workflows/common.md` forbids persistent settings changes. Those current
-instructions remain in force until adapters implement this contract. No new
+instructions remain in force for those pending adapters. No new
 installer, model registry, migration engine, or `/drain` entry is proposed.
 
 ### One question, two roles, one project and harness
@@ -448,7 +452,7 @@ and consent to run a goal are all **not consent to save setup**.
 | Partial: one role chosen/missing, malformed metadata, or interrupted setup | Show both current choices; stop for missing/unsafe files, otherwise explicitly reconfirm the pair. Never complete silently. |
 | Confirmed explicit models, unchanged pair | No questionnaire or writes; check current native availability/effective dispatch before acting. |
 | Confirmed inheritance, unchanged pair | No questionnaire or writes. Resolve native defaults for this session; inheritance is consent to that policy, not a pinned model. |
-| Customized / unowned files | Owned edits: offer existing settings for confirmation and preserve unrelated bytes. Unowned, replaced ownership, or ambiguous files: stop; no adoption through model setup. |
+| Customized / unowned files | Owned edits: offer existing settings for confirmation and preserve unrelated bytes. Claude/Codex use scoped manifest/pristine snapshot evidence, not historical inode proof. Copilot additionally refuses identities outside its recorded creation/setup ownership. Unowned, unsafe or ambiguous files stop; no adoption through setup. |
 | Model/effort unavailable, unsupported, substituted, or effective dispatch unknown | Stop before workflow/delegation; preserve prior files/confirmation. Report the role and reason; no fallback. |
 | Explicit reconfiguration | The same question for both roles, with current values; save only the approved minimal diff, then reload/reinvoke. Cancel preserves the prior pair. |
 
@@ -545,16 +549,23 @@ validate the resolved models/efforts and any user provider restriction anew.
 Keep current Copilot OpenAI-only request restrictions until explicitly changed
 by a separately approved contract; never infer permission to change vendors.
 
-Before saving, require native evidence that **both** selected/resolved roles,
-models and efforts are available with required tools. Before workflow action,
-require qualified native effective-dispatch verification for the current
-client/session. File syntax, a catalog listing, a user assertion, and this
-marker are not such proof. If the adapter cannot verify the effective choice
-or prevent a silent substitution, stop without setup writes or workflow action;
-do not invent an API or launch a paid probe to answer the question.
-Qualification of availability and observed dispatch belongs to **hq-7sm.6**,
-with a separately user-approved budget. This documentation does not clear that
-gate or authorize those calls.
+Before saving, require supported native evidence that **both** proposed model/
+effort selections are selectable and available with required tools in the
+installed client; check applicable overrides, aliases and inherited resolution.
+Unknown support or a defeating override stops without setup writes; do not
+invent an API or launch a paid probe. This is a pre-save support check, not
+proof of an observed dispatch.
+
+After reload, before workflow/task dispatch, verify exact project-local role
+loading, session-resolved selections and overrides using supported native
+evidence. If effective selection or prevention of silent substitution cannot be
+verified, stop without workflow or further writes. File syntax, a catalog
+listing, a user assertion and this marker alone are not dispatch proof.
+Actual **observed dispatch/reload qualification** belongs to **hq-7sm.6**, with
+a separately user-approved budget. It is not a prerequisite to emitting guarded
+instructions or saving choices that pass pre-save checks. Neither documentation
+nor static tests clear that later gate, promise pre-observation knowledge or
+authorize paid calls.
 
 ### Entry and lifecycle boundaries
 
@@ -597,7 +608,7 @@ tracked files nor expands excludes or changes repository instructions.
 Preflight both roles and the existing ownership data before the first write:
 exact root/harness, active ownership, safe regular non-symlink/non-hardlinked
 paths, readable bounded metadata, writable parents, proposed lossless patches,
-native qualification, and explicit approval of the complete diff. Recheck input
+pre-save native support checks, and explicit approval of the complete diff. Recheck input
 bytes/identities immediately before publication; changes mean stop/re-prompt.
 No task work occurs during this operation.
 
@@ -640,7 +651,13 @@ writes with no matching recorded identity are retained for human resolution.
 This is a bounded extension of existing ownership, not a new model registry.
 
 Claude/Codex retain their existing snapshot/three-way update and scoped uninstall
-rules: setup never replaces pristine merge bases with customized bytes. Updates
+rules. For Claude, the scoped `.claude/.domestique/manifest` inventory and
+`base/.claude/agents/{implementer,reviewer}.md` pristine snapshots are management
+evidence for the exact role paths, not historical inode records. Missing evidence
+or unsafe/unmanaged paths refuse. Current owned customizations can be explicitly
+confirmed; recheck safe current paths, identities and bytes within the operation.
+Historical creation/setup inode matching above is specific to Copilot.
+Setup never replaces pristine merge bases with customized bytes. Updates
 preserve choices as local edits; changed role bytes invalidate the marker for
 reconfirmation. Uninstall preserves modified files under existing semantics;
 reinstall/generated defaults never imply prior consent. Copilot shared updates
@@ -658,17 +675,25 @@ Offline tests can establish the following; they cannot substitute for hq-7sm.6.
 | Explicit pair; inheritance pair; same model for both | Correct native fields/omissions, valid pair marker; next unchanged invocation has no prompt/writes and still checks native readiness. |
 | Model changed but old effort incompatible | Stop before writes/dispatch; never silently change effort. |
 | Manual model/effort/body edit; copied root; another harness | Only the affected pair loses confirmation; no cross-project/harness writes or automatic adoption. |
-| Owned customization; unowned/replaced/malformed role | Confirmable owned settings preserve every unrelated byte; ambiguous/unsafe ownership or syntax refuses without writes. |
+| Owned customization; unowned/unsafe/malformed role; Copilot replaced identity | Confirmable owned settings preserve every unrelated byte; ambiguous/unsafe ownership or syntax refuses without writes. Claude/Codex ownership remains snapshot-based. |
 | Short/legacy aliases; explicit reconfiguration; ordinary entry | Shared state; same setup-only path; ordinary cannot obtain goal authority or bypass the gate. |
 | Marker invalidation, reviewer write, final implementer write, or receipt save fails | No success/workflow; factual partial state; explicit retry or human resolution; customized files remain protected on disable. |
 | Copilot pristine minimal update versus customized update | Creation facts unchanged; current hashes truthful; only proven removable updates eligible for deletion. |
 | Update, guest, uninstall; tracked setup dirtiness before goal | Choices/customizations preserved by existing lifecycle; no changed excludes/global settings; dirty goal execution stops for the human. |
-| Unknown/unavailable effective model, effort, or native substitution | No fallback, setup write, claim or delegation; report qualification gap. Actual observed dispatch/reload tests remain budget-gated. |
+| Unknown/unavailable model/effort support or defeating override before save | No fallback or setup write; report the gap. After reload unknown effective selection stops workflow/claim/delegation without altering the saved pair. Actual observed dispatch/reload tests remain budget-gated. |
+
+Claude evidence is deliberately split: `test/guest.sh --current` checks real
+installer output/alias equality and static protocol assertions (first/repeat,
+inheritance, customization, cancellation, publication ordering and setup-only
+boundaries). `test/upgrade.sh --current` and `test/uninstall.sh --current` use a
+synthetic configured pair to exercise real snapshot merge/preservation behavior.
+These do not execute an assistant questionnaire, inject runtime write failures,
+or prove native loading/model dispatch. Other adapters and hq-7sm.6 remain pending.
 
 ## Workflows, dependencies and inspection
 
-The remainder describes **current shipped preview behavior**, not the future
-first-use contract above.
+The remainder describes **current shipped Copilot preview behavior**, not its
+pending first-use adapter above.
 
 Shared policy/context loading is implemented in **hq-iyu.4**; execution remains
 the native caller's job, not a Python loop manager. Entry instructions use the activated

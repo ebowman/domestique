@@ -39,11 +39,21 @@ Codex also supports `/skills` selection. Compatibility entries remain:
 Claude `/decompose`, `/goal`; Codex `$domestique-decompose`, `$domestique-goal`;
 Copilot `/domestique-v2-copilot-decompose`, `/domestique-v2-copilot-goal`.
 Goal still needs an explicit request naming the epic; loading/matching a skill
-alone never authorizes unattended work. Ordinary/bootstrap entries, role IDs,
-per-client models and native invocation policies are unchanged. These additive
+alone never authorizes unattended work. Ordinary/bootstrap entries and role IDs
+are unchanged. These additive
 names do **not** imply full Claude/Codex v2 parity. Naming/ownership evidence is
 offline regression coverage, not new native execution qualification; the earlier
 workflow-body demonstration above remains its separate, bounded evidence.
+
+Claude's v1 installer now emits a shared **first-use role-model setup protocol**
+for both command names/aliases. Generated defaults need explicit confirmation;
+setup ends without Beads/code/goal work and requires a fresh session/reinvocation.
+Use `/dom-decompose configure role models` to reconfigure both roles. Ordinary
+unconfirmed delegation redirects there. Existing snapshot update/uninstall
+semantics preserve customized roles. This is instruction-driven and **native
+unqualified**; unknown native support/selection stops without fallback.
+Codex/Copilot setup adapters and paid observed qualification remain pending.
+See [the contract and evidence limits](docs/v2-preview.md#first-use-role-models--claude-protocol-implemented-native-unqualified).
 
 From a checkout containing the new entrypoint:
 
