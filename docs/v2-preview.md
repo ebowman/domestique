@@ -406,7 +406,269 @@ sandboxing or invisibility. Existing ancestor/global definitions may still
 advertise Domestique; enabling or disabling this preview does not retire them
 or erase cached native context. Use fresh clients when qualifying discovery.
 
+## First-use role models — future contract, NOT SHIPPED (hq-7sm.1)
+
+This section specifies the small follow-on UX, **not current behavior or native
+qualification**. Today `domestique.sh` emits hardcoded Claude model defaults and
+Codex model/effort defaults; `preview/native.py` emits no Copilot models.
+`preview/workflow.py` transports ephemeral requests, and
+`preview/workflows/common.md` forbids persistent settings changes. Those current
+instructions remain in force until adapters implement this contract. No new
+installer, model registry, migration engine, or `/drain` entry is proposed.
+
+### One question, two roles, one project and harness
+
+Before the first decompose or goal action, the native entry passes its explicit
+`claude`, `codex`, or `copilot` harness identity and exact physical Git worktree
+root to setup. Never infer the active harness from directories, search ancestors
+for another project, or configure another harness. Existing project activation/
+ownership checks still apply. Missing role files require the existing explicit
+install/enable lifecycle, not creation by this question.
+
+Use one form/question, not a wizard:
+
+> Configure Domestique roles for **ROOT / HARNESS**?
+> Implementer: **exact model ID or native inheritance**; reviewer: **exact model
+> ID or native inheritance**. Existing values (including effort) are shown for
+> confirmation, not pre-approved. For Claude/Codex, confirm each existing effort
+> or choose a supported effort/native inheritance. Save the displayed minimal
+> diff to these two role files (and Copilot's existing ownership receipt)?
+> **Save setup only / Cancel**. Reload, then invoke your workflow again.
+
+Show paths, inherited semantics, and any tracked-file consequences before
+consent. No model menu is shipped: use the client's current supported choices,
+not guesses from filenames or a dated list. Both roles may use the same model;
+review independence comes from a **fresh reviewer context**, not a vendor or
+price tier. A generated default, an empty model field, loading instructions,
+and consent to run a goal are all **not consent to save setup**.
+
+| State at entry | Small UX and permitted result |
+| --- | --- |
+| Unconfigured: no valid completion marker, including pristine generated defaults | Ask once for both roles; show defaults as suggestions only. No workflow until confirmed. |
+| Partial: one role chosen/missing, malformed metadata, or interrupted setup | Show both current choices; stop for missing/unsafe files, otherwise explicitly reconfirm the pair. Never complete silently. |
+| Confirmed explicit models, unchanged pair | No questionnaire or writes; check current native availability/effective dispatch before acting. |
+| Confirmed inheritance, unchanged pair | No questionnaire or writes. Resolve native defaults for this session; inheritance is consent to that policy, not a pinned model. |
+| Customized / unowned files | Owned edits: offer existing settings for confirmation and preserve unrelated bytes. Unowned, replaced ownership, or ambiguous files: stop; no adoption through model setup. |
+| Model/effort unavailable, unsupported, substituted, or effective dispatch unknown | Stop before workflow/delegation; preserve prior files/confirmation. Report the role and reason; no fallback. |
+| Explicit reconfiguration | The same question for both roles, with current values; save only the approved minimal diff, then reload/reinvoke. Cancel preserves the prior pair. |
+
+Cancellation, an incomplete answer, and noninteractive missing input produce
+**zero writes and no workflow** (including no Beads readiness/create/claim).
+Noninteractive invocations may use an already confirmed pair but cannot perform
+setup in this first release; they report the interactive setup/reinvoke action.
+Malformed/duplicate fields require human repair, not a whole-file formatter.
+
+### Native fields and one completion marker
+
+Choices live only in these existing role files, relative to ROOT:
+
+| Harness | Implementer / reviewer paths | Explicit selection | Native inheritance |
+| --- | --- | --- | --- |
+| Claude Code | `.claude/agents/implementer.md`, `.claude/agents/reviewer.md` | YAML frontmatter `model: "ID"`; optional `effort: "LEVEL"` | Write `model: "inherit"`; omit `effort` for inherited effort. |
+| Codex | `.codex/agents/implementer.toml`, `.codex/agents/reviewer.toml` | Top-level TOML `model = "ID"`; optional `model_reasoning_effort = "LEVEL"` | Omit `model`; omit `model_reasoning_effort` for inherited effort. Never write a literal model named `inherit`. |
+| Copilot | `.github/agents/domestique-v2-copilot-implementer.agent.md`, `.github/agents/domestique-v2-copilot-reviewer.agent.md` | YAML frontmatter `model: "ID"` | Omit `model`, meaning the native default. No invented effort field. |
+
+Model and effort choices are independent for Claude/Codex. Existing explicit
+efforts must be displayed and confirmed, not silently retained as an assumed
+default when changing models. Omitting effort means native resolution, **not**
+necessarily the selected model's default effort. Validate the resulting pair.
+An existing Claude model alias may be kept only with displayed native resolution
+and confirmation; it is not an exact-ID guarantee. New explicit choices use exact
+IDs. No parent model, tools, permissions, MCP, trust, or global config is edited.
+
+Store one logical per-harness completion marker **only in the implementer role
+file**: a single comment line `# domestique-model-setup: JSON`, immediately
+inside YAML frontmatter or at the beginning of TOML. JSON has exactly
+`v` (integer `1`), `project` (absolute physical root string), `harness` (the
+entry's enum), `implementer_sha256` and `reviewer_sha256` (lowercase SHA-256 hex).
+Each digest covers the complete corresponding role file bytes with that one
+marker line removed from the implementer. Reviewer files have no setup marker.
+Reject duplicate/misplaced markers. This comment is ignored by native parsers;
+it carries confirmation, never a second copy of model choices. No sidecar,
+global configuration or parallel model registry is added.
+
+Validate bounded UTF-8 regular files (at most 1 MiB each), unique scalar fields,
+and the fixed paths before editing. Encode inserted YAML values as JSON-quoted
+strings and TOML values as escaped basic strings using serializers; reject
+control characters/newlines in model/effort input. Encode the marker with a JSON
+serializer, never shell interpolation/eval. Patch only the selected scalar
+values/removals and marker; preserve all other bytes, comments and modes.
+If a lossless bounded patch cannot be established, stop for manual resolution.
+
+At every entry compare the marker's project/harness and both computed hashes,
+plus existing ownership. Unchanged confirmed files do not prompt again. Any
+manual role edit, including instructions or effort, invalidates confirmation;
+show the current settings once for explicit reconfirmation, not every run.
+Changing another harness or using an alias does not affect this pair. A copied/
+moved project does not inherit consent. The marker proves a confirmed file
+pair under cooperative local operation, **not** availability or native dispatch.
+
+### Native precedence, qualification and reload
+
+Official sources consulted for this contract (2026-10-23):
+
+- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents):
+  current documented model order is invocation parameter, role frontmatter,
+  subagent environment default, then parent. `inherit` in frontmatter selects
+  the parent model. Force-model settings and spawn hooks can override this;
+  older versions differ and native allowlists can substitute models. Effort
+  order is environment override, invocation effort, role effort, then session.
+  The docs describe file watching with restart exceptions (including newly
+  created agent directories), and `/tasks` model/effort display; neither proves
+  a pre-dispatch enforcement API in the installed client.
+- [Codex subagents](https://developers.openai.com/codex/subagents), redirecting
+  to [agent configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents):
+  each role-file `model`/`model_reasoning_effort` overrides the value previously
+  resolved from explicit spawn, `[agents]` defaults, then parent. If spawn or
+  defaults select a model but neither supplies effort, that model's default
+  effort is used. A role file setting only `model` preserves the previously
+  resolved effort; it does not reset it. Omitting both fields allows native
+  resolution, not necessarily direct parent inheritance.
+- [Copilot custom-agent configuration](https://docs.github.com/en/copilot/reference/custom-agents-configuration):
+  role frontmatter `model` selects the agent model; unset inherits the default.
+  This is not proof that a particular CLI version can load, dispatch, or report
+  the requested effective model, nor a documented hot-reload guarantee.
+
+Available local **`codex --help` only** was consulted: it describes `--model`
+and `--config` but does not establish custom-role reload or an effective-model
+verification interface. No other native clients or model calls were run.
+For all three adapters, use a **fresh client session after saving**, discover the
+exact local role IDs, and explicitly reinvoke; do not rely on hot reload or
+resume a previously loaded role context.
+
+Domestique sends no conflicting spawn model/effort override to a confirmed
+explicit role. Existing ephemeral `--implementer-model` / `--reviewer-model`
+requests remain assertions to verify, not persistence or an override that can
+defeat native role precedence. A conflict stops and offers explicit
+reconfiguration. For inheritance, native session changes may change resolution;
+validate the resolved models/efforts and any user provider restriction anew.
+Keep current Copilot OpenAI-only request restrictions until explicitly changed
+by a separately approved contract; never infer permission to change vendors.
+
+Before saving, require native evidence that **both** selected/resolved roles,
+models and efforts are available with required tools. Before workflow action,
+require qualified native effective-dispatch verification for the current
+client/session. File syntax, a catalog listing, a user assertion, and this
+marker are not such proof. If the adapter cannot verify the effective choice
+or prevent a silent substitution, stop without setup writes or workflow action;
+do not invent an API or launch a paid probe to answer the question.
+Qualification of availability and observed dispatch belongs to **hq-7sm.6**,
+with a separately user-approved budget. This documentation does not clear that
+gate or authorize those calls.
+
+### Entry and lifecycle boundaries
+
+Decompose-first and goal-first both run the same setup gate before Beads or
+delegation. Any successful first confirmation/reconfiguration is **setup only**:
+no planning beads, task claim, code, branch/commit, or goal cycle. Disclose the
+writes, save only on explicit consent, then end with the fresh-session invocation
+to repeat. In particular, the goal request that led to setup is consumed, not
+queued for automatic continuation. Missing setup during unattended goal
+execution is a stop, never permission to write configuration.
+
+Reconfigure by invoking the harness's Domestique decompose entry with the exact
+request **`configure role models`**, reserved as setup-only rather than a planning
+brief. This uses the same form and storage, not a new command family. Normal
+invocations after confirmation keep their existing action/epic/readiness gates:
+
+| Harness | Decompose (also reconfiguration entry) | Goal requiring a fresh explicit epic request |
+| --- | --- | --- |
+| Claude | `/dom-decompose`; alias `/decompose` | `/dom-goal EPIC_ID`; alias `/goal EPIC_ID` |
+| Codex | `$dom-decompose`; alias `$domestique-decompose` | `$dom-goal EPIC_ID`; alias `$domestique-goal EPIC_ID` |
+| Copilot | `/dom-decompose`; alias `/domestique-v2-copilot-decompose` | `/dom-goal EPIC_ID`; alias `/domestique-v2-copilot-goal EPIC_ID` |
+
+Aliases share exactly one pair/marker; no separate consent or configuration.
+Ordinary/bootstrap loading stays read-only and grants no goal authority. An
+ordinary bounded workflow can use a confirmed pair; if unconfirmed, stop before
+delegation and direct the human to the same setup entry, not another wizard.
+Standalone instruction loading does not synthesize a harness identity or start
+setup. Direct execution paths must receive the explicit native-entry identity
+and enforce the same gate; they cannot bypass it through the retained CLI.
+
+Setup may dirty tracked Claude/Codex role files with disclosed consent. Before
+goal execution, **all tracked/index dirtiness, including setup changes, requires
+human resolution**. Do not auto-stage, commit, stash, discard or hide it. Copilot's
+existing refusal of tracked native files remains. Guest mode keeps its existing
+local-only footprint/exclusions and uninstall preservation; setup neither hides
+tracked files nor expands excludes or changes repository instructions.
+
+### Two-role write and ownership safety
+
+Preflight both roles and the existing ownership data before the first write:
+exact root/harness, active ownership, safe regular non-symlink/non-hardlinked
+paths, readable bounded metadata, writable parents, proposed lossless patches,
+native qualification, and explicit approval of the complete diff. Recheck input
+bytes/identities immediately before publication; changes mean stop/re-prompt.
+No task work occurs during this operation.
+
+Prepare both outputs in memory. After consent, invalidate any old completion
+marker first, write the reviewer update, then publish the implementer with the
+new pair marker last. Use same-directory temporary files and atomic per-file
+replacement, preserving modes; do not claim a two-file transaction. Re-read and
+verify both outputs and required receipt writes before reporting setup success.
+Any failure stops, reports exactly which paths changed, and grants no workflow
+authority. A missing/stale marker, digest mismatch or receipt mismatch means
+incomplete setup. Retain user bytes; clean only this operation's known temporary
+files. Retry is the same explicit two-role preflight/question over current bytes,
+not a journal, rollback engine or silent repair.
+
+For Copilot, retain `files[PATH].identity` and `files[PATH].sha256` as immutable
+**creation** facts in `.domestique-private/copilot-preview.json`. Add only an
+optional `model_setup` object to each of the two existing role entries, containing
+`identity` (post-write device/inode pair), `sha256` (complete post-write file hash,
+including the implementer marker), and `removable` (boolean). It stores no model
+names. Save these two objects together after both role writes; the confirmation
+gate also requires both objects to match current bytes/identities. A failed
+receipt save cannot yield a confirmed pair, even if the marker was published.
+An explicit retry may record the approved current outputs after full preflight;
+it must not reset creation facts or claim the interrupted operation succeeded.
+Ownership checks recognize the creation identity or a recorded `model_setup`
+identity. Same-identity byte edits remain owned customizations eligible for
+reconfirmation, never automatic deletion. An identity matching neither record
+is a replaced/ambiguous file requiring human ownership resolution, not adoption.
+
+`removable` may be true only when that file matched its creation identity/hash,
+or a prior matching `model_setup` with `removable: true`, at preflight and this
+operation changed only approved model/effort/marker bytes. Otherwise it is false:
+confirming existing owned custom instructions does **not** bless them for
+deletion. Inspection continues to show customized versus creation, separately
+from model confirmation. Repeat enable/shared update must recognize these owned
+replacements but never rewrite them or reset hashes. Disable revokes first and
+may remove only a matching creation file or a matching approved update with
+`removable: true`; other edits remain with honest partial removal. Interrupted
+writes with no matching recorded identity are retained for human resolution.
+This is a bounded extension of existing ownership, not a new model registry.
+
+Claude/Codex retain their existing snapshot/three-way update and scoped uninstall
+rules: setup never replaces pristine merge bases with customized bytes. Updates
+preserve choices as local edits; changed role bytes invalidate the marker for
+reconfirmation. Uninstall preserves modified files under existing semantics;
+reinstall/generated defaults never imply prior consent. Copilot shared updates
+remain project-write-free, including old five-definition layouts. No migration
+or alias refresh is bundled with setup.
+
+### Bounded adapter acceptance matrix
+
+Offline tests can establish the following; they cannot substitute for hq-7sm.6.
+
+| Case | Required observable result |
+| --- | --- |
+| Fresh generated defaults; decompose-first / goal-first, each harness | One two-role question; no consent assumed; approved setup ends without Beads/code/goal and asks for fresh invocation. |
+| Cancel; one missing answer; noninteractive unconfigured | Identical project/receipt bytes and zero workflow/Beads calls. |
+| Explicit pair; inheritance pair; same model for both | Correct native fields/omissions, valid pair marker; next unchanged invocation has no prompt/writes and still checks native readiness. |
+| Model changed but old effort incompatible | Stop before writes/dispatch; never silently change effort. |
+| Manual model/effort/body edit; copied root; another harness | Only the affected pair loses confirmation; no cross-project/harness writes or automatic adoption. |
+| Owned customization; unowned/replaced/malformed role | Confirmable owned settings preserve every unrelated byte; ambiguous/unsafe ownership or syntax refuses without writes. |
+| Short/legacy aliases; explicit reconfiguration; ordinary entry | Shared state; same setup-only path; ordinary cannot obtain goal authority or bypass the gate. |
+| Marker invalidation, reviewer write, final implementer write, or receipt save fails | No success/workflow; factual partial state; explicit retry or human resolution; customized files remain protected on disable. |
+| Copilot pristine minimal update versus customized update | Creation facts unchanged; current hashes truthful; only proven removable updates eligible for deletion. |
+| Update, guest, uninstall; tracked setup dirtiness before goal | Choices/customizations preserved by existing lifecycle; no changed excludes/global settings; dirty goal execution stops for the human. |
+| Unknown/unavailable effective model, effort, or native substitution | No fallback, setup write, claim or delegation; report qualification gap. Actual observed dispatch/reload tests remain budget-gated. |
+
 ## Workflows, dependencies and inspection
+
+The remainder describes **current shipped preview behavior**, not the future
+first-use contract above.
 
 Shared policy/context loading is implemented in **hq-iyu.4**; execution remains
 the native caller's job, not a Python loop manager. Entry instructions use the activated
