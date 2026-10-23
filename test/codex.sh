@@ -166,7 +166,7 @@ scenario_fresh_normal_codex() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 2: emitted agent TOML pins the approved models/efforts and carries
+# Scenario 2: emitted agent TOML suggests unconfirmed models/efforts and carries
 # Codex's required custom-agent fields without a read-only reviewer sandbox.
 # ---------------------------------------------------------------------------
 scenario_agent_toml() {
@@ -762,6 +762,214 @@ scenario_previous_install_adds_public_names() {
   ' _ "$t"
 }
 
+# Static protocol assertions over actual installer output, NOT native execution.
+scenario_codex_setup_protocol() {
+  local t="$WORKROOT/setup-protocol"; mkdir -p "$t"; git_init "$t"
+  check "install Codex" "$DOM" "$t" --platform codex
+  check "first/repeat/inherit/conflict/cancel instructions (static only)" python3 - "$t" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+skills = root / ".agents/skills"
+start = "## Codex first-use role setup — mandatory gate"
+end = "## End role setup gate — continue only for an unchanged confirmed, ready pair"
+def body(text):
+    assert text.count(start) == text.count(end) == 1
+    return text.split(start)[1].split(end)[0]
+decompose = (skills / "dom-decompose/SKILL.md").read_text()
+goal = (skills / "dom-goal/SKILL.md").read_text()
+setup = body(decompose)
+assert setup == body(goal)
+for kind, text, action in (
+    ("decompose", decompose, "# Decompose into beads"),
+    ("goal", goal, "# Unattended epic execution"),
+):
+    legacy = (skills / f"domestique-{kind}/SKILL.md").read_text()
+    assert text == legacy.replace(f"name: domestique-{kind}\n", f"name: dom-{kind}\n", 1)
+    assert text.index(end) < text.index(action)
+
+for phrase in (
+    "BEFORE any Beads command (including readiness/create/claim)",
+    "active harness as `codex`", "exact physical Git", "Never search ancestors",
+    "ROOT/.codex/agents/implementer.toml", "ROOT/.codex/agents/reviewer.toml",
+    "ROOT/.codex/.domestique/manifest",
+    "base/.codex/agents/{implementer,reviewer}.toml",
+    "snapshot_format=1", "platform=codex", "NOT historical inode proof",
+    "Current owned customized bytes may be confirmed", "original pristine bases",
+    "Missing/unmanaged", "never adopt through setup", "Do not impose Copilot",
+    "at most 1 MiB", "no symlinks in any path component", "link count must",
+    "Record current device/inode", "TOML parser", 'name = "implementer"',
+    'name = "reviewer"', "unique top-level scalar string",
+    "Reject duplicate keys", "non-string or multiline selection fields",
+    "duplicate/misplaced setup markers", "nested tables",
+    "single comment at the beginning of implementer",
+    "`# domestique-model-setup: JSON`", "Reviewer must contain no setup marker",
+    "`v` (integer 1)", "`project`", "`harness` (`codex`)",
+    "`implementer_sha256`, `reviewer_sha256`", "removing only",
+    "JSON types/unique keys", "BOTH digests", "pristine generated defaults",
+    "copied/moved", "never complete a partial pair silently", "Any manual",
+    "NO questionnaire and NO writes", "including confirmed\ninheritance",
+    "request `configure role models`", "Aliases share this pair/marker",
+    "Show ROOT / codex", "current model and model_reasoning_effort",
+    "same model", "fresh reviewer context", "exact IDs",
+    "Generated defaults and absent fields are not consent",
+    "Model and effort are independent", "explicitly confirm compatible existing",
+    "explicitly resolve incompatible effort", "Never silently retain unsupported",
+    "OMIT model", "write a literal model named `inherit`",
+    "For inherited effort OMIT\nmodel_reasoning_effort",
+    "ACTUAL complete proposed diff", "Save setup only / Cancel",
+    "redisplay the diff", "Goal authorization\nis not settings consent",
+    "Cancel, incomplete/missing values, or noninteractive",
+    "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
+    "Noninteractive callers may only use an already confirmed pair",
+    "Reject newlines and control characters", "including DEL/C1",
+    "double-quoted basic strings", r"as \\ and double quote as \"",
+    "ensure_ascii=False", "surrogate pairs", "Round-trip both proposed files",
+    "every unrelated key, including developer_instructions",
+    "never shell interpolation/eval", "selected top-level value spans",
+    "not inside a\ntable or multiline string", "Preserve ALL unrelated bytes",
+    "line endings\nand modes", "retain its unrelated inline comment",
+    "lossless bounded patch cannot be established, STOP",
+    "recheck safe paths, current identities, modes and bytes",
+    "same-directory temporary files", "atomic per-file replacement",
+    "NOT a two-file transaction", "verify exact approved bytes/modes",
+    "reports exactly which paths changed", "NO workflow authority",
+    "No rollback, journal or silent repair", "SETUP ONLY: no planning",
+    "beads, claim, code, dispatch, branch/commit or goal cycle",
+    "fresh client\nsession", "NOT queued for automatic continuation",
+    "Missing setup during unattended goal execution means STOP",
+    "Confirmed setup alone grants no goal authority",
+    "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
+    "never reset pristine\nbases to configured bytes",
+):
+    assert phrase in setup, phrase
+assert setup.index("1. Invalidate") < setup.index("2. Write the reviewer")
+assert setup.index("2. Write the reviewer") < setup.index("3. Publish implementer")
+for phrase in (
+    "Before saving, use supported evidence", "supported and available",
+    "role-file model/model_reasoning_effort values override",
+    "explicit spawn, then [agents] defaults, then parent",
+    "previously resolved effort; it does NOT reset",
+    "Verify installed-version behavior", "Unknown support/availability",
+    "STOP before writes", "No fallback", "invented verification API or paid probe",
+    "After saving, require a fresh client session",
+    "verify that these exact files loaded", "session-resolved model AND effort",
+    "Send no conflicting spawn", "Ephemeral model requests are assertions",
+    "a conflict stops", "resolve/check it anew each session",
+    "STOP without workflow or writes", "not dispatch proof",
+    "Actual observed role dispatch/reload qualification is separate",
+    "static emitted-protocol/lifecycle tests do not\nqualify runtime",
+):
+    assert phrase in setup, phrase
+for path in (root / "AGENTS.md", skills / "domestique/SKILL.md"):
+    text = path.read_text()
+    assert "Ordinary bounded delegation" in text
+    assert "read-only" in text
+    assert "STOP and direct the human to `$dom-decompose configure role models`" in text
+    assert "do not start another questionnaire" in text
+    assert "Instruction/bootstrap loading alone neither starts setup nor grants goal" in text
+    assert text.index("## Role model gate") < text.index("`bd ready`")
+assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create/switch")
+for role in ("implementer", "reviewer"):
+    assert b"domestique-model-setup:" not in (root / f".codex/agents/{role}.toml").read_bytes()
+assert not (root / ".beads").exists()
+PY
+}
+
+# Real installer lifecycle on a SYNTHETIC pair; no native questionnaire/dispatch.
+scenario_codex_configured_lifecycle() {
+  local choice="$1" t="$WORKROOT/configured-$1"
+  mkdir -p "$t"; git_init "$t"
+  if [ "$choice" = inherit ]; then
+    check "install guest fixture" "$DOM" "$t" --platform codex --guest
+  else
+    check "install explicit fixture" "$DOM" "$t" --platform codex
+  fi
+  local base="$t/.codex/.domestique/base" i_before r_before base_before excludes_before
+  base_before="$(treehash "$base")"
+  excludes_before="$(filehash "$t/.git/info/exclude")"
+  check "synthetic parser-checked $choice pair" python3 "$SCRIPT_DIR/fixtures/codex-configured-pair.py" "$t" "$choice"
+  i_before="$(filehash "$t/$IMPL_REL")"
+  r_before="$(filehash "$t/$REVIEWER_REL")"
+  cp "$t/$IMPL_REL" "$WORKROOT/$choice-implementer"
+  cp "$t/$REVIEWER_REL" "$WORKROOT/$choice-reviewer"
+  cp "$base/$IMPL_REL" "$WORKROOT/$choice-base"
+  check "repeat install" "$DOM" "$t"
+  check "configured implementer byte-identical" test "$i_before" = "$(filehash "$t/$IMPL_REL")"
+  check "configured reviewer byte-identical" test "$r_before" = "$(filehash "$t/$REVIEWER_REL")"
+  check "pristine bases not rebaselined" test "$base_before" = "$(treehash "$base")"
+  check "excludes unchanged" test "$excludes_before" = "$(filehash "$t/.git/info/exclude")"
+  if [ "$choice" = inherit ]; then
+    check "configured guest stays local-only" bash -c 'test -z "$(git -C "$1" status --porcelain)"' _ "$t"
+  fi
+  local v2="$WORKROOT/configured-$choice-v2.sh"
+  check "synthetic upstream instruction change" python3 - "$DOM" "$v2" <<'PY'
+from pathlib import Path
+import sys
+source, dest = map(Path, sys.argv[1:])
+old = b"- Stay inside the brief. Do not refactor adjacent code or start another bead."
+new = old + b" (v2)"
+text = source.read_bytes()
+assert text.count(old) == 1
+dest.write_bytes(text.replace(old, new))
+PY
+  check "real three-way upgrade" bash "$v2" "$t"
+  check "parser/marker/preservation after real merge (offline only)" python3 - "$t" "$WORKROOT" "$choice" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+import tomllib
+root, scratch = map(Path, sys.argv[1:3])
+choice = sys.argv[3]
+i = (root / ".codex/agents/implementer.toml").read_bytes()
+r = (root / ".codex/agents/reviewer.toml").read_bytes()
+old = (scratch / f"{choice}-implementer").read_bytes()
+anchor = b"- Stay inside the brief. Do not refactor adjacent code or start another bead."
+assert i == old.replace(anchor, anchor + b" (v2)")
+assert r == (scratch / f"{choice}-reviewer").read_bytes()
+line = i.splitlines(keepends=True)[0]
+marker = json.loads(line.removeprefix(b"# domestique-model-setup: "))
+assert set(marker) == {"v", "project", "harness", "implementer_sha256", "reviewer_sha256"}
+assert marker["v"] == 1 and marker["harness"] == "codex"
+assert marker["project"] == str(root.resolve())
+assert marker["implementer_sha256"] == hashlib.sha256(old[len(line):]).hexdigest()
+assert marker["implementer_sha256"] != hashlib.sha256(i[len(line):]).hexdigest()
+assert marker["reviewer_sha256"] == hashlib.sha256(r).hexdigest()
+base = (root / ".codex/.domestique/base/.codex/agents/implementer.toml").read_bytes()
+assert base == (scratch / f"{choice}-base").read_bytes().replace(anchor, anchor + b" (v2)")
+assert b"domestique-model-setup:" not in base
+assert b"LOCAL IMPLEMENTER INSTRUCTIONS" not in base
+for data in (i, r, base):
+    tomllib.loads(data.decode())
+# Read-only byte mutation demonstrates digest sensitivity, NOT a running gate.
+assert marker["reviewer_sha256"] != hashlib.sha256(r + b"# manual edit\n").hexdigest()
+PY
+  check "upgrade leaves excludes unchanged" test "$excludes_before" = "$(filehash "$t/.git/info/exclude")"
+  cp "$t/$IMPL_REL" "$WORKROOT/$choice-implementer"
+  check "real uninstall preserves configured roles" bash "$v2" "$t" --uninstall
+  check "both customized roles kept under existing backup semantics" python3 - "$t" "$WORKROOT" "$choice" <<'PY'
+from pathlib import Path
+import sys
+root, scratch = map(Path, sys.argv[1:3])
+choice = sys.argv[3]
+for role in ("implementer", "reviewer"):
+    path = root / f".codex/agents/{role}.toml"
+    assert not path.exists()
+    backups = list(path.parent.glob(path.name + ".uninstalled.*"))
+    assert len(backups) == 1
+    original = scratch / f"{choice}-{role}"
+    assert backups[0].read_bytes() == original.read_bytes()
+    assert backups[0].stat().st_mode == original.stat().st_mode
+assert not (root / ".codex/.domestique").exists()
+assert not (root / ".beads").exists()
+PY
+}
+
+scenario_codex_explicit_lifecycle() { scenario_codex_configured_lifecycle explicit; }
+scenario_codex_inherit_guest_lifecycle() { scenario_codex_configured_lifecycle inherit; }
+
 echo "domestique Codex test harness"
 echo
 
@@ -785,6 +993,9 @@ if [ "${1:-}" = "--current" ]; then
   run_scenario "cross-client public entries and unchanged-only removal" scenario_public_names
   run_scenario "public entry host collisions" scenario_public_name_host_collisions
   run_scenario "previous guest install gains public names" scenario_previous_install_adds_public_names
+  run_scenario "Codex setup emitted protocol (static assertions)" scenario_codex_setup_protocol
+  run_scenario "synthetic explicit TOML pair lifecycle (real installer)" scenario_codex_explicit_lifecycle
+  run_scenario "synthetic inherited TOML pair guest lifecycle (real installer)" scenario_codex_inherit_guest_lifecycle
 fi
 
 echo

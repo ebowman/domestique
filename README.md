@@ -45,15 +45,16 @@ names do **not** imply full Claude/Codex v2 parity. Naming/ownership evidence is
 offline regression coverage, not new native execution qualification; the earlier
 workflow-body demonstration above remains its separate, bounded evidence.
 
-Claude's v1 installer now emits a shared **first-use role-model setup protocol**
-for both command names/aliases. Generated defaults need explicit confirmation;
+The v1 installer now emits shared **first-use role-model setup protocols**
+for Claude and Codex command/skill names and aliases. Generated defaults need explicit confirmation;
 setup ends without Beads/code/goal work and requires a fresh session/reinvocation.
-Use `/dom-decompose configure role models` to reconfigure both roles. Ordinary
+Use `/dom-decompose configure role models` (Claude) or
+`$dom-decompose configure role models` (Codex) to reconfigure both roles. Ordinary
 unconfirmed delegation redirects there. Existing snapshot update/uninstall
 semantics preserve customized roles. This is instruction-driven and **native
 unqualified**; unknown native support/selection stops without fallback.
-Codex/Copilot setup adapters and paid observed qualification remain pending.
-See [the contract and evidence limits](docs/v2-preview.md#first-use-role-models--claude-protocol-implemented-native-unqualified).
+Copilot setup and paid observed qualification remain pending.
+See [the contract and evidence limits](docs/v2-preview.md#first-use-role-models--claudecodex-protocols-implemented-native-unqualified).
 
 From a checkout containing the new entrypoint:
 

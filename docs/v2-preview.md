@@ -406,18 +406,18 @@ sandboxing or invisibility. Existing ancestor/global definitions may still
 advertise Domestique; enabling or disabling this preview does not retire them
 or erase cached native context. Use fresh clients when qualifying discovery.
 
-## First-use role models — Claude protocol implemented, native unqualified
+## First-use role models — Claude+Codex protocols implemented, native unqualified
 
-The accepted contract (hq-7sm.1) below is implemented for Claude as an **emitted
-native assistant protocol** in `domestique.sh` (hq-7sm.2), not a standalone
+The accepted contract (hq-7sm.1) below is implemented for Claude and Codex as
+**emitted native assistant protocols** in `domestique.sh` (hq-7sm.2–.3), not a standalone
 settings engine or native runtime qualification. One shared setup body gates
-canonical/legacy decompose and goal; ordinary policy redirects unconfirmed
-delegation to setup. Generated Claude model defaults remain suggestions, not
-consent. Codex and Copilot setup adapters are still pending:
-`domestique.sh` emits Codex model/effort defaults; `preview/native.py` emits no Copilot models.
+each harness's canonical/legacy decompose and goal; ordinary policy redirects
+unconfirmed delegation to setup. Generated Claude/Codex model/effort defaults
+remain suggestions, not consent. The Copilot setup adapter remains pending:
+`preview/native.py` emits no Copilot models.
 `preview/workflow.py` transports ephemeral requests, and
 `preview/workflows/common.md` forbids persistent settings changes. Those current
-instructions remain in force for those pending adapters. No new
+instructions remain in force for the pending Copilot adapter. No new
 installer, model registry, migration engine, or `/drain` entry is proposed.
 
 ### One question, two roles, one project and harness
@@ -651,8 +651,10 @@ writes with no matching recorded identity are retained for human resolution.
 This is a bounded extension of existing ownership, not a new model registry.
 
 Claude/Codex retain their existing snapshot/three-way update and scoped uninstall
-rules. For Claude, the scoped `.claude/.domestique/manifest` inventory and
-`base/.claude/agents/{implementer,reviewer}.md` pristine snapshots are management
+rules. The scoped `.claude/.domestique/manifest` /
+`.codex/.domestique/manifest` inventories and corresponding
+`base/.claude/agents/{implementer,reviewer}.md` /
+`base/.codex/agents/{implementer,reviewer}.toml` pristine snapshots are management
 evidence for the exact role paths, not historical inode records. Missing evidence
 or unsafe/unmanaged paths refuse. Current owned customizations can be explicitly
 confirmed; recheck safe current paths, identities and bytes within the operation.
@@ -687,8 +689,17 @@ installer output/alias equality and static protocol assertions (first/repeat,
 inheritance, customization, cancellation, publication ordering and setup-only
 boundaries). `test/upgrade.sh --current` and `test/uninstall.sh --current` use a
 synthetic configured pair to exercise real snapshot merge/preservation behavior.
-These do not execute an assistant questionnaire, inject runtime write failures,
-or prove native loading/model dispatch. Other adapters and hq-7sm.6 remain pending.
+Codex evidence is similarly split: `test/codex.sh --current` (22 scenarios)
+checks real installed aliases and static first/repeat/inheritance/conflicting
+effort/cancellation instructions. Synthetic explicit and inherited TOML pairs
+exercise real repeat install, three-way upstream merge, guest exclusions and
+uninstall backup preservation without rebaselining configured bytes. Python
+`tomllib` checks native role syntax, basic-string escaping (quotes, backslashes,
+shell literals and Unicode), unchanged custom instructions/keys, and pair hashes;
+these illustrative fixture model strings are not availability claims.
+These tests do not execute an assistant questionnaire, inject runtime write
+failures, or prove native loading/model dispatch. Copilot setup and hq-7sm.6
+remain pending; no paid/native qualification is claimed.
 
 ## Workflows, dependencies and inspection
 

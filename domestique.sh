@@ -370,10 +370,9 @@ DOM_EOF
 }
 
 # Codex project-scoped custom agents. Unlike Claude agent frontmatter, Codex
-# uses TOML config layers. Keep the role model explicit: implementation uses a
-# balanced model, while review uses a stronger, higher-effort independent
-# context. Users can locally edit these files; the normal snapshot/3-way merge
-# path preserves those edits on upgrade.
+# uses TOML config layers. Generated model/effort values are suggestions, not
+# consent. Review independence requires a fresh context, not a stronger model.
+# The normal snapshot/3-way merge path preserves local choices on upgrade.
 emit_codex_implementer() { cat <<'DOM_EOF'
 name = "implementer"
 description = "Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
@@ -425,6 +424,199 @@ actually observed; concrete gaps for non-PASS; and material risks/follow-ups.
 DOM_EOF
 }
 
+# One native instruction-driven protocol shared by both skill families/aliases.
+# Not an installer-time engine, model registry or native qualification.
+emit_codex_model_setup() { cat <<'DOM_EOF'
+## Codex first-use role setup — mandatory gate
+
+Run this gate BEFORE any Beads command (including readiness/create/claim),
+planning, code, branch changes or dispatch. This native entry explicitly
+identifies the active harness as `codex`. Bind ROOT to the exact physical Git
+worktree root of this invocation; if cwd is not that root or identity is
+ambiguous, STOP and ask for an explicit invocation there. Never search ancestors
+for another installation, infer a harness from directories, or configure a
+sibling worktree. Standalone instruction loading is read-only, not setup consent.
+
+### Read-only preflight and confirmation state
+Use only ROOT/.codex/agents/implementer.toml and
+ROOT/.codex/agents/reviewer.toml, with existing scoped management evidence:
+ROOT/.codex/.domestique/manifest and the corresponding pristine files at
+ROOT/.codex/.domestique/base/.codex/agents/{implementer,reviewer}.toml.
+Require a readable, bounded, unambiguous snapshot_format=1 manifest with
+platform=codex whose comma-separated files inventory contains each exact role
+path once. Both pristine bases must exist. This is snapshot/three-way ownership,
+NOT historical inode proof. Current owned customized bytes may be confirmed
+while preserving unrelated bytes and original pristine bases. Missing/unmanaged
+evidence, unsafe paths or ambiguous ownership mean STOP for the existing explicit
+install lifecycle/human repair; never adopt through setup. Do not impose Copilot
+creation/setup identity receipts on Codex or add a sidecar.
+
+Validate both roles and evidence: bounded UTF-8 regular files (at most 1 MiB
+each), no symlinks in any path component, no hardlinked files (link count must
+be one), fixed paths confined to ROOT, readable metadata and writable role
+parents. Record current device/inode, modes and complete bytes of both roles
+and evidence for operation-local rechecks, not historical provenance.
+Parse each complete role with a TOML parser; require exact name = "implementer"
+or name = "reviewer", respectively, and valid developer_instructions. Require
+unique top-level scalar string model/model_reasoning_effort fields if present.
+Reject duplicate keys, malformed TOML, non-string or multiline selection fields,
+duplicate/misplaced setup markers, and any syntax whose selected value spans
+cannot be patched losslessly. Do not confuse keys/comments inside multiline
+developer_instructions or nested tables with top-level settings. Never reformat
+the file or rewrite developer_instructions or unrelated keys.
+
+The only completion marker is a single comment at the beginning of implementer
+TOML: `# domestique-model-setup: JSON`. Reviewer must contain no setup marker.
+JSON has exactly these keys: `v` (integer 1), `project` (absolute physical ROOT),
+`harness` (`codex`), `implementer_sha256`, `reviewer_sha256` (lowercase
+64-character SHA-256 hex). Hash complete role byte sequences, removing only
+that entire marker line from implementer; hash reviewer unchanged. Validate
+JSON types/unique keys, root, harness and BOTH digests, plus ownership, at every
+entry. No second copy of model choices belongs in the marker.
+
+No marker (including pristine generated defaults), a stale hash, a copied/moved
+project or interrupted setup is unconfirmed. Show both current choices for
+explicit reconfirmation; never complete a partial pair silently. Any manual
+model, effort or instructions edit invalidates confirmation. An unchanged
+confirmed pair means NO questionnaire and NO writes, including confirmed
+inheritance: proceed only through native readiness below. Explicit decompose
+request `configure role models` always uses the same two-role question instead,
+reserved for setup only, not a planning brief. Aliases share this pair/marker.
+
+### Native evidence — no invented API or paid probe
+Before saving, use supported evidence from the installed client's documented
+capabilities/current selectable models and efforts to establish that BOTH
+proposed selections are supported and available with the required role tools.
+Display the evidence and its limits. Check applicable native precedence and
+overrides with non-secret evidence; do not edit client/provider settings.
+Codex role-file model/model_reasoning_effort values override the values
+previously resolved from explicit spawn, then [agents] defaults, then parent.
+If spawn/defaults select a model without supplying effort, native resolution
+uses that model's default effort. A role file setting only model preserves the
+previously resolved effort; it does NOT reset effort to that model's default.
+Verify installed-version behavior rather than assuming this order is universal.
+Unknown support/availability, incompatible effort, unresolved inheritance/alias,
+or an override that defeats selection means STOP before writes with role/reason.
+No fallback, silent default substitution, invented verification API or paid probe.
+
+After saving, require a fresh client session and explicit reinvocation. Before
+any workflow action on a confirmed pair, discover the exact project-local
+`implementer` and `reviewer` role IDs and verify that these exact files loaded.
+Check session-resolved model AND effort, tools, provider restrictions and
+selection/override evidence before task dispatch. Send no conflicting spawn
+model/effort override. Ephemeral model requests are assertions, not persistence;
+a conflict stops and offers explicit reconfiguration. Inheritance is consent
+to native resolution, not a pinned model or necessarily the direct parent:
+resolve/check it anew each session. If exact loading/effective selection or
+prevention of silent substitution cannot be verified with supported native
+evidence, STOP without workflow or writes. A catalog, file syntax, user
+assertion or marker alone is not dispatch proof; do not promise pre-observation
+knowledge. Actual observed role dispatch/reload qualification is separate,
+budget-gated work (hq-7sm.6); static emitted-protocol/lifecycle tests do not
+qualify runtime. That later observation is not a prerequisite to emitting this
+protocol or saving choices with supported pre-save evidence, and does not
+authorize a paid call here.
+
+### One question for BOTH roles; mandatory consent
+Show ROOT / codex, both exact paths, current model and model_reasoning_effort
+values (including absent fields and native resolution), and tracked-file effects.
+Ask in one form:
+> Configure Domestique roles? Implementer: exact model ID or native inheritance,
+> plus confirmed effort or inherited effort. Reviewer: exact model ID or native
+> inheritance, plus confirmed effort or inherited effort.
+> Save the displayed minimal diff to these two files? Save setup only / Cancel.
+
+Use current client choices, not a shipped model menu. Both roles may use the
+same model; always use a fresh reviewer context. New explicit choices require
+exact IDs; resolve any existing alias with supported native evidence before
+confirmation. Generated defaults and absent fields are not consent.
+Model and effort are independent: display/explicitly confirm compatible existing
+effort or explicitly resolve incompatible effort with a supported choice or
+native inheritance. Never silently retain unsupported old effort when a model
+changes, silently change effort, or assume omission resets it. Validate the
+resulting model AND resolved effort. For model inheritance OMIT model; NEVER
+write a literal model named `inherit`. For inherited effort OMIT
+model_reasoning_effort; this means native resolution, not necessarily the
+selected model's default.
+
+Prepare both outputs in memory and show the ACTUAL complete proposed diff
+(including marker), existing settings, inherited semantics and tracked-file
+consequences before explicit Save setup only consent. If selections change,
+redisplay the diff and obtain consent to that exact diff. Goal authorization
+is not settings consent. Cancel, incomplete/missing values, or noninteractive
+setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
+Noninteractive callers may only use an already confirmed pair after readiness
+checks; otherwise report the interactive setup/reinvoke action and STOP.
+
+### Lossless bounded publication, setup only
+Reject newlines and control characters in model/effort input (Unicode Cc,
+including DEL/C1); never interpolate inputs into shell commands or eval.
+Serialize inserted TOML values as double-quoted basic strings: escape backslash
+as \\ and double quote as \"; preserve other allowed Unicode/special characters
+literally. A JSON string serializer with ensure_ascii=False is suitable after
+that control/newline rejection; do not emit JSON-only escapes such as \/ or
+surrogate pairs. Round-trip both proposed files through a TOML parser, comparing
+decoded selections and every unrelated key, including developer_instructions.
+Serialize marker JSON with a JSON serializer, never shell interpolation/eval.
+Patch only selected top-level value spans, necessary field additions/removals
+and the marker. Insert absent fields in the top-level region, not inside a
+table or multiline string. Preserve ALL unrelated bytes, comments, line endings
+and modes; when removing a field retain its unrelated inline comment as a
+comment. If a lossless bounded patch cannot be established, STOP for manual
+resolution. Never change tools, sandbox/permissions, parent/global configuration,
+pristine bases, manifest, guest exclusions, repository instructions or Beads.
+
+Preflight both outputs and ownership together. Immediately before publication,
+recheck safe paths, current identities, modes and bytes of both roles/evidence;
+any change means STOP/re-prompt, not overwrite. Under cooperative single-writer
+operation, use same-directory temporary files and atomic per-file replacement,
+preserving original modes. Recheck expected state before each replacement:
+1. Invalidate any old implementer completion marker first (remove only its line).
+2. Write the reviewer update.
+3. Publish implementer with the new pair marker LAST.
+This is NOT a two-file transaction or hostile-writer guarantee. Re-read both
+outputs, verify exact approved bytes/modes and marker hashes before reporting
+success. Any failure stops, reports exactly which paths changed and any unknown
+state, and grants NO workflow authority. Retain user bytes; clean only this
+operation's known temporary files. No rollback, journal or silent repair.
+Retry uses the same explicit two-role preflight/question over current bytes.
+
+Every successful first confirmation/reconfiguration is SETUP ONLY: no planning
+beads, claim, code, dispatch, branch/commit or goal cycle. End with a fresh client
+session and explicit `$dom-decompose` (alias `$domestique-decompose`) or
+`$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`) invocation to repeat.
+The initiating goal request is consumed, NOT queued for automatic continuation.
+Missing setup during unattended goal execution means STOP, not permission to
+write settings. Confirmed setup alone grants no goal authority.
+Before later goal execution, ALL tracked/index dirtiness, including setup
+changes, requires human disposition: never auto-stage, commit, stash, discard
+or hide it. Guest mode retains existing local-only exclusions and uninstall
+preservation. Updates use existing three-way snapshots, never reset pristine
+bases to configured bytes; changed bytes invalidate confirmation. Uninstall
+preserves modified roles under existing semantics; reinstall implies no consent.
+
+## End role setup gate — continue only for an unchanged confirmed, ready pair
+DOM_EOF
+}
+
+emit_codex_role_gate() { cat <<'DOM_EOF'
+## Role model gate (before Beads or delegation)
+Ordinary bounded delegation must first validate the confirmed pair and native
+readiness, read-only, using the shared Codex setup protocol in the installed
+`$dom-decompose` / `$domestique-decompose` skill body. If unconfigured or stale,
+STOP and direct the human to `$dom-decompose configure role models` (alias
+`$domestique-decompose configure role models`); do not start another questionnaire
+or call Beads. Do not infer the active harness from directories.
+Instruction/bootstrap loading alone neither starts setup nor grants goal
+authority. Generated defaults are suggestions, never confirmation. A configured
+pair still requires exact local `implementer` / `reviewer` loading and current
+native model/effort/override checks before dispatch, with no conflicting spawn
+override and no fallback for unknown or substituted selections. Explicit
+reconfiguration uses that same two-role gate and ends setup-only, with a fresh
+session/reinvocation and no automatic goal continuation.
+DOM_EOF
+}
+
 # The base skill is both the explicit guest-mode bootstrap (`$domestique`) and
 # the implicit match for the ordinary dispatch/landing prompts. It deliberately
 # does not authorize unattended epic draining; only an explicit named goal does.
@@ -435,6 +627,10 @@ description: Orchestrate a beads-backed implementer then independent reviewer wo
 ---
 
 # Domestique orchestration
+
+DOM_EOF
+  emit_codex_role_gate
+  cat <<'DOM_EOF'
 
 Act as the orchestrator: plan, delegate, wait, independently review, and
 adjudicate. Do not implement except for genuinely trivial one-line edits.
@@ -468,6 +664,9 @@ emit_codex_decompose_skill() { cat <<'DOM_EOF'
 name: domestique-decompose
 description: Decompose a goal or specification into a dependency-ordered beads epic with bounded tasks. Use when explicitly invoked as $dom-decompose or $domestique-decompose or when the user asks for domestique/beads decomposition; planning only, never implementation.
 ---
+DOM_EOF
+  emit_codex_model_setup
+  cat <<'DOM_EOF'
 
 # Decompose into beads
 
@@ -488,6 +687,9 @@ emit_codex_goal_skill() { cat <<'DOM_EOF'
 name: domestique-goal
 description: Explicitly drain one named beads epic using domestique's bounded implementer-reviewer loop on an isolated branch. Use only when the user explicitly invokes $dom-goal or $domestique-goal with an epic id; never infer this unattended authorization.
 ---
+DOM_EOF
+  emit_codex_model_setup
+  cat <<'DOM_EOF'
 
 # Unattended epic execution
 
@@ -496,7 +698,10 @@ to continue between beads. It applies only to that epic and expires on
 completion, a stop condition, or after 15 closed beads.
 Merely loading or implicitly matching this skill is not unattended authority.
 
-Before work, require an epic id and create/switch to a dedicated epic branch.
+Only after the role setup gate passes without setup writes, require an explicit
+epic request and check ALL tracked/index dirtiness (including configured role
+files). If dirty, stop for human disposition; never auto-stage, commit, stash,
+discard or hide it. Then create/switch to a dedicated epic branch.
 Never work on the default branch, merge, or push. Then repeat the sequential
 `$domestique` loop: one implementer, wait, fingerprint, one fresh reviewer,
 wait, fingerprint, adjudicate. One passing bead per commit; never close a bead
@@ -539,6 +744,10 @@ emit_codex_dom_goal_metadata() {
 # the self-contained $domestique skill, leaving host AGENTS files untouched.
 emit_codex_policy() { cat <<'DOM_EOF'
 # Domestique orchestration policy (Codex)
+
+DOM_EOF
+  emit_codex_role_gate
+  cat <<'DOM_EOF'
 
 This session is the orchestrator. Use `$dom-decompose` (compatibility: `$domestique-decompose`) for planning,
 then follow the `$domestique` sequential implementer → wait → reviewer → wait
