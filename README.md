@@ -53,8 +53,13 @@ Use `/dom-decompose configure role models` (Claude) or
 unconfirmed delegation redirects there. Existing snapshot update/uninstall
 semantics preserve customized roles. This is instruction-driven and **native
 unqualified**; unknown native support/selection stops without fallback.
-Copilot setup and paid observed qualification remain pending.
-See [the contract and evidence limits](docs/v2-preview.md#first-use-role-models--claudecodex-protocols-implemented-native-unqualified).
+Copilot now uses the same instruction-driven first-use gate plus a narrow owned
+writer: `/dom-decompose configure role models`, explicit pair/diff consent in an
+interactive terminal, then fresh client/reinvocation. Creation receipt facts stay
+immutable; approved model updates have separate identity/hash/removability facts.
+All three adapters are implemented; native dispatch/reload qualification remains
+pending. CLI support/selection flags relay caller checks, not native evidence.
+See [the contract and evidence limits](docs/v2-preview.md#first-use-role-models--all-adapters-implemented-native-unqualified).
 
 From a checkout containing the new entrypoint:
 
@@ -132,10 +137,14 @@ brief/exact role ID and its original immutable `preview/cli.py` path. All later
 calls keep that source, even after update; only a new workflow samples current.
 
 Before any operational body, validate the active receipt, exact root/Git/machine
-binding and presence of every recorded owned definition (seven fresh, five legacy). Customized bytes remain
-opaque/preserved and need fresh native exact-ID/capability confirmation before
+binding and presence of every recorded owned definition (seven fresh, five legacy).
+Role setup also validates bounded lossless frontmatter and the confirmed pair/
+receipt; unsafe syntax stops, not reformats. Customized bytes remain
+preserved and need fresh native exact-ID/capability confirmation before
 `--ready --confirm-native`; that assertion is not native proof. No global fallback.
-`--ready` runs bounded normal `bd --version` and project-scoped `status`, requiring
+`--ready` additionally requires `--harness copilot --confirm-model-selection`
+after native effective-role checks; an unconfirmed pair cannot reach Beads.
+It runs bounded normal `bd --version` and project-scoped `status`, requiring
 local project discovery state plus actual success, not just `.beads` presence.
 Ambient Git/Beads retargeting is removed for those subprocesses. The user configures
 Beads separately; no init, backend management, migration or automatic repair.
@@ -147,7 +156,8 @@ implementer → fresh-reviewer cycle, one bead by default, one fix pass, exact
 reviewed-path staging/one local commit per passed bead on a clean dedicated
 non-default branch; never push/merge or close unpassed work. No ready work with
 unfinished descendants means **BLOCKED**, not complete.
-Models/tools/MCP stay native/session-local, installed models unset. Optional
+Models are initially unset, never pre-approved; setup saves only the explicitly
+consented role model/marker and receipt changes. Tools/MCP stay native/session-local. Optional
 `--implementer-model` / `--reviewer-model` are literal ephemeral requests; actual
 native exact OpenAI ID/capability confirmation is required, unavailable means
 stop without substitution. See the contract for complete optional loader flags.
@@ -166,7 +176,8 @@ in your own client; shell-command approval and file-path approval are separate.
 
 Inspection never installs, repairs, opens Beads, invokes a native/model/MCP
 client or changes exclusions. It compares original **creation hashes**, including
-across shared updates; it does not parse native metadata or infer permissions.
+across shared updates, and separately reports model setup confirmation from
+bounded marker/hash/receipt checks; it never infers native capabilities or permissions.
 Missing/corrupt/incompatible ownership or unreadable evidence remains partial/
 unknown (**1**); absent preview and complete observations, including customization,
 return **0**. Legacy named markers/references and tracked evidence are reported

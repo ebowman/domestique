@@ -27,7 +27,8 @@ def templates(launcher, project):
         kind = ALIASES.get(entry, entry)
         text = f"---\nname: {name}\ndescription: {description}\n"
         text += "---\n\n"
-        command = shlex.join([str(launcher), "workflow", kind, "--project", str(project)])
+        command = shlex.join([str(launcher), "workflow", kind, "--project", str(project),
+                             "--harness", "copilot"])
         if kind in ROLES:
             text += (
                 "Delegated role only: await the caller's explicit bounded task and retained\n"

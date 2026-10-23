@@ -9,7 +9,7 @@ import uuid
 from machine import Refusal, git, identity, make_parents, need, safe, writable_directory
 from native import DEFINITIONS, LEAVES, templates
 from project_data import (KIND, LIMIT, MARKER, PATHS, RECEIPT, block, inventory, load,
-                          read_bytes, regular, save, sha)
+                          owned_identity, read_bytes, regular, removable, save, sha)
 
 LEGACY_STATE = (
     ".domestique-private/v2", ".domestique-private/manifest",
@@ -147,11 +147,12 @@ def leaf_status(root, leaf, created, tracked):
         return "missing"
     regular(path)
     need(created is not None, f"unowned collision (even identical): {leaf}")
-    if identity(path) != created["identity"]:
+    if not owned_identity(path, created):
         return "customized/replaced"
     if created["sha256"] is None or path.stat().st_size > LIMIT:
         return "customized/incomplete"
-    return "unchanged" if sha(read_bytes(path)) == created["sha256"] else "customized"
+    return ("unchanged" if identity(path) == created["identity"] and
+            sha(read_bytes(path)) == created["sha256"] else "customized")
 
 
 def operate(command, target, dry_run, machine_root, machine_receipt):
@@ -241,7 +242,8 @@ def disable(root, project, record, tracked, dry_run):
     for leaf in (inventory(record) if record else LEAVES).values():
         try:
             status = leaf_status(root, leaf, record["files"].get(leaf) if record else None, tracked)
-            if status == "unchanged":
+            if status == "unchanged" or (status == "customized" and
+                                        removable(root / leaf, record["files"][leaf])):
                 eligible.append(root / leaf)
             elif status != "missing":
                 reasons.append(f"{leaf}: {status}; retained")

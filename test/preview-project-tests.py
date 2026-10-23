@@ -1,5 +1,6 @@
 """Small offline installed-CLI cohort; no native, DB, historical fixture or network."""
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,13 +12,30 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "preview"))
 import project as P
+import model_setup as S
+from machine import Refusal, read_json
 from native import ALIASES, ENTRIES, LEAVES, templates
 from project_data import RECEIPT, PATHS
+
+
+def setup_models(case, root=None, implementer="fixture-openai", reviewer="fixture-openai",
+                 consent="Save setup only\n", interactive=True, support=True):
+    """Real local writer, synthetic terminal/support only; NOT native evidence."""
+    stdin = io.StringIO(consent)
+    output = io.StringIO()
+    options = {"--harness": "copilot", "--implementer-model": implementer,
+               "--reviewer-model": reviewer, "--confirm-model-support": support}
+    with patch.dict(os.environ, case.env, clear=True), patch.object(sys, "stdin", stdin), \
+            patch.object(stdin, "isatty", return_value=interactive), redirect_stdout(output):
+        result = S.write_setup(str(root or case.a), case.machine_root,
+                               read_json(case.machine_root / "receipt.json"), options)
+    return result, output.getvalue()
 
 
 def snapshot(root):
@@ -207,7 +225,8 @@ class PreviewProjectTests(unittest.TestCase):
             self.assertEqual(front, expected)  # No models/tools/MCP/default grants.
             command = body.split("```sh\n")[1].split("\n```")[0]
             self.assertEqual(shlex.split(command),
-                             [str(self.launcher), "workflow", workflow_kind, "--project", str(self.a)])
+                             [str(self.launcher), "workflow", workflow_kind, "--project", str(self.a),
+                              "--harness", "copilot"])
             if kind in ("implementer", "reviewer"):
                 self.assertIn("await the caller", body)
                 self.assertIn("or run this locator autonomously", body)
@@ -267,9 +286,9 @@ class PreviewProjectTests(unittest.TestCase):
         self.assertIn("legacy five-definition layout", inspected)
         self.assertIn("Preview activation: active", inspected)
         self.assertEqual(inspected.count(": unchanged"), 4)
-        self.assertIn("SETUP ONLY", self.unchanged_call("workflow", "goal", "--project", self.a))
-        self.assertIn("Beads readiness: NOT CHECKED",
-                      self.unchanged_call("workflow", "decompose", "--project", self.a))
+        self.assertIn("UTF-8", self.unchanged_call("workflow", "goal", "--project", self.a, code=1))
+        self.assertIn("UTF-8",
+                      self.unchanged_call("workflow", "decompose", "--project", self.a, code=1))
         for alias in ALIASES:
             self.assertFalse((self.a / LEAVES[alias]).exists())
         unowned = self.a / LEAVES["dom-decompose"]
@@ -489,6 +508,198 @@ class PreviewProjectTests(unittest.TestCase):
         self.unchanged_call("enable", self.a, code=1)
         self.command("disable", self.a)
         self.unchanged_call("disable", self.a)
+
+    def test_role_model_writer_lifecycle(self):
+        self.command("enable")
+        creation = self.receipt()["files"]
+        modes = {r: (self.a / LEAVES[r]).stat().st_mode for r in S.ROLES}
+        message, display = setup_models(self)
+        self.assertIn("Saved setup only", message)
+        self.assertIn("--- " + LEAVES["implementer"], display)
+        self.assertIn("current", display)
+        self.assertIn(RECEIPT, display)
+        for role in S.ROLES:
+            path = self.a / LEAVES[role]
+            entry = self.receipt()["files"][LEAVES[role]]
+            self.assertEqual({k: entry[k] for k in ("identity", "sha256")}, creation[LEAVES[role]])
+            self.assertEqual(entry["model_setup"]["sha256"], S.sha(path.read_bytes()))
+            self.assertTrue(entry["model_setup"]["removable"])
+            self.assertEqual(path.stat().st_mode, modes[role])
+            self.assertIn(b'model: "fixture-openai"\n', path.read_bytes())
+        self.unchanged_call("enable")
+        self.assertIn("confirmed file pair", self.unchanged_call("inspect"))
+        message, _ = setup_models(self, implementer="inherit", reviewer="inherit")
+        for role in S.ROLES:
+            self.assertNotIn(b"\nmodel:", (self.a / LEAVES[role]).read_bytes())
+            self.assertTrue(self.receipt()["files"][LEAVES[role]]["model_setup"]["removable"])
+        self.assertIn("fresh Copilot client", message)
+        self.command("disable")
+        self.assertFalse((self.a / RECEIPT).exists())
+        self.assertTrue(all(not (self.a / leaf).exists() for leaf in LEAVES.values()))
+
+    def test_role_model_customization_and_invalidation(self):
+        self.command("enable")
+        creation = self.receipt()["files"]
+        path = self.a / LEAVES["implementer"]
+        data = path.read_bytes().replace(b"---\n", b'---\ntools: ["read", "edit"]\n', 1)
+        path.write_bytes(data + b"\nKeep these custom instructions.\n")
+        setup_models(self, implementer='fixture-"quoted"')
+        self.assertIn(b'tools: ["read", "edit"]\n', path.read_bytes())
+        self.assertTrue(path.read_bytes().endswith(b"\nKeep these custom instructions.\n"))
+        self.assertFalse(self.receipt()["files"][LEAVES["implementer"]]["model_setup"]["removable"])
+        self.assertTrue(self.receipt()["files"][LEAVES["reviewer"]]["model_setup"]["removable"])
+        self.assertIn("confirmed file pair", self.command("inspect"))
+        path.write_bytes(path.read_bytes() + b"\nAnother edit.\n")
+        self.assertIn("Role model setup: unconfirmed", self.command("inspect"))
+        setup_models(self, implementer="inherit")
+        for role in S.ROLES:
+            entry = self.receipt()["files"][LEAVES[role]]
+            self.assertEqual({k: entry[k] for k in ("identity", "sha256")}, creation[LEAVES[role]])
+        custom = path.read_bytes()
+        self.assertIn("PARTIAL", self.command("disable", code=1))
+        self.assertEqual(path.read_bytes(), custom)
+        self.assertFalse((self.a / LEAVES["reviewer"]).exists())
+
+    def test_role_model_no_consent_and_unsafe_refusals(self):
+        self.command("enable")
+        before = snapshot(self.a)
+        for kwargs in ({"consent": ""}, {"consent": "Cancel\n"}, {"consent": "yes\n"}):
+            self.assertIn("Cancelled", setup_models(self, **kwargs)[0])
+            self.assertEqual(snapshot(self.a), before)
+        for kwargs in ({"interactive": False}, {"support": False},
+                       {"reviewer": None}, {"implementer": "bad\nmodel"}):
+            with self.assertRaises(Refusal):
+                setup_models(self, **kwargs)
+            self.assertEqual(snapshot(self.a), before)
+        path = self.a / LEAVES["reviewer"]
+        original = path.read_bytes()
+        for bad in (b"model: one\nmodel: two\n", b"model: |\n  block\n",
+                    b"tools: &anchor something\n", b"effort: high\n",
+                    b"model: null\n", b'model: "embedded\\nnewline"\n',
+                    b"# domestique-model-setup: {}\n"):
+            path.write_bytes(original.replace(b"---\n", b"---\n" + bad, 1))
+            before_bad = snapshot(self.a)
+            with self.assertRaises((Refusal, ValueError)):
+                setup_models(self)
+            self.assertEqual(snapshot(self.a), before_bad)
+        path.write_bytes(original)
+        held = self.area / "held-reviewer"
+        path.rename(held)
+        path.write_bytes(original)
+        before_bad = snapshot(self.a)
+        with self.assertRaisesRegex(Refusal, "replaced identity"):
+            setup_models(self)
+        self.assertEqual(snapshot(self.a), before_bad)
+
+    def test_role_model_partial_writes_and_receipt_failure(self):
+        # Fresh independent activations per failure; faults wrap real publication.
+        real_write, real_save = S.atomic_write, S.save
+        for failure in ("invalidation", "reviewer", "implementer", "receipt"):
+            root = self.area / failure
+            self.repo(root)
+            self.command("enable", root)
+            setup_models(self, root)
+            creation = json.loads((root / RECEIPT).read_bytes())["files"]
+            calls = []
+
+            def write(path, render, mode):
+                calls.append(path.name)
+                index = {"invalidation": 1, "reviewer": 2, "implementer": 3}.get(failure)
+                if len(calls) == index:
+                    raise OSError("fixture write failure")
+                return real_write(path, render, mode)
+
+            def save(path, record):
+                if failure == "receipt":
+                    raise OSError("fixture receipt failure")
+                return real_save(path, record)
+
+            before = snapshot(root)
+            with patch.object(S, "atomic_write", side_effect=write), \
+                    patch.object(S, "save", side_effect=save), \
+                    self.assertRaisesRegex(Refusal, "PARTIAL role setup; changed paths:") as caught:
+                setup_models(self, root, implementer="new-fixture")
+            reported = json.loads(str(caught.exception).split("changed paths: ", 1)[1].split(";")[0])
+            expected = ([] if failure == "invalidation" else [LEAVES["implementer"]] +
+                        ([LEAVES["reviewer"]] if failure in ("implementer", "receipt") else []))
+            self.assertEqual(set(reported), set(expected))
+            record = json.loads((root / RECEIPT).read_bytes())
+            self.assertEqual(record["files"], creation)
+            if failure == "invalidation":
+                self.assertEqual(snapshot(root), before)
+                self.assertIn("confirmed file pair", self.command("inspect", root))
+            else:
+                self.assertIn("Role model setup: unconfirmed", self.command("inspect", root))
+                self.command("disable", root, code=1)
+                self.assertTrue((root / LEAVES["implementer"]).exists())
+
+    def test_role_model_recheck_links_and_atomic_failure(self):
+        self.command("enable")
+        path = self.a / LEAVES["reviewer"]
+        original = path.read_bytes()
+        held = self.area / "held"
+        path.rename(held)
+        for linked in ("symlink", "hardlink"):
+            if linked == "symlink":
+                path.symlink_to(held)
+            else:
+                os.link(held, path)
+            before = snapshot(self.a)
+            with self.assertRaises(Refusal):
+                setup_models(self)
+            self.assertEqual(snapshot(self.a), before)
+            path.unlink()
+        held.rename(path)
+        self.git(self.a, "add", "-f", "--", LEAVES["reviewer"])
+        before = snapshot(self.a)
+        with self.assertRaisesRegex(Refusal, "tracked"):
+            setup_models(self)
+        self.assertEqual(snapshot(self.a), before)
+        self.git(self.a, "rm", "--cached", "--", LEAVES["reviewer"])
+        real_context = S.context
+        count = 0
+
+        def changing_context(*args):
+            nonlocal count
+            count += 1
+            if count == 2:
+                path.write_bytes(original + b"\nConcurrent fixture edit\n")
+            return real_context(*args)
+
+        with patch.object(S, "context", side_effect=changing_context), \
+                self.assertRaisesRegex(Refusal, "inputs changed during consent"):
+            setup_models(self)
+        self.assertEqual(path.read_bytes(), original + b"\nConcurrent fixture edit\n")
+        self.assertNotIn("model_setup", self.receipt()["files"][LEAVES["implementer"]])
+        path.write_bytes(original)
+        before = snapshot(self.a)
+        with patch.object(os, "replace", side_effect=OSError("atomic fixture failure")), \
+                self.assertRaisesRegex(Refusal, r"changed paths: \[\]"):
+            setup_models(self)
+        self.assertEqual(snapshot(self.a), before, "failed temp publication cleans only its own temp")
+
+    def test_y_role_models_legacy_receipt(self):
+        self.command("update", "--ref", self.legacy)
+        self.host = snapshot(self.home)
+        self.command("enable")
+        before = self.receipt()
+        native = {k: (self.a / leaf).read_bytes() for k, leaf in LEAVES.items()
+                  if (self.a / leaf).exists() and k not in S.ROLES}
+        self.command("update", "--ref", self.second)
+        self.host = snapshot(self.home)
+        setup_models(self, implementer="inherit", reviewer="inherit")
+        after = self.receipt()
+        self.assertNotIn("inventory", after)
+        self.assertEqual(after["exclusion"], before["exclusion"])
+        for leaf, entry in before["files"].items():
+            self.assertEqual({k: after["files"][leaf][k] for k in entry}, entry)
+        for kind, data in native.items():
+            self.assertEqual((self.a / LEAVES[kind]).read_bytes(), data)
+        for alias in ALIASES:
+            self.assertFalse((self.a / LEAVES[alias]).exists())
+        self.unchanged_call("enable")
+        self.assertIn("confirmed file pair", self.unchanged_call("inspect"))
+        self.command("disable")
 
 
 if __name__ == "__main__":

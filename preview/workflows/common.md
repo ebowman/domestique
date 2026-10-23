@@ -12,18 +12,31 @@ load, readiness call and delegated role, even after a shared update. Never use
 the stable launcher/current again mid-workflow. No unowned/global/default role
 fallback. Use a fresh native session to confirm the exact local IDs and actual
 capabilities, especially after customization; do not parse or approve local
-YAML/TOML. User edits stay untouched. An edited raw locator is trusted user code,
+YAML/TOML as capability evidence. User edits stay untouched outside the narrow
+consented role-model setup operation. An edited raw locator is trusted user code,
 outside hostile-loader guarantees. `--confirm-native` is a caller assertion,
 not evidence of discovery or a permission grant.
 
-Models/tools/MCP remain native/session-local, with installed models unset.
+Role models require the shared first-use confirmation gate before any Beads or
+delegation. An unconfirmed pair redirects to /dom-decompose configure role models;
+canonical and legacy entries share the same state. A successful setup ends that
+request, including goal, requiring a fresh client and explicit reinvocation.
+Confirmed file hashes are not native evidence: verify exact loaded roles,
+effective selections, applicable overrides and prevention of silent substitution
+before --ready --harness copilot --confirm-model-selection. Unknown means STOP.
+The flag is a caller assertion, not proof. No questionnaire for an unchanged pair.
+Tools/MCP remain native/session-local.
 Honor explicit OpenAI implementer/reviewer choices only after the native client
 confirms the exact requested model ID is OpenAI, available to this session and
 supports the required role/tools. Use that exact ID for actual native dispatch.
 If unavailable, unknown, unsupported or exact dispatch cannot be confirmed:
 STOP before delegation; no substitute model or fallback vendor. If no model was
-requested, leave native session choices alone. Never change persistent settings,
-credentials, authentication, trust, tools or MCP configuration. Printed requested
+requested, respect the confirmed native role policy. Never send a conflicting
+spawn override: a conflicting ephemeral request requires explicit reconfiguration.
+Never change persistent settings except the consented setup-only owned role
+model/marker and receipt operation described by the shared setup gate.
+Never change global/provider settings, credentials, authentication, trust, tools
+or MCP configuration. Printed requested
 model strings are literal ephemeral data, not a registry or capability proof.
 
 Before acting, compare the caller's retained project/task/source/exact role ID

@@ -8,7 +8,7 @@ import stat
 import tempfile
 
 from machine import identity, need, safe
-from native import CORE_LEAVES, DEFINITIONS, LEAVES
+from native import CORE_LEAVES, DEFINITIONS, LEAVES, ROLES
 
 KIND = "domestique-copilot-preview"
 RECEIPT = ".domestique-private/copilot-preview.json"
@@ -75,11 +75,20 @@ def load(path, project, installation):
     files, directories = record.get("files"), record.get("directories")
     leaves = inventory(record)
     need(type(files) is dict and files.keys() <= set(leaves.values()), "invalid created paths")
-    for value in files.values():
+    for leaf, value in files.items():
         need(type(value) is dict and "sha256" in value and valid_identity(value.get("identity")) and
              (value.get("sha256") is None or
               (type(value["sha256"]) is str and HASH.fullmatch(value["sha256"]))),
              "invalid native creation data")
+        if "model_setup" in value:
+            setup = value["model_setup"]
+            need(leaf in {LEAVES[r] for r in ROLES} and type(setup) is dict and
+                 {"identity", "sha256", "removable"} <= set(setup) and
+                 set(setup) <= {"identity", "sha256", "removable", "confirmed"} and
+                 type(setup.get("confirmed", True)) is bool and
+                 valid_identity(setup["identity"]) and type(setup["sha256"]) is str and
+                 HASH.fullmatch(setup["sha256"]) and type(setup["removable"]) is bool,
+                 "invalid role model setup data")
     parents = {str(p) for leaf in (*leaves.values(), RECEIPT)
                for p in Path(leaf).parents if str(p) != "."}
     need(type(directories) is dict and directories.keys() <= parents and
@@ -99,6 +108,34 @@ def load(path, project, installation):
     return record
 
 
+def owned_identity(path, created):
+    return identity(path) in (created["identity"], created.get("model_setup", {}).get("identity"))
+
+
+def matches(path, facts):
+    return bool(facts and identity(path) == facts["identity"] and
+                sha(read_bytes(path)) == facts["sha256"])
+
+
+def removable(path, created):
+    setup = created.get("model_setup")
+    return matches(path, created) or bool(setup and setup["removable"] and matches(path, setup))
+
+
+def atomic_write(path, render, mode=0o600):
+    """Existing same-directory replacement discipline, shared by roles and receipt."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".copilot-preview-", delete=False) as stream:
+            temporary = Path(stream.name)
+            os.fchmod(stream.fileno(), mode)
+            stream.write(render(temporary))
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
 def save(path, record, fresh=False):
     """One atomic small state replacement; interruptions are not transactions."""
     if fresh:
@@ -106,13 +143,7 @@ def save(path, record, fresh=False):
             record["receipt_identity"] = identity(path)
             stream.write((json.dumps(record, indent=2) + "\n").encode())
         return
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".copilot-preview-", delete=False) as stream:
-            temporary = Path(stream.name)
-            record["receipt_identity"] = identity(temporary)
-            stream.write((json.dumps(record, indent=2) + "\n").encode())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+    def render(temporary):
+        record["receipt_identity"] = identity(temporary)
+        return (json.dumps(record, indent=2) + "\n").encode()
+    atomic_write(path, render)

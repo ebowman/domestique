@@ -27,5 +27,6 @@ backend debugging and queue-draining/session-close authority. Claim/commit/close
 belong to the caller; roles never close unpassed work.
 
 `common.md` plus small entry/role sections are repository-owned shared policy.
-Native `.3` creation templates remain byte-identical thin locators. No model
+Existing `.3` locators remain untouched; new thin locators explicitly name the
+Copilot harness. The first-use gate adds only consented owned model setup. No model
 registry, provider schema, private Beads bridge or historical engine is reused.

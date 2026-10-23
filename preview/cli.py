@@ -25,6 +25,17 @@ Unknown/partial ownership returns 1; no repair or native/readiness inference.
 workflow TYPE --project ROOT loads shared instructions without invoking Beads.
 TYPE: ordinary | decompose | goal | implementer | reviewer.
 Optional --ready explicitly checks existing bd --version and project status.
+Before --ready: confirmed role pair, --harness copilot and
+--confirm-model-selection (caller assertion after native effective-selection
+checks, NOT native evidence). Unconfigured work stops before Beads.
+First use or reconfigure: /dom-decompose configure role models.
+One two-role question, explicit consent, then fresh client and reinvocation.
+Retained workflow decompose --brief 'configure role models' --source CLI
+--harness copilot --save-role-models --confirm-model-support
+--implementer-model ID_OR_inherit --reviewer-model ID_OR_inherit is the narrow
+interactive writer: shows diffs, requires typing 'Save setup only'; no piped input.
+Support assertions are caller checks, not native qualification. No setup work
+continues automatically into a goal. Native unknown/unavailable means stop.
 ordinary action: --task ID --brief TEXT; decompose action: --brief TEXT.
 goal action: --epic ID --domestique-goal (actual explicit user intent required).
 roles: --source ABSOLUTE_IMMUTABLE_CLI --task ID --brief TEXT --role-id EXACT_ID.
@@ -45,7 +56,8 @@ Released v1 Codex: $dom-decompose, $dom-goal EPIC_ID (or /skills selection);
 compatibility: $domestique-decompose, $domestique-goal EPIC_ID.
 Loading/matching a skill alone is never unattended authority.
 Native end-to-end qualification is NOT READY.
-No native global definitions, startup, PATH, alias, model or Beads setup."""
+All three role-model adapters implemented; native dispatch/reload unqualified.
+No native global definitions, startup, PATH, alias, global model or Beads setup."""
 
 
 def main(args):

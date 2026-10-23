@@ -115,6 +115,24 @@ class PreviewInspectTests(unittest.TestCase):
         self.assertIn("Preview activation: partial/unknown", output)
         self.assertNotIn("Preview activation: active", output)
 
+    def test_setup_confirmation_separate_from_creation(self):
+        self.command("enable")
+        output = self.inspect("inspect")
+        self.assertIn("Role model setup: unconfirmed", output)
+        PF.setup_models(self)
+        output = self.inspect("inspect")
+        self.assertEqual(output.count(": customized"), 2)
+        self.assertIn("Role model setup: confirmed file pair/receipt (not native evidence)", output)
+        role = self.a / LEAVES["reviewer"]
+        role.write_bytes(role.read_bytes() + b"\nUser edits stay owned.\n")
+        output = self.inspect("inspect")
+        self.assertIn("Role model setup: unconfirmed", output)
+        self.assertIn("Preview activation: active", output)
+        PF.setup_models(self)
+        record = json.loads((self.a / RECEIPT).read_bytes())
+        self.assertFalse(record["files"][LEAVES["reviewer"]]["model_setup"]["removable"])
+        self.assertIn("confirmed file pair", self.inspect("inspect"))
+
     def test_legacy_and_ambiguous_evidence(self):
         (self.a / ".domestique-private/v2").mkdir(parents=True)
         (self.a / ".claude").mkdir()

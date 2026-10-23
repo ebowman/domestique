@@ -239,7 +239,7 @@ simple command shape (paths are literal shell-quoted, including spaces, quotes
 and `$`):
 
 ```text
-ABSOLUTE_LAUNCHER workflow TYPE --project ABSOLUTE_PHYSICAL_ROOT
+ABSOLUTE_LAUNCHER workflow TYPE --project ABSOLUTE_PHYSICAL_ROOT --harness copilot
 ```
 
 TYPE is `ordinary`, `decompose`, `goal`, `implementer` or `reviewer`. These
@@ -264,12 +264,26 @@ arguments return **2**; missing action/role context or prerequisite returns **1*
 | `--role-id EXACT_ID` | Mandatory for actual roles, exactly the selected local implementer/reviewer ID. |
 | `--implementer-model ID` / `--reviewer-model ID` | Optional literal ephemeral requested model strings; no persistent settings/capability claim. |
 | `--confirm-native` | Caller asserts fresh native exact-ID/capability confirmation of customized files before `--ready`; not automatic metadata admission or native proof. |
+| `--harness copilot` | Explicit native-entry identity, required for readiness and setup writes. Old locators still load guidance; their retained action commands supply it. |
+| `--confirm-model-selection` | Required before readiness, after caller checks exact loaded roles, effective selections/overrides and prevention of silent substitution natively. A flag is not native evidence. |
+| `--save-role-models --confirm-model-support` | Narrow interactive writer, only with decompose `--brief 'configure role models'`, exact retained `--source`, harness and both model choices (`inherit` removes model). Caller first verifies native support; writer displays diffs and requires typed `Save setup only`. Noninteractive stdin refuses. |
+
+Unconfirmed role pairs return the shared setup-only questionnaire before any
+workflow body or Beads. The model options above remain ephemeral assertions
+except in this explicitly consented writer operation. Native support/effective
+selection checks belong to the caller; no CLI flag establishes native evidence.
+Rendered readiness commands include both `--confirm-model-selection` and
+`--confirm-native`, conditional on actual native checks of loaded exact IDs,
+capabilities/tools, effective selections and overrides plus the user's action
+request. Do not execute them based on writer assertions or a model catalog;
+unknown checks mean stop.
 
 Bare goal is SETUP ONLY, not a loop body or Beads readiness. Its rendered
 instructions tell the native caller to forward the user's explicit epic through
 the retained command, e.g. `python3 -I -S -B ABSOLUTE_IMMUTABLE_CLI workflow goal
 --project ROOT --source ABSOLUTE_IMMUTABLE_CLI --epic USER_EPIC --domestique-goal
---ready`. The original `.3` locator need not know newer flags. If the user did
+--ready --harness copilot --confirm-model-selection --confirm-native`, only after
+role setup and native checks. The original `.3` locator need not know newer flags. If the user did
 not explicitly request Domestique goal, ask and stop rather than infer intent
 from native goal/autopilot or planning. An explicit gated goal load without
 `--ready` can read policy, but cannot act before requested readiness.
@@ -286,7 +300,7 @@ independently sample current or invoke readiness to start a new workflow.
 JSON display escapes literal context; shell command examples use literal quoting
 and preserve newlines. Never eval them or serialize them into persistent settings.
 
-Frontmatter contains only these exact `name` / `description` pairs:
+Freshly generated frontmatter contains only these exact `name` / `description` pairs:
 
 | Name | Description |
 | --- | --- |
@@ -308,7 +322,9 @@ never resolves current again. It requires the matching active project receipt,
 root/Git/common identities, machine binding, five stable internal native IDs and all
 recorded owned files (seven fresh, five legacy) before operational instructions. Missing/revoked/moved/copied/foreign,
 nested-root or missing-role contexts refuse without Beads or fallback.
-Customized definitions are marked, never parsed or rewritten; fresh native
+Customized definitions are preserved. Role frontmatter is parsed only by the
+bounded setup/confirmation gate, never as native capability evidence; only
+explicit consent permits the model/marker patch. Fresh native
 confirmation is required before action. Edited raw locators are trusted user
 code, outside hostile-loader guarantees. Definition installation alone is
 **not operational workflow readiness**.
@@ -326,6 +342,13 @@ The bounded JSON receipt's `kind` is `domestique-copilot-preview`. It records:
   adoption or rebaselining occurs, and internal `native_ids` stay unchanged.
 - `files`: only created native relative paths, their creation identities and
   original SHA-256 hashes (`null` only for a known incomplete write).
+  Role entries may additionally carry `model_setup` identity/hash/removable
+  facts from a consented setup; creation facts never advance. Optional
+  `model_setup.confirmed: false` revokes completion after a published receipt's
+  save/final verification fails, preserving those facts and all role bytes.
+  Explicit successful setup replaces the revocation. Cleanup errors and observed
+  confirmation are reported separately: failed invalidation may leave a confirmed
+  pair and must require human resolution, not an assumed rollback or success.
 - `directories`: only created parents and their identities; `receipt_identity`
   identifies this state file, not a foreign identical copy.
 - `token`, `exclusion`: exact eight-pattern block (original six for legacy) plus delimiters, original
@@ -354,12 +377,14 @@ Repeat enable never rewrites wrappers, changes their baselines, parses their
 YAML or approves user model fields. It reports `customized` and preserves all
 owned local edits byte-for-byte, including bodies and malformed metadata,
 across shared source/template updates. Missing owned definitions refuse
-repair; use disable. A replaced native inode is retained as customized/replaced,
-not newly adopted.
+repair; use disable. A recorded setup identity is still owned, without changing
+its customized-versus-creation status. Other replaced native inodes are retained
+as customized/replaced, not newly adopted.
 
 Disable first preflights all leaves/exclusion and revokes the active receipt
-**before any eligible deletion**. Only same-identity, unchanged owned files are
-deleted. Customized, replaced, tracked, unsafe or unowned leftovers remain;
+**before any eligible deletion**. Only matching unchanged creation files or
+exact matching `model_setup` records with `removable: true` are deleted.
+Other customized, replaced, tracked, unsafe or unowned leftovers remain;
 exit **1 / PARTIAL** lists reasons and retains the disabled receipt with its
 original baselines. Repeated partial disable remains honest, never re-enables or
 rebaselines. Resolve retained material yourself, then repeat disable; enable
@@ -406,19 +431,37 @@ sandboxing or invisibility. Existing ancestor/global definitions may still
 advertise Domestique; enabling or disabling this preview does not retire them
 or erase cached native context. Use fresh clients when qualifying discovery.
 
-## First-use role models — Claude+Codex protocols implemented, native unqualified
+## First-use role models — all adapters implemented, native unqualified
 
 The accepted contract (hq-7sm.1) below is implemented for Claude and Codex as
-**emitted native assistant protocols** in `domestique.sh` (hq-7sm.2–.3), not a standalone
-settings engine or native runtime qualification. One shared setup body gates
-each harness's canonical/legacy decompose and goal; ordinary policy redirects
-unconfirmed delegation to setup. Generated Claude/Codex model/effort defaults
-remain suggestions, not consent. The Copilot setup adapter remains pending:
-`preview/native.py` emits no Copilot models.
-`preview/workflow.py` transports ephemeral requests, and
-`preview/workflows/common.md` forbids persistent settings changes. Those current
-instructions remain in force for the pending Copilot adapter. No new
-installer, model registry, migration engine, or `/drain` entry is proposed.
+**emitted native assistant protocols** in `domestique.sh` (hq-7sm.2–.3), and for
+Copilot as shared instructions plus the narrow owned writer in
+`preview/model_setup.py` (hq-7sm.4). This is not a standalone settings engine or
+native runtime qualification. One shared setup body gates each harness's
+canonical/legacy decompose and goal; ordinary policy redirects unconfirmed
+delegation to setup. Generated defaults remain suggestions, not consent.
+Copilot creation templates still emit no models. Only explicitly consented
+setup may persist project-local model/marker changes and ownership receipts.
+No new installer, model registry, migration engine, or `/drain` entry is added.
+
+Copilot's instruction-driven question collects both choices. The retained CLI
+writer requires an interactive stdin terminal and typed `Save setup only` after
+displaying the pair, paths and minimal diff. An assistant tool without a terminal
+must offer the literal command for the human to run interactively, not pipe
+consent or fake a TTY. This intentionally conservative interface does not claim
+an assistant tool can supply genuine interaction or native evidence.
+`--confirm-model-support` and `--confirm-model-selection` transport caller checks,
+**not native evidence**. Unknown support stops before save; unknown effective
+loading/selection stops before workflow. Actual native qualification remains
+separately budget-gated hq-7sm.6.
+
+The lossless Copilot parser accepts LF UTF-8 frontmatter with unique top-level
+scalar keys, comments/blank lines, and a flat JSON string array for `tools`.
+Inserted models are JSON-quoted; `inherit` removes model. Inline model comments
+are retained, including as standalone comments on removal. Block/anchored/
+ambiguous YAML, unsupported effort fields, duplicate/misplaced markers, CRLF
+and non-UTF-8 require manual resolution; no formatter or lossy conversion runs.
+The Markdown prompt body and all unrelated supported fields remain byte-exact.
 
 ### One question, two roles, one project and harness
 
@@ -697,14 +740,20 @@ uninstall backup preservation without rebaselining configured bytes. Python
 `tomllib` checks native role syntax, basic-string escaping (quotes, backslashes,
 shell literals and Unicode), unchanged custom instructions/keys, and pair hashes;
 these illustrative fixture model strings are not availability claims.
-These tests do not execute an assistant questionnaire, inject runtime write
-failures, or prove native loading/model dispatch. Copilot setup and hq-7sm.6
-remain pending; no paid/native qualification is claimed.
+These Claude/Codex tests do not execute an assistant questionnaire, inject runtime
+write failures, or prove native loading/model dispatch. Copilot's existing
+preview-project/workflow/inspect suites exercise the real local writer with
+synthetic terminal answers/support assertions: explicit/inherited/same-model
+pairs, customization and reconfirmation, cancellation/refusal, immutable creation
+facts, removable metadata, old receipts and injected publication/receipt failures.
+They check the retained CLI readiness gate without native/model calls.
+Neither these fixtures nor emitted instructions prove native functionality.
+All adapters are implemented; hq-7sm.6 remains pending.
 
 ## Workflows, dependencies and inspection
 
-The remainder describes **current shipped Copilot preview behavior**, not its
-pending first-use adapter above.
+The remainder describes **current shipped Copilot preview behavior**, including
+the first-use adapter above.
 
 Shared policy/context loading is implemented in **hq-iyu.4**; execution remains
 the native caller's job, not a Python loop manager. Entry instructions use the activated
@@ -738,8 +787,10 @@ withholding raw potentially sensitive output. There is no private DB bridge or
 backend setup. Shared instructions run normal scoped create/show/ready/list/dep/
 update/close directly after explicit consent/readiness; errors stop honestly.
 
-Models, tools and MCP remain native or ephemeral session choices. Install no
-model defaults, questionnaire or registry. Honor explicitly supported OpenAI
+Role models require explicit first-use confirmation; tools and MCP remain native
+or ephemeral session choices. Install no model defaults or registry.
+Only the consented setup operation persists project-local role choices.
+Honor explicitly supported OpenAI
 role selections with actual native exact-ID/capability confirmation; unavailable requested choices stop rather than silently
 switching models/vendors. Do not alter authentication, trust or client settings.
 
@@ -866,7 +917,10 @@ old CLI), the target's receipt state and recorded definition paths (seven fresh,
 five legacy), and the
 recorded exclusion contribution without changing it. Original creation hashes
 and identities determine unchanged/customized/replaced/missing statuses, never
-updated templates. An active receipt with missing/unreadable/tracked files or
+updated templates; recorded setup identities are recognized without rebaselining.
+Model setup confirmation is reported separately using bounded frontmatter,
+marker and both receipt hashes/identities, never as native evidence.
+An active receipt with missing/unreadable/tracked files or
 invalid exclusions reports partial/unknown, not pristine activation. Corrupt,
 incompatible, copied or missing receipts never grant ownership to leftover files.
 A partial/disabled receipt remains partial even when remaining files match.
@@ -885,7 +939,7 @@ references are evidence, not proof of a complete installed generation. Actual
 indexed evidence is labeled tracked; untracked is **not proof of guest mode**.
 Claude/Codex/Copilot containers alone are ambiguous, not installed Domestique.
 Other legacy presence, generation, customization and guest mode remain unknown;
-there is no ancestor/global scan, legacy baseline, metadata parser or registry.
+there is no ancestor/global scan, legacy baseline, legacy metadata parser or registry.
 
 Inspection separates source checkout, installed machine and target filesystem
 discovery from effective native client loading and **workflow readiness: NOT

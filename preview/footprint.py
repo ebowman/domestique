@@ -5,10 +5,12 @@ from pathlib import Path
 import stat
 
 from machine import Refusal, git, identity, need, resolve_source, safe
-from native import LEAVES
+from native import LEAVES, ROLES
+from model_setup import confirmed, parse
 from project import (COMMAND_ANCHORS, LEGACY_STATE, POLICIES, exclusion_remainder,
                      installation_identity, project_identity, tracked_paths)
-from project_data import LIMIT, MARKER, RECEIPT, inventory, load, read_bytes, regular, sha
+from project_data import (LIMIT, MARKER, RECEIPT, inventory, load, owned_identity,
+                          read_bytes, regular, sha)
 
 
 def display(path):
@@ -57,13 +59,14 @@ def created_status(root, leaf, created, tracked):
     regular(root / leaf)
     if created is None:
         return "unknown (unowned file)"
-    if identity(root / leaf) != created["identity"]:
+    if not owned_identity(root / leaf, created):
         return "customized/replaced"
     if created["sha256"] is None:
         return "unknown (incomplete creation hash)"
     if info.st_size > LIMIT:
         return "customized/oversize"
-    return "unchanged" if sha(read_bytes(root / leaf)) == created["sha256"] else "customized"
+    return ("unchanged" if identity(root / leaf) == created["identity"] and
+            sha(read_bytes(root / leaf)) == created["sha256"] else "customized")
 
 
 def legacy_evidence(root):
@@ -136,6 +139,18 @@ def report(target, machine_root, machine_receipt):
             status = "unknown (unsafe/unreadable file)"
         partial |= status.startswith(("unknown", "missing"))
         rows.append(f"  {display(leaf)}: {status}")
+    confirmation = "unconfirmed"
+    if record and record["state"] == "active":
+        try:
+            roles = {}
+            for role in ROLES:
+                data = read_bytes(root / LEAVES[role])
+                roles[role] = (data, None, None, parse(data, role))
+            if confirmed(root, record, roles):
+                confirmation = "confirmed file pair/receipt (not native evidence)"
+        except (Refusal, OSError, ValueError):
+            confirmation = "unconfirmed (unsafe/invalid/partial role data)"
+    rows.append("Role model setup: " + confirmation + "; separate from customization versus creation.")
     try:
         path = Path(project["common_dir"]) / "info/exclude"
         data = read_bytes(path) if probe(path) is not None else b""
@@ -159,7 +174,7 @@ def report(target, machine_root, machine_receipt):
     rows.extend([
         "Project discovery: filesystem evidence only; effective client loading NOT CHECKED.",
         "Workflow readiness: NOT CHECKED; Beads/native/model/MCP never invoked.",
-        "Creation hashes, not current templates; metadata/permissions not interpreted.",
+        "Creation hashes, not current templates; model confirmation is not native capability/permission proof.",
         "No ancestor/global inventory, legacy baseline or guest-mode inference.",
     ])
     return int(partial), "\n".join(rows)
