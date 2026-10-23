@@ -538,6 +538,42 @@ class PreviewWorkflowTests(unittest.TestCase):
         self.assertIn("confirmed file pair", self.load("decompose"))
         self.assertEqual(PF.snapshot(self.a), before)
 
+    def test_goal_setup_preserves_dirty_tree_and_emits_clean_gate_before_claim(self):
+        # Check writer effects and emitted instruction order, not native
+        # enforcement: the instruction loader itself does not run a goal loop.
+        (self.a / "host.txt").write_text("uncommitted human work\n")
+        dirty = self.git(self.a, "status", "--porcelain")
+        self.assertIn(" M host.txt", dirty)
+        git_before = PF.snapshot(self.a / ".git")
+        before = PF.snapshot(self.a)
+        intent = ("--epic", "fixture-epic", "--domestique-goal")
+        first = self.load("goal", *intent)
+        self.assertIn("Goal request consumed, not queued", first)
+        self.assertNotIn("### Bounded implementation/review cycle", first)
+        self.assertEqual(PF.snapshot(self.a), before)
+        self.assertIn("save requires decompose", self.load(
+            "goal", *intent, "--save-role-models", code=2))
+        message, _ = PF.setup_models(self)
+        self.assertIn("Saved setup only", message)
+        self.assertIn("fresh Copilot client", message)
+        self.assertEqual(PF.snapshot(self.a / ".git"), git_before,
+                         "setup must neither stage nor commit nor switch branches")
+        self.assertEqual((self.a / "host.txt").read_text(), "uncommitted human work\n")
+        before = PF.snapshot(self.a)
+        self.assertIn("SETUP ONLY", self.load("goal"), "setup grants no remembered epic")
+        output = self.load("goal", *intent)
+        positions = [output.index(text) for text in (
+            "Role model confirmation: confirmed file pair",
+            "Before code work require a clean working tree and index",
+            "Caller claims the selected task",
+            "Only after reviewer PASS",
+            "## Explicit Domestique goal")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("If dirty,\ndetached, uncertain", output)
+        self.assertIn("Never broad staging", output)
+        self.assertEqual(PF.snapshot(self.a), before)
+        self.assertEqual(self.calls(), [], "no readiness/goal action follows setup implicitly")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

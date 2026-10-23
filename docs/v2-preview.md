@@ -463,6 +463,47 @@ ambiguous YAML, unsupported effort fields, duplicate/misplaced markers, CRLF
 and non-UTF-8 require manual resolution; no formatter or lossy conversion runs.
 The Markdown prompt body and all unrelated supported fields remain byte-exact.
 
+### Bounded cross-adapter isolation (hq-7sm.5)
+
+The existing offline project runner now exercises this exact disposable order:
+install the preview machine source into fixture HOME, enable Copilot in a fresh
+project, then run V1 `domestique.sh PROJECT --platform both` (normal and guest
+cases). The V1 installer accepts this order. Claude/Codex pairs are configured
+with the existing **synthetic** pair helpers; Copilot uses the real owned writer
+with synthetic terminal/consent input. Each pair change preserves the other two
+adapter inventories, V1 baselines, exclusions, project sentinels, sibling project
+and complete fixture HOME. Canonical/legacy entries keep the same pair and gate;
+V1 confirmation does not confirm Copilot's goal gate. Copilot creation
+identities/hashes are never rewritten to configured bytes.
+
+This is **bounded isolation evidence, not general coexistence support**:
+
+| Order / operation | Current result |
+| --- | --- |
+| Fresh preview enable, then V1 both-provider install | Accepted by those installers; tested only as the disposable mixed fixture above. |
+| V1 first, then preview enable | Refused: `legacy/experimental authority collision: .claude/.domestique`. |
+| Repeat preview enable after V1 was added, before or after role setup | Same refusal, despite the intact active preview receipt. |
+| Inspect mixed project | Read-only active preview/confirmation report, alongside separate V1 evidence; no native readiness claim. |
+| Disable mixed preview with unchanged consented setup | Removes only owned preview files/receipt/exclusion contribution; preserves V1 and host bytes. Re-enable still refuses while V1 evidence remains. |
+
+Both real and dry-run refused enables preserve bytes, modes, path inventory,
+identities and modification times. No evidence is hidden/removed to unlock
+activation; no receipt identities are fabricated. The existing frozen
+five-definition tests remain the compatibility evidence, not a reconstructed
+mixed legacy layout.
+
+Run `python3 -B -Werror test/preview-project-tests.py` and
+`python3 -B -Werror test/preview-workflow-tests.py` serially. Existing cases
+retain first/repeat/inheritance/manual-edit/cancel/noninteractive/interrupted
+write coverage. Added goal checks inspect the **actual emitted instruction
+ordering**, including setup-only stop, reinvocation and clean-tree-before-claim
+requirements. The real Copilot setup writer leaves dirty tracked work and all
+Git administration unchanged: it neither stages nor commits setup as a bead.
+The loader is not a goal executor and does not itself enforce the native caller's
+clean-tree check. These assertions are not a real questionnaire, model selection,
+native dirty-tree enforcement or full parity qualification. Native hq-7sm.6
+still requires separate approval; no native, paid or real-Beads calls occur here.
+
 ### One question, two roles, one project and harness
 
 Before the first decompose or goal action, the native entry passes its explicit

@@ -185,6 +185,152 @@ class PreviewProjectTests(unittest.TestCase):
         self.assertEqual((snapshot(self.area), snapshot(self.home), snapshot(self.source)), before)
         return result
 
+    def assert_legacy_enable_refused(self, root):
+        def identities():
+            return {str(p): (p.lstat().st_dev, p.lstat().st_ino, p.lstat().st_mtime_ns)
+                    for p in root.rglob("*")}
+
+        before = identities()
+        for suffix in ((), ("--dry-run",)):
+            self.assertIn("legacy/experimental authority collision",
+                          self.unchanged_call("enable", root, *suffix, code=1))
+            self.assertEqual(identities(), before, "not even same-byte replacement/touch")
+
+    def test_copilot_first_v1_pairs_are_isolated_not_coexistence_support(self):
+        # Real lifecycles, then synthetic V1 pairs / real Copilot writer with
+        # synthetic terminal consent. No questionnaire or native model proof.
+        for mode in ("normal", "guest"):
+            with self.subTest(mode=mode):
+                root = self.area / mode
+                self.repo(root)
+                note = root / "project-sentinel"
+                note.write_bytes(b"unrelated project settings\n")
+                namespaces = {"claude": (".claude",), "codex": (".codex", ".agents"),
+                              "copilot": (".github", ".domestique-private")}
+
+                def inventories():
+                    return {h: {p: snapshot(root / p) for p in paths}
+                            for h, paths in namespaces.items()}
+
+                def isolated(harnesses, action):
+                    before = inventories()
+                    sentinels = (snapshot(self.home), snapshot(self.b),
+                                 snapshot(self.source), note.read_bytes(),
+                                 (root / "host.txt").read_bytes())
+                    result = action()
+                    for other in namespaces.keys() - set(harnesses):
+                        self.assertEqual(inventories()[other], before[other], other)
+                    self.assertEqual(
+                        (snapshot(self.home), snapshot(self.b), snapshot(self.source),
+                         note.read_bytes(), (root / "host.txt").read_bytes()), sentinels)
+                    return result
+
+                isolated(("copilot",), lambda: self.command("enable", root))
+                creation = self.receipt(root)["files"]
+                args = ("--guest",) if mode == "guest" else ()
+                # V1's supported both-provider install also records shared
+                # platform selection; don't mistake that for a role setup edit.
+                isolated(("claude", "codex"), lambda: self.run_raw(
+                    ["bash", ROOT / "domestique.sh", root, "--platform", "both", *args], root))
+                # The V1 installer accepts this order. It does not make repeat
+                # preview activation legal, even with an intact active receipt.
+                self.assert_legacy_enable_refused(root)
+
+                definitions = {}
+                for kind in ("decompose", "goal"):
+                    claude = root / f".claude/commands/{kind}.md"
+                    alias = root / f".claude/commands/dom-{kind}.md"
+                    self.assertEqual(claude.read_bytes(), alias.read_bytes())
+                    codex = root / f".agents/skills/domestique-{kind}/SKILL.md"
+                    short = root / f".agents/skills/dom-{kind}/SKILL.md"
+                    self.assertEqual(codex.read_bytes().split(b"---\n", 2)[2],
+                                     short.read_bytes().split(b"---\n", 2)[2])
+                    if kind == "goal":
+                        # Emitted protocol ordering, NOT execution by a native
+                        # assistant or proof that it obeys these instructions.
+                        for path in (claude, codex):
+                            body = path.read_text()
+                            positions = [body.index(text) for text in (
+                                "### Lossless bounded publication, setup only",
+                                "## End role setup gate",
+                                "Only after the role setup gate passes without setup writes",
+                                "check ALL tracked/index dirtiness",
+                                "Then create")]
+                            self.assertEqual(positions, sorted(positions))
+                            self.assertIn("never auto-stage, commit, stash,", body)
+                            self.assertIn("NOT queued for automatic continuation", body)
+                            self.assertIn("no planning\nbeads, claim, code, dispatch, branch/commit",
+                                          body)
+                    for path in (claude, alias, codex, short):
+                        definitions[path] = path.read_bytes()
+                    locators = []
+                    for entry in (kind, "dom-" + kind):
+                        path = root / LEAVES[entry]
+                        definitions[path] = path.read_bytes()
+                        locators.append(path.read_text().split("```sh\n")[1].split("\n```")[0])
+                    self.assertEqual(locators[0], locators[1])
+
+                for harness in ("claude", "codex", "copilot"):
+                    before = snapshot(root)
+                    if harness == "copilot":
+                        result, _ = isolated((harness,), lambda: setup_models(self, root))
+                        self.assertIn("Saved setup only", result)
+                        allowed = {LEAVES[r] for r in S.ROLES} | {RECEIPT}
+                    else:
+                        extra = ["explicit"] if harness == "codex" else []
+                        isolated((harness,), lambda: self.run_raw(
+                            [sys.executable, "-B", ROOT / "test/fixtures" /
+                             f"{harness}-configured-pair.py", root, *extra], root))
+                        extension = "md" if harness == "claude" else "toml"
+                        allowed = {f".{harness}/agents/{r}.{extension}" for r in S.ROLES}
+                    after = snapshot(root)
+                    self.assertEqual({p for p in before.keys() | after.keys()
+                                      if before.get(p) != after.get(p)}, allowed)
+                    self.assertEqual({p: p.read_bytes() for p in definitions}, definitions,
+                                     "canonical/legacy entries retain the same pair and gate")
+                    for leaf, facts in self.receipt(root)["files"].items():
+                        self.assertEqual({k: v for k, v in facts.items() if k != "model_setup"},
+                                         creation[leaf], "creation facts never rebaseline")
+                    output = self.unchanged_call(
+                        "workflow", "goal", "--project", root, "--harness", "copilot",
+                        "--epic", "fixture-epic", "--domestique-goal")
+                    confirmation = ("confirmed file pair" if harness == "copilot"
+                                    else "UNCONFIRMED")
+                    self.assertIn("Role model confirmation: " + confirmation, output,
+                                  "V1 confirmation must not authorize Copilot")
+
+                inspected = self.unchanged_call("inspect", root)
+                self.assertIn("Preview activation: active", inspected)
+                self.assertIn("confirmed file pair/receipt", inspected)
+                self.assertIn('".claude/.domestique"', inspected)
+                self.assertIn('".codex/.domestique"', inspected)
+                self.assert_legacy_enable_refused(root)
+                record = self.receipt(root)
+                exclude = root / ".git/info/exclude"
+                contribution = (record["exclusion"]["separator"] +
+                                record["exclusion"]["block"]).encode()
+                expected = exclude.read_bytes().replace(contribution, b"", 1)
+                self.unchanged_call("disable", root, "--dry-run")
+                isolated(("copilot",), lambda: self.command("disable", root))
+                self.assertEqual(exclude.read_bytes(), expected,
+                                 "remove only the preview contribution; keep V1/host suffix")
+                self.assertFalse((root / RECEIPT).exists())
+                self.assertTrue(all(not (root / leaf).exists() for leaf in LEAVES.values()))
+                self.unchanged_call("disable", root)
+                self.assertIn("Preview activation: absent", self.unchanged_call("inspect", root))
+                self.assert_legacy_enable_refused(root)
+
+    def test_v1_first_preview_enable_refuses_without_writes(self):
+        self.run_raw(["bash", ROOT / "domestique.sh", self.a, "--platform", "both"], self.a)
+        self.assert_legacy_enable_refused(self.a)
+        self.assertFalse((self.a / RECEIPT).exists())
+        self.assertFalse((self.a / ".github").exists())
+        output = self.unchanged_call("inspect", self.a)
+        self.assertIn("Preview activation: absent", output)
+        self.assertIn('".claude/.domestique"', output)
+        self.assertIn('".codex/.domestique"', output)
+        self.unchanged_call("disable", self.a)
+
     def test_lifecycle_and_loader_contract(self):
         # Existing host containers/files and matching ignore lines are unowned.
         (self.a / ".github").mkdir()
