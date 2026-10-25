@@ -32,6 +32,7 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 
 ## Role model gate (before Beads or delegation)
 - Claude native entries `/dom-decompose` and `/dom-goal` (aliases `/decompose`, `/goal`) share the setup protocol in their installed command bodies and the same two role files/marker. Generated defaults are suggestions, never confirmation.
+- An interactive first-use `/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) runs the same two-role questionnaire INLINE in this request, not a redirect to decompose. Setup consumes the request: no task, Beads or implementation, and no automatic continuation. The goal's later unattended loop does not make this interactive entry noninteractive. Truly noninteractive/autopilot callers without a confirmed pair STOP without persistence.
 - Ordinary bounded delegation must first validate the confirmed pair and native readiness using that protocol, read-only. If unconfigured or stale, STOP and direct the human to `/dom-decompose configure role models`; do not start another questionnaire or call Beads. Instruction/bootstrap loading alone neither starts setup nor authorizes goal work; do not infer the active harness from directories.
 - Explicit `/dom-decompose configure role models` (or `/decompose configure role models`) is reserved for setup-only reconfiguration, not a planning brief. Saving consumes the request: fresh client session and explicit reinvocation are required, with no automatic goal continuation.
 - Before dispatch, verify exact local role loading and effective model/effort/override evidence for this session. Unknown or substituted selections mean STOP, never fallback. Send no conflicting spawn model/effort overrides. Native dispatch qualification is separate from emitted instruction tests.
@@ -146,6 +147,12 @@ DOM_EOF
 emit_claude_model_setup() { cat <<'DOM_EOF'
 ## Claude first-use role setup — mandatory gate
 
+Throughout setup, do NOT use ANY Agent/Task/agent delegation, including
+documentation/research helpers or `claude-code-guide`. The caller must inspect
+tools/docs itself; missing evidence means STOP, not a helper call. This rule is
+scoped to setup, not a global agent prohibition: after setup/reload and readiness,
+the workflow still requires implementer and independent reviewer delegation.
+
 Run this gate BEFORE any Beads command (including readiness/create/claim),
 planning, code, branch changes or dispatch. This native command explicitly
 identifies the harness as `claude`. Bind ROOT to the exact physical Git worktree
@@ -153,6 +160,14 @@ root of this invocation; if cwd is not that root, or identity is ambiguous,
 STOP and ask for an explicit invocation there. Never search ancestors for
 another installation, infer another harness, or configure a sibling worktree.
 Standalone instruction loading is read-only, not permission to run setup.
+
+An interactive first-use Domestique goal (`/dom-goal EPIC_ID` or `/goal EPIC_ID`)
+runs the same two-role questionnaire INLINE here; do not redirect to decompose.
+Setup consumes this request: no task, Beads or implementation, even if an epic
+was supplied. The later unattended loop does not make this entry noninteractive.
+Ordinary unconfigured delegation instead redirects to decompose configuration.
+Truly noninteractive/autopilot callers without a confirmed pair STOP without
+persistence; do not ask questions or enter setup on their behalf.
 
 ### Read-only preflight and confirmation state
 Use only ROOT/.claude/agents/implementer.md and
@@ -197,6 +212,9 @@ request `configure role models` always uses the same two-role question instead.
 Aliases share exactly this pair and marker, never separate consent.
 
 ### Native evidence — no invented API or paid probe
+During setup evidence/preflight, do NOT use ANY Agent/Task/agent delegation,
+including documentation/research helpers or `claude-code-guide`. Inspect
+tools/docs yourself; missing evidence means STOP, not a helper call.
 Before saving, use supported evidence from the installed client's documented
 capabilities/current selectable models and efforts to establish that BOTH
 proposed selections are supported and available with the required role tools.
@@ -330,6 +348,12 @@ DOM_EOF
   emit_claude_model_setup
   cat <<'DOM_EOF'
 
+Interactive first-use goal setup runs the two-role questionnaire INLINE above,
+not the ordinary-delegation redirect. Setup consumes this request with no task,
+Beads or implementation; stop for fresh-session reinvocation. Truly
+noninteractive/autopilot callers without a confirmed pair STOP without persistence.
+Only an unchanged confirmed, ready pair can enter the unattended loop below.
+
 Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
 
 Require an explicit `/dom-goal <epic-id>` or compatibility `/goal <epic-id>` request naming the epic in `$ARGUMENTS`. Merely loading these instructions is not unattended authority; if the epic or explicit request is missing, ask and stop.
@@ -429,6 +453,12 @@ DOM_EOF
 emit_codex_model_setup() { cat <<'DOM_EOF'
 ## Codex first-use role setup — mandatory gate
 
+Throughout setup, do NOT use ANY Agent/Task/agent delegation, including
+documentation/research helpers or built-in documentation agents. The caller must inspect
+tools/docs itself; missing evidence means STOP, not a helper call. This rule is
+scoped to setup, not a global agent prohibition: after setup/reload and readiness,
+the workflow still requires implementer and independent reviewer delegation.
+
 Run this gate BEFORE any Beads command (including readiness/create/claim),
 planning, code, branch changes or dispatch. This native entry explicitly
 identifies the active harness as `codex`. Bind ROOT to the exact physical Git
@@ -436,6 +466,15 @@ worktree root of this invocation; if cwd is not that root or identity is
 ambiguous, STOP and ask for an explicit invocation there. Never search ancestors
 for another installation, infer a harness from directories, or configure a
 sibling worktree. Standalone instruction loading is read-only, not setup consent.
+
+An interactive first-use Domestique goal (`$dom-goal EPIC_ID` or
+`$domestique-goal EPIC_ID`) runs the same two-role questionnaire INLINE here;
+do not redirect to decompose. Setup consumes this request: no task, Beads or
+implementation, even if an epic was supplied. The later unattended loop does
+not make this entry noninteractive. Ordinary unconfigured delegation instead
+redirects to decompose configuration. Truly noninteractive/autopilot callers
+without a confirmed pair STOP without persistence; do not ask questions or enter
+setup on their behalf.
 
 ### Read-only preflight and confirmation state
 Use only ROOT/.codex/agents/implementer.toml and
@@ -453,8 +492,8 @@ creation/setup identity receipts on Codex or add a sidecar.
 
 Validate both roles and evidence: bounded UTF-8 regular files (at most 1 MiB
 each), no symlinks in any path component, no hardlinked files (link count must
-be one), fixed paths confined to ROOT, readable metadata and writable role
-parents. Record current device/inode, modes and complete bytes of both roles
+be one), fixed paths confined to ROOT and readable metadata.
+Record current device/inode, modes and complete bytes of both roles
 and evidence for operation-local rechecks, not historical provenance.
 Parse each complete role with a TOML parser; require exact name = "implementer"
 or name = "reviewer", respectively, and valid developer_instructions. Require
@@ -464,6 +503,12 @@ duplicate/misplaced setup markers, and any syntax whose selected value spans
 cannot be patched losslessly. Do not confuse keys/comments inside multiline
 developer_instructions or nested tables with top-level settings. Never reformat
 the file or rewrite developer_instructions or unrelated keys.
+
+These initial checks are read-only ownership/path/field/identity checks, not a
+writability gate before pair selection and diff consent. Native sandbox
+protection of `.codex` paths is NOT unknown ownership or permanent filesystem
+read-only status. Do not write probes; final writable preflight belongs after
+save consent and any required native scoped approval, in that approved context.
 
 The only completion marker is a single comment at the beginning of implementer
 TOML: `# domestique-model-setup: JSON`. Reviewer must contain no setup marker.
@@ -484,6 +529,9 @@ request `configure role models` always uses the same two-role question instead,
 reserved for setup only, not a planning brief. Aliases share this pair/marker.
 
 ### Native evidence — no invented API or paid probe
+During setup evidence/preflight, do NOT use ANY Agent/Task/agent delegation,
+including documentation/research helpers or built-in documentation agents. Inspect
+tools/docs yourself; missing evidence means STOP, not a helper call.
 Before saving, use supported evidence from the installed client's documented
 capabilities/current selectable models and efforts to establish that BOTH
 proposed selections are supported and available with the required role tools.
@@ -548,7 +596,7 @@ setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
 Noninteractive callers may only use an already confirmed pair after readiness
 checks; otherwise report the interactive setup/reinvoke action and STOP.
 
-### Lossless bounded publication, setup only
+### Lossless bounded preparation, setup only
 Reject newlines and control characters in model/effort input (Unicode Cc,
 including DEL/C1); never interpolate inputs into shell commands or eval.
 Serialize inserted TOML values as double-quoted basic strings: escape backslash
@@ -566,11 +614,33 @@ comment. If a lossless bounded patch cannot be established, STOP for manual
 resolution. Never change tools, sandbox/permissions, parent/global configuration,
 pristine bases, manifest, guest exclusions, repository instructions or Beads.
 
-Preflight both outputs and ownership together. Immediately before publication,
-recheck safe paths, current identities, modes and bytes of both roles/evidence;
-any change means STOP/re-prompt, not overwrite. Under cooperative single-writer
-operation, use same-directory temporary files and atomic per-file replacement,
-preserving original modes. Recheck expected state before each replacement:
+### After save consent — native scoped approval, then publication
+Only AFTER explicit Save setup only consent to the exact prepared diff, if
+native sandbox protection requires permission to write these config paths,
+request native one-command scoped approval for the EXACT prepared publication
+operation below, including its final preflight. When the native tool supports
+it (for example exec_command with approval_policy=on-request), request
+`sandbox_permissions=require_escalated` with a specific justification naming
+both exact role paths and the consented setup-only diff. Do not try ordinary
+writes as probes before requesting approval. No persistent prefix rule,
+sandbox-mode change, broad permission grant or bypass is permitted.
+Save consent is not native permission; use the supported native approval flow.
+If approval is denied or unavailable, STOP with ZERO mutation and NO success;
+preserve the prior pair. Never bypass a client that cannot approve this operation.
+
+Final writable preflight runs INSIDE the approved command/context (or the
+existing permitted context when no additional approval is needed), before ANY
+mutation, including temporary files or marker invalidation. Preflight BOTH
+roles, outputs and ownership together. Immediately before publication,
+recheck safe paths, current identities, modes and bytes of both roles/evidence
+against the original read-only snapshot,
+and verify both role files and parents are actually writable in this context.
+Changed inputs or an actually unwritable file/parent mean STOP with ZERO mutation
+and NO success; re-prompt for changed inputs, never overwrite or repair permissions.
+Only after all checks pass, the SAME prepared command performs publication.
+Under cooperative single-writer operation, use same-directory temporary files
+and atomic per-file replacement, preserving original modes.
+Recheck expected state before each replacement:
 1. Invalidate any old implementer completion marker first (remove only its line).
 2. Write the reviewer update.
 3. Publish implementer with the new pair marker LAST.
@@ -586,8 +656,9 @@ beads, claim, code, dispatch, branch/commit or goal cycle. End with a fresh clie
 session and explicit `$dom-decompose` (alias `$domestique-decompose`) or
 `$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`) invocation to repeat.
 The initiating goal request is consumed, NOT queued for automatic continuation.
-Missing setup during unattended goal execution means STOP, not permission to
-write settings. Confirmed setup alone grants no goal authority.
+Missing setup during truly noninteractive/autopilot goal execution means STOP,
+not permission to write settings; interactive first-use goal entry asks INLINE
+as above. Confirmed setup alone grants no goal authority.
 Before later goal execution, ALL tracked/index dirtiness, including setup
 changes, requires human disposition: never auto-stage, commit, stash, discard
 or hide it. Guest mode retains existing local-only exclusions and uninstall
@@ -601,6 +672,12 @@ DOM_EOF
 
 emit_codex_role_gate() { cat <<'DOM_EOF'
 ## Role model gate (before Beads or delegation)
+An interactive first-use `$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`)
+runs the same two-role questionnaire INLINE in its installed goal body, not a
+redirect to decompose. Setup consumes the request: no task, Beads or
+implementation, and no automatic continuation. The later unattended loop does
+not make this entry noninteractive. Truly noninteractive/autopilot callers
+without a confirmed pair STOP without persistence.
 Ordinary bounded delegation must first validate the confirmed pair and native
 readiness, read-only, using the shared Codex setup protocol in the installed
 `$dom-decompose` / `$domestique-decompose` skill body. If unconfigured or stale,
@@ -692,6 +769,12 @@ DOM_EOF
   cat <<'DOM_EOF'
 
 # Unattended epic execution
+
+Interactive first-use goal setup runs the two-role questionnaire INLINE above,
+not the ordinary-delegation redirect. Setup consumes this request with no task,
+Beads or implementation; stop for fresh-session reinvocation. Truly
+noninteractive/autopilot callers without a confirmed pair STOP without persistence.
+Only an unchanged confirmed, ready pair can enter the unattended loop below.
 
 An explicit `$dom-goal <epic-id>` or `$domestique-goal <epic-id>` invocation is the sole authorization
 to continue between beads. It applies only to that epic and expires on

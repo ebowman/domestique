@@ -553,6 +553,19 @@ for phrase in (
 assert setup.index("1. Invalidate") < setup.index("2. Write the reviewer")
 assert setup.index("2. Write the reviewer") < setup.index("3. Publish implementer")
 
+# Setup forbids helper delegation at entry AND during native evidence gathering.
+entry, preflight = setup.split("### Read-only preflight", 1)
+evidence = preflight.split("### Native evidence", 1)[1].split("Before saving", 1)[0]
+for section in (entry, evidence):
+    assert "do NOT use ANY Agent/Task/agent delegation" in section
+    assert "documentation/research helpers or `claude-code-guide`" in section
+    assert "missing evidence means STOP, not a helper call" in section
+assert "the workflow still requires implementer and independent reviewer delegation" in entry
+assert "questionnaire INLINE here; do not redirect to decompose" in entry
+assert "Ordinary unconfigured delegation instead redirects" in entry
+assert "without a confirmed pair STOP without persistence" in " ".join(entry.split())
+assert "Setup consumes this request: no task, Beads or implementation" in entry
+
 # Support and dispatch evidence are distinct; unknowns stop, no invented API.
 for phrase in (
     "Before saving, use supported evidence", "supported and available",
@@ -571,6 +584,11 @@ policy = (root / "CLAUDE.local.md").read_text()
 assert "Ordinary bounded delegation" in policy
 assert "read-only" in policy
 assert "STOP and direct the human to `/dom-decompose configure role models`" in policy
+assert policy.index("questionnaire INLINE") < policy.index("Ordinary bounded delegation")
+assert "not a redirect to decompose" in policy
+assert "noninteractive/autopilot callers without a confirmed pair STOP without persistence" in policy
+assert goal.index("Interactive first-use goal setup") < goal.index("Drive epic $ARGUMENTS")
+assert "not the ordinary-delegation redirect" in goal
 assert "selected role model" in policy
 assert "Sonnet" not in policy + decompose and "Opus" not in policy
 assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create or switch")

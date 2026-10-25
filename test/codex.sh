@@ -838,7 +838,7 @@ for phrase in (
     "No rollback, journal or silent repair", "SETUP ONLY: no planning",
     "beads, claim, code, dispatch, branch/commit or goal cycle",
     "fresh client\nsession", "NOT queued for automatic continuation",
-    "Missing setup during unattended goal execution means STOP",
+    "Missing setup during truly noninteractive/autopilot goal execution means STOP",
     "Confirmed setup alone grants no goal authority",
     "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
     "never reset pristine\nbases to configured bytes",
@@ -846,6 +846,47 @@ for phrase in (
     assert phrase in setup, phrase
 assert setup.index("1. Invalidate") < setup.index("2. Write the reviewer")
 assert setup.index("2. Write the reviewer") < setup.index("3. Publish implementer")
+
+# Real emitted aliases share inline entry and a setup-scoped ban on helpers.
+entry, preflight = setup.split("### Read-only preflight", 1)
+evidence = preflight.split("### Native evidence", 1)[1].split("Before saving", 1)[0]
+for section in (entry, evidence):
+    assert "do NOT use ANY Agent/Task/agent delegation" in section
+    assert "documentation/research helpers or built-in documentation agents" in section
+    assert "missing evidence means STOP, not a helper call" in section
+assert "the workflow still requires implementer and independent reviewer delegation" in entry
+assert "questionnaire INLINE here" in entry and "do not redirect to decompose" in entry
+assert "Ordinary unconfigured delegation instead" in entry
+assert "without a confirmed pair STOP without persistence" in " ".join(entry.split())
+assert "Setup consumes this request: no task, Beads or implementation" in " ".join(entry.split())
+
+# Read-only pair/diff first; consent and native approval precede BOTH-role checks
+# inside the publication command, with denial/change/unwritable paths fail-closed.
+ordered = (
+    "### Read-only preflight", "### One question for BOTH roles",
+    "ACTUAL complete proposed diff", "before explicit Save setup only consent",
+    "Only AFTER explicit Save setup only consent",
+    "request native one-command scoped approval", "sandbox_permissions=require_escalated",
+    "Final writable preflight runs INSIDE the approved command/context",
+    "Preflight BOTH", "both role files and parents are actually writable",
+    "the SAME prepared command performs publication", "1. Invalidate",
+)
+positions = [setup.index(phrase) for phrase in ordered]
+assert positions == sorted(positions)
+assert "writable role\nparents" not in preflight.split("### Native evidence")[0]
+for phrase in (
+    "read-only ownership/path/field/identity checks, not a writability gate",
+    "NOT unknown ownership or permanent filesystem read-only status",
+    "Do not write probes", "approval_policy=on-request",
+    "specific justification naming both exact role paths",
+    "No persistent prefix rule, sandbox-mode change, broad permission grant or bypass",
+    "If approval is denied or unavailable, STOP with ZERO mutation and NO success",
+    "before ANY mutation, including temporary files or marker invalidation",
+    "against the original read-only snapshot",
+    "Changed inputs or an actually unwritable file/parent mean STOP with ZERO mutation and NO success",
+):
+    assert phrase in " ".join(setup.split()), phrase
+
 for phrase in (
     "Before saving, use supported evidence", "supported and available",
     "role-file model/model_reasoning_effort values override",
@@ -869,7 +910,12 @@ for path in (root / "AGENTS.md", skills / "domestique/SKILL.md"):
     assert "STOP and direct the human to `$dom-decompose configure role models`" in text
     assert "do not start another questionnaire" in text
     assert "Instruction/bootstrap loading alone neither starts setup nor grants goal" in text
+    assert text.index("questionnaire INLINE") < text.index("Ordinary bounded delegation")
+    assert "not a\nredirect to decompose" in text
+    assert "without a confirmed pair STOP without persistence" in text
     assert text.index("## Role model gate") < text.index("`bd ready`")
+assert goal.index("Interactive first-use goal setup") < goal.index("An explicit `$dom-goal <epic-id>`")
+assert "not the ordinary-delegation redirect" in goal
 assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create/switch")
 for role in ("implementer", "reviewer"):
     assert b"domestique-model-setup:" not in (root / f".codex/agents/{role}.toml").read_bytes()

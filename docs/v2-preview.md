@@ -617,9 +617,10 @@ Official sources consulted for this contract (2026-10-23):
   This is not proof that a particular CLI version can load, dispatch, or report
   the requested effective model, nor a documented hot-reload guarantee.
 
-Available local **`codex --help` only** was consulted: it describes `--model`
+For the original 2026-10-23 contract review, local **`codex --help` only**
+was consulted: it describes `--model`
 and `--config` but does not establish custom-role reload or an effective-model
-verification interface. No other native clients or model calls were run.
+verification interface. That review was not a native workflow run.
 For all three adapters, use a **fresh client session after saving**, discover the
 exact local role IDs, and explicitly reinvoke; do not rely on hot reload or
 resume a previously loaded role context.
@@ -640,6 +641,13 @@ Unknown support or a defeating override stops without setup writes; do not
 invent an API or launch a paid probe. This is a pre-save support check, not
 proof of an observed dispatch.
 
+During Claude/Codex setup, including native evidence/preflight, **all
+Agent/Task/agent delegation is forbidden**, including documentation/research
+helpers and `claude-code-guide`. The caller inspects tools/docs itself; missing
+evidence means stop, not a helper call. This is setup-scoped, not a global native
+agent restriction: implementer and independent reviewer remain required after
+setup, reload and readiness.
+
 After reload, before workflow/task dispatch, verify exact project-local role
 loading, session-resolved selections and overrides using supported native
 evidence. If effective selection or prevention of silent substitution cannot be
@@ -651,15 +659,32 @@ instructions or saving choices that pass pre-save checks. Neither documentation
 nor static tests clear that later gate, promise pre-observation knowledge or
 authorize paid calls.
 
+**Native observations addressed by hq-7sm.8; rerun pending, not qualified:**
+Claude's first-use exact `/dom-goal EPIC` redirected to decompose rather than
+asking inline, and setup launched the built-in `claude-code-guide` (Haiku)
+helper before consent. Codex stopped at workspace-write protection of `.codex`
+before proposing the pair/diff. Retained native instructions showed
+`approval_policy=on-request` and documented `exec_command`
+`sandbox_permissions=require_escalated` with justification; only ordinary
+requests were tried. The emitted protocol now distinguishes interactive entry
+from noninteractive execution, explicitly forbids setup helpers, and orders
+scoped native approval after diff/save consent. These source fixes and static
+tests do not erase the observed delegation or establish native success.
+Parent-owned hq-7sm.6 handles the separate post-commit native rerun.
+
 ### Entry and lifecycle boundaries
 
 Decompose-first and goal-first both run the same setup gate before Beads or
-delegation. Any successful first confirmation/reconfiguration is **setup only**:
+delegation. An **interactive first-use Domestique goal asks the same pair
+questionnaire inline**, not via the ordinary unconfigured-delegation redirect
+to decompose. The later unattended loop does not make this interactive entry
+noninteractive. Any successful first confirmation/reconfiguration is **setup only**:
 no planning beads, task claim, code, branch/commit, or goal cycle. Disclose the
 writes, save only on explicit consent, then end with the fresh-session invocation
 to repeat. In particular, the goal request that led to setup is consumed, not
-queued for automatic continuation. Missing setup during unattended goal
-execution is a stop, never permission to write configuration.
+queued for automatic continuation. Truly noninteractive/autopilot callers with
+missing confirmation stop without questions or persistence, never permission
+to write configuration.
 
 Reconfigure by invoking the harness's Domestique decompose entry with the exact
 request **`configure role models`**, reserved as setup-only rather than a planning
@@ -689,14 +714,35 @@ tracked files nor expands excludes or changes repository instructions.
 
 ### Two-role write and ownership safety
 
-Preflight both roles and the existing ownership data before the first write:
-exact root/harness, active ownership, safe regular non-symlink/non-hardlinked
-paths, readable bounded metadata, writable parents, proposed lossless patches,
-pre-save native support checks, and explicit approval of the complete diff. Recheck input
-bytes/identities immediately before publication; changes mean stop/re-prompt.
+Start with read-only checks of both roles and existing ownership data: exact
+root/harness, active ownership, safe regular non-symlink/non-hardlinked paths,
+readable bounded metadata, scalar fields and current bytes/identities. Prepare
+lossless outputs in memory, establish pre-save native support, select the pair
+read-only, and show the complete minimal diff before explicit save consent.
 No task work occurs during this operation.
 
-Prepare both outputs in memory. After consent, invalidate any old completion
+For Codex, initial ownership/path/field/identity checks must not require writable
+parents before pair selection/diff consent. Native sandbox protection of `.codex`
+is not unknown ownership or permanent filesystem read-only status. **After
+explicit save consent**, if protected config publication needs permission,
+request native one-command scoped approval for the **exact prepared publication
+operation**, including final preflight. If supported by the native tool, use
+`exec_command` with `sandbox_permissions=require_escalated` and a specific
+justification identifying both exact role paths and the consented diff.
+No persistent prefix rule, sandbox-mode change, broad permission grant, write
+probe or bypass. Native permissions are not changed by this source task.
+
+Inside that approved command/context (or the existing permitted context when
+additional approval is unnecessary), recheck **both** roles and evidence against
+the original paths/bytes/identities/modes and verify both role files and parents
+are actually writable **before any mutation**, including temporary files and
+marker invalidation. The same command then performs publication below.
+Approval denial/unavailability, changed inputs or an actually unwritable
+file/parent mean zero mutation and no success; changed inputs require re-prompt,
+not overwrite. No bypass if the native client cannot approve. All harnesses
+retain their ownership checks and final pre-publication input rechecks.
+
+After consent and final preflight, invalidate any old completion
 marker first, write the reviewer update, then publish the implementer with the
 new pair marker last. Use same-directory temporary files and atomic per-file
 replacement, preserving modes; do not claim a two-file transaction. Re-read and
