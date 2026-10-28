@@ -376,9 +376,13 @@ scenario_beads_purged() {
 
   check "exit 0" test "$rc" -eq 0
   check ".beads/ removed" test ! -e "$t/.beads"
-  check "reported Removed (--purge-beads)" bash -c '
-    printf "%s" "$1" | grep -A8 "^  Removed:$" | grep -q ".beads (--purge-beads)"
-  ' _ "$out"
+  # Removed contains consecutive bullet lines, not a fixed-size inventory.
+  check "reported Removed (--purge-beads)" awk -v item="    - $t/.beads (--purge-beads)" '
+    $0 == "  Removed:" { removed = 1; next }
+    removed && !/^    - / { removed = 0 }
+    removed && $0 == item { found = 1 }
+    END { exit !found }
+  ' <<< "$out"
 }
 
 # ---------------------------------------------------------------------------
