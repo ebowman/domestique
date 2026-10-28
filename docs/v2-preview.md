@@ -648,16 +648,51 @@ evidence means stop, not a helper call. This is setup-scoped, not a global nativ
 agent restriction: implementer and independent reviewer remain required after
 setup, reload and readiness.
 
-After reload, before workflow/task dispatch, verify exact project-local role
-loading, session-resolved selections and overrides using supported native
-evidence. If effective selection or prevention of silent substitution cannot be
-verified, stop without workflow or further writes. File syntax, a catalog
-listing, a user assertion and this marker alone are not dispatch proof.
+For **Claude/Codex**, after reload and before workflow/task dispatch, the
+supported pre-dispatch minimum is:
+
+- Identify the active native client and unambiguously registered intended
+  `implementer` and `reviewer` role IDs.
+- Verify the stored pair, ownership, physical root, both marker hashes and
+  required fresh-session reload.
+- Match declared model/effort and required tools to supported native
+  registration/session resolution evidence. Explicit non-overridable registered
+  selections plus documented resolution suffice; resolve inheritance/aliases
+  anew rather than guessing.
+- Check installed-version documented project discovery/precedence, competing
+  project/ancestor/global definitions and known invocation, environment, hook or
+  client overrides.
+- Establish current provider/model compatibility from available non-secret
+  native evidence, including restrictions and known availability failures.
+  Report each source's scope and limits. Current selectable-model or provider/
+  session evidence is not a guarantee of future entitlement or runtime success.
+  A doctor subprocess describes itself, not automatically the active thread;
+  establish applicability before treating it as active-session evidence.
+
+Use native source provenance if exposed; otherwise combine documented discovery/
+precedence, the checked on-disk pair and matching registered selections. Do not
+invent exact-origin/loaded-byte attestation. A missing optional provenance API
+or not-yet-existent child telemetry alone does **not** block ordinary explicitly
+authorized work once this minimum passes. Missing/ambiguous registration,
+actual mismatch, unresolved inheritance, a known defeating override or
+unavailability still stops without workflow or writes. File syntax, a catalog,
+a user assertion and the marker alone are not dispatch proof.
+
+During/after each authorized assignment, check actual available child telemetry
+for role/model/effort and selection errors **before accepting work**. Observed
+selection failure/mismatch stops, never silently falls back. Report observations
+and telemetry limits; declared selections are not actual execution proof. Normal
+use requires neither an invented/unavailable telemetry API nor a separate paid
+probe. Ordinary policy/bootstrap and decompose/goal use this same contract;
+setup-only consent, publication ordering, scoped native write approval and
+explicit authorization remain unchanged. This source-protocol correction does
+not change the Copilot retained-CLI gate or integrate a new installer.
+
 Actual **observed dispatch/reload qualification** belongs to **hq-7sm.6**, with
 a separately user-approved budget. It is not a prerequisite to emitting guarded
 instructions or saving choices that pass pre-save checks. Neither documentation
-nor static tests clear that later gate, promise pre-observation knowledge or
-authorize paid calls.
+nor static tests clear that separate release-qualification gate, promise
+pre-observation knowledge or authorize paid probes.
 
 **Native observations addressed by hq-7sm.8; rerun pending, not qualified:**
 Claude's first-use exact `/dom-goal EPIC` redirected to decompose rather than
@@ -671,6 +706,16 @@ from noninteractive execution, explicitly forbids setup helpers, and orders
 scoped native approval after diff/save consent. These source fixes and static
 tests do not erase the observed delegation or establish native success.
 Parent-owned hq-7sm.6 handles the separate post-commit native rerun.
+
+**hq-7sm.9 source correction; current Codex dispatch remains unqualified:**
+Native Codex 0.154 saved the pair correctly, then refused a fresh goal because
+the emitted gate demanded exact loaded bytes/source mapping that the client
+does not expose. The current role registry reports the intended IDs, model/
+effort and non-overridable selections; documented discovery/precedence and
+on-disk marker checks are available. The supported minimum above removes that
+circular provenance/future-telemetry demand, not real configuration, provider
+or mismatch checks. Static protocol regressions are not native acceptance.
+Fresh native dispatch acceptance is still pending under hq-7sm.6.
 
 ### Entry and lifecycle boundaries
 

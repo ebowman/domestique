@@ -895,16 +895,61 @@ for phrase in (
     "Verify installed-version behavior", "Unknown support/availability",
     "STOP before writes", "No fallback", "invented verification API or paid probe",
     "After saving, require a fresh client session",
-    "verify that these exact files loaded", "session-resolved model AND effort",
     "Send no conflicting spawn", "Ephemeral model requests are assertions",
     "a conflict stops", "resolve/check it anew each session",
     "STOP without workflow or writes", "not dispatch proof",
     "Actual observed role dispatch/reload qualification is separate",
-    "static emitted-protocol/lifecycle tests do not\nqualify runtime",
+    "static emitted-protocol/lifecycle tests do not qualify runtime",
 ):
     assert phrase in setup, phrase
+# Positive minimum permits supported registration/resolution without an optional
+# origin API; actual mismatches still stop and child evidence comes after spawn.
+for phrase in (
+    "supported pre-dispatch minimum, read-only",
+    "active native client and its registered intended `implementer` and `reviewer` role IDs",
+    "registration must be present and unambiguous",
+    "stored pair, ownership, physical ROOT, BOTH marker hashes",
+    "required fresh-session reload",
+    "Match declared model AND effort and required tools",
+    "Explicit non-overridable registered selections plus documented native resolution are sufficient",
+    "documented project-local discovery and precedence",
+    "competing project/ancestor/global definitions",
+    "current provider/model compatibility with available non-secret native evidence",
+    "not a future entitlement/runtime guarantee",
+    "A doctor subprocess describes its own provider/session, not automatically the active thread",
+    "establish applicability before using it as active-session evidence",
+    "Use native source provenance when exposed",
+    "do not invent exact-origin or loaded-byte attestation",
+    "Missing optional exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not block ordinary explicitly authorized work when this minimum is established",
+    "Missing/ambiguous registration, actual mismatch, unresolved inheritance or a known defeating override/unavailability means STOP",
+    "During/after each authorized assignment, check actual available child telemetry",
+    "before accepting work",
+    "selection failure/mismatch means STOP; never silently fall back",
+    "declared selections are not execution proof",
+    "require an unavailable telemetry API or demand a separate paid probe",
+):
+    assert phrase in " ".join(setup.split()), phrase
 for path in (root / "AGENTS.md", skills / "domestique/SKILL.md"):
     text = path.read_text()
+    for phrase in (
+        "supported pre-dispatch minimum in that protocol",
+        "registered intended role IDs", "pair/ownership/root/hashes and required reload",
+        "matching declared/resolved model/effort and tools",
+        "documented project discovery/precedence", "competing definitions and known overrides checked",
+        "available non-secret provider/model compatibility evidence",
+        "Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes",
+        "Missing/ambiguous registration, actual mismatch, unresolved inheritance",
+        "known defeating override or unavailability means STOP, never fallback",
+        "during/after each authorized assignment before accepting work",
+        "selection failure/mismatch stops",
+    ):
+        assert phrase in " ".join(text.split()), phrase
+    for obsolete in (
+        "verify that these exact files loaded", "requires exact local",
+        "If exact loading/effective selection",
+        "prevention of silent substitution cannot be verified",
+    ):
+        assert obsolete not in " ".join((text + decompose + goal).split()), obsolete
     assert "Ordinary bounded delegation" in text
     assert "read-only" in text
     assert "STOP and direct the human to `$dom-decompose configure role models`" in text

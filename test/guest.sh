@@ -566,13 +566,12 @@ assert "Ordinary unconfigured delegation instead redirects" in entry
 assert "without a confirmed pair STOP without persistence" in " ".join(entry.split())
 assert "Setup consumes this request: no task, Beads or implementation" in entry
 
-# Support and dispatch evidence are distinct; unknowns stop, no invented API.
+# Supported readiness is not exact-byte attestation or future execution proof.
 for phrase in (
     "Before saving, use supported evidence", "supported and available",
     "Force-model settings, spawn hooks", "Effort order is environment override",
     "Unknown support/availability", "STOP before writes",
     "After saving, require a fresh client session",
-    "verify that these exact files loaded", "session-resolved model AND effort",
     "Send no conflicting spawn", "a conflict stops",
     "STOP without workflow or writes", "not dispatch proof",
     "Do not invent a verification API", "no paid probe",
@@ -580,7 +579,53 @@ for phrase in (
     "static emitted-protocol/lifecycle tests do not qualify runtime",
 ):
     assert phrase in setup, phrase
+for phrase in (
+    "supported pre-dispatch minimum, read-only",
+    "active native client and its registered intended `implementer` and `reviewer` role IDs",
+    "registration must be present and unambiguous",
+    "stored pair, ownership, physical ROOT, BOTH marker hashes",
+    "required fresh-session reload",
+    "Match declared model AND effort and required tools",
+    "Explicit non-overridable registered selections plus documented native resolution are sufficient",
+    "documented project-local discovery and precedence",
+    "competing project/ancestor/global definitions",
+    "current provider/model compatibility with available non-secret native evidence",
+    "not a future entitlement/runtime guarantee",
+    "A doctor subprocess describes its own provider/session, not automatically the active thread",
+    "establish applicability before using it as active-session evidence",
+    "Use native source provenance when exposed",
+    "do not invent exact-origin or loaded-byte attestation",
+    "Missing optional exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not block ordinary explicitly authorized work when this minimum is established",
+    "Missing/ambiguous registration, actual mismatch, unresolved inheritance or a known defeating override/unavailability means STOP",
+    "During/after each authorized assignment, check actual available child telemetry",
+    "before accepting work",
+    "selection failure/mismatch means STOP; never silently fall back",
+    "declared selections are not execution proof",
+    "require an unavailable telemetry API or demand a separate paid probe",
+):
+    assert phrase in " ".join(setup.split()), phrase
 policy = (root / "CLAUDE.local.md").read_text()
+# Ordinary/bootstrap policy must route to the same positive minimum, not revive
+# the impossible gate that used to contradict "no invented API".
+for phrase in (
+    "supported pre-dispatch minimum in that protocol",
+    "registered intended role IDs", "pair/ownership/root/hashes and required reload",
+    "matching declared/resolved model/effort and tools",
+    "documented project discovery/precedence", "competing definitions and known overrides checked",
+    "available non-secret provider/model compatibility evidence",
+    "Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes",
+    "Missing/ambiguous registration, actual mismatch, unresolved inheritance",
+    "known defeating override or unavailability means STOP, never fallback",
+    "during/after each authorized assignment before accepting work",
+    "selection failure/mismatch stops",
+):
+    assert phrase in " ".join(policy.split()), phrase
+for obsolete in (
+    "verify that these exact files loaded", "verify exact local role loading",
+    "If exact loading/effective selection",
+    "prevention of silent substitution cannot be verified",
+):
+    assert obsolete not in " ".join((policy + decompose + goal).split()), obsolete
 assert "Ordinary bounded delegation" in policy
 assert "read-only" in policy
 assert "STOP and direct the human to `/dom-decompose configure role models`" in policy

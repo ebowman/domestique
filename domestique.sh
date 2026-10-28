@@ -35,7 +35,7 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 - An interactive first-use `/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) runs the same two-role questionnaire INLINE in this request, not a redirect to decompose. Setup consumes the request: no task, Beads or implementation, and no automatic continuation. The goal's later unattended loop does not make this interactive entry noninteractive. Truly noninteractive/autopilot callers without a confirmed pair STOP without persistence.
 - Ordinary bounded delegation must first validate the confirmed pair and native readiness using that protocol, read-only. If unconfigured or stale, STOP and direct the human to `/dom-decompose configure role models`; do not start another questionnaire or call Beads. Instruction/bootstrap loading alone neither starts setup nor authorizes goal work; do not infer the active harness from directories.
 - Explicit `/dom-decompose configure role models` (or `/decompose configure role models`) is reserved for setup-only reconfiguration, not a planning brief. Saving consumes the request: fresh client session and explicit reinvocation are required, with no automatic goal continuation.
-- Before dispatch, verify exact local role loading and effective model/effort/override evidence for this session. Unknown or substituted selections mean STOP, never fallback. Send no conflicting spawn model/effort overrides. Native dispatch qualification is separate from emitted instruction tests.
+- Before dispatch, apply the supported pre-dispatch minimum in that protocol: active native client and registered intended role IDs; verified stored pair/ownership/root/hashes and required reload; matching declared/resolved model/effort and tools; documented project discovery/precedence with competing definitions and known overrides checked; available non-secret provider/model compatibility evidence. Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes. Missing/ambiguous registration, actual mismatch, unresolved inheritance, known defeating override or unavailability means STOP, never fallback. Send no conflicting spawn model/effort overrides. Check available child telemetry during/after each authorized assignment before accepting work; selection failure/mismatch stops. Native dispatch qualification remains separate.
 
 ## Work tracking: beads
 - The plan of record lives in beads (`bd`), not in markdown TODO lists.
@@ -220,6 +220,12 @@ capabilities/current selectable models and efforts to establish that BOTH
 proposed selections are supported and available with the required role tools.
 Display the evidence and its limits. Check applicable native precedence and
 overrides using supported, non-secret evidence; do not edit client settings.
+Include available non-secret provider/model compatibility evidence (supported
+current session/provider status, restrictions and selectable model/effort data).
+State what each source establishes and what remains unobserved: a catalog is
+selection/support evidence, not execution proof or guaranteed future entitlement.
+A doctor subprocess describes its own provider/session, not automatically the
+active thread; establish applicability before using it as active-session evidence.
 For Claude, invocation model precedes role frontmatter, then subagent environment
 default, then parent; `inherit` selects parent. Force-model settings, spawn hooks
 and allowlists may override/substitute. Effort order is environment override,
@@ -230,17 +236,41 @@ or an override that defeats the selection means STOP before writes, with the
 role and reason. No fallback or silent default substitution; no paid probe.
 
 After saving, require a fresh client session and explicit reinvocation. Before
-any workflow action on a confirmed pair, discover the exact project-local
-`implementer` and `reviewer` role IDs and verify that these exact files loaded.
-Check session-resolved model AND effort, tools, provider restrictions and
-selection/override evidence before task dispatch. Send no conflicting spawn
+any workflow action on a confirmed pair, establish this supported pre-dispatch
+minimum, read-only:
+- Identify the active native client and its registered intended `implementer`
+  and `reviewer` role IDs; registration must be present and unambiguous.
+- Verify the stored pair, ownership, physical ROOT, BOTH marker hashes and
+  required fresh-session reload using the checks above.
+- Match declared model AND effort and required tools to supported native
+  registration/session evidence of their resolution. Explicit non-overridable
+  registered selections plus documented native resolution are sufficient;
+  resolve inherited values/aliases anew, not by guessing.
+- Verify installed-version documented project-local discovery and precedence;
+  check competing project/ancestor/global definitions and known invocation,
+  environment, hook or client overrides that could defeat these roles.
+- Establish current provider/model compatibility with available non-secret
+  native evidence, including restrictions and known availability failures;
+  report the evidence and its limits, not a future entitlement/runtime guarantee.
+
+Use native source provenance when exposed. Otherwise use documented discovery,
+precedence and the checked on-disk pair with matching registered selections;
+do not invent exact-origin or loaded-byte attestation. Missing optional
+exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not
+block ordinary explicitly authorized work when this minimum is established.
+Missing/ambiguous registration, actual mismatch, unresolved inheritance or a
+known defeating override/unavailability means STOP without workflow or writes.
+A catalog, file syntax, user assertion or marker alone is not dispatch proof.
+Send no conflicting spawn
 model/effort override; ephemeral model requests are assertions, not persistence:
 a conflict stops and offers explicit reconfiguration. Inheritance is consent to
 native resolution, not a pinned model; resolve/check it anew every session.
-If exact loading/effective selection or prevention of silent substitution cannot
-be verified with supported native evidence, STOP without workflow or writes.
-A catalog, file syntax, user assertion or marker alone is not dispatch proof.
-Do not invent a verification API or promise pre-observation knowledge.
+During/after each authorized assignment, check actual available child telemetry
+for role/model/effort and selection errors before accepting work. Observed
+selection failure/mismatch means STOP; never silently fall back. Report what
+was observed and any telemetry limits; declared selections are not execution
+proof. Do not invent a verification API, require an unavailable telemetry API
+or demand a separate paid probe to establish readiness.
 Actual observed role dispatch/reload qualification is separate, budget-gated
 work (hq-7sm.6); static emitted-protocol/lifecycle tests do not qualify runtime.
 That later observation is not a prerequisite to writing this protocol or saving
@@ -537,6 +567,12 @@ capabilities/current selectable models and efforts to establish that BOTH
 proposed selections are supported and available with the required role tools.
 Display the evidence and its limits. Check applicable native precedence and
 overrides with non-secret evidence; do not edit client/provider settings.
+Include available non-secret provider/model compatibility evidence (supported
+current session/provider status, restrictions and selectable model/effort data).
+State what each source establishes and what remains unobserved: a catalog is
+selection/support evidence, not execution proof or guaranteed future entitlement.
+A doctor subprocess describes its own provider/session, not automatically the
+active thread; establish applicability before using it as active-session evidence.
 Codex role-file model/model_reasoning_effort values override the values
 previously resolved from explicit spawn, then [agents] defaults, then parent.
 If spawn/defaults select a model without supplying effort, native resolution
@@ -548,20 +584,45 @@ or an override that defeats selection means STOP before writes with role/reason.
 No fallback, silent default substitution, invented verification API or paid probe.
 
 After saving, require a fresh client session and explicit reinvocation. Before
-any workflow action on a confirmed pair, discover the exact project-local
-`implementer` and `reviewer` role IDs and verify that these exact files loaded.
-Check session-resolved model AND effort, tools, provider restrictions and
-selection/override evidence before task dispatch. Send no conflicting spawn
+any workflow action on a confirmed pair, establish this supported pre-dispatch
+minimum, read-only:
+- Identify the active native client and its registered intended `implementer`
+  and `reviewer` role IDs; registration must be present and unambiguous.
+- Verify the stored pair, ownership, physical ROOT, BOTH marker hashes and
+  required fresh-session reload using the checks above.
+- Match declared model AND effort and required tools to supported native
+  registration/session evidence of their resolution. Explicit non-overridable
+  registered selections plus documented native resolution are sufficient;
+  resolve inherited values/aliases anew, not by guessing.
+- Verify installed-version documented project-local discovery and precedence;
+  check competing project/ancestor/global definitions and known invocation,
+  environment, hook or client overrides that could defeat these roles.
+- Establish current provider/model compatibility with available non-secret
+  native evidence, including restrictions and known availability failures;
+  report the evidence and its limits, not a future entitlement/runtime guarantee.
+
+Use native source provenance when exposed. Otherwise use documented discovery,
+precedence and the checked on-disk pair with matching registered selections;
+do not invent exact-origin or loaded-byte attestation. Missing optional
+exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not
+block ordinary explicitly authorized work when this minimum is established.
+Missing/ambiguous registration, actual mismatch, unresolved inheritance or a
+known defeating override/unavailability means STOP without workflow or writes.
+A catalog, file syntax, user assertion or marker alone is not dispatch proof.
+Send no conflicting spawn
 model/effort override. Ephemeral model requests are assertions, not persistence;
 a conflict stops and offers explicit reconfiguration. Inheritance is consent
 to native resolution, not a pinned model or necessarily the direct parent:
-resolve/check it anew each session. If exact loading/effective selection or
-prevention of silent substitution cannot be verified with supported native
-evidence, STOP without workflow or writes. A catalog, file syntax, user
-assertion or marker alone is not dispatch proof; do not promise pre-observation
-knowledge. Actual observed role dispatch/reload qualification is separate,
-budget-gated work (hq-7sm.6); static emitted-protocol/lifecycle tests do not
-qualify runtime. That later observation is not a prerequisite to emitting this
+resolve/check it anew each session.
+During/after each authorized assignment, check actual available child telemetry
+for role/model/effort and selection errors before accepting work. Observed
+selection failure/mismatch means STOP; never silently fall back. Report what
+was observed and any telemetry limits; declared selections are not execution
+proof. Do not invent a verification API, require an unavailable telemetry API
+or demand a separate paid probe to establish readiness.
+Actual observed role dispatch/reload qualification is separate, budget-gated
+work (hq-7sm.6); static emitted-protocol/lifecycle tests do not qualify runtime.
+That later observation is not a prerequisite to emitting this
 protocol or saving choices with supported pre-save evidence, and does not
 authorize a paid call here.
 
@@ -685,10 +746,19 @@ STOP and direct the human to `$dom-decompose configure role models` (alias
 `$domestique-decompose configure role models`); do not start another questionnaire
 or call Beads. Do not infer the active harness from directories.
 Instruction/bootstrap loading alone neither starts setup nor grants goal
-authority. Generated defaults are suggestions, never confirmation. A configured
-pair still requires exact local `implementer` / `reviewer` loading and current
-native model/effort/override checks before dispatch, with no conflicting spawn
-override and no fallback for unknown or substituted selections. Explicit
+authority. Generated defaults are suggestions, never confirmation.
+Before dispatch, apply the supported pre-dispatch minimum in that protocol:
+active native client and registered intended role IDs; verified stored
+pair/ownership/root/hashes and required reload; matching declared/resolved
+model/effort and tools; documented project discovery/precedence with competing
+definitions and known overrides checked; available non-secret provider/model
+compatibility evidence. Missing optional exact-origin/loaded-byte APIs or future
+child telemetry alone do not block explicitly authorized work once this minimum
+passes. Missing/ambiguous registration, actual mismatch, unresolved inheritance,
+known defeating override or unavailability means STOP, never fallback.
+Send no conflicting spawn model/effort overrides. Check available child telemetry
+during/after each authorized assignment before accepting work; selection
+failure/mismatch stops. Native dispatch qualification remains separate. Explicit
 reconfiguration uses that same two-role gate and ends setup-only, with a fresh
 session/reinvocation and no automatic goal continuation.
 DOM_EOF
