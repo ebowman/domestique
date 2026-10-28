@@ -45,6 +45,25 @@ names do **not** imply full Claude/Codex v2 parity. Naming/ownership evidence is
 offline regression coverage, not new native execution qualification; the earlier
 workflow-body demonstration above remains its separate, bounded evidence.
 
+**Single-script foundation (`domestique.sh`, this candidate):** Codex's public
+skills now live once under `.agents/skills/dom-{decompose,goal}/SKILL.md`,
+with shared snapshots in `.agents/.domestique`. They route by the actual native
+caller to project-local bodies, preserving the original request and epic
+authorization. All owned Claude/Codex policies and native entry descriptions
+are harness-scoped; foreign/ambiguous invocation stops before setup or work.
+The Copilot route is a **future interface**, not an installed projection here;
+missing bodies stop rather than falling back. Default/CLI provider selection
+is unchanged. This does not migrate or qualify the separate preview above.
+Guest upgrades refuse old unguarded owned host policies without changing them;
+upgrade those policies in normal mode or explicitly reconcile them first.
+Normal upgrades also scope retained inactive owned blocks (including an old
+`AGENTS.md` behind a new host override, and personal `CLAUDE.local.md` after
+`--no-guest`). Snapshot-based merges preserve custom text and host bytes, with
+managed-policy backups even under `--force`; missing proof or conflicts refuse
+before project writes. Retained local policy keeps its personal guest wording;
+conversion removes the Claude guest exclusion, not personal content.
+See [shared ownership and migration](docs/install-upgrade-design.md#single-script-shared-skill-foundation-hq-7sm10).
+
 The v1 installer now emits shared **first-use role-model setup protocols**
 for Claude and Codex command/skill names and aliases. Generated defaults need explicit confirmation;
 setup ends without Beads/code/goal work and requires a fresh session/reinvocation.

@@ -332,8 +332,8 @@ scenario_persisted_platform_selection() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 8: Codex-only output contains no Claude projection terminology,
-# model names, paths, or deprecated custom-prompt instructions.
+# Scenario 8: Codex-only output contains no Claude setup/model paths or
+# deprecated custom prompts. Foreign-client boundary/redirect text is allowed.
 # ---------------------------------------------------------------------------
 scenario_no_claude_leakage() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
@@ -345,8 +345,8 @@ scenario_no_claude_leakage() {
   check "Codex agents exist" bash -c 'test -f "$1" && test -f "$2"' _ "$t/$IMPL_REL" "$t/$REVIEWER_REL"
   check "no Claude artifacts" test ! -e "$t/CLAUDE.md"
   check "no Claude state" test ! -e "$t/.claude"
-  check "no Claude terminology in Codex output" bash -c '
-    ! grep -R -E -i "Claude|Sonnet|Opus|CLAUDE\\.md|\\.claude/|~/\\.codex/prompts" \
+  check "no Claude setup/model paths in Codex output" bash -c '
+    ! grep -R -E -i "Sonnet|Opus|CLAUDE\\.md|\\.claude/|~/\\.codex/prompts" \
       "$1/AGENTS.md" "$1/.codex" "$1/.agents/skills/domestique" \
       "$1/.agents/skills/domestique-decompose" "$1/.agents/skills/domestique-goal"
   ' _ "$t"
@@ -777,16 +777,17 @@ end = "## End role setup gate — continue only for an unchanged confirmed, read
 def body(text):
     assert text.count(start) == text.count(end) == 1
     return text.split(start)[1].split(end)[0]
-decompose = (skills / "dom-decompose/SKILL.md").read_text()
-goal = (skills / "dom-goal/SKILL.md").read_text()
+decompose = (skills / "domestique-decompose/SKILL.md").read_text()
+goal = (skills / "domestique-goal/SKILL.md").read_text()
 setup = body(decompose)
 assert setup == body(goal)
 for kind, text, action in (
     ("decompose", decompose, "# Decompose into beads"),
     ("goal", goal, "# Unattended epic execution"),
 ):
-    legacy = (skills / f"domestique-{kind}/SKILL.md").read_text()
-    assert text == legacy.replace(f"name: domestique-{kind}\n", f"name: dom-{kind}\n", 1)
+    shared = (skills / f"dom-{kind}/SKILL.md").read_text()
+    assert f".agents/skills/domestique-{kind}/SKILL.md" in shared
+    assert start not in shared
     assert text.index(end) < text.index(action)
 
 for phrase in (
@@ -1061,6 +1062,487 @@ PY
 scenario_codex_explicit_lifecycle() { scenario_codex_configured_lifecycle explicit; }
 scenario_codex_inherit_guest_lifecycle() { scenario_codex_configured_lifecycle inherit; }
 
+# Installed text checks only: no native client or simulated dispatch claims.
+scenario_shared_routing_boundaries() {
+  local t="$WORKROOT/shared-routing"; mkdir -p "$t"; git_init "$t"
+  printf 'Host Claude instructions\n' > "$t/CLAUDE.md"
+  printf 'Host Codex instructions\n' > "$t/AGENTS.md"
+  check "source-free stdin install and installed boundaries" python3 - "$DOM" "$t" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+script, root = map(Path, sys.argv[1:])
+subprocess.run(["bash", "-s", "--", str(root), "--platform", "both"],
+               input=script.read_bytes(), cwd=root, check=True, capture_output=True)
+for filename, harness in (("CLAUDE.md", "claude"), ("AGENTS.md", "codex")):
+    text = (root / filename).read_text()
+    assert text.startswith("Host ")
+    assert f"Active harness boundary ({harness} only)" in text
+    assert "Other harnesses must ignore this entire owned policy block" in text
+    assert text.index("Active harness boundary") < text.index("This session is")
+    assert "Unrelated host instructions still apply" in text
+native = list((root / ".claude/commands").glob("*.md"))
+native += list((root / ".claude/agents").glob("*.md"))
+native += list((root / ".agents/skills").glob("domestique*/SKILL.md"))
+assert len(native) == 9
+for path in native:
+    text = path.read_text()
+    harness = "claude" if ".claude" in path.parts else "codex"
+    description = next(x for x in text.splitlines() if x.startswith("description:"))
+    assert ("Claude Code only" if harness == "claude" else "Codex only") in description
+    assert "never match" in description
+    assert f"Active harness boundary ({harness} only)" in text
+    for phrase in ("ACTUAL native caller", "context and native tools",
+                   "There is no required identity API", "STOP and ask",
+                   "An explicit foreign-harness invocation must STOP",
+                   "without setup, Beads, task", "do not invoke them automatically"):
+        assert phrase in text, (path, phrase)
+    if "first-use role setup" in text:
+        assert text.index("Active harness boundary") < text.index("first-use role setup")
+for kind in ("decompose", "goal"):
+    text = (root / f".agents/skills/dom-{kind}/SKILL.md").read_text()
+    for phrase in ("ACTUAL native caller", "Unknown, ambiguous, or unsupported",
+                   "Missing, unreadable or foreign native bodies mean STOP",
+                   "ORIGINAL user request verbatim", "explicit epic arguments",
+                   "authorization provenance", "Never synthesize a new",
+                   "Merely loading or implicitly matching", "must not start setup",
+                   "Setup consumes that", "does not yet emit Copilot bodies",
+                   f".agents/skills/domestique-{kind}/SKILL.md",
+                   f".github/skills/domestique-v2-copilot-{kind}/SKILL.md",
+                   "domestique-v2-copilot-implementer", "domestique-v2-copilot-reviewer"):
+        assert phrase in text, phrase
+    assert "first-use role setup" not in text
+assert not (root / ".github").exists()
+inventories = []
+for state in (".claude", ".codex", ".agents"):
+    manifest = (root / state / ".domestique/manifest").read_text()
+    inventories += next(x[6:] for x in manifest.splitlines() if x.startswith("files=")).split(",")
+assert len(inventories) == len(set(inventories))
+for kind in ("decompose", "goal"):
+    rel = f".agents/skills/dom-{kind}/SKILL.md"
+    assert (root / ".agents/.domestique/base" / rel).exists()
+    assert not (root / ".codex/.domestique/base" / rel).exists()
+PY
+}
+
+scenario_shared_legacy_migration() {
+  local t="$WORKROOT/shared-migration" old="$WORKROOT/shared-old.sh" before rc
+  mkdir -p "$t"; git_init "$t"
+  git -C "$REPO_DIR" show 64f4e09:domestique.sh > "$old"
+  check "previous snapshot install" bash "$old" "$t" --platform codex --guest
+  printf '\nLocal native body customization\n' >> "$t/$DECOMPOSE_SKILL_REL"
+  before="$(treehash "$t")"
+  "$DOM" "$t" --dry-run >/dev/null 2>&1; rc=$?
+  check "migration dry-run" test "$rc" -eq 0
+  check "dry-run writes nothing" test "$before" = "$(treehash "$t")"
+  check "migrate shared bases" "$DOM" "$t"
+  check "native custom bytes retained" grep -qxF 'Local native body customization' "$t/$DECOMPOSE_SKILL_REL"
+  check "shared authority exists" test -f "$t/.agents/.domestique/manifest"
+  check "legacy canonical base retired" test ! -e "$t/.codex/.domestique/base/.agents/skills/dom-goal/SKILL.md"
+  check "no duplicate canonical inventory" bash -c '! grep "^files=" "$1" | grep -q "/dom-goal/"' _ "$t/.codex/.domestique/manifest"
+  before="$(treehash "$t")"
+  "$DOM" "$t" >/dev/null 2>&1; rc=$?
+  check "migration rerun" test "$rc" -eq 0
+  check "migration idempotent" test "$before" = "$(treehash "$t")"
+  check "migrated guest remains private" git -C "$t" check-ignore -q .agents/.domestique/manifest
+}
+
+scenario_shared_preflight_refusal() {
+  local t="$WORKROOT/shared-refusal" old="$WORKROOT/shared-refusal-old.sh" before rc flag
+  mkdir -p "$t"; git_init "$t"
+  git -C "$REPO_DIR" show 64f4e09:domestique.sh > "$old"
+  bash "$old" "$t" --platform codex --guest >/dev/null 2>&1
+  # A conflicting custom canonical body cannot be silently moved or rebased.
+  printf 'Entirely customized canonical goal body\n' > "$t/.agents/skills/dom-goal/SKILL.md"
+  before="$(treehash "$t")"
+  for flag in --dry-run --force --no-guest; do
+    "$DOM" "$t" --platform both "$flag" >/dev/null 2>&1; rc=$?
+    check "legacy conflict refused $flag" test "$rc" -eq 3
+    check "legacy refusal has zero writes $flag" test "$before" = "$(treehash "$t")"
+  done
+  local fresh="$WORKROOT/shared-unknown"
+  mkdir -p "$fresh/.agents/.domestique"
+  printf 'unknown state\n' > "$fresh/.agents/.domestique/manifest"
+  before="$(treehash "$fresh")"
+  for flag in --dry-run --force --uninstall; do
+    "$DOM" "$fresh" --platform codex "$flag" >/dev/null 2>&1; rc=$?
+    check "unknown namespace refused $flag" test "$rc" -eq 3
+    check "unknown refusal has zero writes $flag" test "$before" = "$(treehash "$fresh")"
+  done
+}
+
+# Schema evidence ONLY for the next bead; deliberately no skills/client run.
+copilot_consumer_fixture() {
+  python3 - "$1" "$2" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+state = root / ".github/.domestique"
+files = [f".github/agents/domestique-v2-copilot-{r}.agent.md" for r in ("implementer", "reviewer")]
+for rel in files:
+    base = state / "base" / rel
+    base.parent.mkdir(parents=True, exist_ok=True)
+    base.write_text("bounded future consumer schema fixture; NOT a projection\n")
+(state / "manifest").write_text("snapshot_format=1\nplatform=copilot\nfiles=" + ",".join(files) + "\n")
+if sys.argv[2] == "guest":
+    (state / "mode").write_text("guest\n")
+PY
+}
+
+scenario_shared_consumers() {
+  local mode t before rc
+  for mode in normal guest; do
+    t="$WORKROOT/shared-consumers-$mode"; mkdir -p "$t"; git_init "$t"
+    check "$mode seed host visibility" python3 - "$t" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+p = root / ".agents/skills/dom-decompose/SKILL.md"
+p.parent.mkdir(parents=True)
+p.write_text("Pre-existing visible host skill\n")
+exclude = root / ".git/info/exclude"
+exclude.write_bytes(exclude.read_bytes() + b"\n# host-owned exact exclusion\nhost-private.txt\n")
+PY
+    if [ "$mode" = guest ]; then
+      "$DOM" "$t" --platform codex --guest >/dev/null 2>&1
+    else
+      "$DOM" "$t" --platform codex >/dev/null 2>&1
+    fi
+    check "future consumer schema" copilot_consumer_fixture "$t" guest
+    before="$(treehash "$t/.agents")"
+    "$DOM" "$t" --uninstall --platform codex >/dev/null 2>&1; rc=$?
+    check "$mode scoped removal succeeds" test "$rc" -eq 0
+    # Native Codex skills disappear, but shared bytes and pristine bases stay.
+    check "$mode shared entry survives" test -f "$t/.agents/skills/dom-goal/SKILL.md"
+    check "$mode shared base survives" test -f "$t/.agents/.domestique/base/.agents/skills/dom-goal/SKILL.md"
+    if [ "$mode" = guest ]; then
+      check "surviving guest remains hidden" git -C "$t" check-ignore -q .agents/skills/dom-goal/SKILL.md
+    else
+      check "normal shared ownership not hidden by guest survivor" bash -c '! git -C "$1" check-ignore -q .agents/skills/dom-goal/SKILL.md' _ "$t"
+    fi
+    local shared_before exclude_before
+    shared_before="$(treehash "$t/.agents")"
+    exclude_before="$(filehash "$t/.git/info/exclude")"
+    check "$mode unrelated normal Claude install" "$DOM" "$t" --platform claude
+    check "$mode shared state byte-preserved" test "$shared_before" = "$(treehash "$t/.agents")"
+    check "$mode exclusions byte-preserved" test "$exclude_before" = "$(filehash "$t/.git/info/exclude")"
+    check "$mode normal Claude remains visible" bash -c '! git -C "$1" check-ignore -q .claude/commands/dom-goal.md' _ "$t"
+    check "$mode host canonical leaf remains visible" bash -c '! git -C "$1" check-ignore -q .agents/skills/dom-decompose/SKILL.md' _ "$t"
+    check "$mode no broad shared exclusions" bash -c '! grep -qxE "\\.agents/|\\.agents/skills/|\\.agents/skills/dom-goal/" "$1/.git/info/exclude"' _ "$t"
+    check "$mode host exclude retained" grep -qxF 'host-private.txt' "$t/.git/info/exclude"
+    if [ "$mode" = guest ]; then
+      check "guest still hidden after normal install" git -C "$t" check-ignore -q .agents/skills/dom-goal/SKILL.md
+    fi
+    check "$mode remove unrelated Claude" "$DOM" "$t" --uninstall --platform claude
+    # Rejoin while the other valid owner remains, then remove that schema
+    # fixture so Codex is the last consumer. No Copilot uninstall claim.
+    if [ "$mode" = guest ]; then
+      "$DOM" "$t" --platform codex --guest >/dev/null 2>&1; rc=$?
+    else
+      "$DOM" "$t" --platform codex >/dev/null 2>&1; rc=$?
+    fi
+    check "$mode rejoin" test "$rc" -eq 0
+    check "$mode shared/native tree restored exactly" test "$before" = "$(treehash "$t/.agents")"
+    rm -rf "$t/.github"
+    "$DOM" "$t" --uninstall --platform codex >/dev/null 2>&1; rc=$?
+    check "$mode last-consumer uninstall" test "$rc" -eq 0
+    check "$mode last-consumer removes shared state" test ! -e "$t/.agents/.domestique"
+    check "$mode last-consumer removes shared entry" test ! -e "$t/.agents/skills/dom-goal/SKILL.md"
+    check "$mode last-consumer preserves host entry" grep -qxF 'Pre-existing visible host skill' "$t/.agents/skills/dom-decompose/SKILL.md"
+  done
+}
+
+scenario_shared_path_safety() {
+  check "typed paths refuse without following links or changing any state" python3 - "$DOM" "$WORKROOT" "$REPO_DIR" <<'PY'
+from pathlib import Path
+import os
+import subprocess
+import sys
+
+dom, work, repo = map(Path, sys.argv[1:])
+old = work / "path-old.sh"
+old.write_bytes(subprocess.check_output(["git", "-C", str(repo), "show", "64f4e09:domestique.sh"]))
+
+def snapshot(root):
+    result = {}
+    for parent, dirs, files in os.walk(root, followlinks=False):
+        for name in dirs + files:
+            p = Path(parent) / name
+            s = p.lstat()
+            data = os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None
+            result[str(p.relative_to(root))] = (s.st_mode, s.st_nlink, s.st_mtime_ns, data)
+    return result
+
+def run(script, root, *args):
+    return subprocess.run(["bash", str(script), str(root), *args], capture_output=True)
+
+paths = [
+    ".agents/skills/dom-goal",
+    ".agents/skills/dom-goal/SKILL.md",
+    ".agents/skills/dom-goal/agents/openai.yaml",
+    ".agents/.domestique",
+    ".agents/.domestique/manifest",
+    ".agents/.domestique/mode",
+    ".agents/.domestique/guest-excludes",
+    ".agents/.domestique/base/.agents/skills/dom-goal/SKILL.md",
+]
+for i, rel in enumerate(paths):
+    for kind in ("directory", "symlink", "hardlink", "file-ancestor"):
+        root = work / f"path-safety-{i}-{kind}"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        # Existing valid state exercises uninstall and conversions; fresh state
+        # also tests obstructions on paths that have never had a snapshot.
+        if kind != "directory":
+            assert run(dom, root, "--platform", "both", "--guest").returncode == 0
+        victim = work / f"victim-{i}-{kind}"
+        victim.mkdir()
+        (victim / "SKILL.md").write_text("unowned external victim\n")
+        p = root / rel
+        if p.exists():
+            p.rename(root / f"saved-{i}")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "directory":
+            # For a directory path, a regular file obstructs its descendants.
+            if rel in (paths[0], paths[3]):
+                p.write_text("not a directory\n")
+            else:
+                p.mkdir()
+        elif kind == "symlink":
+            p.symlink_to(victim if rel in (paths[0], paths[3]) else victim / "SKILL.md")
+        elif kind == "hardlink":
+            os.link(victim / "SKILL.md", p)
+        else:
+            p.write_text("obstructed path\n")
+            if rel not in (paths[0], paths[3]):
+                # A regular file is safe at a file leaf; use its parent instead.
+                p.unlink()
+                p.parent.rename(root / f"saved-parent-{i}")
+                p.parent.write_text("not a directory\n")
+                p = p.parent
+        before, external = snapshot(root), snapshot(victim)
+        for flags in ([], ["--force"], ["--dry-run"], ["--force", "--dry-run"]):
+            for action in (["--platform", "both", "--no-guest"],
+                           ["--uninstall", "--platform", "codex"]):
+                result = run(dom, root, *action, *flags)
+                assert result.returncode == 3, (rel, kind, action, flags, result.stderr)
+                assert snapshot(root) == before, (rel, kind, action, flags)
+                assert snapshot(victim) == external
+                assert p.lstat(), "unsafe path must itself survive"
+
+# The old owner has no shared state yet: uninstall must still check ancestors.
+root = work / "unsafe-legacy-uninstall"
+root.mkdir()
+assert run(old, root, "--platform", "codex", "--guest").returncode == 0
+p = root / ".agents/skills/dom-goal"
+p.rename(root / "saved-goal")
+p.symlink_to(victim)
+before, external = snapshot(root), snapshot(victim)
+for flags in ([], ["--force"], ["--dry-run"], ["--force", "--dry-run"]):
+    assert run(dom, root, "--uninstall", "--platform", "codex", *flags).returncode == 3
+    assert snapshot(root) == before
+    assert snapshot(victim) == external
+PY
+}
+
+scenario_guest_old_root_policy() {
+  check "old root policy guest transitions preserve or refuse before any writes" python3 - "$DOM" "$WORKROOT" "$REPO_DIR" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+dom, work, repo = map(Path, sys.argv[1:])
+old = work / "policy-old.sh"
+old.write_bytes(subprocess.check_output(["git", "-C", str(repo), "show", "64f4e09:domestique.sh"]))
+
+def run(script, root, *args):
+    return subprocess.run(["bash", str(script), str(root), *args], capture_output=True)
+
+def snapshot(root):
+    return {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns,
+                                     p.read_bytes() if p.is_file() else None)
+            for p in root.rglob("*")}
+
+for platform in ("claude", "codex", "both"):
+    for sticky in (False, True):
+        root = work / f"old-policy-{platform}-{sticky}"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        policies = ["CLAUDE.md"] if platform == "claude" else ["AGENTS.md", "AGENTS.override.md"]
+        if platform == "both":
+            policies += ["CLAUDE.md"]
+        for rel in policies:
+            if rel == "AGENTS.override.md":
+                continue
+            (root / rel).write_text("Unrelated host instructions\n")
+        assert run(old, root, "--platform", platform).returncode == 0
+        # Real host override created AFTER the old installer. Keep the old
+        # owned AGENTS.md and its authoritative snapshot completely intact.
+        if platform != "claude":
+            (root / "AGENTS.override.md").write_text("Unrelated host instructions\n")
+        subprocess.run(["git", "-C", str(root), "add", *policies], check=True)
+        if sticky:
+            assert run(old, root, "--guest").returncode == 0
+        before = snapshot(root)
+        for flags in ([], ["--force"], ["--dry-run"], ["--force", "--dry-run"]):
+            args = [] if sticky else ["--guest"]
+            result = run(dom, root, *args, *flags)
+            assert result.returncode == 3, result.stderr
+            assert b"unguarded owned host policy" in result.stderr
+            assert b"--no-guest" in result.stderr
+            assert snapshot(root) == before
+        result = run(dom, root, "--no-guest")
+        assert result.returncode == 0, result.stderr
+        guarded = {rel: (root / rel).read_bytes() for rel in policies}
+        for args in (["--guest"], [], ["--guest", "--force"], ["--dry-run"]):
+            result = run(dom, root, *args)
+            assert result.returncode == 0, result.stderr
+            assert {rel: (root / rel).read_bytes() for rel in policies} == guarded
+        for rel, body in guarded.items():
+            assert body.startswith(b"Unrelated host instructions\n")
+            if b"BEGIN domestique" in body:
+                assert b"Active harness boundary" in body
+PY
+}
+
+scenario_retained_policy_upgrade() {
+  check "all retained policies are scoped preserving old output and custom bytes" python3 - "$DOM" "$WORKROOT" "$REPO_DIR" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+
+dom, work, repo = map(Path, sys.argv[1:])
+old = work / "retained-policy-old.sh"
+old.write_bytes(subprocess.check_output(["git", "-C", str(repo), "show", "64f4e09:domestique.sh"]))
+
+def run(script, root, *args):
+    return subprocess.run(["bash", str(script), str(root), *args], capture_output=True)
+
+def snapshot(root):
+    return {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns,
+                                     p.read_bytes() if p.is_file() else None)
+            for p in root.rglob("*")}
+
+prefix = b"HOST prefix\n\n"
+suffix = b"\nHOST suffix without final newline"
+def seed(name, guest=False, override=False):
+    root = work / name
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    rel = "CLAUDE.local.md" if guest else "CLAUDE.md"
+    for p in (rel, "AGENTS.override.md" if override else "AGENTS.md"):
+        (root / p).write_bytes(prefix)
+    result = run(old, root, "--platform", "both", *(["--guest"] if guest else []))
+    assert result.returncode == 0, result.stderr
+    # Real host override creation/removal changes the active root. Never
+    # sanitize away or copy an old owned block to manufacture ownership.
+    if not guest and not override:
+        (root / "AGENTS.override.md").write_bytes(prefix)
+    for p in root.glob("*.md"):
+        p.write_bytes(p.read_bytes() + suffix)
+    return root
+
+for guest in (False, True):
+    for force in (False, True):
+        root = seed(f"retained-normal-{guest}-{force}", guest)
+        rels = ["CLAUDE.local.md"] if guest else ["CLAUDE.md", "AGENTS.md"]
+        # A harmless in-block customization must survive, even with --force.
+        for rel in rels:
+            p = root / rel
+            p.write_bytes(p.read_bytes().replace(b"## Discipline\n", b"## Discipline\nPersonal retained note.\n"))
+        original = {rel: (root / rel).read_bytes() for rel in rels}
+        before = snapshot(root)
+        args = (["--no-guest"] if guest else []) + (["--force"] if force else [])
+        result = run(dom, root, *args, "--dry-run")
+        assert result.returncode == 0, result.stderr
+        assert snapshot(root) == before
+        result = run(dom, root, *args)
+        assert result.returncode == 0, result.stderr
+        for rel in rels:
+            body = (root / rel).read_bytes()
+            assert body.startswith(prefix) and body.endswith(suffix), rel
+            assert b"Active harness boundary" in body, rel
+            if b"Personal retained note." in original[rel]:
+                assert b"Personal retained note." in body
+            backups = list(root.glob(rel + ".bak.*"))
+            assert any(p.read_bytes() == original[rel] for p in backups), rel
+        if guest:
+            body = (root / "CLAUDE.local.md").read_bytes()
+            assert b"state is personal and stays local" in body
+            assert b"no longer hidden" in result.stderr
+            assert not (root / ".claude/.domestique/mode").exists()
+        # Plain reruns must not rewrite either inactive guarded block or base.
+        before = snapshot(root)
+        result = run(dom, root)
+        assert result.returncode == 0, result.stderr
+        assert snapshot(root) == before
+
+# Both active roots, inactive AGENTS and retained personal local policy need
+# trustworthy ownership/merge proof. Conflicting custom text stays untouched,
+# with no .new/backup/provider/mode/shared/exclusion writes even under --force.
+for rel in ("CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md"):
+    for defect in ("conflict", "missing-base"):
+        root = seed(f"retained-refusal-{rel}-{defect}", rel == "CLAUDE.local.md",
+                    rel == "AGENTS.override.md")
+        p = root / rel
+        if defect == "conflict":
+            body = p.read_bytes()
+            # Replace the first old instruction, where the new guard is added.
+            lines = body.splitlines(keepends=True)
+            marker = next(i for i, line in enumerate(lines) if b"BEGIN domestique" in line)
+            lines[marker + 1:] = [b"Entirely custom owned policy; do not discard.\n",
+                                 *lines[next(i for i, line in enumerate(lines) if b"END domestique" in line):]]
+            p.write_bytes(b"".join(lines))
+        else:
+            provider = "claude" if rel.startswith("CLAUDE") else "codex"
+            (root / f".{provider}/.domestique/base/{rel}.block").unlink()
+        before = snapshot(root)
+        for flags in ([], ["--force"], ["--dry-run"], ["--force", "--dry-run"]):
+            result = run(dom, root, "--no-guest", *flags)
+            assert result.returncode == 3, (rel, defect, flags, result.stderr)
+            assert rel.encode() in result.stderr and b"reconcile" in result.stderr
+            assert snapshot(root) == before
+
+# Personal tracked roots cannot be silently migrated in guest mode either.
+root = seed("retained-tracked-personal", True)
+subprocess.run(["git", "-C", str(root), "add", "-f", "CLAUDE.local.md"], check=True)
+before = snapshot(root)
+for flags in ([], ["--guest"], ["--force"], ["--dry-run"]):
+    result = run(dom, root, *flags)
+    assert result.returncode == 3, result.stderr
+    assert b"--no-guest" in result.stderr
+    assert snapshot(root) == before
+assert run(dom, root, "--no-guest").returncode == 0
+p = root / "CLAUDE.local.md"
+p.write_bytes(p.read_bytes().replace(b"## Discipline\n", b"## Discipline\nPersonal tracked note.\n"))
+body = p.read_bytes()
+for flags in (["--guest"], [], ["--guest", "--force"], ["--dry-run"]):
+    result = run(dom, root, *flags)
+    assert result.returncode == 0, result.stderr
+    assert p.read_bytes() == body
+PY
+}
+
+scenario_shared_uncertain_survivor() {
+  local t="$WORKROOT/uncertain-survivor" before flag rc
+  mkdir -p "$t"; git_init "$t"
+  check "guest install" "$DOM" "$t" --platform codex --guest
+  check "future consumer" copilot_consumer_fixture "$t" guest
+  check "remove Codex" "$DOM" "$t" --uninstall --platform codex
+  # An invalid survivor must not be mistaken for no owner or a normal owner.
+  check "invalidate fixture mode" python3 - "$t" <<'PY'
+from pathlib import Path
+import sys
+(Path(sys.argv[1]) / ".github/.domestique/mode").write_text("uncertain\n")
+PY
+  before="$(treehash "$t")"
+  for flag in --force --dry-run --uninstall; do
+    "$DOM" "$t" --platform claude "$flag" >/dev/null 2>&1; rc=$?
+    check "uncertain survivor refused $flag" test "$rc" -eq 3
+    check "all state/excludes preserved $flag" test "$before" = "$(treehash "$t")"
+    check "shared remains hidden $flag" git -C "$t" check-ignore -q .agents/skills/dom-goal/SKILL.md
+  done
+}
+
 echo "domestique Codex test harness"
 echo
 
@@ -1087,6 +1569,14 @@ if [ "${1:-}" = "--current" ]; then
   run_scenario "Codex setup emitted protocol (static assertions)" scenario_codex_setup_protocol
   run_scenario "synthetic explicit TOML pair lifecycle (real installer)" scenario_codex_explicit_lifecycle
   run_scenario "synthetic inherited TOML pair guest lifecycle (real installer)" scenario_codex_inherit_guest_lifecycle
+  run_scenario "installed shared routes and all foreign boundaries (static)" scenario_shared_routing_boundaries
+  run_scenario "legacy shared-base migration preserves native customization" scenario_shared_legacy_migration
+  run_scenario "shared conflict/unknown namespace refuses before writes" scenario_shared_preflight_refusal
+  run_scenario "shared last-consumer and guest visibility (schema fixtures)" scenario_shared_consumers
+  run_scenario "shared typed path and outside victim preservation" scenario_shared_path_safety
+  run_scenario "guest old root policy preflight and guarded upgrades" scenario_guest_old_root_policy
+  run_scenario "uncertain shared survivor cannot authorize exposure" scenario_shared_uncertain_survivor
+  run_scenario "retained root-policy isolation and preserving conversion" scenario_retained_policy_upgrade
 fi
 
 echo

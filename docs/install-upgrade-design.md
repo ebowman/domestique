@@ -2,6 +2,95 @@
 
 ## Reading this document
 
+### Single-script shared skill foundation (hq-7sm.10)
+
+This candidate's `domestique.sh` keeps existing Claude/Codex selection and
+source-free stdin execution. It does **not** install Copilot or migrate the
+separate preview. The two canonical `.agents/skills/dom-{decompose,goal}/SKILL.md`
+entries route by actual native client context/tools, never installed directories.
+Codex bodies remain `.agents/skills/domestique{,-decompose,-goal}/SKILL.md`;
+the future Copilot interface is
+`.github/skills/domestique-v2-copilot{,-decompose,-goal}/SKILL.md`, using
+`domestique-v2-copilot-{implementer,reviewer}` agent IDs. Missing/ambiguous
+native bodies stop, without cross-harness fallback. Original explicit goal
+authorization and epic arguments must survive routing; loading is not consent.
+Descriptions, bootstrap/legacy bodies, and owned root policies are scoped too,
+because Copilot can discover `.agents/skills` and read CLAUDE/AGENTS instructions.
+Host instructions outside owned policy blocks remain untouched.
+Guest upgrades inspect host root policies read-only: an old owned block without
+the harness guard refuses before any project writes (also with `--force` or
+`--dry-run`). First upgrade the policy in normal mode (`--no-guest`), or
+explicitly reconcile the reported owned block, then retry guest mode. This
+also applies to sticky guest reruns and inactive owned AGENTS root policies.
+Already-guarded host policies and unrelated host instructions remain
+byte-preserved; guest mode never rewrites or backs up these host files.
+
+Isolation preflight covers **all four retained owned root candidates**, not just
+the new active destination or selected provider: `CLAUDE.md`, `CLAUDE.local.md`,
+`AGENTS.md`, and `AGENTS.override.md`. In normal mode, an unguarded block is
+three-way merged against its existing per-file pristine block snapshot and the
+current harness-scoped policy. This also scopes the inactive `AGENTS.md` when
+a host adds an override after installation. Unrelated host prefixes/suffixes
+(including missing final newlines) and cleanly mergeable custom owned text are
+preserved; every changed policy gets its existing `.bak.<timestamp>` backup.
+`--force` does not bypass this preserving isolation merge. Missing/unsafe bases,
+conflicts, malformed markers, or a merged block without the guard refuse before
+provider, shared, mode or exclusion writes, including dry-run. Restore the
+reported pristine snapshot or explicitly reconcile the reported block without
+discarding custom text. Already-scoped inactive blocks stay byte-unchanged;
+ordinary active-policy upgrades retain their existing merge/adoption lifecycle.
+
+`--no-guest` allows this preserving normal conversion; it does not delete
+`CLAUDE.local.md` or change its personal guest wording into normal commit
+instructions. That retained owned block is scoped using the guest emitter and
+its own snapshot. The normal `CLAUDE.md` is added/updated separately; reconcile
+the retained local policy with it explicitly if desired. The Claude guest
+exclusion is removed, so the retained local file and backups may become visible.
+In guest mode only the selected Claude provider's **untracked personal**
+`CLAUDE.local.md` can undergo this isolation upgrade; an unsafe owned tracked
+local policy refuses with normal-mode recovery guidance too. An already-scoped
+tracked local block is left byte-unchanged in guest mode, including `--force`.
+
+Shared state uses the existing flat manifest/base pattern at
+`.agents/.domestique`, `snapshot_format=1`, `platform=shared`. Its exact inventory
+is the two canonical skills plus `dom-goal/agents/openai.yaml`; only this state
+holds their pristine bases. `guest-excludes` records the owned canonical leaves;
+`mode=guest` (the contents of the optional `mode` file) keeps them and the shared
+state private. No general registry or daemon is involved.
+
+Consumers are derived read-only from valid native manifest inventories and both
+role bases: Codex's `.codex/.domestique`, or the **future schema interface**
+`.github/.domestique` with `platform=copilot` and the two
+`.github/agents/domestique-v2-copilot-{implementer,reviewer}.agent.md` paths.
+This schema fixture is not proof of a working Copilot install. Scoped Codex
+removal retains shared files/bases while that valid consumer remains. The last
+valid consumer's removal uses existing unchanged/remove, modified/rename rules.
+Shared normal visibility is not hidden by a surviving guest; guest visibility
+is retained even during a later normal Claude install, not silently promoted.
+Invalid surviving consumer evidence refuses instead of authorizing deletion
+or exposure. A conflicting second-owner mode transition
+refuses for explicit human resolution. Existing host canonical leaves remain
+visible and survive removal under the existing ownership bookkeeping.
+
+Before **any project writes**, unknown/incomplete state in the new shared
+namespace refuses, even with identical bytes, dry-run, or `--force`. Existing
+canonical and shared state paths must have directory ancestors and regular
+file leaves (or be absent for creation). Links, directory leaves and other
+obstructions refuse in both install and uninstall before any mutation;
+`--force` never bypasses this safety check. Existing
+Codex canonical bases are checked and used for three-way merging before they
+are retired from Codex's inventory/base tree. Clean merges preserve custom
+bytes and store only the new pristine shared base; conflicts refuse without
+`.new`, backup, mode, policy, or other project writes. Resolve the reported
+canonical path against its reported old base by hand and retry. Shared and
+legacy duplicate bases refuse rather than choosing an authority. Reruns do not
+churn unchanged pristine bases/manifests for preserved custom plain bodies.
+Other provider file conflicts retain their existing lifecycle.
+
+Coverage is shell lifecycle tests and assertions over actual installed text,
+not native discovery, dispatch, or runtime qualification. Pre-dispatch readiness
+and post-assignment observation remain distinct requirements.
+
 **Source split checkpoint (hq-5jc.3):** public `domestique.sh`/`update.sh` now
 preserve verified released v1. The reviewed preview body and inspector live in
 [`domestique2.sh`](../domestique2.sh); its mutating dispatch is gated.

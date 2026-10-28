@@ -20,6 +20,7 @@ GITEXCLUDE_MARKER_END='# END domestique'
 # ---------------------------------------------------------------------------
 emit_policy() {
   local mode="${1:-normal}"
+  emit_harness_guard claude policy
   cat <<'DOM_EOF'
 # Orchestration policy
 
@@ -82,13 +83,42 @@ DOM_EOF
   esac
 }
 
+emit_harness_guard() {
+  local harness="$1" surface="${2:-entry}"
+  printf '\n## Active harness boundary (%s only)\n\n' "$harness"
+  cat <<'DOM_EOF'
+Before applying ANY instructions below, identify the ACTUAL native caller from
+the client's available session context and native tools. Installed directories,
+file names, skill matching/loading and this text are NOT caller identity.
+There is no required identity API; if available context/tools do not establish
+the client unambiguously, STOP and ask the human. Do not guess.
+DOM_EOF
+  printf 'These instructions apply only to the native `%s` client.\n' "$harness"
+  if [ "$surface" = policy ]; then
+    cat <<'DOM_EOF'
+Other harnesses must ignore this entire owned policy block, including its role,
+setup, Beads and dispatch instructions. Unrelated host instructions still apply.
+DOM_EOF
+  else
+    cat <<'DOM_EOF'
+An explicit foreign-harness invocation must STOP without setup, Beads, task,
+branch or dispatch writes. Report the mismatch; suggest the shared project-local
+dom-decompose/dom-goal entry for Codex/Copilot or Claude's /dom-decompose
+and /dom-goal commands, but do not invoke them automatically.
+DOM_EOF
+  fi
+}
+
 emit_implementer() { cat <<'DOM_EOF'
 ---
 name: implementer
-description: Executes a single well-scoped, bounded coding task and reports back a terse summary. Use proactively for any discrete implementation step handed down by the orchestrator — one bead / one task at a time.
+description: Claude Code only; never match in another harness. Executes a single well-scoped, bounded coding task and reports back a terse summary — one bead / one task at a time.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: sonnet
 ---
+DOM_EOF
+  emit_harness_guard claude
+  cat <<'DOM_EOF'
 
 You are an implementer. You receive one bounded task and complete exactly that task — nothing more.
 
@@ -116,10 +146,13 @@ DOM_EOF
 emit_reviewer() { cat <<'DOM_EOF'
 ---
 name: reviewer
-description: Independently verifies one completed task against its bead's done-criteria in a fresh context — inspects the real diff, reads the changed files, runs the tests — and returns a pass/fail verdict with specific findings. Use after the implementer reports a task done, before the orchestrator closes the bead.
+description: Claude Code only; never match in another harness. Independently verifies one completed task against its bead's done-criteria in a fresh context and returns a pass/fail verdict with specific findings.
 tools: Read, Bash, Glob, Grep
 model: opus
 ---
+DOM_EOF
+  emit_harness_guard claude
+  cat <<'DOM_EOF'
 
 You are a reviewer. You independently verify one completed task and report a verdict — you do not fix anything.
 
@@ -154,8 +187,9 @@ scoped to setup, not a global agent prohibition: after setup/reload and readines
 the workflow still requires implementer and independent reviewer delegation.
 
 Run this gate BEFORE any Beads command (including readiness/create/claim),
-planning, code, branch changes or dispatch. This native command explicitly
-identifies the harness as `claude`. Bind ROOT to the exact physical Git worktree
+planning, code, branch changes or dispatch. Establish the actual native
+harness as `claude` using available client context/tools, not this command's name.
+Bind ROOT to the exact physical Git worktree
 root of this invocation; if cwd is not that root, or identity is ambiguous,
 STOP and ask for an explicit invocation there. Never search ancestors for
 another installation, infer another harness, or configure a sibling worktree.
@@ -346,10 +380,11 @@ DOM_EOF
 
 emit_decompose() { cat <<'DOM_EOF'
 ---
-description: Decompose a goal or spec into a beads epic with bounded, dependency-ordered tasks.
+description: Claude Code only; never match in another harness. Decompose a goal or spec into a beads epic with bounded, dependency-ordered tasks.
 argument-hint: <goal, path to a spec file, or configure role models>
 ---
 DOM_EOF
+  emit_harness_guard claude
   emit_claude_model_setup
   cat <<'DOM_EOF'
 
@@ -371,10 +406,11 @@ DOM_EOF
 
 emit_goal() { cat <<'DOM_EOF'
 ---
-description: Drain a beads epic to completion unattended — dedicated branch, one bead per commit, reviewer-gated, bounded loop.
+description: Claude Code only; never match in another harness. Explicitly drain a named beads epic — dedicated branch, one bead per commit, reviewer-gated, bounded loop.
 argument-hint: <epic-id>
 ---
 DOM_EOF
+  emit_harness_guard claude
   emit_claude_model_setup
   cat <<'DOM_EOF'
 
@@ -490,8 +526,8 @@ scoped to setup, not a global agent prohibition: after setup/reload and readines
 the workflow still requires implementer and independent reviewer delegation.
 
 Run this gate BEFORE any Beads command (including readiness/create/claim),
-planning, code, branch changes or dispatch. This native entry explicitly
-identifies the active harness as `codex`. Bind ROOT to the exact physical Git
+planning, code, branch changes or dispatch. Establish the active harness as `codex`
+from actual client context/tools, not this entry's name. Bind ROOT to the exact physical Git
 worktree root of this invocation; if cwd is not that root or identity is
 ambiguous, STOP and ask for an explicit invocation there. Never search ancestors
 for another installation, infer a harness from directories, or configure a
@@ -770,12 +806,13 @@ DOM_EOF
 emit_codex_skill() { cat <<'DOM_EOF'
 ---
 name: domestique
-description: Orchestrate a beads-backed implementer then independent reviewer workflow. Use when the user says "dispatch next ready bead", asks to dispatch or review a bead, says "land the plane", or explicitly invokes $domestique to bootstrap a guest session. Never use this skill alone to drain an epic unattended.
+description: Codex only; never match in Copilot, Claude or an unknown harness. Orchestrate a beads-backed implementer then independent reviewer workflow. In Codex use when the user says "dispatch next ready bead", asks to dispatch or review a bead, says "land the plane", or explicitly invokes $domestique to bootstrap a guest session. Never use this skill alone to drain an epic unattended.
 ---
 
 # Domestique orchestration
 
 DOM_EOF
+  emit_harness_guard codex
   emit_codex_role_gate
   cat <<'DOM_EOF'
 
@@ -809,9 +846,10 @@ DOM_EOF
 emit_codex_decompose_skill() { cat <<'DOM_EOF'
 ---
 name: domestique-decompose
-description: Decompose a goal or specification into a dependency-ordered beads epic with bounded tasks. Use when explicitly invoked as $dom-decompose or $domestique-decompose or when the user asks for domestique/beads decomposition; planning only, never implementation.
+description: Codex only; never match in Copilot, Claude or an unknown harness. Decompose a goal or specification into a dependency-ordered beads epic with bounded tasks. In Codex use when explicitly invoked as $dom-decompose or $domestique-decompose or when the user asks for domestique/beads decomposition; planning only, never implementation.
 ---
 DOM_EOF
+  emit_harness_guard codex
   emit_codex_model_setup
   cat <<'DOM_EOF'
 
@@ -832,9 +870,10 @@ DOM_EOF
 emit_codex_goal_skill() { cat <<'DOM_EOF'
 ---
 name: domestique-goal
-description: Explicitly drain one named beads epic using domestique's bounded implementer-reviewer loop on an isolated branch. Use only when the user explicitly invokes $dom-goal or $domestique-goal with an epic id; never infer this unattended authorization.
+description: Codex only; never match in Copilot, Claude or an unknown harness. Explicitly drain one named beads epic using domestique's bounded implementer-reviewer loop on an isolated branch. Use only when the user explicitly invokes $dom-goal or $domestique-goal with an epic id; never infer this unattended authorization.
 ---
 DOM_EOF
+  emit_harness_guard codex
   emit_codex_model_setup
   cat <<'DOM_EOF'
 
@@ -874,22 +913,60 @@ DOM_EOF
 emit_codex_goal_metadata() { cat <<'DOM_EOF'
 interface:
   display_name: "Domestique Goal"
-  short_description: "Drain one beads epic with gated review"
+  short_description: "Codex only: drain one explicit epic with gated review"
   default_prompt: "Use $domestique-goal with an explicit epic id."
 policy:
   allow_implicit_invocation: false
 DOM_EOF
 }
 
-# Public names reuse the same workflow bodies and native invocation policy.
+# One physical public entry, with no native workflow/setup duplicated here.
+emit_shared_skill() {
+  local kind="$1"
+  printf '%s\n' '---' "name: dom-$kind"
+  printf 'description: Codex or Copilot only. Route an explicit dom-%s request to that actual native caller'\''s project-local workflow; loading is not setup or unattended authorization.\n' "$kind"
+  printf '%s\n' '---'
+  cat <<'DOM_EOF'
+
+## Shared native routing — read-only boundary
+
+Identify the ACTUAL native caller using the client's available session context
+and native tools. There is no required identity API. Installed directories,
+file names, skill matching/loading and this text do NOT identify the client.
+Unknown, ambiguous, or unsupported callers STOP explicitly, without setup,
+Beads, task, branch or dispatch writes. Claude must use its /dom-decompose or
+/dom-goal command in Claude Code instead; do not auto-invoke another entry.
+
+Bind ROOT to this invocation's physical Git worktree root. Read only the body
+for the established native caller below, relative to ROOT; never search another
+checkout/ancestor, invoke a global/machine launcher, or fall back across harnesses.
+Missing, unreadable or foreign native bodies mean STOP and report that this
+project lacks the required native projection. A route is not install support:
+this installer does not yet emit Copilot bodies.
+
+Preserve the ORIGINAL user request verbatim, including explicit epic arguments
+and its authorization provenance, when reading the body. Never synthesize a new
+user invocation. Merely loading or implicitly matching this skill is not
+unattended authority and must not start setup. Goal requires an original explicit
+dom-goal invocation naming the epic (Codex $dom-goal; Copilot /dom-goal);
+loading the routed body cannot grant it. Native compatibility invocations retain
+their own explicit authority, never an inferred request. Setup consumes that
+request; fresh-session explicit reinvocation is required, not automatic continuation.
+DOM_EOF
+  printf '\n- Codex: `.agents/skills/domestique-%s/SKILL.md` (compatibility `$domestique-%s`); ordinary loop `.agents/skills/domestique/SKILL.md`, native roles `implementer` / `reviewer`.\n' "$kind" "$kind"
+  printf -- '- Copilot: `.github/skills/domestique-v2-copilot-%s/SKILL.md`; ordinary loop `.github/skills/domestique-v2-copilot/SKILL.md`, native roles `domestique-v2-copilot-implementer` / `domestique-v2-copilot-reviewer`.\n' "$kind"
+  printf '\nFor this entry preserve the explicit `%s` request and all its arguments.\n' "\$dom-$kind"
+}
 emit_codex_dom_decompose_skill() {
-  emit_codex_decompose_skill | sed 's/^name: domestique-decompose$/name: dom-decompose/'
+  emit_shared_skill decompose
 }
 emit_codex_dom_goal_skill() {
-  emit_codex_goal_skill | sed 's/^name: domestique-goal$/name: dom-goal/'
+  emit_shared_skill goal
 }
 emit_codex_dom_goal_metadata() {
-  emit_codex_goal_metadata | sed 's/[$]domestique-goal/$dom-goal/'
+  emit_codex_goal_metadata | sed \
+    -e 's/[$]domestique-goal/$dom-goal/' \
+    -e 's/Codex only: drain one explicit epic with gated review/Route one explicit epic to the actual native caller/'
 }
 
 # Normal Codex sessions receive this as a managed root AGENTS policy block.
@@ -899,6 +976,7 @@ emit_codex_policy() { cat <<'DOM_EOF'
 # Domestique orchestration policy (Codex)
 
 DOM_EOF
+  emit_harness_guard codex policy
   emit_codex_role_gate
   cat <<'DOM_EOF'
 
@@ -974,11 +1052,18 @@ Behavior:
   * CLAUDE.md: created if absent; if it has the managed markers only the
     content between them is replaced; otherwise the block is appended and all
     existing content is preserved verbatim. Always backed up before change.
+  * All retained owned CLAUDE/AGENTS root blocks are checked before writes,
+    even inactive blocks behind an override or mode conversion. Normal-mode
+    isolation upgrades preserve custom text via existing snapshot merges and
+    always back up changed policies, including with --force. Missing ownership
+    proof or conflicts refuse before writes. Retained CLAUDE.local.md keeps
+    personal guest wording; --no-guest removes its guest exclusion, not content.
   * --guest: for installing into a repo you don't own, for personal use only.
     The managed policy block is written to CLAUDE.local.md instead of
-    CLAUDE.md. A tracked CLAUDE.md is never read, modified, or backed up in
-    this mode. If CLAUDE.md already carries a non-guest domestique install,
-    a warning is printed and CLAUDE.md is left untouched. Everything guest
+    CLAUDE.md. Host root policies are inspected read-only for owned harness
+    guards, never modified or backed up in this mode. An old unguarded owned
+    block refuses before writes: upgrade it in normal mode (--no-guest) or
+    explicitly reconcile it first. Guarded host blocks stay untouched. Everything guest
     mode creates is also kept out of `git status`: a managed block is added
     to <git-common-dir>/info/exclude (resolved via `git rev-parse
     --git-common-dir`, so this works correctly from a worktree too) listing
@@ -1095,7 +1180,12 @@ configure_provider() {
       POLICY_EMITTER="emit_codex_policy"
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
-      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml,.agents/skills/dom-decompose/SKILL.md,.agents/skills/dom-goal/SKILL.md,.agents/skills/dom-goal/agents/openai.yaml"
+      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
+      ;;
+    shared)
+      SNAPSHOT_DIR="$TARGET_DIR/.agents/.domestique"
+      POLICY_CANDIDATES=""
+      MANAGED_PLAIN_FILES="$SHARED_FILES"
       ;;
   esac
   SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
@@ -1120,7 +1210,7 @@ resolve_provider_mode() {
           fi
           echo "domestique: converting guest install for $CURRENT_PROVIDER in $TARGET_DIR to normal mode." >&2
           if [ "$CURRENT_PROVIDER" = "claude" ]; then
-            echo "  CLAUDE.local.md is left in place; fold any customizations into CLAUDE.md or remove it by hand." >&2
+            echo "  CLAUDE.local.md is retained and its owned block harness-scoped, preserving personal guest instructions/customizations; reconcile it with CLAUDE.md explicitly if desired. It is no longer hidden by the Claude guest exclude." >&2
           else
             echo '  Skills and agents are retained; normal mode now adds the active root AGENTS policy block.' >&2
           fi
@@ -1261,9 +1351,6 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" emit_codex_decompose_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" emit_codex_goal_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" emit_codex_goal_metadata
-      install_plain "$TARGET_DIR/.agents/skills/dom-decompose/SKILL.md" emit_codex_dom_decompose_skill
-      install_plain "$TARGET_DIR/.agents/skills/dom-goal/SKILL.md" emit_codex_dom_goal_skill
-      install_plain "$TARGET_DIR/.agents/skills/dom-goal/agents/openai.yaml" emit_codex_dom_goal_metadata
       write_codex_guest_ownership
       ;;
   esac
@@ -1426,11 +1513,312 @@ SNAPSHOT_BASE="$SNAPSHOT_DIR/base"
 POLICY_SNAPSHOT="$SNAPSHOT_BASE/$POLICY_DEST.block"
 SNAPSHOT_TOUCHED=0
 
+# Shared canonical assets use the same snapshots, not a provider registry.
+# Copilot's future consumer contract is a snapshot_format=1/platform=copilot
+# .github/.domestique manifest inventorying BOTH namespaced roles with bases.
+# No Copilot selection or projection is implemented here.
+SHARED_ENTRIES='.agents/skills/dom-decompose/SKILL.md|emit_codex_dom_decompose_skill
+.agents/skills/dom-goal/SKILL.md|emit_codex_dom_goal_skill
+.agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata'
+SHARED_FILES=".agents/skills/dom-decompose/SKILL.md,.agents/skills/dom-goal/SKILL.md,.agents/skills/dom-goal/agents/openai.yaml"
+SHARED_MIGRATE=0
+SHARED_PRESENT=0
+SHARED_CODEX=0
+SHARED_COPILOT=0
+SHARED_REMOVE=0
+SHARED_GUEST=0
+
+shared_refuse() {
+  echo "Error: shared skills preflight: $*. No project writes; repair ownership/merge by hand and retry (including with --force)." >&2
+  exit 3
+}
+
+# Fixed, project-relative paths only. Do not follow symlinks or hardlinks when
+# reading management evidence. Missing leaf paths are allowed for creation.
+shared_safe_path() {
+  local rel="$1" kind="${2:-file}" part path="$TARGET_DIR" remaining="$1"
+  local parts
+  IFS='/' read -r -a parts <<< "$rel"
+  for part in "${parts[@]}"; do
+    path="$path/$part"
+    remaining="${remaining#"$part"}"
+    remaining="${remaining#/}"
+    [ ! -L "$path" ] || return 1
+    [ -e "$path" ] || continue
+    if [ -n "$remaining" ] || [ "$kind" = directory ]; then
+      [ -d "$path" ] || return 1
+    else
+      [ -f "$path" ] && [ -r "$path" ] || return 1
+      [ "$(find "$path" -prune -links +1 -print)" = "" ] || return 1
+      [ "$(wc -c < "$path")" -le 1048576 ] || return 1
+    fi
+  done
+}
+
+snapshot_has_file() {
+  local state="$1" platform="$2" rel="$3" manifest="$TARGET_DIR/$1/manifest"
+  shared_safe_path "$state/manifest" && [ -f "$manifest" ] || return 1
+  awk -F= -v platform="$platform" -v wanted="$rel" '
+    NF != 2 || seen[$1]++ { bad=1 }
+    $1 == "snapshot_format" { format=$2 }
+    $1 == "platform" { provider=$2 }
+    $1 == "files" {
+      n=split($2, paths, ",")
+      for (i=1; i<=n; i++) {
+        if (paths[i] == wanted) found++
+        if (files[paths[i]]++) bad=1
+      }
+    }
+    END { exit bad || format != "1" || provider != platform || found != 1 }
+  ' "$manifest" || return 1
+  shared_safe_path "$state/base/$rel" && [ -f "$TARGET_DIR/$state/base/$rel" ]
+}
+
+shared_consumer_valid() {
+  local provider="$1" state role
+  case "$provider" in
+    codex) state=".codex/.domestique" ;;
+    copilot) state=".github/.domestique" ;;
+  esac
+  for role in implementer reviewer; do
+    case "$provider" in
+      codex) snapshot_has_file "$state" "$provider" ".codex/agents/$role.toml" || return 1 ;;
+      copilot) snapshot_has_file "$state" "$provider" ".github/agents/domestique-v2-copilot-$role.agent.md" || return 1 ;;
+    esac
+  done
+  shared_safe_path "$state/mode" || return 1
+  [ ! -e "$TARGET_DIR/$state/mode" ] || [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]
+}
+
+shared_preflight() {
+  local rel emitter base staged rc path
+  local state=".agents/.domestique" legacy=".codex/.domestique"
+  # Validate prospective paths as well as existing evidence, before *either*
+  # lifecycle can touch providers, modes or exclusions. A directory is not a
+  # valid file leaf; a file is not a valid ancestor. Never traverse a symlink.
+  shared_safe_path "$state" directory || shared_refuse "unsafe $state"
+  for path in manifest mode guest-excludes; do
+    shared_safe_path "$state/$path" || shared_refuse "unsafe $state/$path"
+  done
+  shared_safe_path "$legacy/guest-excludes" || shared_refuse "unsafe legacy visibility evidence"
+  while IFS='|' read -r rel emitter; do
+    shared_safe_path "$rel" || shared_refuse "unsafe canonical path $rel"
+    shared_safe_path "$state/base/$rel" || shared_refuse "unsafe shared base for $rel"
+    shared_safe_path "$legacy/base/$rel" || shared_refuse "unsafe legacy base for $rel"
+  done <<< "$SHARED_ENTRIES"
+  shared_consumer_valid codex && SHARED_CODEX=1
+  shared_consumer_valid copilot && SHARED_COPILOT=1
+  if [ -e "$TARGET_DIR/.github/.domestique" ] || [ -L "$TARGET_DIR/.github/.domestique" ]; then
+    [ "$SHARED_COPILOT" -eq 1 ] || shared_refuse "uncertain Copilot consumer ownership"
+  fi
+  if [ -e "$TARGET_DIR/$state" ] || [ -L "$TARGET_DIR/$state" ]; then
+    shared_safe_path "$state" directory && [ -d "$TARGET_DIR/$state" ] || shared_refuse "unsafe $state"
+    if [ -e "$TARGET_DIR/$legacy" ] || [ -L "$TARGET_DIR/$legacy" ]; then
+      [ "$SHARED_CODEX" -eq 1 ] || shared_refuse "uncertain Codex consumer ownership"
+    fi
+    # This namespace is new: even identical unknown files cannot be adopted.
+    while IFS='|' read -r rel emitter; do
+      snapshot_has_file "$state" shared "$rel" || shared_refuse "unknown/incomplete $state; expected authoritative shared manifest and bases"
+    done <<< "$SHARED_ENTRIES"
+    [ "$(sed -n 's/^files=//p' "$TARGET_DIR/$state/manifest")" = "$SHARED_FILES" ] ||
+      shared_refuse "unexpected shared inventory"
+    while IFS= read -r path; do
+      case "$path" in
+        "$TARGET_DIR/$state"|"$TARGET_DIR/$state/base"|"$TARGET_DIR/$state/base/.agents"|"$TARGET_DIR/$state/base/.agents/skills"|"$TARGET_DIR/$state/base/.agents/skills/dom-decompose"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/agents")
+          shared_safe_path "${path#"$TARGET_DIR"/}" directory || shared_refuse "unsafe state directory $path"
+          continue ;;
+        "$TARGET_DIR/$state/manifest"|"$TARGET_DIR/$state/mode"|"$TARGET_DIR/$state/guest-excludes") ;;
+        "$TARGET_DIR/$state/base/.agents/skills/dom-decompose/SKILL.md"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/SKILL.md"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/agents/openai.yaml") ;;
+        *) shared_refuse "unknown state path $path" ;;
+      esac
+      shared_safe_path "${path#"$TARGET_DIR"/}" || shared_refuse "unsafe state path $path"
+    done < <(find "$TARGET_DIR/$state" -print)
+    [ -f "$TARGET_DIR/$state/guest-excludes" ] || shared_refuse "missing shared visibility evidence"
+    while IFS= read -r rel; do
+      case ",$SHARED_FILES," in *",$rel,"*) : ;; *) shared_refuse "unknown shared visibility path $rel" ;; esac
+    done < "$TARGET_DIR/$state/guest-excludes"
+    [ ! -e "$TARGET_DIR/$state/mode" ] || [ "$(cat "$TARGET_DIR/$state/mode")" = guest ] ||
+      shared_refuse "invalid shared mode"
+    [ "$SHARED_CODEX" -eq 1 ] || [ "$SHARED_COPILOT" -eq 1 ] ||
+      shared_refuse "shared state has no valid native consumer"
+    SHARED_PRESENT=1
+    [ ! -e "$TARGET_DIR/$state/mode" ] || SHARED_GUEST=1
+    if [ "$SHARED_COPILOT" -eq 1 ] && [ -e "$TARGET_DIR/$state/mode" ] &&
+       [ ! -e "$TARGET_DIR/.github/.domestique/mode" ]; then
+      shared_refuse "guest shared visibility conflicts with a normal Copilot consumer"
+    fi
+  fi
+  [ "$SELECT_CODEX" -eq 1 ] || return 0
+  [ "$UNINSTALL" -eq 0 ] || return 0
+  if [ "$SHARED_COPILOT" -eq 1 ]; then
+    local requested="$REQUESTED_GUEST" shared_guest=0
+    [ "$GUEST_EXPLICIT" -eq 1 ] || [ "$NO_GUEST" -eq 1 ] ||
+      { [ "$(cat "$TARGET_DIR/$legacy/mode" 2>/dev/null || true)" != guest ] || requested=1; }
+    [ ! -e "$TARGET_DIR/$state/mode" ] || shared_guest=1
+    [ "$requested" -eq "$shared_guest" ] ||
+      shared_refuse "another consumer retains shared visibility; cannot convert it implicitly"
+  fi
+  while IFS='|' read -r rel emitter; do
+    shared_safe_path "$rel" || shared_refuse "unsafe canonical path $rel"
+    base="$TARGET_DIR/$state/base/$rel"
+    if [ -e "$TARGET_DIR/$legacy/base/$rel" ]; then
+      [ "$SHARED_PRESENT" -eq 0 ] || shared_refuse "duplicate authoritative base for $rel"
+      snapshot_has_file "$legacy" codex "$rel" || shared_refuse "invalid legacy ownership for $rel"
+      base="$TARGET_DIR/$legacy/base/$rel"
+      SHARED_MIGRATE=1
+    fi
+    [ -f "$base" ] && [ -f "$TARGET_DIR/$rel" ] || continue
+    staged="$TMPDIR_WORK/shared-preflight"
+    "$emitter" > "$staged"
+    rc=0
+    git merge-file -p "$TARGET_DIR/$rel" "$base" "$staged" >/dev/null || rc=$?
+    [ "$rc" -eq 0 ] || shared_refuse "merge conflict for $rel against $base; preserve custom bytes and resolve explicitly"
+  done <<< "$SHARED_ENTRIES"
+}
+
+install_shared() {
+  local rel emitter
+  configure_provider shared
+  # Visibility follows the sole current consumer, or stays with the shared
+  # owner while a second valid consumer survives. Never broaden to .agents/.
+  while IFS='|' read -r rel emitter; do
+    install_plain "$TARGET_DIR/$rel" "$emitter"
+  done <<< "$SHARED_ENTRIES"
+  write_provider_manifest
+  if [ "$SHARED_COPILOT" -eq 0 ]; then
+    SHARED_GUEST="$CODEX_GUEST_SELECTED"
+  fi
+  if [ "$DRY_RUN" -eq 0 ]; then
+    if [ "$SHARED_PRESENT" -eq 0 ]; then
+      : > "$SNAPSHOT_DIR/guest-excludes"
+      while IFS='|' read -r rel emitter; do
+        if codex_exclude_was_owned "$rel"; then
+          printf '%s\n' "$rel" >> "$SNAPSHOT_DIR/guest-excludes"
+        fi
+      done <<< "$SHARED_ENTRIES"
+    fi
+    if [ "$SHARED_COPILOT" -eq 0 ]; then
+      if [ "$CODEX_GUEST_SELECTED" -eq 1 ]; then
+        printf 'guest\n' > "$MODE_MARKER"
+      else
+        rm -f "$MODE_MARKER"
+      fi
+    fi
+  fi
+  if [ "$SHARED_MIGRATE" -eq 1 ]; then
+    configure_provider codex
+    while IFS='|' read -r rel emitter; do
+      [ "$DRY_RUN" -eq 1 ] || rm -f "$SNAPSHOT_BASE/$rel"
+    done <<< "$SHARED_ENTRIES"
+    SNAPSHOT_TOUCHED=1
+    write_provider_manifest
+  fi
+  [ "$DRY_RUN" -eq 1 ] || SHARED_PRESENT=1
+}
+
+# Every retained owned root block needs isolation, even if an override or mode
+# switch makes it inactive. Stage proof before any project writes. Already
+# scoped inactive blocks and unowned host instructions are not update targets.
+policy_preflight() {
+  [ "$UNINSTALL" -eq 0 ] || return 0
+  local provider requested state rel status bc ec block expected base emitter mode merged rc
+  for provider in claude codex; do
+    state=".$provider/.domestique"
+    shared_safe_path "$state/mode" || shared_refuse "unsafe $state/mode"
+    requested="$REQUESTED_GUEST"
+    if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
+       [ -f "$TARGET_DIR/$state/mode" ] &&
+       [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]; then
+      requested=1
+    fi
+    for rel in CLAUDE.md CLAUDE.local.md AGENTS.md AGENTS.override.md; do
+      case "$provider:$rel" in claude:AGENTS*|codex:CLAUDE*) continue ;; esac
+      shared_safe_path "$rel" || shared_refuse "unsafe root policy $rel"
+      base="$state/base/$rel.block"
+      shared_safe_path "$base" || shared_refuse "unsafe policy base $base"
+      [ -f "$TARGET_DIR/$rel" ] || continue
+      read -r status bc ec < <(markers_sane "$TARGET_DIR/$rel")
+      [ "$status" != none ] || continue
+      [ "$status" = ok ] || {
+        echo "Error: malformed owned policy $rel ($status; duplicate, missing or inverted markers). Fix it by hand and re-run. No project writes." >&2
+        exit 1
+      }
+      block="$TMPDIR_WORK/retained-block"
+      expected="$TMPDIR_WORK/retained-guard"
+      awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" '
+        $0 == beginm { inblock=1; next }
+        $0 == endm { exit }
+        inblock { print }
+      ' "$TARGET_DIR/$rel" > "$block"
+      {
+        [ "$provider" != codex ] || printf '# Domestique orchestration policy (Codex)\n\n'
+        emit_harness_guard "$provider" policy
+      } > "$expected"
+      if head -c "$(wc -c < "$expected")" "$block" | cmp -s "$expected" -; then
+        if [ "$requested" -eq 1 ] && [ "$rel" = CLAUDE.local.md ] &&
+           git -C "$TARGET_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+          touch "$TMPDIR_WORK/keep-$rel"
+        fi
+        continue
+      fi
+      if [ "$requested" -eq 1 ]; then
+        # Only the selected Claude provider's untracked personal root may be
+        # upgraded in guest mode. Never silently edit a tracked host root.
+        if [ "$rel" != CLAUDE.local.md ] || [ "$SELECT_CLAUDE" -eq 0 ] ||
+           git -C "$TARGET_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+          shared_refuse "unguarded owned host policy $rel cannot be changed in guest mode; first upgrade in normal mode (--no-guest), or explicitly reconcile the owned block's harness guard, then retry --guest"
+        fi
+      fi
+      shared_safe_path "$base" && [ -f "$TARGET_DIR/$base" ] ||
+        shared_refuse "unguarded owned policy $rel lacks a safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
+      emitter=emit_policy
+      [ "$provider" != codex ] || emitter=emit_codex_policy
+      mode=normal
+      # Retained personal policy remains personal even under --no-guest.
+      [ "$rel" != CLAUDE.local.md ] || mode=guest
+      "$emitter" "$mode" > "$TMPDIR_WORK/retained-upstream"
+      merged="$TMPDIR_WORK/retained-merged"
+      rc=0
+      git merge-file -p "$block" "$TARGET_DIR/$base" "$TMPDIR_WORK/retained-upstream" > "$merged" || rc=$?
+      [ "$rc" -eq 0 ] ||
+        shared_refuse "owned policy merge conflict for $rel against $base; preserve custom text and reconcile the block explicitly before retrying"
+      head -c "$(wc -c < "$expected")" "$merged" | cmp -s "$expected" - ||
+        shared_refuse "merged owned policy $rel lacks the harness guard; reconcile the block against $base explicitly"
+      shared_safe_path "$rel.bak.$TS" || shared_refuse "unsafe policy backup $rel.bak.$TS"
+      # Ephemeral plan only, not another project registry. The existing block
+      # installer performs the same preserving merge and documented backup.
+      touch "$TMPDIR_WORK/scope-$rel"
+    done
+  done
+}
+
+install_retained_policies() {
+  local provider rel mode
+  for provider in claude codex; do
+    configure_provider "$provider"
+    for rel in $POLICY_CANDIDATES; do
+      [ -f "$TMPDIR_WORK/scope-$rel" ] || continue
+      POLICY_DEST="$rel"
+      POLICY_LABEL="$rel"
+      POLICY_SNAPSHOT="$SNAPSHOT_BASE/$rel.block"
+      mode=normal
+      [ "$rel" != CLAUDE.local.md ] || mode=guest
+      install_claude_md "$TARGET_DIR/$rel" "$mode" "$POLICY_EMITTER"
+    done
+    write_provider_manifest
+  done
+}
+
 # rel_to_base <dest> -> absolute path under SNAPSHOT_BASE mirroring <dest>'s
 # path relative to TARGET_DIR, 1:1 (including the .claude/ prefix — no
 # managed file lives under .claude/.domestique/, so this never recurses).
 rel_to_base() {
   local dest="$1"
+  if [ "$CURRENT_PROVIDER" = shared ] && [ "$SHARED_PRESENT" -eq 0 ] &&
+     [ -f "$TARGET_DIR/.codex/.domestique/base/${dest#"$TARGET_DIR"/}" ]; then
+    printf '%s' "$TARGET_DIR/.codex/.domestique/base/${dest#"$TARGET_DIR"/}"
+    return
+  fi
   printf '%s' "$SNAPSHOT_BASE/${dest#"$TARGET_DIR"/}"
 }
 
@@ -1440,7 +1828,12 @@ rel_to_base() {
 # (never on an identical-skip — the snapshot is already correct there).
 snapshot_plain() {
   local dest="$1" content="$2" basepath
-  basepath="$(rel_to_base "$dest")"
+  basepath="$SNAPSHOT_BASE/${dest#"$TARGET_DIR"/}"
+  # A preserved custom body can merge identically on every rerun. Do not
+  # churn its manifest timestamp when the authoritative pristine base agrees.
+  if [ -f "$basepath" ] && cmp -s "$content" "$basepath"; then
+    return 0
+  fi
   SNAPSHOT_TOUCHED=1
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
@@ -1544,7 +1937,7 @@ install_plain() {
     # to merge against.
     local ident_basepath
     ident_basepath="$(rel_to_base "$dest")"
-    if [ ! -e "$ident_basepath" ]; then
+    if [ ! -e "$ident_basepath" ] || { [ "$CURRENT_PROVIDER" = shared ] && [ "$SHARED_PRESENT" -eq 0 ]; }; then
       snapshot_plain "$dest" "$staged"
     fi
     SUM_SKIPPED+=("$dest (identical)")
@@ -1661,6 +2054,19 @@ markers_sane() {
   echo "ok $bc $ec"
 }
 
+# Splice only the owned body; head/tail preserve host bytes, including a
+# suffix without a final newline (awk's print would silently add one).
+splice_policy_body() {
+  local dest="$1" body="$2" result="$3" begin end
+  begin="$(grep -nxF "$MARKER_BEGIN" "$dest" | cut -d: -f1)"
+  end="$(grep -nxF "$MARKER_END" "$dest" | cut -d: -f1)"
+  {
+    head -n "$begin" "$dest"
+    cat "$body"
+    tail -n "+$end" "$dest"
+  } > "$result"
+}
+
 # install_claude_md <dest>
 # Missing/no-markers/half-marker -> unchanged from before (create, append,
 # refuse). Has both markers, block differs:
@@ -1678,6 +2084,14 @@ markers_sane() {
 # See docs/install-upgrade-design.md §3.
 install_claude_md() {
   local dest="$1" mode="${2:-normal}" emitter="${3:-emit_policy}"
+  local FORCE="$FORCE"
+  if [ -f "$TMPDIR_WORK/keep-${dest##*/}" ]; then
+    SUM_SKIPPED+=("$dest (guarded tracked personal policy retained in guest mode)")
+    return 0
+  fi
+  # --force does not discard customized text during an isolation upgrade,
+  # including the later active-destination pass in this same invocation.
+  [ ! -f "$TMPDIR_WORK/scope-${dest##*/}" ] || FORCE=0
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
   local policybody="$TMPDIR_WORK/policybody"
 
@@ -1752,13 +2166,7 @@ install_claude_md() {
       inblock { print }
     ' "$dest" > "$oursblock"
 
-    awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$blk" '
-      BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
-      $0 == beginm && !seen { seen=1; inblock=1; printf "%s", block; next }
-      inblock && $0 == endm { inblock=0; next }
-      inblock { next }
-      { print }
-    ' "$dest" > "$result"
+    splice_policy_body "$dest" "$policybody" "$result"
 
     # If the block body is already current (no user edit, or already up to
     # date), the wholesale-replace result is byte-identical to $dest already
@@ -1780,13 +2188,7 @@ install_claude_md() {
           if [ "$rc" -eq 0 ]; then
             # Clean merge: splice the merged block body back between fresh
             # markers, preserving everything outside the markers verbatim.
-            awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$mergedblock" '
-              BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
-              $0 == beginm && !seen { seen=1; inblock=1; print beginm; printf "%s", block; next }
-              inblock && $0 == endm { inblock=0; print endm; next }
-              inblock { next }
-              { print }
-            ' "$dest" > "$result"
+            splice_policy_body "$dest" "$mergedblock" "$result"
 
             if cmp -s "$result" "$dest"; then
               SUM_SKIPPED+=("$dest (managed block already current)")
@@ -1820,13 +2222,7 @@ install_claude_md() {
           fi
 
           local conflictresult="$TMPDIR_WORK/conflict_result"
-          awk -v beginm="$MARKER_BEGIN" -v endm="$MARKER_END" -v blockfile="$mergedblock" '
-            BEGIN { while ((getline line < blockfile) > 0) block = block line ORS }
-            $0 == beginm && !seen { seen=1; inblock=1; print beginm; printf "%s", block; next }
-            inblock && $0 == endm { inblock=0; print endm; next }
-            inblock { next }
-            { print }
-          ' "$dest" > "$conflictresult"
+          splice_policy_body "$dest" "$mergedblock" "$conflictresult"
 
           if [ "$DRY_RUN" -eq 1 ]; then
             note_dry "merge $dest block ($kind) — would write $newfile, back up $dest -> $backup2, leave $dest untouched"
@@ -1942,7 +2338,8 @@ install_git_exclude() {
     if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ]; then
       local codex_ownership="$target/.codex/.domestique/guest-excludes"
       if [ -e "$codex_ownership" ]; then
-        cat "$codex_ownership"
+        # Canonical visibility belongs to the shared state, not this guest.
+        grep -vE '^\.agents/skills/dom-(decompose|goal)/' "$codex_ownership" || true
       else
         # Dry-run and legacy-state fallback.  Fresh real installs persist the
         # exact list before this block is reconciled.
@@ -1953,9 +2350,22 @@ install_git_exclude() {
         [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
         [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
         [ "${CODEX_PREEXIST_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/agents/openai.yaml\n'
-        [ "${CODEX_PREEXIST_DOM_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-decompose/SKILL.md\n'
-        [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
-        [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
+      fi
+    fi
+    if [ "$SHARED_REMOVE" -eq 0 ]; then
+      if [ "$SHARED_GUEST" -eq 1 ] && [ "$SHARED_PRESENT" -eq 1 ]; then
+        printf '.agents/.domestique/\n'
+        cat "$target/.agents/.domestique/guest-excludes"
+      elif [ ! -e "$target/.agents/.domestique" ] && [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ]; then
+        # Dry-run or a legacy uninstall still uses the original owner.
+        printf '.agents/.domestique/\n'
+        if [ -f "$target/.codex/.domestique/guest-excludes" ]; then
+          grep -E '^\.agents/skills/dom-(decompose|goal)/' "$target/.codex/.domestique/guest-excludes" || true
+        else
+          [ "${CODEX_PREEXIST_DOM_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-decompose/SKILL.md\n'
+          [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
+          [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
+        fi
       fi
     fi
     if { [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.claude/.domestique/beads-owned" ]; } ||
@@ -2087,6 +2497,9 @@ sync_guest_beads_ownership() {
 do_uninstall() {
   local target="$1"
   local anything_done=0
+  if [ "$SHARED_PRESENT" -eq 1 ] && [ "$UNINSTALL_CODEX" -eq 1 ] && [ "$SHARED_COPILOT" -eq 0 ]; then
+    SHARED_REMOVE=1
+  fi
 
   # Fixed path inventories are not ownership proof by themselves. Require a
   # provider state tree or one of our managed policy markers before touching
@@ -2110,10 +2523,20 @@ do_uninstall() {
     [ "$provider" = "codex" ] && [ "$UNINSTALL_CODEX" -eq 0 ] && continue
     [ "$provider" = "claude" ] && [ "$claude_evidence" -eq 0 ] && continue
     [ "$provider" = "codex" ] && [ "$codex_evidence" -eq 0 ] && continue
+    local ownership="$target/.codex/.domestique/guest-excludes"
+    case "$rel" in
+      .agents/skills/dom-decompose/*|.agents/skills/dom-goal/*)
+        [ "$SHARED_COPILOT" -eq 0 ] || continue
+        if [ "$SHARED_PRESENT" -eq 1 ]; then
+          state_rel=".agents/.domestique"
+          ownership="$target/$state_rel/guest-excludes"
+        fi
+        ;;
+    esac
     dest="$target/$rel"
     [ -e "$dest" ] || continue
-    if [ "$provider" = "codex" ] && [ -e "$target/.codex/.domestique/guest-excludes" ] &&
-       ! grep -qxF "$rel" "$target/.codex/.domestique/guest-excludes" 2>/dev/null; then
+    if [ "$provider" = "codex" ] && [ -e "$ownership" ] &&
+       ! grep -qxF "$rel" "$ownership" 2>/dev/null; then
       SUM_KEPT+=("$dest (pre-existing; never domestique-owned)")
       continue
     fi
@@ -2293,7 +2716,8 @@ UNINSTALL_POLICIES
     keep_codex_guest=1
   fi
 
-  if [ "$keep_claude_guest" -eq 1 ] || [ "$keep_codex_guest" -eq 1 ]; then
+  if [ "$keep_claude_guest" -eq 1 ] || [ "$keep_codex_guest" -eq 1 ] ||
+     { [ "$SHARED_REMOVE" -eq 0 ] && [ "$SHARED_GUEST" -eq 1 ]; }; then
     CLAUDE_GUEST_SELECTED="$keep_claude_guest"
     CODEX_GUEST_SELECTED="$keep_codex_guest"
     install_git_exclude "$target"
@@ -2338,10 +2762,11 @@ UNINSTALL_POLICIES
 
   # --- 4. selected provider state (do this after snapshot comparisons) -----
   local snapshot_dir
-  for snapshot_dir in "$target/.claude/.domestique" "$target/.codex/.domestique"; do
+  for snapshot_dir in "$target/.claude/.domestique" "$target/.codex/.domestique" "$target/.agents/.domestique"; do
     case "$snapshot_dir" in
       "$target/.claude/.domestique") [ "$UNINSTALL_CLAUDE" -eq 1 ] || continue ;;
       "$target/.codex/.domestique") [ "$UNINSTALL_CODEX" -eq 1 ] || continue ;;
+      "$target/.agents/.domestique") [ "$SHARED_REMOVE" -eq 1 ] || continue ;;
     esac
     [ -e "$snapshot_dir" ] || continue
     anything_done=1
@@ -2429,6 +2854,9 @@ UNINSTALL_POLICIES
   echo "Done."
 }
 
+shared_preflight
+policy_preflight
+
 if [ "$UNINSTALL" -eq 1 ]; then
   UNINSTALL_CLAUDE=1
   UNINSTALL_CODEX=1
@@ -2450,6 +2878,8 @@ fi
 # ---------------------------------------------------------------------------
 echo "domestique: installing into $TARGET_DIR (platforms=$PLATFORM_SET)"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
+
+install_retained_policies
 
 ANY_GUEST=0
 CLAUDE_GUEST_SELECTED=0
@@ -2492,6 +2922,7 @@ if [ "$SELECT_CODEX" -eq 1 ]; then
     printf '%s\n' "Note: Codex guest mode is skills-only; start each new session with \`\$domestique\`." >&2
   fi
   install_current_provider
+  install_shared
 fi
 
 persist_platform_set
@@ -2511,7 +2942,7 @@ if [ "$WITH_BEADS" -eq 1 ]; then
           *--skip-agents*--skip-hooks*) : ;;
           *) BD_INIT_SAFE=0 ;;
         esac
-        if [ "$ANY_GUEST" -eq 1 ]; then
+        if [ "$ANY_GUEST" -eq 1 ] || [ "$(cat "$TARGET_DIR/.agents/.domestique/mode" 2>/dev/null || true)" = guest ]; then
           case "$BD_INIT_HELP" in *--stealth*) : ;; *) BD_INIT_SAFE=0 ;; esac
         fi
       fi
@@ -2566,7 +2997,7 @@ if [ "$WITH_BEADS" -eq 1 ]; then
 fi
 
 sync_guest_beads_ownership
-if [ "$ANY_GUEST" -eq 1 ]; then
+if [ "$ANY_GUEST" -eq 1 ] || [ "$SHARED_GUEST" -eq 1 ]; then
   install_git_exclude "$TARGET_DIR"
 else
   remove_git_exclude "$TARGET_DIR"

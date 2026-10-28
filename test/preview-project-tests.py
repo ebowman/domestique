@@ -243,8 +243,60 @@ class PreviewProjectTests(unittest.TestCase):
                     self.assertEqual(claude.read_bytes(), alias.read_bytes())
                     codex = root / f".agents/skills/domestique-{kind}/SKILL.md"
                     short = root / f".agents/skills/dom-{kind}/SKILL.md"
-                    self.assertEqual(codex.read_bytes().split(b"---\n", 2)[2],
-                                     short.read_bytes().split(b"---\n", 2)[2])
+                    # The canonical skill is a shared router, not a second
+                    # Codex body. Check the actual installed route and its
+                    # authority boundary, not native execution/qualification.
+                    self.assertFalse(short.is_symlink())
+                    self.assertEqual(short.stat().st_nlink, 1)
+                    shared = short.read_text()
+                    self.assertEqual(shared.split("---\n", 2)[1].splitlines()[0],
+                                     f"name: dom-{kind}")
+                    self.assertIn("description: Codex or Copilot only.", shared)
+                    self.assertEqual(
+                        [line for line in shared.splitlines()
+                         if line.startswith(("- Codex:", "- Copilot:"))],
+                        [f"- Codex: `.agents/skills/domestique-{kind}/SKILL.md` "
+                         f"(compatibility `$domestique-{kind}`); ordinary loop "
+                         "`.agents/skills/domestique/SKILL.md`, native roles "
+                         "`implementer` / `reviewer`.",
+                         f"- Copilot: `.github/skills/domestique-v2-copilot-{kind}/SKILL.md`; "
+                         "ordinary loop `.github/skills/domestique-v2-copilot/SKILL.md`, "
+                         "native roles `domestique-v2-copilot-implementer` / "
+                         "`domestique-v2-copilot-reviewer`."])
+                    routed = " ".join(shared.split())
+                    for text in (
+                            "ACTUAL native caller using the client's available session context "
+                            "and native tools",
+                            "Installed directories, file names, skill matching/loading and this "
+                            "text do NOT identify the client",
+                            "Unknown, ambiguous, or unsupported callers STOP explicitly, "
+                            "without setup, Beads, task, branch or dispatch writes",
+                            "Read only the body for the established native caller",
+                            "relative to ROOT; never search another checkout/ancestor, invoke "
+                            "a global/machine launcher, or fall back across harnesses",
+                            "Missing, unreadable or foreign native bodies mean STOP",
+                            "this installer does not yet emit Copilot bodies",
+                            "ORIGINAL user request verbatim, including explicit epic arguments "
+                            "and its authorization provenance",
+                            "Never synthesize a new user invocation",
+                            "Merely loading or implicitly matching this skill is not unattended "
+                            "authority and must not start setup",
+                            "Goal requires an original explicit dom-goal invocation naming "
+                            "the epic (Codex $dom-goal; Copilot /dom-goal)",
+                            "loading the routed body cannot grant it",
+                            "Setup consumes that request; fresh-session explicit reinvocation "
+                            "is required, not automatic continuation"):
+                        self.assertIn(text, routed)
+                    self.assertNotIn("first-use role setup", shared)
+                    self.assertNotIn("bd create", shared)
+                    if kind == "decompose":
+                        for path in (claude, codex):
+                            body = path.read_text()
+                            self.assertLess(body.index("End role setup gate"),
+                                            body.index("Do not implement anything."))
+                            self.assertIn("bounded", body)
+                            self.assertIn("bd ready", body)
+                            self.assertIn("epic tree", body)
                     if kind == "goal":
                         # Emitted protocol ordering, NOT execution by a native
                         # assistant or proof that it obeys these instructions.
@@ -280,9 +332,14 @@ class PreviewProjectTests(unittest.TestCase):
                                 "After saving, require a fresh client session and "
                                 "explicit reinvocation.",
                                 "never auto-stage, commit, stash, discard or hide it.")
+                            explicit = ("/dom-goal <epic-id>" if path == claude
+                                        else "$dom-goal <epic-id>")
+                            compatibility = ("/goal <epic-id>" if path == claude
+                                             else "$domestique-goal <epic-id>")
                             with self.subTest(protocol=str(path.relative_to(root))):
-                                for text in ordered + required:
+                                for text in ordered + required + (explicit, compatibility):
                                     self.assertIn(text, body)
+                                self.assertIn("not unattended authority", body)
                                 positions = [body.index(text) for text in ordered]
                                 self.assertEqual(positions, sorted(positions))
                     for path in (claude, alias, codex, short):
@@ -293,6 +350,45 @@ class PreviewProjectTests(unittest.TestCase):
                         definitions[path] = path.read_bytes()
                         locators.append(path.read_text().split("```sh\n")[1].split("\n```")[0])
                     self.assertEqual(locators[0], locators[1])
+
+                # Copilot discovers all .agents skills, not just the public
+                # aliases, and reads root instructions. Unique names alone
+                # cannot isolate the bootstrap, legacy bodies or policies.
+                entries = list((root / ".agents/skills").glob("domestique*/SKILL.md"))
+                entries += list((root / ".claude/commands").glob("*.md"))
+                entries += list((root / ".claude/agents").glob("*.md"))
+                self.assertEqual(len(entries), 9)
+                for path in entries:
+                    harness = "claude" if ".claude" in path.parts else "codex"
+                    text = path.read_text()
+                    description = next(line for line in text.splitlines()
+                                       if line.startswith("description:"))
+                    self.assertIn("Claude Code only" if harness == "claude"
+                                  else "Codex only", description)
+                    self.assertIn("never match", description)
+                    self.assertIn(f"Active harness boundary ({harness} only)", text)
+                    body = " ".join(text.split())
+                    self.assertIn("An explicit foreign-harness invocation must STOP "
+                                  "without setup, Beads, task, branch or dispatch writes", body)
+                    self.assertIn("do not invoke them automatically", body)
+                    for gate in ("first-use role setup", "Role model gate"):
+                        if gate in text:
+                            self.assertLess(text.index("Active harness boundary"), text.index(gate))
+                    if path.parent.name != "agents":
+                        definitions[path] = path.read_bytes()
+                policies = (("CLAUDE.local.md" if mode == "guest" else "CLAUDE.md", "claude"),
+                            ("AGENTS.md", "codex"))
+                for filename, harness in policies:
+                    path = root / filename
+                    if mode == "guest" and harness == "codex":
+                        self.assertFalse(path.exists(), "guest bootstrap must not add root policy")
+                        continue
+                    text = path.read_text()
+                    self.assertIn(f"Active harness boundary ({harness} only)", text)
+                    self.assertIn("Other harnesses must ignore this entire owned policy block", text)
+                    self.assertIn("Unrelated host instructions still apply", text)
+                    self.assertLess(text.index("Active harness boundary"), text.index("This session is"))
+                    definitions[path] = path.read_bytes()
 
                 for harness in ("claude", "codex", "copilot"):
                     before = snapshot(root)
