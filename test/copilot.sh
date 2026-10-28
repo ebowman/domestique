@@ -9,6 +9,12 @@ PASS=0
 FAIL=0
 WORKROOT="$(mktemp -d)"
 trap 'rm -rf "$WORKROOT"' EXIT
+if [ "${1:-}" = "--current" ]; then
+  export HOME="$WORKROOT/current-home"
+  mkdir -p "$HOME"
+  python3 "$SCRIPT_DIR/copilot-current.py" "$DOM" "$WORKROOT"
+  exit $?
+fi
 # shellcheck source=test/historical-fixture.sh
 source "$SCRIPT_DIR/historical-fixture.sh"
 

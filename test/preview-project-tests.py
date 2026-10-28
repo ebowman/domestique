@@ -226,6 +226,7 @@ class PreviewProjectTests(unittest.TestCase):
                     return result
 
                 isolated(("copilot",), lambda: self.command("enable", root))
+                preview_copilot = snapshot(root / ".github")
                 creation = self.receipt(root)["files"]
                 args = ("--guest",) if mode == "guest" else ()
                 # V1's supported both-provider install also records shared
@@ -275,7 +276,8 @@ class PreviewProjectTests(unittest.TestCase):
                             "relative to ROOT; never search another checkout/ancestor, invoke "
                             "a global/machine launcher, or fall back across harnesses",
                             "Missing, unreadable or foreign native bodies mean STOP",
-                            "this installer does not yet emit Copilot bodies",
+                            "report that this project lacks the required native projection",
+                            "Installation/discovery alone does not establish native readiness",
                             "ORIGINAL user request verbatim, including explicit epic arguments "
                             "and its authorization provenance",
                             "Never synthesize a new user invocation",
@@ -289,6 +291,17 @@ class PreviewProjectTests(unittest.TestCase):
                         self.assertIn(text, routed)
                     self.assertNotIn("first-use role setup", shared)
                     self.assertNotIn("bd create", shared)
+                    # This fixture deliberately retains the separate preview,
+                    # not the standalone projection. Routing must not migrate
+                    # its bodies or introduce another launcher/authority.
+                    copilot = root / f".github/skills/domestique-v2-copilot-{kind}/SKILL.md"
+                    self.assertTrue(copilot.is_file())
+                    self.assertEqual(snapshot(root / ".github"), preview_copilot)
+                    self.assertNotEqual(short.read_bytes(), copilot.read_bytes())
+                    self.assertNotEqual(codex.read_bytes(), copilot.read_bytes())
+                    for external in (str(ROOT), str(self.source), str(self.launcher),
+                                     "workflow --project", "current/bin"):
+                        self.assertNotIn(external, shared)
                     if kind == "decompose":
                         for path in (claude, codex):
                             body = path.read_text()

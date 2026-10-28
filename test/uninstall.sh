@@ -571,6 +571,20 @@ run_marker_refusal_scenario() {
   ' _ "$out" "$discriminator"
   check "sibling component (implementer.md) still removed" test ! -e "$t/$IMPL_REL"
   check "snapshot dir still removed despite the conflict" test ! -e "$t/$SNAPSHOT_REL"
+
+  if [ "$SCEN_OK" -eq 0 ]; then
+    local snapshot_status="absent"
+    if [ -d "$t/$SNAPSHOT_REL" ]; then
+      snapshot_status="directory present"
+    elif [ -e "$t/$SNAPSHOT_REL" ] || [ -L "$t/$SNAPSHOT_REL" ]; then
+      snapshot_status="non-directory entry present"
+    fi
+    # Only this synthetic sandbox's command output/status, never host files or env.
+    printf 'DIAGNOSTIC: marker refusal (%s): uninstall rc=%s; %s: %s\n' \
+      "$corrupt_fn" "$rc" "$SNAPSHOT_REL" "$snapshot_status" >&2
+    printf '%s\n' '--- captured uninstall stdout/stderr ---' "$out" \
+      '--- end captured uninstall stdout/stderr ---' >&2
+  fi
 }
 
 scenario_marker_half_begin_only() {

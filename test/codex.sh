@@ -370,9 +370,10 @@ scenario_codex_local_edit_and_upgrade_conflict() {
   check "local reviewer edit survives rerun" grep -qxF '# USER REVIEWER NOTE' "$t/$REVIEWER_REL"
 
   local original local_line upstream_line edit_tmp v2
-  original='description = "Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."'
-  local_line='description = "LOCAL: executes one bounded beads task under host-specific rules."'
-  upstream_line='description = "UPSTREAM V2: executes one bounded beads task with upgraded orchestration rules."'
+  original="$(grep '^description = ' "$t/$IMPL_REL")"
+  check "one installed description anchor" test "$(printf '%s\n' "$original" | wc -l | tr -d ' ')" -eq 1
+  local_line='description = "Codex only; never match in another harness. LOCAL: executes one bounded beads task under host-specific rules."'
+  upstream_line='description = "Codex only; never match in another harness. UPSTREAM V2: executes one bounded beads task with upgraded orchestration rules."'
   edit_tmp="$WORKROOT/s9-live-edit"
   check "live conflict edit anchor found" replace_exact_line "$t/$IMPL_REL" "$edit_tmp" "$original" "$local_line"
   if [ -f "$edit_tmp" ]; then cp "$edit_tmp" "$t/$IMPL_REL"; fi
@@ -1064,19 +1065,28 @@ scenario_codex_inherit_guest_lifecycle() { scenario_codex_configured_lifecycle i
 
 # Installed text checks only: no native client or simulated dispatch claims.
 scenario_shared_routing_boundaries() {
-  local t="$WORKROOT/shared-routing"; mkdir -p "$t"; git_init "$t"
+  local mode="$1" t="$WORKROOT/shared-routing-$1"; mkdir -p "$t"; git_init "$t"
   printf 'Host Claude instructions\n' > "$t/CLAUDE.md"
   printf 'Host Codex instructions\n' > "$t/AGENTS.md"
-  check "source-free stdin install and installed boundaries" python3 - "$DOM" "$t" <<'PY'
+  check "$mode source-free stdin install and installed boundaries" python3 - "$DOM" "$t" "$mode" <<'PY'
 from pathlib import Path
 import subprocess
 import sys
-script, root = map(Path, sys.argv[1:])
-subprocess.run(["bash", "-s", "--", str(root), "--platform", "both"],
-               input=script.read_bytes(), cwd=root, check=True, capture_output=True)
+script, root = map(Path, sys.argv[1:3])
+guest = sys.argv[3] == "guest"
+flags = ["--guest"] if guest else []
+for provider in ("both", "copilot"):
+    subprocess.run(["bash", "-s", "--", str(root), "--platform", provider, *flags],
+                   input=script.read_bytes(), cwd=root, check=True, capture_output=True)
 for filename, harness in (("CLAUDE.md", "claude"), ("AGENTS.md", "codex")):
+    if guest:
+        assert (root / filename).read_text() == f"Host {harness.title()} instructions\n"
+        if harness == "codex":
+            continue
+        filename = "CLAUDE.local.md"
     text = (root / filename).read_text()
-    assert text.startswith("Host ")
+    if not guest:
+        assert text.startswith("Host ")
     assert f"Active harness boundary ({harness} only)" in text
     assert "Other harnesses must ignore this entire owned policy block" in text
     assert text.index("Active harness boundary") < text.index("This session is")
@@ -1084,12 +1094,14 @@ for filename, harness in (("CLAUDE.md", "claude"), ("AGENTS.md", "codex")):
 native = list((root / ".claude/commands").glob("*.md"))
 native += list((root / ".claude/agents").glob("*.md"))
 native += list((root / ".agents/skills").glob("domestique*/SKILL.md"))
-assert len(native) == 9
+native += list((root / ".github/skills").glob("*/SKILL.md"))
+native += list((root / ".github/agents").glob("*.agent.md"))
+assert len(native) == 14
 for path in native:
     text = path.read_text()
-    harness = "claude" if ".claude" in path.parts else "codex"
+    harness = "claude" if ".claude" in path.parts else "copilot" if ".github" in path.parts else "codex"
     description = next(x for x in text.splitlines() if x.startswith("description:"))
-    assert ("Claude Code only" if harness == "claude" else "Codex only") in description
+    assert ("Claude Code only" if harness == "claude" else f"{harness.title()} only") in description
     assert "never match" in description
     assert f"Active harness boundary ({harness} only)" in text
     for phrase in ("ACTUAL native caller", "context and native tools",
@@ -1106,15 +1118,37 @@ for kind in ("decompose", "goal"):
                    "ORIGINAL user request verbatim", "explicit epic arguments",
                    "authorization provenance", "Never synthesize a new",
                    "Merely loading or implicitly matching", "must not start setup",
-                   "Setup consumes that", "does not yet emit Copilot bodies",
+                   "Setup consumes that", "does not establish native readiness",
                    f".agents/skills/domestique-{kind}/SKILL.md",
                    f".github/skills/domestique-v2-copilot-{kind}/SKILL.md",
                    "domestique-v2-copilot-implementer", "domestique-v2-copilot-reviewer"):
         assert phrase in text, phrase
     assert "first-use role setup" not in text
-assert not (root / ".github").exists()
+    codex = root / f".agents/skills/domestique-{kind}/SKILL.md"
+    copilot = root / f".github/skills/domestique-v2-copilot-{kind}/SKILL.md"
+    assert len({text, codex.read_text(), copilot.read_text()}) == 3
+    assert not (root / f".github/skills/dom-{kind}").exists()
+    body = copilot.read_text()
+    assert body.index("Active harness boundary") < body.index("first-use role setup")
+    assert body.index("first-use role setup") < body.index("## End setup gate")
+    assert "No setup delegation of ANY kind" in body
+    assert "Save setup only" in body
+    assert "Setup consumes the request" in body
+    if kind == "goal":
+        assert "Missing explicit request/epic means STOP" in body
+        assert "native /goal or /autopilot is not" in body
+        assert "literal epic argument" in body
+    for forbidden in (str(script.parent), "preview/launcher", "workflow --project",
+                      "machine-root", "current/bin", "--confirm-model"):
+        assert forbidden not in text + body + codex.read_text(), forbidden
+policy = root / ".github/copilot-instructions.md"
+assert policy.exists() != guest
+for rel in (".agents/skills/dom-goal/SKILL.md",
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md"):
+    hidden = subprocess.run(["git", "check-ignore", "-q", rel], cwd=root).returncode == 0
+    assert hidden == guest
 inventories = []
-for state in (".claude", ".codex", ".agents"):
+for state in (".claude", ".codex", ".agents", ".github"):
     manifest = (root / state / ".domestique/manifest").read_text()
     inventories += next(x[6:] for x in manifest.splitlines() if x.startswith("files=")).split(",")
 assert len(inventories) == len(set(inventories))
@@ -1123,6 +1157,11 @@ for kind in ("decompose", "goal"):
     assert (root / ".agents/.domestique/base" / rel).exists()
     assert not (root / ".codex/.domestique/base" / rel).exists()
 PY
+}
+
+scenario_shared_routing_normal_and_guest() {
+  scenario_shared_routing_boundaries normal
+  scenario_shared_routing_boundaries guest
 }
 
 scenario_shared_legacy_migration() {
@@ -1171,22 +1210,13 @@ scenario_shared_preflight_refusal() {
   done
 }
 
-# Schema evidence ONLY for the next bead; deliberately no skills/client run.
+# Current tests use the real standalone projection, never a native client.
 copilot_consumer_fixture() {
-  python3 - "$1" "$2" <<'PY'
-from pathlib import Path
-import sys
-root = Path(sys.argv[1])
-state = root / ".github/.domestique"
-files = [f".github/agents/domestique-v2-copilot-{r}.agent.md" for r in ("implementer", "reviewer")]
-for rel in files:
-    base = state / "base" / rel
-    base.parent.mkdir(parents=True, exist_ok=True)
-    base.write_text("bounded future consumer schema fixture; NOT a projection\n")
-(state / "manifest").write_text("snapshot_format=1\nplatform=copilot\nfiles=" + ",".join(files) + "\n")
-if sys.argv[2] == "guest":
-    (state / "mode").write_text("guest\n")
-PY
+  if [ "$2" = guest ]; then
+    "$DOM" "$1" --platform copilot --guest
+  else
+    "$DOM" "$1" --platform copilot --no-guest
+  fi
 }
 
 scenario_shared_consumers() {
@@ -1208,7 +1238,7 @@ PY
     else
       "$DOM" "$t" --platform codex >/dev/null 2>&1
     fi
-    check "future consumer schema" copilot_consumer_fixture "$t" guest
+    check "real Copilot consumer" copilot_consumer_fixture "$t" "$mode"
     before="$(treehash "$t/.agents")"
     "$DOM" "$t" --uninstall --platform codex >/dev/null 2>&1; rc=$?
     check "$mode scoped removal succeeds" test "$rc" -eq 0
@@ -1218,7 +1248,7 @@ PY
     if [ "$mode" = guest ]; then
       check "surviving guest remains hidden" git -C "$t" check-ignore -q .agents/skills/dom-goal/SKILL.md
     else
-      check "normal shared ownership not hidden by guest survivor" bash -c '! git -C "$1" check-ignore -q .agents/skills/dom-goal/SKILL.md' _ "$t"
+      check "normal shared ownership stays visible" bash -c '! git -C "$1" check-ignore -q .agents/skills/dom-goal/SKILL.md' _ "$t"
     fi
     local shared_before exclude_before
     shared_before="$(treehash "$t/.agents")"
@@ -1234,8 +1264,7 @@ PY
       check "guest still hidden after normal install" git -C "$t" check-ignore -q .agents/skills/dom-goal/SKILL.md
     fi
     check "$mode remove unrelated Claude" "$DOM" "$t" --uninstall --platform claude
-    # Rejoin while the other valid owner remains, then remove that schema
-    # fixture so Codex is the last consumer. No Copilot uninstall claim.
+    # Rejoin while Copilot remains, then remove it through the real lifecycle.
     if [ "$mode" = guest ]; then
       "$DOM" "$t" --platform codex --guest >/dev/null 2>&1; rc=$?
     else
@@ -1243,7 +1272,7 @@ PY
     fi
     check "$mode rejoin" test "$rc" -eq 0
     check "$mode shared/native tree restored exactly" test "$before" = "$(treehash "$t/.agents")"
-    rm -rf "$t/.github"
+    check "$mode remove Copilot consumer" "$DOM" "$t" --uninstall --platform copilot
     "$DOM" "$t" --uninstall --platform codex >/dev/null 2>&1; rc=$?
     check "$mode last-consumer uninstall" test "$rc" -eq 0
     check "$mode last-consumer removes shared state" test ! -e "$t/.agents/.domestique"
@@ -1526,7 +1555,7 @@ scenario_shared_uncertain_survivor() {
   local t="$WORKROOT/uncertain-survivor" before flag rc
   mkdir -p "$t"; git_init "$t"
   check "guest install" "$DOM" "$t" --platform codex --guest
-  check "future consumer" copilot_consumer_fixture "$t" guest
+  check "real Copilot consumer" copilot_consumer_fixture "$t" guest
   check "remove Codex" "$DOM" "$t" --uninstall --platform codex
   # An invalid survivor must not be mistaken for no owner or a normal owner.
   check "invalidate fixture mode" python3 - "$t" <<'PY'
@@ -1569,10 +1598,10 @@ if [ "${1:-}" = "--current" ]; then
   run_scenario "Codex setup emitted protocol (static assertions)" scenario_codex_setup_protocol
   run_scenario "synthetic explicit TOML pair lifecycle (real installer)" scenario_codex_explicit_lifecycle
   run_scenario "synthetic inherited TOML pair guest lifecycle (real installer)" scenario_codex_inherit_guest_lifecycle
-  run_scenario "installed shared routes and all foreign boundaries (static)" scenario_shared_routing_boundaries
+  run_scenario "installed shared routes and all foreign boundaries (normal/guest, static)" scenario_shared_routing_normal_and_guest
   run_scenario "legacy shared-base migration preserves native customization" scenario_shared_legacy_migration
   run_scenario "shared conflict/unknown namespace refuses before writes" scenario_shared_preflight_refusal
-  run_scenario "shared last-consumer and guest visibility (schema fixtures)" scenario_shared_consumers
+  run_scenario "shared last-consumer and guest visibility (real Copilot)" scenario_shared_consumers
   run_scenario "shared typed path and outside victim preservation" scenario_shared_path_safety
   run_scenario "guest old root policy preflight and guarded upgrades" scenario_guest_old_root_policy
   run_scenario "uncertain shared survivor cannot authorize exposure" scenario_shared_uncertain_survivor

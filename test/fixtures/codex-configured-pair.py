@@ -37,6 +37,13 @@ for before, model, effort, role in (
     if choice == "inherit":
         replacement = b"# fixture model comment\n"
     after = before.replace(old_model, replacement)
+    description = next(line for line in before.splitlines(keepends=True)
+                       if line.startswith(b"description = "))
+    custom_description = (
+        f"Codex only; never match in another harness. Host-specific {role} description"
+    )
+    after = after.replace(description, b"description = " +
+                          json.dumps(custom_description).encode() + b"\n")
     # Exercise independent inheritance: omit model but retain reviewer effort;
     # explicit fixture retains model but omits implementer effort.
     if role == "implementer":
@@ -48,6 +55,7 @@ for before, model, effort, role in (
     parsed = tomllib.loads(after.decode())
     original = tomllib.loads(before.decode())
     assert parsed["name"] == role
+    assert parsed["description"] == custom_description
     assert parsed["sandbox_mode"] == original["sandbox_mode"]
     assert parsed["developer_instructions"] == original["developer_instructions"] + local
     assert parsed["fixture"] == {"model": "unrelated table value", "keep": 42}

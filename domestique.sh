@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # domestique.sh — install the domestique orchestration config into a repo.
 # Claude Code remains the default projection; --platform also supports Codex
-# and a simultaneous Claude+Codex install. All runtime assets remain embedded
+# and explicit Copilot or simultaneous Claude+Codex installs. Runtime assets remain embedded
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
@@ -465,13 +465,15 @@ DOM_EOF
 # The normal snapshot/3-way merge path preserves local choices on upgrade.
 emit_codex_implementer() { cat <<'DOM_EOF'
 name = "implementer"
-description = "Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
+description = "Codex only; never match in another harness. Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 You are the domestique implementer. Complete exactly one bounded task handed
 to you by the orchestrator, then stop.
+These instructions apply only in the actual native Codex client; foreign or
+ambiguous callers stop without work. Installed directories do not identify it.
 
 - If given a bead id, claim it with `bd update <id> --claim` (or set it
   in_progress). Never close it; the orchestrator closes only after review.
@@ -490,13 +492,15 @@ DOM_EOF
 
 emit_codex_reviewer() { cat <<'DOM_EOF'
 name = "reviewer"
-description = "Independently verifies one completed bead against its done criteria, real diff, and tests; never fixes or changes bead state."
+description = "Codex only; never match in another harness. Independently verifies one completed bead against its done criteria, real diff, and tests; never fixes or changes bead state."
 model = "gpt-5.6"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
 You are the domestique reviewer. Independently verify one completed task and
 return a verdict; do not fix anything.
+These instructions apply only in the actual native Codex client; foreign or
+ambiguous callers stop without work. Installed directories do not identify it.
 
 - Judge the bead's done criteria against the real files and diff, not the
   implementer's summary.
@@ -920,6 +924,299 @@ policy:
 DOM_EOF
 }
 
+emit_copilot_implementer() { cat <<'DOM_EOF'
+---
+name: domestique-v2-copilot-implementer
+description: Copilot only; never match in Claude, Codex or an unknown harness. Complete exactly one caller-assigned bounded Domestique task.
+tools: ["read", "edit", "search", "execute"]
+---
+DOM_EOF
+  emit_harness_guard copilot
+  cat <<'DOM_EOF'
+Delegated role only: await an explicit bounded brief from the caller, with
+physical project root, bead ID, scope and done criteria. Never start setup or
+an autonomous workflow. Claim a supplied bead, but never close it or commit.
+Complete exactly the assigned task. Run relevant tests and lint; fix only
+in-scope failures. File discovered work using
+`bd create "<what>" -p 2 --deps discovered-from:<current-id>`; do not chase it.
+Never touch credentials, access controls or destructive Git operations.
+Stop for ambiguity, scope growth or unavailable native selection; no fallback.
+Return a terse summary: files changed, actual validation/results, discovered
+beads and blockers. No file dumps.
+DOM_EOF
+}
+
+emit_copilot_reviewer() { cat <<'DOM_EOF'
+---
+name: domestique-v2-copilot-reviewer
+description: Copilot only; never match in Claude, Codex or an unknown harness. Independently verify one caller-assigned bounded Domestique task in a fresh context.
+tools: ["read", "search", "execute"]
+---
+DOM_EOF
+  emit_harness_guard copilot
+  cat <<'DOM_EOF'
+Delegated role only: await the caller's explicit bounded brief, project root,
+bead ID and done criteria. Never start setup or an autonomous workflow.
+Inspect actual tracked/staged diffs and affected files, not the implementer's
+summary. Run relevant tests and lint yourself. Do not edit code/configuration,
+fix findings, change bead state or commit. Ignored test caches are acceptable;
+tracked/staged or bead-state changes fail review. Never touch credentials,
+access controls or destructive Git operations. Stay within this task's scope.
+Return only PASS, FAIL or NEEDS-WORK, actual validation/results, concrete gaps
+and material risks. No file dumps.
+DOM_EOF
+}
+
+emit_copilot_model_setup() { cat <<'DOM_EOF'
+## Copilot first-use role setup — mandatory gate
+
+No setup delegation of ANY kind, including documentation/research helpers.
+Inspect supported native tools/docs yourself; missing evidence means STOP.
+Before Beads, planning, code, branch changes or dispatch, establish the actual
+native caller as copilot from session context/tools, never installed directories.
+Bind ROOT to this invocation's exact physical Git worktree root. Ambiguous
+identity or cwd outside that root means STOP; never search ancestors or another
+checkout. Loading instructions alone is read-only, not setup consent.
+
+Interactive first-use /dom-goal EPIC_ID (or /domestique-v2-copilot-goal EPIC_ID)
+runs this two-role questionnaire INLINE. Setup consumes the request, even with
+an epic: no automatic continuation. The later unattended loop does not make
+this entry noninteractive. Truly noninteractive/autopilot callers without a
+confirmed pair STOP without persistence. Ordinary unconfigured delegation
+redirects to /dom-decompose configure role models, without a questionnaire.
+The exact decompose request `configure role models` is reserved for setup-only
+reconfiguration, not planning, even for an already confirmed pair.
+
+### Read-only ownership and confirmation
+Use only ROOT/.github/agents/domestique-v2-copilot-implementer.agent.md and
+ROOT/.github/agents/domestique-v2-copilot-reviewer.agent.md. Require the existing
+ROOT/.github/.domestique/manifest with snapshot_format=1, platform=copilot and
+each exact role path once in its comma-separated files inventory, plus both
+pristine bases at ROOT/.github/.domestique/base/.github/agents/.
+This is snapshot/three-way ownership, not historical inode proof. No preview
+receipt, second writer/authority, global settings or machine runtime is needed.
+Missing/unmanaged evidence, unsafe paths or ambiguous ownership means STOP for
+explicit lifecycle/human repair; never adopt through setup.
+
+Validate bounded UTF-8 regular roles/evidence (at most 1 MiB each), no symlink
+in any component, no hardlinks, paths confined to ROOT. Record current complete
+bytes, modes and device/inode identities for operation-local rechecks.
+Require one well-formed YAML frontmatter block and exact names
+`domestique-v2-copilot-implementer` / `domestique-v2-copilot-reviewer`.
+Reject duplicate keys, malformed metadata, nested/aliased/multiline selection
+syntax, non-string models and duplicate/misplaced markers for human repair.
+Retain native tools arrays and all other metadata/body bytes. No Copilot effort
+field is invented; effort/model_reasoning_effort fields require human repair.
+Never whole-file format or silently repair ambiguous native YAML.
+
+The only completion marker is one comment immediately after the opening
+implementer delimiter: `# domestique-model-setup: JSON`. Reviewer has none.
+JSON has exactly keys `v` (integer 1), `project` (absolute physical ROOT),
+`harness` (`copilot`), `implementer_sha256`, `reviewer_sha256` (lowercase
+64-character SHA-256 hex). Validate unique keys/types/root/harness and BOTH
+digests at every entry. Hash full file bytes, excluding only the entire
+implementer marker line; hash reviewer unchanged. No model copies in the marker.
+No marker, stale hash, moved/copied project or partial setup is unconfirmed.
+ANY edit to model, tools, metadata or body invalidates confirmation. Show both
+current selections for explicit reconfirmation; never silently reapprove.
+An unchanged confirmed pair, including inheritance, has NO questionnaire and
+NO writes, but still requires native readiness. Aliases share this same pair.
+
+### Supported native evidence, not a paid probe
+Before saving establish BOTH selections' support/availability and required
+role/tools compatibility using the installed client's documented capabilities,
+current selectable models and applicable non-secret session/provider evidence.
+Show sources and limits: a catalog is selection evidence, not execution proof
+or future entitlement. A subprocess's provider/session is not automatically
+the active thread. Verify applicability. Respect explicit provider constraints
+using actual native evidence; do not infer provider from spelling or hardcode a
+provider switch. Examples such as Sol/Luna/Opus/Sonnet are not selected values.
+Unknown/unavailable/unsupported selection, unresolved inheritance or defeating
+override means STOP without writes. No fallback, fake paid probe, invented API
+or caller-assertion CLI flag substitutes for evidence.
+
+After a save require a fresh Copilot invocation/reload and explicit reinvocation.
+Before any dispatch on a confirmed pair, establish read-only:
+- Actual native client and present, unambiguous registered intended role IDs.
+- Stored pair/ownership/physical ROOT/BOTH hashes and required fresh reload.
+- Matching declared/resolved model and required tools, using supported native
+  registration/session evidence. Explicit non-overridable registered selections
+  plus documented resolution suffice; resolve aliases/inheritance each session.
+- Installed-version project discovery/precedence, competing project/ancestor/
+  global definitions and known invocation/environment/hook/client overrides.
+- Available non-secret provider/model compatibility and restrictions.
+Use native source provenance when exposed; otherwise documented discovery,
+precedence and the checked pair with matching registered selections suffice.
+Optional exact-origin/loaded-file attestation and unavailable future child
+telemetry are NOT prerequisites. Actual observed mismatch/unavailability,
+ambiguous registration, unresolved inheritance or defeating overrides STOP.
+Marker, syntax, catalog and user assertion alone are not dispatch proof.
+Send no conflicting spawn model override. Ephemeral requests are assertions,
+not persistence or precedence overrides; conflicts require reconfiguration.
+Check available child role/model telemetry and selection errors during/after
+each authorized assignment before accepting work. Observed mismatch/failure
+stops without fallback. Report telemetry limits honestly. No paid probe needed.
+Native dispatch/reload qualification remains separate budget-gated work.
+
+### BOTH roles, actual diff and explicit consent
+Show ROOT / copilot, exact role paths, current selections (including absent
+model/native inheritance), evidence and tracked-file consequences. Ask BOTH:
+> Implementer: exact native model ID or native inheritance?
+> Reviewer: exact native model ID or native inheritance?
+Both may use the same model; independent review means a fresh context.
+Use current native choices, not a shipped menu. Resolve existing aliases with
+native evidence before confirmation. Generated defaults/unset fields are not
+consent. Inheritance removes the model field and follows native resolution,
+not necessarily the direct parent; resolve it anew each session.
+
+Prepare both outputs in memory. Patch only model value spans/addition/removal
+and the implementer marker, preserving unrelated fields, tools, comments,
+body, modes and line endings. Preserve an inline comment when removing model.
+Reject control characters/newlines in input; serialize inserted values as
+JSON-quoted YAML strings and marker JSON with a serializer, never shell/eval.
+If lossless patching is uncertain, STOP. Show the ACTUAL complete proposed diff
+(including marker) and require explicit `Save setup only` consent to that diff.
+Changed selections require a new diff/consent. Goal consent is not save consent.
+Cancel, partial/missing input or noninteractive setup means ZERO writes and
+NO workflow. No global/provider/auth/trust/tool/MCP/settings changes.
+
+After consent preflight both outputs and writable parents together; recheck
+safe paths, identities, modes and complete bytes of roles AND evidence.
+Any concurrent change means STOP/re-prompt, never overwrite. Under cooperative
+single-writer operation use same-directory temporary files and atomic per-file
+replacement, retaining modes: invalidate old implementer marker first, publish
+reviewer next, publish implementer with new pair marker LAST. Recheck expected
+state before each replacement. This is not a two-file transaction or hostile-
+writer guarantee. Re-read exact approved bytes/modes and verify both hashes.
+Failure reports changed paths/unknown state, grants no workflow authority and
+retains user bytes for explicit retry; clean only operation-owned temporaries.
+Never update pristine snapshots/manifest/excludes or add receipts/journals.
+
+Every successful confirmation/reconfiguration is SETUP ONLY: no Beads, planning,
+code, branch/commit or dispatch. End with fresh Copilot invocation/reload and
+explicit /dom-decompose or /dom-goal EPIC_ID (legacy names also work).
+The initiating goal is consumed, not queued. Before later goal work, ALL
+tracked/index dirtiness, including setup edits, requires human disposition:
+never auto-stage, commit, stash, discard or hide it. Existing snapshot upgrades
+preserve customizations; changed bytes invalidate consent, never silently renew
+it. Uninstall preserves modified roles; reinstall implies no confirmation.
+
+## End setup gate — continue only for an unchanged confirmed, ready pair
+DOM_EOF
+}
+
+emit_copilot_role_gate() { cat <<'DOM_EOF'
+## Read-only role gate
+Before Beads/delegation validate the confirmed pair and supported pre-dispatch
+readiness using `.github/skills/domestique-v2-copilot-decompose/SKILL.md`.
+Read that gate as a protocol, not a new invocation or setup authorization.
+If unconfigured/stale, STOP and direct the human to
+`/dom-decompose configure role models`; no ordinary/bootstrap questionnaire.
+Loading/matching alone authorizes neither setup nor an epic. Actual mismatches,
+unavailable/ambiguous roles, unresolved inheritance or defeating overrides STOP;
+optional loaded-file attestation/future telemetry is not a prerequisite.
+Goal first-use runs the same questionnaire inline in its own body, setup only.
+DOM_EOF
+}
+
+emit_copilot_loop() { cat <<'DOM_EOF'
+## Bounded native cycle
+Use the existing user's `bd` in the exact physical project root. Require actual
+command success and usable scoped output; errors are never an empty queue.
+Missing prerequisites mean STOP, not install/init/repair. Treat brief/model
+data literally, never eval. No credentials, settings, push or merge changes.
+Before code require a clean tracked tree/index and a dedicated non-default
+task/epic branch. Dirty/uncertain state requires human disposition, not hiding.
+One task in flight: verify its real bead, scope and done criteria, claim it,
+then delegate exactly one bounded brief to `domestique-v2-copilot-implementer`.
+Wait. Fingerprint tracked/staged diffs and bead state. Delegate independent
+verification to a fresh `domestique-v2-copilot-reviewer` with the same criteria.
+Reviewer runs relevant tests/lint and inspects real work. Fingerprint again;
+reviewer-caused tracked/staged/bead changes FAIL and stop. Ignored caches are OK.
+At most one corrective pass plus fresh review. Second non-PASS, full-suite
+regression, ambiguity/scope growth, model/role/tools failure, infrastructure
+failure or exhausted session budget means STOP, leave unpassed work in_progress.
+Only after PASS stage exact reviewed paths with literal Git pathspecs, verify
+the staged diff, make one authorized local commit including bead ID, then close
+the bead. Never broad-stage or close unpassed work. Commit/close failure stops.
+Do not guess/stage database paths. Beads-induced dirtiness requires disposition.
+File adjacent work as discovered-from beads, never implement it opportunistically.
+Report changed paths, actual validations, review, commit/bead state and blockers.
+Stop after one bead unless an explicit named Domestique goal authorizes more.
+Guest state remains local-only; never commit it or push host-repository work.
+DOM_EOF
+}
+
+emit_copilot_skill() { cat <<'DOM_EOF'
+---
+name: domestique-v2-copilot
+description: Copilot only; never match in Claude, Codex or an unknown harness. Bootstrap Domestique or perform one explicitly assigned bounded bead with independent review; never authorize an epic by matching.
+---
+DOM_EOF
+  emit_harness_guard copilot
+  emit_copilot_role_gate
+  emit_copilot_loop
+  cat <<'DOM_EOF'
+Ordinary entry is read-only guidance until an explicit task/brief/action request.
+Missing task/brief: ask and stop, never invent one. Land-the-plane requests mean
+validation/status/handoff, not autonomous queue draining, push or merge.
+DOM_EOF
+}
+
+emit_copilot_decompose_skill() { cat <<'DOM_EOF'
+---
+name: domestique-v2-copilot-decompose
+description: Copilot only; never match in Claude, Codex or an unknown harness. Handle an explicit /dom-decompose or /domestique-v2-copilot-decompose request; planning or role setup only.
+---
+DOM_EOF
+  emit_harness_guard copilot
+  emit_copilot_model_setup
+  cat <<'DOM_EOF'
+After the gate and explicit planning request, create one epic and bounded child
+tasks using the existing project-scoped bd. Each task has one deliverable,
+inputs/outputs, edge cases and testable done criteria. Wire real dependencies.
+Check every result and retain actual IDs; errors are not successful creation.
+Show scoped ready work and the epic tree for human review. No implementation,
+delegation, claims, close, staging or commits. Planning never grants execution.
+DOM_EOF
+}
+
+emit_copilot_goal_skill() { cat <<'DOM_EOF'
+---
+name: domestique-v2-copilot-goal
+description: Copilot only; never match in Claude, Codex or an unknown harness. Run one explicitly named epic only on /dom-goal EPIC_ID or /domestique-v2-copilot-goal EPIC_ID; matching/loading and native goal/autopilot are not authorization.
+---
+DOM_EOF
+  emit_harness_guard copilot
+  emit_copilot_model_setup
+  emit_copilot_loop
+  cat <<'DOM_EOF'
+Preserve the original explicit /dom-goal EPIC_ID or
+/domestique-v2-copilot-goal EPIC_ID request and its literal epic argument.
+Missing explicit request/epic means STOP; native /goal or /autopilot is not
+Domestique authorization. Setup consumes goal-first requests without work.
+Only after unchanged confirmation/readiness, require human disposition of ALL
+tracked/index dirtiness (including setup changes), then use a dedicated epic
+branch. Never auto-stage/commit/stash/discard/hide setup changes.
+Verify epic type and descendant membership from successful scoped Beads queries.
+Select highest-priority ready unfinished task inside that epic only, serially.
+Default bound is ONE reviewed bead; the human may explicitly request more,
+at most 15 per session. Every next bead needs a clean branch again.
+Authority expires on completion, a stop condition, bound, budget or session end;
+never carry it to another epic/session. Never merge or push.
+If no scoped ready tasks exist, inspect ALL unfinished descendants, including
+nested epics. Unfinished blocked work means BLOCKED, not complete. Errors or
+empty/unverified output cannot prove completion; never auto-close the epic.
+Report review/commits/bead states and remaining work, without queue draining.
+DOM_EOF
+}
+
+emit_copilot_policy() {
+  emit_harness_guard copilot policy
+  emit_copilot_role_gate
+  emit_copilot_loop
+}
+
 # One physical public entry, with no native workflow/setup duplicated here.
 emit_shared_skill() {
   local kind="$1"
@@ -941,8 +1238,8 @@ Bind ROOT to this invocation's physical Git worktree root. Read only the body
 for the established native caller below, relative to ROOT; never search another
 checkout/ancestor, invoke a global/machine launcher, or fall back across harnesses.
 Missing, unreadable or foreign native bodies mean STOP and report that this
-project lacks the required native projection. A route is not install support:
-this installer does not yet emit Copilot bodies.
+project lacks the required native projection. Installation/discovery alone
+does not establish native readiness.
 
 Preserve the ORIGINAL user request verbatim, including explicit epic arguments
 and its authorization provenance, when reading the body. Never synthesize a new
@@ -1012,9 +1309,12 @@ directory). Claude is the compatibility default; Codex uses native surfaces:
   .codex/agents/*.toml             Codex implementer and reviewer
   .agents/skills/dom-*/            Codex $dom-decompose / $dom-goal EPIC_ID
   .agents/skills/domestique*/      Codex bootstrap and compatibility skills
+  .github/agents/domestique-v2-copilot-*.agent.md  Copilot native roles
+  .github/skills/domestique-v2-copilot*/           Copilot local workflows
+  .github/copilot-instructions.md Copilot policy (normal only)
 
 Options:
-  --platform <p> Select claude, codex, or both. A fresh selector-less install
+  --platform <p> Select claude, codex, both, or copilot. A fresh selector-less install
                  remains Claude-only. Explicit installs add to the persisted
                  provider set; later selector-less runs update that set.
   --dry-run      Print planned changes; touch nothing.
@@ -1026,6 +1326,8 @@ Options:
   --guest        Use personal/guest mode. Claude routes policy to
                  CLAUDE.local.md; Codex leaves both root AGENTS files
                  untouched and bootstraps through `$domestique` skills.
+                 Copilot leaves host policies untouched and bootstraps via
+                 /domestique-v2-copilot. Exclusions use exact owned paths.
   --no-guest     Convert an existing guest install back to normal: removes
                  the sticky guest-mode marker and prints by-hand conversion
                  guidance where needed, removes stale guest excludes, and
@@ -1140,9 +1442,9 @@ done
 TARGET_DIR="${TARGET_DIR:-.}"
 
 case "${PLATFORM_ARG:-claude}" in
-  claude|codex|both) ;;
+  claude|codex|both|copilot) ;;
   *)
-    echo "Error: --platform must be one of: claude, codex, both (got '$PLATFORM_ARG')." >&2
+    echo "Error: --platform must be one of: claude, codex, both, copilot (got '$PLATFORM_ARG')." >&2
     usage >&2
     exit 2
     ;;
@@ -1160,7 +1462,14 @@ if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   exit 2
 fi
 
-# configure_provider <claude|codex> — select one provider's inventory and
+COPILOT_ENTRIES='.github/agents/domestique-v2-copilot-implementer.agent.md|emit_copilot_implementer
+.github/agents/domestique-v2-copilot-reviewer.agent.md|emit_copilot_reviewer
+.github/skills/domestique-v2-copilot/SKILL.md|emit_copilot_skill
+.github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
+.github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill'
+COPILOT_FILES="$(printf '%s\n' "$COPILOT_ENTRIES" | cut -d'|' -f1 | paste -sd, -)"
+
+# configure_provider <claude|codex|copilot|shared> — select inventory and
 # snapshot namespace. Policy destination is finalized after sticky guest mode
 # is resolved for that provider.
 configure_provider() {
@@ -1181,6 +1490,13 @@ configure_provider() {
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
       MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
+      ;;
+    copilot)
+      SNAPSHOT_DIR="$TARGET_DIR/.github/.domestique"
+      POLICY_EMITTER="emit_copilot_policy"
+      POLICY_LABEL=".github/copilot-instructions.md"
+      POLICY_CANDIDATES=".github/copilot-instructions.md"
+      MANAGED_PLAIN_FILES="$COPILOT_FILES"
       ;;
     shared)
       SNAPSHOT_DIR="$TARGET_DIR/.agents/.domestique"
@@ -1242,7 +1558,7 @@ resolve_provider_mode() {
       POLICY_DEST="CLAUDE.md"
       POLICY_LABEL="$POLICY_DEST"
       ;;
-    codex:1)
+    codex:1|copilot:1)
       # No additive root instruction file exists in Codex. Skills-only guest
       # mode is intentional and leaves both host AGENTS files byte-untouched.
       POLICY_DEST=""
@@ -1254,6 +1570,10 @@ resolve_provider_mode() {
       else
         POLICY_DEST="AGENTS.md"
       fi
+      POLICY_LABEL="$POLICY_DEST"
+      ;;
+    copilot:0)
+      POLICY_DEST=".github/copilot-instructions.md"
       POLICY_LABEL="$POLICY_DEST"
       ;;
   esac
@@ -1332,6 +1652,7 @@ install_current_provider() {
   echo "domestique: platform=$CURRENT_PROVIDER mode=$([ "$GUEST" -eq 1 ] && printf guest || printf normal) policy=${POLICY_DEST:-skills-only}"
 
   if [ -n "$POLICY_DEST" ]; then
+    [ "$DRY_RUN" -eq 1 ] || mkdir -p "$(dirname "$TARGET_DIR/$POLICY_DEST")"
     install_claude_md "$TARGET_DIR/$POLICY_DEST" "$([ "$GUEST" -eq 1 ] && printf guest || printf normal)" "$POLICY_EMITTER"
   fi
 
@@ -1353,6 +1674,16 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" emit_codex_goal_metadata
       write_codex_guest_ownership
       ;;
+    copilot)
+      local rel emitter
+      while IFS='|' read -r rel emitter; do
+        install_plain "$TARGET_DIR/$rel" "$emitter"
+      done <<< "$COPILOT_ENTRIES"
+      if [ "$DRY_RUN" -eq 0 ]; then
+        cp "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"
+      fi
+      echo "Copilot configuration installed; native readiness is NOT established. Use a fresh native invocation and the role setup gate."
+      ;;
   esac
 
   if [ "$GUEST" -eq 1 ]; then
@@ -1369,10 +1700,11 @@ install_current_provider() {
 persist_platform_set() {
   local state_dir state_file old
   [ "$CONFLICT_OCCURRED" -eq 0 ] || return 0
-  for state_dir in "$TARGET_DIR/.claude/.domestique" "$TARGET_DIR/.codex/.domestique"; do
+  for state_dir in "$TARGET_DIR/.claude/.domestique" "$TARGET_DIR/.codex/.domestique" "$TARGET_DIR/.github/.domestique"; do
     case "$state_dir" in
       "$TARGET_DIR/.claude/.domestique") [ "$SELECT_CLAUDE" -eq 1 ] || continue ;;
       "$TARGET_DIR/.codex/.domestique") [ "$SELECT_CODEX" -eq 1 ] || continue ;;
+      "$TARGET_DIR/.github/.domestique") [ "$SELECT_COPILOT" -eq 1 ] || continue ;;
     esac
     state_file="$state_dir/platforms"
     old="$(cat "$state_file" 2>/dev/null || true)"
@@ -1407,8 +1739,10 @@ fi
 # ---------------------------------------------------------------------------
 SELECT_CLAUDE=0
 SELECT_CODEX=0
+SELECT_COPILOT=0
 PERSISTED_CLAUDE=0
 PERSISTED_CODEX=0
+PERSISTED_COPILOT=0
 
 read_platform_state() {
   local statefile="$1" value
@@ -1418,12 +1752,17 @@ read_platform_state() {
     claude) PERSISTED_CLAUDE=1 ;;
     codex) PERSISTED_CODEX=1 ;;
     both) PERSISTED_CLAUDE=1; PERSISTED_CODEX=1 ;;
+    copilot) PERSISTED_COPILOT=1 ;;
+    claude,copilot) PERSISTED_CLAUDE=1; PERSISTED_COPILOT=1 ;;
+    codex,copilot) PERSISTED_CODEX=1; PERSISTED_COPILOT=1 ;;
+    claude,codex,copilot) PERSISTED_CLAUDE=1; PERSISTED_CODEX=1; PERSISTED_COPILOT=1 ;;
     *) echo "Warning: ignoring invalid domestique platform state '$value' in $statefile." >&2 ;;
   esac
 }
 
 read_platform_state "$TARGET_DIR/.claude/.domestique/platforms"
 read_platform_state "$TARGET_DIR/.codex/.domestique/platforms"
+read_platform_state "$TARGET_DIR/.github/.domestique/platforms"
 
 # Backfill provider state that predates the platforms marker.
 if [ "$PERSISTED_CLAUDE" -eq 0 ] && [ -d "$TARGET_DIR/.claude/.domestique" ]; then
@@ -1432,29 +1771,47 @@ fi
 if [ "$PERSISTED_CODEX" -eq 0 ] && [ -d "$TARGET_DIR/.codex/.domestique" ]; then
   PERSISTED_CODEX=1
 fi
+if [ -d "$TARGET_DIR/.github/.domestique" ]; then
+  PERSISTED_COPILOT=1
+fi
 
 if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
   SELECT_CLAUDE="$PERSISTED_CLAUDE"
   SELECT_CODEX="$PERSISTED_CODEX"
+  # An explicit unrelated provider operation retains Copilot unchanged.
+  # In particular it must not convert/hide normal assets or expose guest ones.
+  SELECT_COPILOT=0
   case "$PLATFORM_ARG" in
     claude) SELECT_CLAUDE=1 ;;
     codex) SELECT_CODEX=1 ;;
     both) SELECT_CLAUDE=1; SELECT_CODEX=1 ;;
+    copilot) SELECT_COPILOT=1 ;;
   esac
-elif [ "$PERSISTED_CLAUDE" -eq 1 ] || [ "$PERSISTED_CODEX" -eq 1 ]; then
+elif [ "$PERSISTED_CLAUDE" -eq 1 ] || [ "$PERSISTED_CODEX" -eq 1 ] || [ "$PERSISTED_COPILOT" -eq 1 ]; then
   SELECT_CLAUDE="$PERSISTED_CLAUDE"
   SELECT_CODEX="$PERSISTED_CODEX"
+  SELECT_COPILOT="$PERSISTED_COPILOT"
 else
   SELECT_CLAUDE=1
 fi
 
+platform_set() {
 if [ "$SELECT_CLAUDE" -eq 1 ] && [ "$SELECT_CODEX" -eq 1 ]; then
   PLATFORM_SET="both"
 elif [ "$SELECT_CODEX" -eq 1 ]; then
   PLATFORM_SET="codex"
-else
+elif [ "$SELECT_CLAUDE" -eq 1 ]; then
   PLATFORM_SET="claude"
+else
+  PLATFORM_SET=""
 fi
+if [ "$SELECT_COPILOT" -eq 1 ] ||
+   { [ "$UNINSTALL" -eq 0 ] && [ "$PERSISTED_COPILOT" -eq 1 ]; }; then
+  [ "$PLATFORM_SET" != both ] || PLATFORM_SET="claude,codex"
+  PLATFORM_SET="${PLATFORM_SET:+$PLATFORM_SET,}copilot"
+fi
+}
+platform_set
 
 REQUESTED_GUEST="$GUEST"
 
@@ -1514,9 +1871,8 @@ POLICY_SNAPSHOT="$SNAPSHOT_BASE/$POLICY_DEST.block"
 SNAPSHOT_TOUCHED=0
 
 # Shared canonical assets use the same snapshots, not a provider registry.
-# Copilot's future consumer contract is a snapshot_format=1/platform=copilot
+# Copilot's consumer contract is a snapshot_format=1/platform=copilot
 # .github/.domestique manifest inventorying BOTH namespaced roles with bases.
-# No Copilot selection or projection is implemented here.
 SHARED_ENTRIES='.agents/skills/dom-decompose/SKILL.md|emit_codex_dom_decompose_skill
 .agents/skills/dom-goal/SKILL.md|emit_codex_dom_goal_skill
 .agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata'
@@ -1590,6 +1946,368 @@ shared_consumer_valid() {
   [ ! -e "$TARGET_DIR/$state/mode" ] || [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]
 }
 
+# Discovery is a separate boundary from the role body. Validate the decoded
+# description's exact, owned prefix, not the apparent meaning of custom prose.
+# Check the preserving merge candidate; never insert a guard into user text or
+# use --force as permission to repair an unscoped description.
+native_role_description_preflight() {
+  local provider="$1" candidate="$2" rel="$3"
+  python3 - "$provider" "$candidate" <<'PY' ||
+import json
+import pathlib
+import re
+import sys
+
+provider, candidate = sys.argv[1:]
+prefix = {
+    "codex": "Codex only; never match in another harness.",
+    "copilot": "Copilot only; never match in Claude, Codex or an unknown harness.",
+}[provider]
+try:
+    text = pathlib.Path(candidate).read_text()
+    if provider == "codex":
+        try:
+            import tomllib
+        except ImportError:
+            raise ValueError("Python 3.11+ (tomllib) required for Codex role validation") from None
+        description = tomllib.loads(text).get("description")
+    else:
+        lines = text.splitlines()
+        if not lines or lines[0] != "---":
+            raise ValueError("missing role frontmatter")
+        end = lines.index("---", 1)
+        values = [line[len("description:"):].strip() for line in lines[1:end]
+                  if line.startswith("description:")]
+        if len(values) != 1:
+            raise ValueError("expected one frontmatter description")
+        value = values[0]
+        if value.startswith('"'):
+            description, end = json.JSONDecoder().raw_decode(value)
+            if value[end:].strip() and not value[end:].startswith((" #", "\t#")):
+                raise ValueError("invalid description scalar")
+        elif value.startswith("'"):
+            match = re.fullmatch(r"'((?:[^']|'')*)'(?:[ \t]+#.*)?", value)
+            if not match:
+                raise ValueError("invalid description scalar")
+            description = match[1].replace("''", "'")
+        else:
+            # Same simple, single-line scalar subset as role syntax preflight.
+            if not value or any(c in value for c in "[]{}&*!|>'\"`%@") or ": " in value:
+                raise ValueError("unsupported description scalar")
+            description = re.split(r"[ \t]+#", value, maxsplit=1)[0].rstrip()
+    if not isinstance(description, str) or not (
+            description == prefix or description.startswith(prefix + " ")):
+        raise ValueError("missing exact discovery description boundary")
+except (OSError, ValueError, TypeError) as exc:
+    print(f"{provider} role description: {exc}. The decoded description must start "
+          f"with {prefix!r}; retain compatible custom text after that prefix, "
+          "explicitly reconcile the role and retry. Role body guards are also required.",
+          file=sys.stderr)
+    sys.exit(1)
+PY
+    shared_refuse "native role discovery description guard $rel"
+}
+
+# Copilot projection preflight reuses snapshot ownership and three-way merge.
+# It never writes project state or confirms a model pair.
+copilot_preflight() {
+  [ "$SELECT_COPILOT" -eq 1 ] || [ -e "$TARGET_DIR/.github/.domestique" ] ||
+    [ -L "$TARGET_DIR/.github/.domestique" ] || return 0
+  command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
+  local state=".github/.domestique" rel emitter path base rc provider mode
+  local guests=0 normals=0
+  for path in .domestique-private/copilot-preview.json .github/skills/dom-decompose .github/skills/dom-goal; do
+    if [ -e "$TARGET_DIR/$path" ] || [ -L "$TARGET_DIR/$path" ]; then
+      shared_refuse "competing preview ownership/path $path; explicit migration is separate"
+    fi
+  done
+  shared_safe_path "$state" directory || shared_refuse "unsafe Copilot state"
+  for provider in .claude .codex .github; do
+    path="$provider/.domestique"
+    shared_safe_path "$path" directory || shared_refuse "unsafe $path"
+    for rel in mode platforms manifest guest-excludes beads-owned; do
+      shared_safe_path "$path/$rel" || shared_refuse "unsafe $path/$rel"
+    done
+    if [ -d "$TARGET_DIR/$path" ]; then
+      mode="$(cat "$TARGET_DIR/$path/mode" 2>/dev/null || true)"
+      case "$mode" in
+        guest) guests=$((guests + 1)) ;;
+        "") [ ! -e "$TARGET_DIR/$path/mode" ] || shared_refuse "invalid mode $path"; normals=$((normals + 1)) ;;
+        *) shared_refuse "invalid mode $path" ;;
+      esac
+    fi
+  done
+  if [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] &&
+     [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ]; then
+    [ "$guests" -eq 0 ] || [ "$normals" -eq 0 ] ||
+      shared_refuse "mixed-mode ambiguity; explicitly choose --guest or --no-guest"
+    # Adding a projection to a wholly guest project must not expose it.
+    [ "$guests" -eq 0 ] || REQUESTED_GUEST=1
+  fi
+  : > "$TMPDIR_WORK/copilot-excludes"
+  : > "$TMPDIR_WORK/shared-new-excludes"
+  if [ -d "$TARGET_DIR/$state" ]; then
+    shared_consumer_valid copilot || shared_refuse "unknown Copilot authority"
+    while IFS='|' read -r rel emitter; do
+      snapshot_has_file "$state" copilot "$rel" || shared_refuse "incomplete Copilot inventory: $rel"
+    done <<< "$COPILOT_ENTRIES"
+    local files
+    files="$(sed -n 's/^files=//p' "$TARGET_DIR/$state/manifest")"
+    [ "$files" = "$COPILOT_FILES" ] || [ "$files" = "$COPILOT_FILES,.github/copilot-instructions.md" ] ||
+      shared_refuse "unknown Copilot inventory"
+    while IFS= read -r path; do
+      rel="${path#"$TARGET_DIR/$state"/}"
+      if [ -d "$path" ] && [ ! -L "$path" ]; then
+        shared_safe_path "${path#"$TARGET_DIR"/}" directory || shared_refuse "unsafe state directory"
+        case "$COPILOT_FILES,.github/copilot-instructions.md" in *"${rel#base/}/"*) : ;; *)
+          [ "$path" = "$TARGET_DIR/$state" ] || [ "$rel" = base ] ||
+            shared_refuse "unknown Copilot state directory $rel" ;;
+        esac
+      else
+        shared_safe_path "${path#"$TARGET_DIR"/}" || shared_refuse "unsafe state file $rel"
+        case "$rel" in
+          manifest|mode|platforms|guest-excludes|beads-owned) ;;
+          base/.github/copilot-instructions.md.block) ;;
+          base/*) case ",$COPILOT_FILES," in *",${rel#base/},"*) ;; *) shared_refuse "unknown state file $rel" ;; esac ;;
+          *) shared_refuse "unknown state file $rel" ;;
+        esac
+      fi
+    done < <(find "$TARGET_DIR/$state" -print)
+    [ -f "$TARGET_DIR/$state/guest-excludes" ] || shared_refuse "missing Copilot visibility evidence"
+    while IFS= read -r rel; do
+      case ",$COPILOT_FILES,.github/.domestique/," in *",$rel,"*) ;; *) shared_refuse "unknown Copilot exclusion $rel" ;; esac
+    done < "$TARGET_DIR/$state/guest-excludes"
+    cp "$TARGET_DIR/$state/guest-excludes" "$TMPDIR_WORK/copilot-excludes"
+  else
+    printf '.github/.domestique/\n' > "$TMPDIR_WORK/copilot-excludes"
+  fi
+  while IFS='|' read -r rel emitter; do
+    shared_safe_path "$rel" && shared_safe_path "$state/base/$rel" &&
+      shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.uninstalled.$TS" ||
+      shared_refuse "unsafe Copilot path $rel"
+    base="$TARGET_DIR/$state/base/$rel"
+    if [ -e "$TARGET_DIR/$rel" ] && [ ! -f "$base" ]; then
+      shared_refuse "unowned Copilot path $rel; no silent preview adoption"
+    fi
+    if [ ! -e "$TARGET_DIR/$rel" ]; then
+      printf '%s\n' "$rel" >> "$TMPDIR_WORK/copilot-excludes"
+    elif [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+      "$emitter" > "$TMPDIR_WORK/copilot-upstream"
+      rc=0
+      git merge-file -p "$TARGET_DIR/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" > "$TMPDIR_WORK/copilot-candidate" || rc=$?
+      [ "$rc" -eq 0 ] || shared_refuse "Copilot merge conflict $rel"
+      case "$rel" in
+        .github/agents/*)
+          native_role_description_preflight copilot "$TMPDIR_WORK/copilot-candidate" "$rel" ;;
+      esac
+      emit_harness_guard copilot > "$TMPDIR_WORK/copilot-guard"
+      python3 - "$TMPDIR_WORK/copilot-guard" "$TMPDIR_WORK/copilot-candidate" "$rel" <<'PY' ||
+import pathlib
+import sys
+guard, candidate = (pathlib.Path(p).read_bytes() for p in sys.argv[1:3])
+# Native descriptions are checked separately; neither discovery nor body
+# boundaries can substitute for the other.
+role = sys.argv[3].startswith(".github/agents/")
+sys.exit(guard not in candidate or (
+    not role and b"\ndescription: Copilot only;" not in candidate))
+PY
+        shared_refuse "missing Copilot caller guard $rel"
+    fi
+  done <<< "$COPILOT_ENTRIES"
+  while IFS='|' read -r rel emitter; do
+    [ -e "$TARGET_DIR/$rel" ] || printf '%s\n' "$rel" >> "$TMPDIR_WORK/shared-new-excludes"
+  done <<< "$SHARED_ENTRIES"
+  path=".github/copilot-instructions.md"
+  shared_safe_path "$path" && shared_safe_path "$state/base/$path.block" &&
+    shared_safe_path "$path.bak.$TS" || shared_refuse "unsafe Copilot policy"
+  if [ -f "$TARGET_DIR/$path" ] && grep -qF "$MARKER_BEGIN" "$TARGET_DIR/$path" &&
+     [ ! -f "$TARGET_DIR/$state/base/$path.block" ]; then
+    shared_refuse "unknown Copilot policy authority"
+  fi
+  if [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] && [ -f "$TARGET_DIR/$state/base/$path.block" ] &&
+     [ -f "$TARGET_DIR/$path" ]; then
+    awk -v b="$MARKER_BEGIN" -v e="$MARKER_END" '$0==b {on=1;next} $0==e {exit} on' \
+      "$TARGET_DIR/$path" > "$TMPDIR_WORK/copilot-policy"
+    emit_copilot_policy > "$TMPDIR_WORK/copilot-upstream"
+    rc=0
+    git merge-file -p "$TMPDIR_WORK/copilot-policy" "$TARGET_DIR/$state/base/$path.block" "$TMPDIR_WORK/copilot-upstream" >/dev/null || rc=$?
+    [ "$rc" -eq 0 ] || shared_refuse "Copilot policy conflict"
+  fi
+  # Validate native syntax without a YAML dependency or any confirmation write.
+  command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
+  python3 - "$TARGET_DIR" <<'PY' || shared_refuse "malformed Copilot role or unsafe exclude path"
+import json
+import pathlib
+import re
+import stat
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate key")
+        result[key] = value
+    return result
+
+def scalar(value):
+    if value.startswith('"'):
+        item, end = json.JSONDecoder().raw_decode(value)
+        if not isinstance(item, str) or (value[end:].strip() and not value[end:].startswith((" #", "\t#"))):
+            raise ValueError("invalid string")
+        return item
+    if value.startswith("'"):
+        match = re.fullmatch(r"'((?:[^']|'')*)'(?:[ \t]+#.*)?", value)
+        if not match:
+            raise ValueError("invalid quoted scalar")
+        return match[1].replace("''", "'")
+    if not value or any(c in value for c in "[]{}&*!|>'\"`%@") or value.startswith(("-", "?", ":", "#")) or ": " in value:
+        raise ValueError("complex YAML; human repair required")
+    return re.split(r"[ \t]+#", value, maxsplit=1)[0].rstrip()
+
+try:
+    for role in ("implementer", "reviewer"):
+        path = root / f".github/agents/domestique-v2-copilot-{role}.agent.md"
+        if not path.exists():
+            continue
+        text = path.read_bytes().decode("utf-8")
+        if "\r" in text or any(ord(c) < 32 and c not in "\n\t" for c in text):
+            raise ValueError("unsupported role controls/line endings")
+        lines = text.splitlines(keepends=True)
+        if not lines or lines[0] != "---\n":
+            raise ValueError("missing frontmatter")
+        end = lines.index("---\n", 1)
+        markers = [i for i, line in enumerate(lines) if "# domestique-model-setup:" in line]
+        if markers:
+            if role != "implementer" or markers != [1] or not lines[1].startswith("# domestique-model-setup: "):
+                raise ValueError("duplicate/misplaced marker")
+            marker = json.loads(lines[1].split(": ", 1)[1], object_pairs_hook=unique)
+            if (not isinstance(marker, dict) or set(marker) != {
+                    "v", "project", "harness", "implementer_sha256", "reviewer_sha256"} or
+                    type(marker["v"]) is not int or marker["v"] != 1 or
+                    not isinstance(marker["project"], str) or not marker["project"].startswith("/") or
+                    marker["harness"] != "copilot" or not all(
+                        isinstance(marker[r + "_sha256"], str) and
+                        re.fullmatch("[0-9a-f]{64}", marker[r + "_sha256"])
+                        for r in ("implementer", "reviewer"))):
+                raise ValueError("malformed marker")
+            # Stale hashes remain unconfirmed, never silently renewed here.
+        fields = {}
+        for line in lines[1:end]:
+            if not line.strip() or line.startswith("#"):
+                continue
+            match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(.*?)\n", line)
+            if not match or match[1] in fields:
+                raise ValueError("malformed/duplicate YAML field")
+            key, value = match.groups()
+            if key == "tools" and value.startswith("["):
+                tools = json.loads(value)
+                if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                    raise ValueError("invalid native tools")
+                fields[key] = tools
+            else:
+                fields[key] = scalar(value)
+            if key == "model" and not value.startswith(("'", '"')) and (
+                    fields[key].lower() in ("null", "~", "true", "false", "yes", "no", "on", "off") or
+                    re.match(r"^[+\-0-9.]", fields[key])):
+                raise ValueError("non-string model")
+        if fields.get("name") != f"domestique-v2-copilot-{role}" or "effort" in fields or "model_reasoning_effort" in fields:
+            raise ValueError("wrong role identity or unsupported effort")
+    common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+                            capture_output=True, text=True)
+    if common.returncode == 0:
+        base = pathlib.Path(common.stdout.strip())
+        if not base.is_absolute():
+            base = root / base
+        exclude = (base / "info/exclude").absolute()
+        for path in (*reversed(exclude.parents), exclude):
+            if path.is_symlink():
+                raise ValueError("symlink in exclude path")
+            if path.exists():
+                info = path.stat()
+                if path == exclude:
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise ValueError("unsafe exclude leaf")
+                    data = path.read_text()
+                    b, e = "# BEGIN domestique (managed)", "# END domestique"
+                    if data.count(b) != data.count(e) or data.count(b) > 1 or (
+                            b in data and data.index(b) > data.index(e)):
+                        raise ValueError("malformed exclude block")
+                elif not path.is_dir():
+                    raise ValueError("unsafe exclude ancestor")
+except (OSError, ValueError, TypeError) as exc:
+    print(f"Copilot preflight: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
+  # Copilot enablement must not partially publish before an older selected
+  # projection's unsafe path, merge conflict or missing caller guard is found.
+  while IFS='|' read -r provider rel emitter; do
+    # An unrelated explicit provider operation retains Copilot unchanged.
+    # Still enforce discovery isolation on any Codex roles it will rewrite;
+    # other retained-projection checks remain scoped to Copilot enablement.
+    if [ "$SELECT_COPILOT" -eq 0 ]; then
+      case "$provider:$rel" in codex:*.toml) ;; *) continue ;; esac
+    fi
+    [ "$provider" != claude ] || [ "$SELECT_CLAUDE" -eq 1 ] || continue
+    [ "$provider" != codex ] || [ "$SELECT_CODEX" -eq 1 ] || continue
+    base=".$provider/.domestique/base/$rel"
+    shared_safe_path "$rel" && shared_safe_path "$base" &&
+      shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" ||
+      shared_refuse "unsafe retained $provider path $rel"
+    [ "$UNINSTALL" -eq 0 ] || continue
+    "$emitter" > "$TMPDIR_WORK/legacy-upstream"
+    cp "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate"
+    if [ -f "$TARGET_DIR/$rel" ]; then
+      [ -f "$TARGET_DIR/$base" ] || shared_refuse "unknown retained ownership $rel"
+      rc=0
+      git merge-file -p "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" > "$TMPDIR_WORK/legacy-candidate" || rc=$?
+      [ "$rc" -eq 0 ] || shared_refuse "retained projection conflict $rel"
+    fi
+    case "$rel" in
+      *.yaml) continue ;;
+      *.toml)
+        native_role_description_preflight codex "$TMPDIR_WORK/legacy-candidate" "$rel"
+        python3 - "$TMPDIR_WORK/legacy-candidate" <<'PY' ||
+import pathlib
+import sys
+guard = (
+    "These instructions apply only in the actual native Codex client; foreign or\n"
+    "ambiguous callers stop without work. Installed directories do not identify it."
+)
+# The body boundary is mandatory in addition to the discovery description.
+sys.exit(guard not in pathlib.Path(sys.argv[1]).read_text())
+PY
+          shared_refuse "missing retained role caller guard $rel"
+        ;;
+      *)
+        emit_harness_guard "$provider" > "$TMPDIR_WORK/legacy-guard"
+        python3 - "$TMPDIR_WORK/legacy-guard" "$TMPDIR_WORK/legacy-candidate" <<'PY' ||
+import pathlib
+import sys
+sys.exit(pathlib.Path(sys.argv[1]).read_bytes() not in pathlib.Path(sys.argv[2]).read_bytes())
+PY
+          shared_refuse "missing retained caller guard $rel"
+        ;;
+    esac
+  done <<'ENTRIES'
+claude|.claude/agents/implementer.md|emit_implementer
+claude|.claude/agents/reviewer.md|emit_reviewer
+claude|.claude/commands/decompose.md|emit_decompose
+claude|.claude/commands/goal.md|emit_goal
+claude|.claude/commands/dom-decompose.md|emit_decompose
+claude|.claude/commands/dom-goal.md|emit_goal
+codex|.codex/agents/implementer.toml|emit_codex_implementer
+codex|.codex/agents/reviewer.toml|emit_codex_reviewer
+codex|.agents/skills/domestique/SKILL.md|emit_codex_skill
+codex|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
+codex|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
+codex|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
+ENTRIES
+}
+
 shared_preflight() {
   local rel emitter base staged rc path
   local state=".agents/.domestique" legacy=".codex/.domestique"
@@ -1648,9 +2366,9 @@ shared_preflight() {
       shared_refuse "guest shared visibility conflicts with a normal Copilot consumer"
     fi
   fi
-  [ "$SELECT_CODEX" -eq 1 ] || return 0
+  [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ] || return 0
   [ "$UNINSTALL" -eq 0 ] || return 0
-  if [ "$SHARED_COPILOT" -eq 1 ]; then
+  if [ "$SHARED_COPILOT" -eq 1 ] && [ "$SELECT_COPILOT" -eq 0 ]; then
     local requested="$REQUESTED_GUEST" shared_guest=0
     [ "$GUEST_EXPLICIT" -eq 1 ] || [ "$NO_GUEST" -eq 1 ] ||
       { [ "$(cat "$TARGET_DIR/$legacy/mode" 2>/dev/null || true)" != guest ] || requested=1; }
@@ -1685,20 +2403,23 @@ install_shared() {
     install_plain "$TARGET_DIR/$rel" "$emitter"
   done <<< "$SHARED_ENTRIES"
   write_provider_manifest
-  if [ "$SHARED_COPILOT" -eq 0 ]; then
+  if [ "$SELECT_COPILOT" -eq 1 ]; then
+    SHARED_GUEST="$COPILOT_GUEST_SELECTED"
+  elif [ "$SHARED_COPILOT" -eq 0 ]; then
     SHARED_GUEST="$CODEX_GUEST_SELECTED"
   fi
   if [ "$DRY_RUN" -eq 0 ]; then
     if [ "$SHARED_PRESENT" -eq 0 ]; then
       : > "$SNAPSHOT_DIR/guest-excludes"
       while IFS='|' read -r rel emitter; do
-        if codex_exclude_was_owned "$rel"; then
+        if codex_exclude_was_owned "$rel" ||
+           grep -qxF "$rel" "$TMPDIR_WORK/shared-new-excludes" 2>/dev/null; then
           printf '%s\n' "$rel" >> "$SNAPSHOT_DIR/guest-excludes"
         fi
       done <<< "$SHARED_ENTRIES"
     fi
-    if [ "$SHARED_COPILOT" -eq 0 ]; then
-      if [ "$CODEX_GUEST_SELECTED" -eq 1 ]; then
+    if [ "$SELECT_COPILOT" -eq 1 ] || [ "$SHARED_COPILOT" -eq 0 ]; then
+      if [ "$SHARED_GUEST" -eq 1 ]; then
         printf 'guest\n' > "$MODE_MARKER"
       else
         rm -f "$MODE_MARKER"
@@ -1722,8 +2443,9 @@ install_shared() {
 policy_preflight() {
   [ "$UNINSTALL" -eq 0 ] || return 0
   local provider requested state rel status bc ec block expected base emitter mode merged rc
-  for provider in claude codex; do
+  for provider in claude codex copilot; do
     state=".$provider/.domestique"
+    [ "$provider" != copilot ] || state=".github/.domestique"
     shared_safe_path "$state/mode" || shared_refuse "unsafe $state/mode"
     requested="$REQUESTED_GUEST"
     if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
@@ -1731,8 +2453,8 @@ policy_preflight() {
        [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]; then
       requested=1
     fi
-    for rel in CLAUDE.md CLAUDE.local.md AGENTS.md AGENTS.override.md; do
-      case "$provider:$rel" in claude:AGENTS*|codex:CLAUDE*) continue ;; esac
+    for rel in CLAUDE.md CLAUDE.local.md AGENTS.md AGENTS.override.md .github/copilot-instructions.md; do
+      case "$provider:$rel" in claude:AGENTS*|codex:CLAUDE*|claude:.github/*|codex:.github/*|copilot:CLAUDE*|copilot:AGENTS*) continue ;; esac
       shared_safe_path "$rel" || shared_refuse "unsafe root policy $rel"
       base="$state/base/$rel.block"
       shared_safe_path "$base" || shared_refuse "unsafe policy base $base"
@@ -1773,6 +2495,7 @@ policy_preflight() {
         shared_refuse "unguarded owned policy $rel lacks a safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
       emitter=emit_policy
       [ "$provider" != codex ] || emitter=emit_codex_policy
+      [ "$provider" != copilot ] || emitter=emit_copilot_policy
       mode=normal
       # Retained personal policy remains personal even under --no-guest.
       [ "$rel" != CLAUDE.local.md ] || mode=guest
@@ -1787,6 +2510,7 @@ policy_preflight() {
       shared_safe_path "$rel.bak.$TS" || shared_refuse "unsafe policy backup $rel.bak.$TS"
       # Ephemeral plan only, not another project registry. The existing block
       # installer performs the same preserving merge and documented backup.
+      mkdir -p "$(dirname "$TMPDIR_WORK/scope-$rel")"
       touch "$TMPDIR_WORK/scope-$rel"
     done
   done
@@ -1794,7 +2518,7 @@ policy_preflight() {
 
 install_retained_policies() {
   local provider rel mode
-  for provider in claude codex; do
+  for provider in claude codex copilot; do
     configure_provider "$provider"
     for rel in $POLICY_CANDIDATES; do
       [ -f "$TMPDIR_WORK/scope-$rel" ] || continue
@@ -2352,6 +3076,13 @@ install_git_exclude() {
         [ "${CODEX_PREEXIST_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/agents/openai.yaml\n'
       fi
     fi
+    if [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ]; then
+      if [ -f "$target/.github/.domestique/guest-excludes" ]; then
+        cat "$target/.github/.domestique/guest-excludes"
+      elif [ -f "$TMPDIR_WORK/copilot-excludes" ]; then
+        cat "$TMPDIR_WORK/copilot-excludes"
+      fi
+    fi
     if [ "$SHARED_REMOVE" -eq 0 ]; then
       if [ "$SHARED_GUEST" -eq 1 ] && [ "$SHARED_PRESENT" -eq 1 ]; then
         printf '.agents/.domestique/\n'
@@ -2369,7 +3100,8 @@ install_git_exclude() {
       fi
     fi
     if { [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.claude/.domestique/beads-owned" ]; } ||
-       { [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.codex/.domestique/beads-owned" ]; }; then
+       { [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.codex/.domestique/beads-owned" ]; } ||
+       { [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.github/.domestique/beads-owned" ]; }; then
       printf '.beads/\n'
     fi
     printf '%s\n' "$GITEXCLUDE_MARKER_END"
@@ -2467,14 +3199,15 @@ remove_git_exclude() {
 sync_guest_beads_ownership() {
   local claude_marker="$TARGET_DIR/.claude/.domestique/beads-owned"
   local codex_marker="$TARGET_DIR/.codex/.domestique/beads-owned"
+  local copilot_marker="$TARGET_DIR/.github/.domestique/beads-owned"
   if [ ! -d "$TARGET_DIR/.beads" ]; then
     if [ "$DRY_RUN" -eq 0 ]; then
-      rm -f "$claude_marker" "$codex_marker"
+      rm -f "$claude_marker" "$codex_marker" "$copilot_marker"
     fi
     return 0
   fi
   [ "${ANY_GUEST:-0}" -eq 1 ] || return 0
-  if [ ! -e "$claude_marker" ] && [ ! -e "$codex_marker" ]; then
+  if [ ! -e "$claude_marker" ] && [ ! -e "$codex_marker" ] && [ ! -e "$copilot_marker" ]; then
     return 0
   fi
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -2489,6 +3222,10 @@ sync_guest_beads_ownership() {
     mkdir -p "$(dirname "$codex_marker")"
     : > "$codex_marker"
   fi
+  if [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ]; then
+    mkdir -p "$(dirname "$copilot_marker")"
+    : > "$copilot_marker"
+  fi
 }
 
 # do_uninstall <target-dir>
@@ -2497,7 +3234,9 @@ sync_guest_beads_ownership() {
 do_uninstall() {
   local target="$1"
   local anything_done=0
-  if [ "$SHARED_PRESENT" -eq 1 ] && [ "$UNINSTALL_CODEX" -eq 1 ] && [ "$SHARED_COPILOT" -eq 0 ]; then
+  if [ "$SHARED_PRESENT" -eq 1 ] &&
+     { [ "$UNINSTALL_CODEX" -eq 1 ] || [ "$SHARED_CODEX" -eq 0 ]; } &&
+     { [ "$UNINSTALL_COPILOT" -eq 1 ] || [ "$SHARED_COPILOT" -eq 0 ]; }; then
     SHARED_REMOVE=1
   fi
 
@@ -2519,23 +3258,27 @@ do_uninstall() {
   local provider state_rel rel emitter dest staged basepath reference
   while IFS='|' read -r provider state_rel rel emitter; do
     [ -z "$rel" ] && continue
-    [ "$provider" = "claude" ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && continue
-    [ "$provider" = "codex" ] && [ "$UNINSTALL_CODEX" -eq 0 ] && continue
-    [ "$provider" = "claude" ] && [ "$claude_evidence" -eq 0 ] && continue
-    [ "$provider" = "codex" ] && [ "$codex_evidence" -eq 0 ] && continue
-    local ownership="$target/.codex/.domestique/guest-excludes"
+    local ownership="$target/$state_rel/guest-excludes"
     case "$rel" in
       .agents/skills/dom-decompose/*|.agents/skills/dom-goal/*)
-        [ "$SHARED_COPILOT" -eq 0 ] || continue
         if [ "$SHARED_PRESENT" -eq 1 ]; then
+          [ "$SHARED_REMOVE" -eq 1 ] || continue
+          provider=shared
           state_rel=".agents/.domestique"
           ownership="$target/$state_rel/guest-excludes"
+        elif [ "$SHARED_COPILOT" -eq 1 ]; then
+          continue
         fi
         ;;
     esac
+    [ "$provider" = "claude" ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && continue
+    [ "$provider" = "codex" ] && [ "$UNINSTALL_CODEX" -eq 0 ] && continue
+    [ "$provider" = "copilot" ] && { [ "$UNINSTALL_COPILOT" -eq 0 ] || [ "$SHARED_COPILOT" -eq 0 ]; } && continue
+    [ "$provider" = "claude" ] && [ "$claude_evidence" -eq 0 ] && continue
+    [ "$provider" = "codex" ] && [ "$codex_evidence" -eq 0 ] && continue
     dest="$target/$rel"
     [ -e "$dest" ] || continue
-    if [ "$provider" = "codex" ] && [ -e "$ownership" ] &&
+    if [ "$provider" != "claude" ] && [ -e "$ownership" ] &&
        ! grep -qxF "$rel" "$ownership" 2>/dev/null; then
       SUM_KEPT+=("$dest (pre-existing; never domestique-owned)")
       continue
@@ -2588,6 +3331,11 @@ codex|.codex/.domestique|.agents/skills/domestique-goal/agents/openai.yaml|emit_
 codex|.codex/.domestique|.agents/skills/dom-decompose/SKILL.md|emit_codex_dom_decompose_skill
 codex|.codex/.domestique|.agents/skills/dom-goal/SKILL.md|emit_codex_dom_goal_skill
 codex|.codex/.domestique|.agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata
+copilot|.github/.domestique|.github/agents/domestique-v2-copilot-implementer.agent.md|emit_copilot_implementer
+copilot|.github/.domestique|.github/agents/domestique-v2-copilot-reviewer.agent.md|emit_copilot_reviewer
+copilot|.github/.domestique|.github/skills/domestique-v2-copilot/SKILL.md|emit_copilot_skill
+copilot|.github/.domestique|.github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
+copilot|.github/.domestique|.github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill
 UNINSTALL_FILES
 
   # --- 2. managed policy blocks for selected providers --------------------
@@ -2595,6 +3343,7 @@ UNINSTALL_FILES
   while IFS='|' read -r provider policyfile policymode policyemitter policybase; do
     [ "$provider" = "claude" ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && continue
     [ "$provider" = "codex" ] && [ "$UNINSTALL_CODEX" -eq 0 ] && continue
+    [ "$provider" = "copilot" ] && [ "$UNINSTALL_COPILOT" -eq 0 ] && continue
     dest="$target/$policyfile"
     [ -e "$dest" ] || continue
 
@@ -2703,23 +3452,28 @@ claude|CLAUDE.md|normal|emit_policy|.claude/.domestique
 claude|CLAUDE.local.md|guest|emit_policy|.claude/.domestique
 codex|AGENTS.md|normal|emit_codex_policy|.codex/.domestique
 codex|AGENTS.override.md|normal|emit_codex_policy|.codex/.domestique
+copilot|.github/copilot-instructions.md|normal|emit_copilot_policy|.github/.domestique
 UNINSTALL_POLICIES
 
   # --- 3. managed block in <git-common-dir>/info/exclude ------------------
   # A scoped uninstall retains an exact union for any other provider that is
   # still guest-installed. Only the final guest-provider removal strips it.
-  local keep_claude_guest=0 keep_codex_guest=0
+  local keep_claude_guest=0 keep_codex_guest=0 keep_copilot_guest=0
   if [ "$UNINSTALL_CLAUDE" -eq 0 ] && [ "$(cat "$target/.claude/.domestique/mode" 2>/dev/null || true)" = "guest" ]; then
     keep_claude_guest=1
   fi
   if [ "$UNINSTALL_CODEX" -eq 0 ] && [ "$(cat "$target/.codex/.domestique/mode" 2>/dev/null || true)" = "guest" ]; then
     keep_codex_guest=1
   fi
+  if [ "$UNINSTALL_COPILOT" -eq 0 ] && [ "$(cat "$target/.github/.domestique/mode" 2>/dev/null || true)" = "guest" ]; then
+    keep_copilot_guest=1
+  fi
 
-  if [ "$keep_claude_guest" -eq 1 ] || [ "$keep_codex_guest" -eq 1 ] ||
+  if [ "$keep_claude_guest" -eq 1 ] || [ "$keep_codex_guest" -eq 1 ] || [ "$keep_copilot_guest" -eq 1 ] ||
      { [ "$SHARED_REMOVE" -eq 0 ] && [ "$SHARED_GUEST" -eq 1 ]; }; then
     CLAUDE_GUEST_SELECTED="$keep_claude_guest"
     CODEX_GUEST_SELECTED="$keep_codex_guest"
+    COPILOT_GUEST_SELECTED="$keep_copilot_guest"
     install_git_exclude "$target"
     anything_done=1
   else
@@ -2762,10 +3516,11 @@ UNINSTALL_POLICIES
 
   # --- 4. selected provider state (do this after snapshot comparisons) -----
   local snapshot_dir
-  for snapshot_dir in "$target/.claude/.domestique" "$target/.codex/.domestique" "$target/.agents/.domestique"; do
+  for snapshot_dir in "$target/.claude/.domestique" "$target/.codex/.domestique" "$target/.github/.domestique" "$target/.agents/.domestique"; do
     case "$snapshot_dir" in
       "$target/.claude/.domestique") [ "$UNINSTALL_CLAUDE" -eq 1 ] || continue ;;
       "$target/.codex/.domestique") [ "$UNINSTALL_CODEX" -eq 1 ] || continue ;;
+      "$target/.github/.domestique") [ "$UNINSTALL_COPILOT" -eq 1 ] || continue ;;
       "$target/.agents/.domestique") [ "$SHARED_REMOVE" -eq 1 ] || continue ;;
     esac
     [ -e "$snapshot_dir" ] || continue
@@ -2779,19 +3534,12 @@ UNINSTALL_POLICIES
   done
 
   # Keep the surviving provider's persisted set authoritative.
-  local remaining_state="" remaining_value=""
-  if [ "$UNINSTALL_CLAUDE" -eq 1 ] && [ "$UNINSTALL_CODEX" -eq 0 ] && [ -d "$target/.codex/.domestique" ]; then
-    remaining_state="$target/.codex/.domestique/platforms"; remaining_value="codex"
-  elif [ "$UNINSTALL_CODEX" -eq 1 ] && [ "$UNINSTALL_CLAUDE" -eq 0 ] && [ -d "$target/.claude/.domestique" ]; then
-    remaining_state="$target/.claude/.domestique/platforms"; remaining_value="claude"
-  fi
-  if [ -n "$remaining_state" ]; then
-    if [ "$DRY_RUN" -eq 1 ]; then
-      note_dry "persist platform set '$remaining_value' -> $remaining_state"
-    else
-      printf '%s\n' "$remaining_value" > "$remaining_state"
-    fi
-  fi
+  SELECT_CLAUDE=0; SELECT_CODEX=0; SELECT_COPILOT=0
+  [ "$UNINSTALL_CLAUDE" -eq 0 ] && [ -d "$target/.claude/.domestique" ] && SELECT_CLAUDE=1
+  [ "$UNINSTALL_CODEX" -eq 0 ] && [ -d "$target/.codex/.domestique" ] && SELECT_CODEX=1
+  [ "$UNINSTALL_COPILOT" -eq 0 ] && [ -d "$target/.github/.domestique" ] && SELECT_COPILOT=1
+  platform_set
+  persist_platform_set
 
   # Prune now-empty dirs, never one that still has user content.
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -2814,6 +3562,18 @@ UNINSTALL_POLICIES
       rmdir "$target/.agents/skills/domestique" 2>/dev/null || true
       rmdir "$target/.agents/skills" 2>/dev/null || true
       rmdir "$target/.agents" 2>/dev/null || true
+    fi
+    if [ "$UNINSTALL_COPILOT" -eq 1 ]; then
+      local dir
+      for dir in .github/agents .github/skills/domestique-v2-copilot .github/skills/domestique-v2-copilot-decompose .github/skills/domestique-v2-copilot-goal .github/skills .github; do
+        rmdir "$target/$dir" 2>/dev/null || true
+      done
+    fi
+    if [ "$SHARED_REMOVE" -eq 1 ]; then
+      local shared_dir
+      for shared_dir in .agents/skills/dom-goal/agents .agents/skills/dom-goal .agents/skills/dom-decompose .agents/skills .agents; do
+        rmdir "$target/$shared_dir" 2>/dev/null || true
+      done
     fi
   fi
 
@@ -2854,19 +3614,23 @@ UNINSTALL_POLICIES
   echo "Done."
 }
 
+copilot_preflight
 shared_preflight
 policy_preflight
 
 if [ "$UNINSTALL" -eq 1 ]; then
   UNINSTALL_CLAUDE=1
   UNINSTALL_CODEX=1
+  UNINSTALL_COPILOT=1
   if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
     UNINSTALL_CLAUDE=0
     UNINSTALL_CODEX=0
+    UNINSTALL_COPILOT=0
     case "$PLATFORM_ARG" in
       claude) UNINSTALL_CLAUDE=1 ;;
       codex) UNINSTALL_CODEX=1 ;;
       both) UNINSTALL_CLAUDE=1; UNINSTALL_CODEX=1 ;;
+      copilot) UNINSTALL_COPILOT=1 ;;
     esac
   fi
   echo "domestique: uninstalling from $TARGET_DIR (platform=${PLATFORM_ARG:-all})"
@@ -2884,6 +3648,12 @@ install_retained_policies
 ANY_GUEST=0
 CLAUDE_GUEST_SELECTED=0
 CODEX_GUEST_SELECTED=0
+COPILOT_GUEST_SELECTED=0
+if [ "$SELECT_COPILOT" -eq 0 ] &&
+   [ "$(cat "$TARGET_DIR/.github/.domestique/mode" 2>/dev/null || true)" = guest ]; then
+  COPILOT_GUEST_SELECTED=1
+  ANY_GUEST=1
+fi
 # Preserve the pre-install visibility of existing untracked Codex-owned
 # paths: guest exclude hides only files domestique is creating itself.
 CODEX_PREEXIST_IMPL=0
@@ -2922,6 +3692,18 @@ if [ "$SELECT_CODEX" -eq 1 ]; then
     printf '%s\n' "Note: Codex guest mode is skills-only; start each new session with \`\$domestique\`." >&2
   fi
   install_current_provider
+fi
+if [ "$SELECT_COPILOT" -eq 1 ]; then
+  configure_provider copilot
+  resolve_provider_mode
+  if [ "$GUEST" -eq 1 ]; then
+    ANY_GUEST=1
+    COPILOT_GUEST_SELECTED=1
+    echo "Note: Copilot guest mode is skills-only; bootstrap with /domestique-v2-copilot." >&2
+  fi
+  install_current_provider
+fi
+if [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ]; then
   install_shared
 fi
 
@@ -2965,6 +3747,10 @@ if [ "$WITH_BEADS" -eq 1 ]; then
           if [ "$CODEX_GUEST_SELECTED" -eq 1 ]; then
             mkdir -p "$TARGET_DIR/.codex/.domestique"
             : > "$TARGET_DIR/.codex/.domestique/beads-owned"
+          fi
+          if [ "$COPILOT_GUEST_SELECTED" -eq 1 ]; then
+            mkdir -p "$TARGET_DIR/.github/.domestique"
+            : > "$TARGET_DIR/.github/.domestique/beads-owned"
           fi
         else
           ( cd "$TARGET_DIR" && bd init --skip-agents --skip-hooks --non-interactive )

@@ -4,12 +4,14 @@
 
 ### Single-script shared skill foundation (hq-7sm.10)
 
-This candidate's `domestique.sh` keeps existing Claude/Codex selection and
-source-free stdin execution. It does **not** install Copilot or migrate the
-separate preview. The two canonical `.agents/skills/dom-{decompose,goal}/SKILL.md`
+This candidate's `domestique.sh` keeps fresh selector-less Claude installation
+and source-free stdin execution. Explicit `--platform copilot` now installs a
+self-contained Copilot projection (hq-7sm.11); it does **not** migrate the
+separate preview or implement selector-less all-client installation.
+The two canonical `.agents/skills/dom-{decompose,goal}/SKILL.md`
 entries route by actual native client context/tools, never installed directories.
 Codex bodies remain `.agents/skills/domestique{,-decompose,-goal}/SKILL.md`;
-the future Copilot interface is
+Copilot bodies are
 `.github/skills/domestique-v2-copilot{,-decompose,-goal}/SKILL.md`, using
 `domestique-v2-copilot-{implementer,reviewer}` agent IDs. Missing/ambiguous
 native bodies stop, without cross-harness fallback. Original explicit goal
@@ -25,9 +27,10 @@ also applies to sticky guest reruns and inactive owned AGENTS root policies.
 Already-guarded host policies and unrelated host instructions remain
 byte-preserved; guest mode never rewrites or backs up these host files.
 
-Isolation preflight covers **all four retained owned root candidates**, not just
+Isolation preflight covers **all retained owned root candidates**, not just
 the new active destination or selected provider: `CLAUDE.md`, `CLAUDE.local.md`,
-`AGENTS.md`, and `AGENTS.override.md`. In normal mode, an unguarded block is
+`AGENTS.md`, `AGENTS.override.md`, and `.github/copilot-instructions.md`.
+In normal mode, an unguarded block is
 three-way merged against its existing per-file pristine block snapshot and the
 current harness-scoped policy. This also scopes the inactive `AGENTS.md` when
 a host adds an override after installation. Unrelated host prefixes/suffixes
@@ -59,10 +62,11 @@ holds their pristine bases. `guest-excludes` records the owned canonical leaves;
 state private. No general registry or daemon is involved.
 
 Consumers are derived read-only from valid native manifest inventories and both
-role bases: Codex's `.codex/.domestique`, or the **future schema interface**
+role bases: Codex's `.codex/.domestique`, or
 `.github/.domestique` with `platform=copilot` and the two
 `.github/agents/domestique-v2-copilot-{implementer,reviewer}.agent.md` paths.
-This schema fixture is not proof of a working Copilot install. Scoped Codex
+Current tests install both real projections; these offline checks are not
+native execution qualification. Scoped Codex/Copilot
 removal retains shared files/bases while that valid consumer remains. The last
 valid consumer's removal uses existing unchanged/remove, modified/rename rules.
 Shared normal visibility is not hidden by a surviving guest; guest visibility
@@ -71,6 +75,43 @@ Invalid surviving consumer evidence refuses instead of authorizing deletion
 or exposure. A conflicting second-owner mode transition
 refuses for explicit human resolution. Existing host canonical leaves remain
 visible and survive removal under the existing ownership bookkeeping.
+
+Copilot's five native files have their own manifest/pristine snapshots and exact
+guest exclusions, never broad `.github` exclusions or duplicate canonical
+`.github/skills/dom-*` entries. Normal policy is a managed block; guest bootstrap
+is `/domestique-v2-copilot` with no host-policy writes. Explicit unrelated
+provider operations retain Copilot visibility. Copilot setup asks both roles
+and stores only the existing full-byte confirmed-pair marker in implementer
+frontmatter after explicit diff consent. No model defaults are confirmations;
+native inheritance removes `model`. Existing custom metadata/tools/body survive
+three-way upgrades; changed bytes invalidate confirmation without reapproval.
+Native role discovery descriptions must independently retain these exact
+decoded prefixes (not merely a guard somewhere in the role body):
+
+- Copilot: `Copilot only; never match in Claude, Codex or an unknown harness.`
+- Codex: `Codex only; never match in another harness.`
+
+The prefix is the non-overridable scope of the entire description; append a
+space and compatible custom remainder. Validation checks this explicit format,
+not natural-language intent or keywords in arbitrary custom prose. Quoted
+single-line Copilot scalars and native TOML descriptions are decoded before
+checking; Codex validation requires Python 3.11+ `tomllib`. Copilot preflight
+checks both native roles and selected retained Codex roles, including explicit
+Codex operations while Copilot is installed. It checks the normal three-way
+merge candidate before provider/shared/state/exclusion writes, independently
+of body validation. If that preserving merge cannot establish the boundary,
+missing/changed prefixes or conflicts refuse in ordinary, guest, `--force`,
+and `--dry-run` runs. Restore the reported exact prefix and explicitly reconcile
+custom text against its scope before retrying. The installer does not classify
+foreign prose, silently prepend guards, overwrite custom descriptions to repair
+them, or refresh confirmed-pair hashes. Compatible description/model/tools/
+metadata/body edits retain the normal merge lifecycle and full-byte consent
+invalidation; unrelated retained Copilot files remain untouched.
+Setup ends before Beads/work, requires fresh native invocation/reload and human
+disposition of tracked setup edits. Missing Copilot does not prevent installation
+but installation never claims readiness. Preview receipts/competing canonical
+paths, unknown ownership, malformed roles, unsafe paths and conflicts refuse;
+preview migration and native qualification remain separate work.
 
 Before **any project writes**, unknown/incomplete state in the new shared
 namespace refuses, even with identical bytes, dry-run, or `--force`. Existing
