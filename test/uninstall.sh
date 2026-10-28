@@ -25,9 +25,16 @@ if [ ! -f "$DOM" ]; then
 fi
 
 WORKROOT="$(mktemp -d)"
-cleanup() { rm -rf "$WORKROOT"; }
+cleanup() {
+  if [ "${FAIL_COUNT:-0}" -gt 0 ]; then
+    echo "Failure evidence retained: $WORKROOT" >&2
+  else
+    rm -rf "$WORKROOT"
+  fi
+}
 trap cleanup EXIT
 if [ "${1:-}" = "--current" ]; then
+  CURRENT_TEST=1
   export HOME="$WORKROOT/current-home"
   mkdir -p "$HOME"
 else
@@ -35,6 +42,25 @@ else
   source "$SCRIPT_DIR/historical-fixture.sh"
 fi
 
+# Claude-scoped fixtures run the actual candidate; historical calls are unchanged.
+claude_install() {
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then "$@" --platform claude
+  else "$@"; fi
+}
+# Match all-current.py's fixed-TS source fixture; no sleeps or backup removal.
+# Both the historical and current installer still run their real lifecycle.
+claude_install_at() {
+  local timestamp="$1"; shift
+  python3 - "$DOM" "$timestamp" <<'PY' | claude_install bash -s -- "$@"
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text()
+clock = 'TS="$(date +%Y%m%d%H%M%S)"'
+assert source.count(clock) == 1
+assert len(sys.argv[2]) == 14 and sys.argv[2].isdigit()
+print(source.replace(clock, f'TS="{sys.argv[2]}"'))
+PY
+}
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -51,6 +77,8 @@ check() {
   else
     SCEN_OK=0
     SCEN_REASON="${SCEN_REASON:+$SCEN_REASON; }$desc"
+    printf 'Failure diagnostic (%s):\n%s\n%s\n%s\n%s\n%s\n' \
+      "$desc" "${out:-}" "${out_i:-}" "${out_u:-}" "${out1:-}" "${out2:-}" >&2
     return 1
   fi
 }
@@ -209,13 +237,13 @@ scenario_plain_roundtrip() {
   local sha_pre; sha_pre="$(filehash "$t/CLAUDE.md")"
 
   local out_i rc_i
-  out_i="$("$DOM" "$t" 2>&1)"; rc_i=$?
+  out_i="$(claude_install "$DOM" "$t" 2>&1)"; rc_i=$?
   check "install: exit 0" test "$rc_i" -eq 0
   check "install: implementer.md installed (setup ran)" test -f "$t/$IMPL_REL"
   check "install: CLAUDE.md carries managed block (setup ran)" grep -qF "$MARKER_BEGIN" "$t/CLAUDE.md"
 
   local out_u rc_u
-  out_u="$("$DOM" "$t" --uninstall 2>&1)"; rc_u=$?
+  out_u="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc_u=$?
   local sha_post; sha_post="$(filehash "$t/CLAUDE.md")"
 
   check "uninstall: exit 0" test "$rc_u" -eq 0
@@ -236,7 +264,7 @@ scenario_guest_roundtrip() {
 
   local out_i rc_i
   # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
-  out_i="$("$DOM" "$t" --guest 2>&1)"; rc_i=$?
+  out_i="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc_i=$?
   check "install: exit 0" test "$rc_i" -eq 0
   check "install: CLAUDE.local.md created (setup ran)" test -f "$t/CLAUDE.local.md"
   check "install: exclude has managed block (setup ran)" grep -qF "# BEGIN domestique (managed)" "$t/.git/info/exclude"
@@ -244,7 +272,7 @@ scenario_guest_roundtrip() {
 
   local out_u rc_u
   # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
-  out_u="$("$DOM" "$t" --uninstall 2>&1)"; rc_u=$?
+  out_u="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc_u=$?
 
   check "uninstall: exit 0" test "$rc_u" -eq 0
   check "git status --porcelain empty" bash -c '[ -z "$(git -C "$1" status --porcelain)" ]' _ "$t"
@@ -261,14 +289,14 @@ scenario_guest_roundtrip() {
 scenario_modified_file_kept() {
   local t="$WORKROOT/s3a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   check "install: reviewer.md present (setup ran)" test -f "$t/$REVIEWER_REL"
 
   printf '\nUSER EDIT SENTINEL\n' >> "$t/$REVIEWER_REL"
   check "edit applied before uninstall (setup ran)" grep -qF "USER EDIT SENTINEL" "$t/$REVIEWER_REL"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "original path gone" test ! -e "$t/$REVIEWER_REL"
@@ -288,12 +316,12 @@ scenario_modified_file_kept() {
 scenario_modified_file_force_removed() {
   local t="$WORKROOT/s3b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   printf '\nUSER EDIT SENTINEL\n' >> "$t/$REVIEWER_REL"
   check "edit applied before uninstall (setup ran)" grep -qF "USER EDIT SENTINEL" "$t/$REVIEWER_REL"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall --force 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall --force 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "original path gone" test ! -e "$t/$REVIEWER_REL"
@@ -317,26 +345,31 @@ scenario_policy_modified_backup() {
   printf '# Header\n\nExtra outside text.\n' > "$t/CLAUDE.md"
   git -C "$t" add CLAUDE.md
   git -C "$t" commit -q -m "initial"
-  "$DOM" "$t" >/dev/null 2>&1
+  local original modified out_i rc_i
+  original="$(filehash "$t/CLAUDE.md")"
+  out_i="$(claude_install_at 20990101000000 "$t" 2>&1)"; rc_i=$?
+  check "install: exit 0" test "$rc_i" -eq 0
   check "install: managed block present (setup ran)" grep -qF "$MARKER_BEGIN" "$t/CLAUDE.md"
+  check "install backup captured original bytes" test "$original" = "$(filehash "$t/CLAUDE.md.bak.20990101000000")"
 
   sed -i.orig \
     's/- The plan of record lives in beads (`bd`), not in markdown TODO lists\./- The plan of record lives in beads (`bd`), not in markdown TODO lists. (user-edit)/' \
     "$t/CLAUDE.md"
   rm -f "$t/CLAUDE.md.orig"
   check "in-block edit applied before uninstall (setup ran)" grep -qF "(user-edit)" "$t/CLAUDE.md"
+  modified="$(filehash "$t/CLAUDE.md")"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install_at 20990101000001 "$t" --uninstall 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "managed block gone" bash -c '! grep -qF "$2" "$1"' _ "$t/CLAUDE.md" "$MARKER_BEGIN"
-  check "a CLAUDE.md.bak.* backup captured the user-modified block" bash -c '
+  check "install backup bytes preserved" test "$original" = "$(filehash "$t/CLAUDE.md.bak.20990101000000")"
+  check "distinct uninstall backup captured modified policy bytes" test "$modified" = "$(filehash "$t/CLAUDE.md.bak.20990101000001")"
+  check "only the two expected backups exist" bash -c '
     shopt -s nullglob
-    for f in "$1"/CLAUDE.md.bak.*; do
-      grep -qF "(user-edit)" "$f" && exit 0
-    done
-    exit 1
+    files=("$1"/CLAUDE.md.bak.*)
+    [ "${#files[@]}" -eq 2 ]
   ' _ "$t"
   check "outside-block header preserved" grep -qF "# Header" "$t/CLAUDE.md"
   check "outside-block text preserved" grep -qF "Extra outside text." "$t/CLAUDE.md"
@@ -348,12 +381,12 @@ scenario_policy_modified_backup() {
 scenario_beads_preserved() {
   local t="$WORKROOT/s5a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   mkdir -p "$t/.beads"
   printf 'dummy\n' > "$t/.beads/dummy.txt"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check ".beads/ preserved" test -d "$t/.beads"
@@ -367,12 +400,12 @@ scenario_beads_preserved() {
 scenario_beads_purged() {
   local t="$WORKROOT/s5b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   mkdir -p "$t/.beads"
   printf 'dummy\n' > "$t/.beads/dummy.txt"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall --purge-beads 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall --purge-beads 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check ".beads/ removed" test ! -e "$t/.beads"
@@ -392,7 +425,7 @@ scenario_purge_beads_alone_exit2() {
   local t="$WORKROOT/s5c"; mkdir -p "$t"
 
   local out rc
-  out="$("$DOM" "$t" --purge-beads 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --purge-beads 2>&1)"; rc=$?
 
   check "exit 2" test "$rc" -eq 2
   check "error message mentions --purge-beads" bash -c 'printf "%s" "$1" | grep -qF -- "--purge-beads"' _ "$out"
@@ -404,12 +437,12 @@ scenario_purge_beads_alone_exit2() {
 scenario_dry_run_full_plan() {
   local t="$WORKROOT/s6"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   check "install: implementer.md present (setup ran)" test -f "$t/$IMPL_REL"
 
   local hash_before out rc hash_after
   hash_before="$(treehash "$t")"
-  out="$("$DOM" "$t" --uninstall --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall --dry-run 2>&1)"; rc=$?
   hash_after="$(treehash "$t")"
 
   check "exit 0" test "$rc" -eq 0
@@ -427,7 +460,7 @@ scenario_noop_never_installed() {
   git_init "$t"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "exact 'no domestique install detected' phrasing" bash -c '
@@ -441,15 +474,15 @@ scenario_noop_never_installed() {
 scenario_noop_double_uninstall() {
   local t="$WORKROOT/s7b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   local out1 rc1
   # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
-  out1="$("$DOM" "$t" --uninstall 2>&1)"; rc1=$?
+  out1="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc1=$?
   check "first uninstall: exit 0" test "$rc1" -eq 0
 
   local out2 rc2
-  out2="$("$DOM" "$t" --uninstall 2>&1)"; rc2=$?
+  out2="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc2=$?
 
   check "second uninstall: exit 0" test "$rc2" -eq 0
   check "second uninstall: no-op phrasing" bash -c '
@@ -464,14 +497,14 @@ scenario_noop_double_uninstall() {
 scenario_mixed_dir() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   check "install: CLAUDE.md has managed block (setup ran)" grep -qF "$MARKER_BEGIN" "$t/CLAUDE.md"
   check "install: CLAUDE.local.md has managed block (setup ran)" grep -qF "$MARKER_BEGIN" "$t/CLAUDE.local.md"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   # Both policy files here consist ONLY of the managed block (no other
@@ -506,7 +539,7 @@ scenario_mixed_dir() {
 scenario_bad_combo_guest() {
   local t="$WORKROOT/s9a"; mkdir -p "$t"
   local out rc
-  out="$("$DOM" "$t" --uninstall --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall --guest 2>&1)"; rc=$?
   check "exit 2" test "$rc" -eq 2
   check "exact combinability error line" bash -c 'printf "%s" "$1" | grep -qF "Error: --uninstall is only combinable with"' _ "$out"
   check "aborted before touching the target: no .claude/ created" test ! -e "$t/.claude"
@@ -516,7 +549,7 @@ scenario_bad_combo_guest() {
 scenario_bad_combo_no_guest() {
   local t="$WORKROOT/s9b"; mkdir -p "$t"
   local out rc
-  out="$("$DOM" "$t" --uninstall --no-guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall --no-guest 2>&1)"; rc=$?
   check "exit 2" test "$rc" -eq 2
   check "exact combinability error line" bash -c 'printf "%s" "$1" | grep -qF "Error: --uninstall is only combinable with"' _ "$out"
   check "aborted before touching the target: no .claude/ created" test ! -e "$t/.claude"
@@ -526,7 +559,7 @@ scenario_bad_combo_no_guest() {
 scenario_bad_combo_with_beads() {
   local t="$WORKROOT/s9c"; mkdir -p "$t"
   local out rc
-  out="$("$DOM" "$t" --uninstall --with-beads 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall --with-beads 2>&1)"; rc=$?
   check "exit 2" test "$rc" -eq 2
   check "exact combinability error line" bash -c 'printf "%s" "$1" | grep -qF "Error: --uninstall is only combinable with"' _ "$out"
   check "aborted before touching the target: no .claude/ created" test ! -e "$t/.claude"
@@ -549,7 +582,7 @@ scenario_bad_combo_with_beads() {
 run_marker_refusal_scenario() {
   local t="$1" corrupt_fn="$2" discriminator="$3"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   check "install: implementer.md present (setup ran)" test -f "$t/$IMPL_REL"
 
   local sha_pre; sha_pre="$(filehash "$t/CLAUDE.md")"
@@ -558,7 +591,7 @@ run_marker_refusal_scenario() {
   check "corruption actually applied (setup ran)" bash -c '[ "$1" != "$2" ]' _ "$sha_pre" "$sha_corrupt"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc=$?
   local sha_post; sha_post="$(filehash "$t/CLAUDE.md")"
 
   check "exit 3" test "$rc" -eq 3
@@ -622,7 +655,7 @@ scenario_marker_inverted() {
 scenario_marker_guest_variant() {
   local t="$WORKROOT/s10-guest"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
   check "install: CLAUDE.local.md present (setup ran)" test -f "$t/CLAUDE.local.md"
 
   local sha_pre; sha_pre="$(filehash "$t/CLAUDE.local.md")"
@@ -631,7 +664,7 @@ scenario_marker_guest_variant() {
   check "corruption actually applied (setup ran)" bash -c '[ "$1" != "$2" ]' _ "$sha_pre" "$sha_corrupt"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc=$?
   local sha_post; sha_post="$(filehash "$t/CLAUDE.local.md")"
 
   check "exit 3" test "$rc" -eq 3
@@ -678,7 +711,7 @@ scenario_guard_trailing_space() {
 scenario_prune_only_empty_dirs() {
   local t="$WORKROOT/s12"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   check "install: .claude/commands present (setup ran)" test -d "$t/.claude/commands"
 
   printf '{"user":"settings"}\n' > "$t/.claude/settings.local.json"
@@ -688,7 +721,7 @@ scenario_prune_only_empty_dirs() {
   sha_notes_pre="$(filehash "$t/.claude/agents/my-notes.md")"
 
   local out rc
-  out="$("$DOM" "$t" --uninstall 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --uninstall 2>&1)"; rc=$?
 
   local sha_settings_post sha_notes_post
   sha_settings_post="$(filehash "$t/.claude/settings.local.json")"
@@ -710,11 +743,11 @@ echo
 scenario_configured_pair_uninstall() {
   local t="$WORKROOT/configured-pair"; mkdir -p "$t"
   git_init "$t"
-  check "guest install" "$DOM" "$t" --guest
+  check "guest install" claude_install "$DOM" "$t" --guest
   check "synthetic configured-pair fixture" python3 "$SCRIPT_DIR/fixtures/claude-configured-pair.py" "$t"
   cp "$t/$IMPL_REL" "$WORKROOT/configured-implementer"
   cp "$t/$REVIEWER_REL" "$WORKROOT/configured-reviewer"
-  check "real uninstall" "$DOM" "$t" --uninstall
+  check "real uninstall" claude_install "$DOM" "$t" --uninstall
   check "both configured roles preserved byte-for-byte as existing uninstall backups" python3 - "$t" "$WORKROOT" <<'PY'
 from pathlib import Path
 import sys

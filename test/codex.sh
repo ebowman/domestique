@@ -24,6 +24,7 @@ WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
 if [ "${1:-}" = "--current" ]; then
+  CURRENT_TEST=1
   export HOME="$WORKROOT/current-home"
   mkdir -p "$HOME"
 else
@@ -31,6 +32,12 @@ else
   source "$SCRIPT_DIR/historical-fixture.sh"
 fi
 
+# Preserve the intended fixture scope, not the former implicit CLI default.
+scoped_install() {
+  local platform="$1"; shift
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then "$@" --platform "$platform"
+  else "$@"; fi
+}
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -326,8 +333,13 @@ scenario_persisted_platform_selection() {
 
   check "bare rerun exits 0" test "$rc" -eq 0
   check "bare rerun restores Codex reviewer" test -f "$t/$REVIEWER_REL"
-  check "bare rerun does not create CLAUDE.md" test ! -e "$t/CLAUDE.md"
-  check "bare rerun does not create .claude" test ! -e "$t/.claude"
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "bare rerun adds Claude" test -f "$t/CLAUDE.md"
+    check "bare rerun adds Copilot" test -f "$t/.github/.domestique/manifest"
+  else
+    check "bare rerun does not create CLAUDE.md" test ! -e "$t/CLAUDE.md"
+    check "bare rerun does not create .claude" test ! -e "$t/.claude"
+  fi
   check "bare rerun reports persisted Codex" bash -c 'printf "%s" "$1" | grep -qi "codex"' _ "$out"
 }
 
@@ -506,7 +518,7 @@ scenario_guest_visibility_ownership() {
   before="$(git -C "$t" status --porcelain --untracked-files=all)"
   "$DOM" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
   after_first="$(git -C "$t" status --porcelain --untracked-files=all)"
-  "$DOM" "$t" >/dev/null 2>&1
+  scoped_install both "$DOM" "$t" >/dev/null 2>&1
   after_second="$(git -C "$t" status --porcelain --untracked-files=all)"
   "$DOM" "$t" --uninstall --platform claude >/dev/null 2>&1
   after_scope="$(git -C "$t" status --porcelain --untracked-files=all)"
@@ -519,7 +531,7 @@ scenario_guest_visibility_ownership() {
   check "pre-existing .beads is not ignored" bash -c '! git -C "$1" check-ignore -q .beads/user.txt' _ "$t"
   check "generic .new suffix is not ignored" bash -c '! git -C "$1" check-ignore -q notes.new' _ "$t"
 
-  "$DOM" "$t" --no-guest >/dev/null 2>&1; rc=$?
+  scoped_install codex "$DOM" "$t" --no-guest >/dev/null 2>&1; rc=$?
   check "no-guest conversion exits 0" test "$rc" -eq 0
   check "no-guest removes managed exclude block" bash -c '! grep -qF "# BEGIN domestique (managed)" "$1"' _ "$t/.git/info/exclude"
 
@@ -546,7 +558,12 @@ scenario_updater_platform_forwarding() {
   out="$("$UPDATER" "$t" --source "$DOM" 2>&1)"; rc=$?
   check "selector-less updater rerun exits 0" test "$rc" -eq 0
   check "selector-less updater retains Codex" test -f "$t/$REVIEWER_REL"
-  check "selector-less updater does not add Claude" test ! -e "$t/.claude"
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "selector-less updater adds Claude" test -f "$t/CLAUDE.md"
+    check "selector-less updater adds Copilot" test -f "$t/.github/.domestique/manifest"
+  else
+    check "selector-less updater does not add Claude" test ! -e "$t/.claude"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -693,13 +710,13 @@ scenario_public_names() {
       check "Codex policy legacy authority" grep -qF '$domestique-goal <epic-id>' "$t/AGENTS.md"
     fi
     before="$(treehash "$t")"
-    "$DOM" "$t" >/dev/null 2>&1; rc=$?
+    "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
     check "rerun succeeds" test "$rc" -eq 0
     check "rerun byte-identical" test "$before" = "$(treehash "$t")"
     for rel in .claude/commands/dom-goal.md .agents/skills/dom-goal/SKILL.md; do
       printf '\nUser customization\n' >> "$t/$rel"
     done
-    "$DOM" "$t" >/dev/null 2>&1; rc=$?
+    "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
     check "edited rerun succeeds" test "$rc" -eq 0
     for rel in .claude/commands/dom-goal.md .agents/skills/dom-goal/SKILL.md; do
       check "rerun preserves $rel" grep -qxF 'User customization' "$t/$rel"
@@ -724,7 +741,7 @@ scenario_public_name_host_collisions() {
   done
   "$DOM" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
   check "collision install preserves via helpers" test "$rc" -eq 0
-  "$DOM" "$t" >/dev/null 2>&1
+  "$DOM" "$t" --platform both >/dev/null 2>&1
   for rel in .claude/commands/dom-goal.md .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
     check "host bytes preserved $rel" grep -qxF 'host customization' "$t/$rel"
   done
@@ -747,7 +764,7 @@ scenario_previous_install_adds_public_names() {
   check "previous install had no short skill" test ! -e "$t/.agents/skills/dom-goal"
   check "previous install had no short command" test ! -e "$t/.claude/commands/dom-goal.md"
   printf '\nUser role edit\n' >> "$t/$IMPL_REL"
-  "$DOM" "$t" >/dev/null 2>&1; rc=$?
+  "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
   check "ordinary rerun adds aliases" test "$rc" -eq 0
   check "role customization preserved" grep -qxF 'User role edit' "$t/$IMPL_REL"
   check "Claude alias added" cmp -s "$t/.claude/commands/goal.md" "$t/.claude/commands/dom-goal.md"
@@ -988,7 +1005,7 @@ scenario_codex_configured_lifecycle() {
   cp "$t/$IMPL_REL" "$WORKROOT/$choice-implementer"
   cp "$t/$REVIEWER_REL" "$WORKROOT/$choice-reviewer"
   cp "$base/$IMPL_REL" "$WORKROOT/$choice-base"
-  check "repeat install" "$DOM" "$t"
+  check "repeat install" "$DOM" "$t" --platform codex
   check "configured implementer byte-identical" test "$i_before" = "$(filehash "$t/$IMPL_REL")"
   check "configured reviewer byte-identical" test "$r_before" = "$(filehash "$t/$REVIEWER_REL")"
   check "pristine bases not rebaselined" test "$base_before" = "$(treehash "$base")"
@@ -1007,7 +1024,7 @@ text = source.read_bytes()
 assert text.count(old) == 1
 dest.write_bytes(text.replace(old, new))
 PY
-  check "real three-way upgrade" bash "$v2" "$t"
+  check "real three-way upgrade" bash "$v2" "$t" --platform codex
   check "parser/marker/preservation after real merge (offline only)" python3 - "$t" "$WORKROOT" "$choice" <<'PY'
 import hashlib
 import json
@@ -1041,7 +1058,7 @@ assert marker["reviewer_sha256"] != hashlib.sha256(r + b"# manual edit\n").hexdi
 PY
   check "upgrade leaves excludes unchanged" test "$excludes_before" = "$(filehash "$t/.git/info/exclude")"
   cp "$t/$IMPL_REL" "$WORKROOT/$choice-implementer"
-  check "real uninstall preserves configured roles" bash "$v2" "$t" --uninstall
+  check "real uninstall preserves configured roles" bash "$v2" "$t" --uninstall --platform codex
   check "both customized roles kept under existing backup semantics" python3 - "$t" "$WORKROOT" "$choice" <<'PY'
 from pathlib import Path
 import sys
@@ -1171,16 +1188,16 @@ scenario_shared_legacy_migration() {
   check "previous snapshot install" bash "$old" "$t" --platform codex --guest
   printf '\nLocal native body customization\n' >> "$t/$DECOMPOSE_SKILL_REL"
   before="$(treehash "$t")"
-  "$DOM" "$t" --dry-run >/dev/null 2>&1; rc=$?
+  "$DOM" "$t" --platform codex --dry-run >/dev/null 2>&1; rc=$?
   check "migration dry-run" test "$rc" -eq 0
   check "dry-run writes nothing" test "$before" = "$(treehash "$t")"
-  check "migrate shared bases" "$DOM" "$t"
+  check "migrate shared bases" "$DOM" "$t" --platform codex
   check "native custom bytes retained" grep -qxF 'Local native body customization' "$t/$DECOMPOSE_SKILL_REL"
   check "shared authority exists" test -f "$t/.agents/.domestique/manifest"
   check "legacy canonical base retired" test ! -e "$t/.codex/.domestique/base/.agents/skills/dom-goal/SKILL.md"
   check "no duplicate canonical inventory" bash -c '! grep "^files=" "$1" | grep -q "/dom-goal/"' _ "$t/.codex/.domestique/manifest"
   before="$(treehash "$t")"
-  "$DOM" "$t" >/dev/null 2>&1; rc=$?
+  "$DOM" "$t" --platform codex >/dev/null 2>&1; rc=$?
   check "migration rerun" test "$rc" -eq 0
   check "migration idempotent" test "$before" = "$(treehash "$t")"
   check "migrated guest remains private" git -C "$t" check-ignore -q .agents/.domestique/manifest
@@ -1253,7 +1270,7 @@ PY
     local shared_before exclude_before
     shared_before="$(treehash "$t/.agents")"
     exclude_before="$(filehash "$t/.git/info/exclude")"
-    check "$mode unrelated normal Claude install" "$DOM" "$t" --platform claude
+    check "$mode unrelated normal Claude install" "$DOM" "$t" --platform claude --no-guest
     check "$mode shared state byte-preserved" test "$shared_before" = "$(treehash "$t/.agents")"
     check "$mode exclusions byte-preserved" test "$exclude_before" = "$(filehash "$t/.git/info/exclude")"
     check "$mode normal Claude remains visible" bash -c '! git -C "$1" check-ignore -q .claude/commands/dom-goal.md' _ "$t"
@@ -1444,7 +1461,8 @@ old = work / "retained-policy-old.sh"
 old.write_bytes(subprocess.check_output(["git", "-C", str(repo), "show", "64f4e09:domestique.sh"]))
 
 def run(script, root, *args):
-    return subprocess.run(["bash", str(script), str(root), *args], capture_output=True)
+    return subprocess.run(["bash", str(script), str(root), "--platform", "both", *args],
+                          capture_output=True)
 
 def snapshot(root):
     return {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns,

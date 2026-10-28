@@ -51,26 +51,41 @@ with shared snapshots in `.agents/.domestique`. They route by the actual native
 caller to project-local bodies, preserving the original request and epic
 authorization. All owned Claude/Codex policies and native entry descriptions
 are harness-scoped; foreign/ambiguous invocation stops before setup or work.
-The standalone candidate now installs Copilot explicitly:
-`bash domestique.sh /path/to/project --platform copilot` (optionally `--guest`
-or `--dry-run`). It embeds unique `.github` workflows and native role files,
+The standalone candidate now installs **Claude + Codex + Copilot by default**:
+`bash domestique.sh /path/to/project` (optionally `--guest` or `--dry-run`).
+`--platform all` is equivalent. Explicit `claude`, `codex`, `copilot`, and
+`both` remain supported; **both means Claude + Codex only**.
+It embeds unique `.github` workflows and native role files,
 with no launcher, preview package or machine runtime required after install.
 Normal mode adds a scoped `.github/copilot-instructions.md` block; guest mode
 leaves host policies untouched and bootstraps via `/domestique-v2-copilot`,
 using exact local exclusions rather than hiding `.github`.
 Scoped removal is `--uninstall --platform copilot`; shared canonical skills
 remain until the last Codex/Copilot consumer is removed.
-Fresh selector-less installation remains Claude-only; selector-less all-client
-installation is pending. Explicit unrelated provider operations retain Copilot
-and its visibility. Missing bodies stop rather than falling back.
-This does not migrate or qualify the separate preview above.
+Both fresh and repeat selector-less installs select all three, adding missing
+providers to every persisted subset. Explicit installs remain additive; explicit
+uninstall is scoped, while selector-less uninstall scans all three.
+Installed modes stay sticky. Missing providers inherit an entirely guest or
+normal installed set (fresh defaults to normal). Mixed existing modes plus a
+missing provider refuse **before writes** unless `--guest` or `--no-guest`
+intentionally resolves the selection. Shared routes stay visible if any valid
+Codex/Copilot consumer is normal; they are private only when all consumers are
+guest. Scoped removal preserves remaining guests' asset exclusions.
+Missing bodies stop rather than falling back.
+Requires local Git and Python 3.11+ (`tomllib` for Codex); optional native clients
+need not be installed to install configuration. No client/dependency installation,
+launcher, alias, global settings or implicit Beads initialization occurs.
+Preview migration (hq-7sm.13), native qualification (hq-7sm.6), and release
+publication remain pending; this does not migrate or qualify the separate preview.
 Guest upgrades refuse old unguarded owned host policies without changing them;
 upgrade those policies in normal mode or explicitly reconcile them first.
 Normal upgrades also scope retained inactive owned blocks (including an old
 `AGENTS.md` behind a new host override, and personal `CLAUDE.local.md` after
 `--no-guest`). Snapshot-based merges preserve custom text and host bytes, with
 managed-policy backups even under `--force`; missing proof or conflicts refuse
-before project writes. Retained local policy keeps its personal guest wording;
+before project writes, even for already-guarded policies. Conflicts create no
+project artifacts; occupied backup names are never overwritten.
+Retained local policy keeps its personal guest wording;
 conversion removes the Claude guest exclusion, not personal content.
 See [shared ownership and migration](docs/install-upgrade-design.md#single-script-shared-skill-foundation-hq-7sm10).
 
@@ -104,6 +119,7 @@ readiness. Supported pre-dispatch role/discovery/config/precedence evidence is
 required; optional loaded-file attestation or future telemetry is not.
 Native qualification remains pending. `bash test/copilot.sh --current` tests
 this standalone candidate; omitting `--current` retains frozen historical tests.
+`python3 -B -Werror test/all-current.py` covers the default-all standalone lifecycle.
 
 The **separate retained-CLI preview** uses a narrow owned writer:
 `/dom-decompose configure role models`, explicit pair/diff consent in an
@@ -262,7 +278,7 @@ These artifact meanings are historical, except for the explicitly replaced entry
 
 | Source | Current behavior |
 | --- | --- |
-| [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Standalone candidate based on public **v1**, now with shared public names and explicit `--platform copilot`. Fresh selector-less all-client installation and native qualification remain pending. The updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics are unchanged; the separate preview is not this runtime. |
+| [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Standalone candidate based on public **v1**, with shared public names and default-all Claude/Codex/Copilot installation. Native qualification, preview migration and publication remain pending. The updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics are unchanged; the separate preview is not this runtime. |
 | [`domestique2.sh`](domestique2.sh) | Source-only transition: reviewed read-only `--inspect` and help. **All installation/removal/activation operations refuse.** The format-1 preview engine is retained for fixture extraction/reuse, not executable setup through this entrypoint. |
 | [`update2.sh`](update2.sh) | Fail-closed transition: accepts explicit source/version selection syntax but **refuses all updates**, before candidate execution, fetch or destination writes. No default source; nonempty legacy source environment override refuses. Shell files, including this checkout's scripts, are not V2 packages. |
 | [`install-v2.sh`](install-v2.sh) | **Replaced on this preview branch** by the thin `--source CHECKOUT --ref REV` entrypoint above. The historical package/`--version`/`--dry-run` bootstrap interface no longer applies to this artifact. This is not automatic migration of existing installs. |

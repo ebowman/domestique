@@ -4,10 +4,25 @@
 
 ### Single-script shared skill foundation (hq-7sm.10)
 
-This candidate's `domestique.sh` keeps fresh selector-less Claude installation
-and source-free stdin execution. Explicit `--platform copilot` now installs a
-self-contained Copilot projection (hq-7sm.11); it does **not** migrate the
-separate preview or implement selector-less all-client installation.
+This candidate's source-free `domestique.sh` installs Claude, Codex and Copilot
+on both fresh and repeat selector-less runs (hq-7sm.12). `--platform all` selects
+the same three; `both` remains Claude+Codex only. Explicit selections add to the
+persisted subset, never silently remove another provider. Uninstall without a
+selector scans all three; explicit uninstall removes only that selection.
+The self-contained Copilot projection (hq-7sm.11) does **not** migrate the
+separate preview. Migration .13, native qualification .6, and publication remain pending.
+Installed provider modes stay sticky; missing providers inherit wholly guest or
+wholly normal installations (fresh is normal). With mixed installed modes and
+a missing selected provider, preflight refuses without changing provider, shared,
+policy or exclude state. Explicit `--guest`/`--no-guest` provide intentional
+resolution using the established additive selection semantics.
+Required local dependencies and all selected target/state paths are checked
+before writes, including Git-common exclusions and Python's Codex TOML parser.
+The all-provider install requires Git and Python 3.11+; native clients remain
+optional for config installation and are never installed by this script.
+Operational failures return nonzero and disclose possible partial results,
+not three-client readiness. No machine launcher, source reference or separate
+runtime is required by the installed workflows.
 The two canonical `.agents/skills/dom-{decompose,goal}/SKILL.md`
 entries route by actual native client context/tools, never installed directories.
 Codex bodies remain `.agents/skills/domestique{,-decompose,-goal}/SKILL.md`;
@@ -30,18 +45,26 @@ byte-preserved; guest mode never rewrites or backs up these host files.
 Isolation preflight covers **all retained owned root candidates**, not just
 the new active destination or selected provider: `CLAUDE.md`, `CLAUDE.local.md`,
 `AGENTS.md`, `AGENTS.override.md`, and `.github/copilot-instructions.md`.
-In normal mode, an unguarded block is
+Every owned block with a pristine base, even an already-guarded inactive block,
+undergoes the preserving merge preflight. In normal mode, an unguarded block is
 three-way merged against its existing per-file pristine block snapshot and the
 current harness-scoped policy. This also scopes the inactive `AGENTS.md` when
 a host adds an override after installation. Unrelated host prefixes/suffixes
 (including missing final newlines) and cleanly mergeable custom owned text are
-preserved; every changed policy gets its existing `.bak.<timestamp>` backup.
+preserved; every changed policy gets a new `.bak.<timestamp>` backup.
+Policy destinations, bases, backups and conflict paths are checked before
+selected writes; symlinks, hardlinks and wrong types refuse. An occupied backup
+name refuses when a backup is needed, preserving earlier backups and unrelated
+files. Backup creation is exclusive and policy publication refuses symlink
+destinations again, including under `--force` and `--dry-run`.
 `--force` does not bypass this preserving isolation merge. Missing/unsafe bases,
 conflicts, malformed markers, or a merged block without the guard refuse before
 provider, shared, mode or exclusion writes, including dry-run. Restore the
 reported pristine snapshot or explicitly reconcile the reported block without
-discarding custom text. Already-scoped inactive blocks stay byte-unchanged;
-ordinary active-policy upgrades retain their existing merge/adoption lifecycle.
+discarding custom text. Already-scoped inactive blocks stay byte-unchanged after
+preflight. Active owned policies use the same preserving merge even with
+`--force`; policy conflicts leave the entire project unchanged, without `.new`
+or backup artifacts. Guarded pre-snapshot policies retain adoption semantics.
 
 `--no-guest` allows this preserving normal conversion; it does not delete
 `CLAUDE.local.md` or change its personal guest wording into normal commit
@@ -69,11 +92,13 @@ Current tests install both real projections; these offline checks are not
 native execution qualification. Scoped Codex/Copilot
 removal retains shared files/bases while that valid consumer remains. The last
 valid consumer's removal uses existing unchanged/remove, modified/rename rules.
-Shared normal visibility is not hidden by a surviving guest; guest visibility
-is retained even during a later normal Claude install, not silently promoted.
+Shared canonical routes are visible whenever **any valid Codex or Copilot
+consumer is normal**, in either mixed-mode permutation. They remain private
+when all valid consumers are guest, including during a normal Claude install.
+Sticky reruns, explicit selected conversions and scoped removal recompute this
+rule; remaining guest providers retain their own exact asset exclusions.
 Invalid surviving consumer evidence refuses instead of authorizing deletion
-or exposure. A conflicting second-owner mode transition
-refuses for explicit human resolution. Existing host canonical leaves remain
+or exposure. Existing host canonical leaves remain
 visible and survive removal under the existing ownership bookkeeping.
 
 Copilot's five native files have their own manifest/pristine snapshots and exact

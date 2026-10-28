@@ -24,6 +24,7 @@ WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
 if [ "${1:-}" = "--current" ]; then
+  CURRENT_TEST=1
   export HOME="$WORKROOT/current-home"
   mkdir -p "$HOME"
 else
@@ -31,6 +32,11 @@ else
   source "$SCRIPT_DIR/historical-fixture.sh"
 fi
 
+# Claude-scoped fixtures run the actual candidate; historical calls are unchanged.
+claude_install() {
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then "$@" --platform claude
+  else "$@"; fi
+}
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -126,7 +132,7 @@ scenario_fresh_guest_install() {
 
   local sha_before out rc sha_after
   sha_before="$(filehash "$t/CLAUDE.md")"
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
   sha_after="$(filehash "$t/CLAUDE.md")"
 
   check "exit 0" test "$rc" -eq 0
@@ -160,12 +166,12 @@ scenario_guest_idempotent() {
   printf '# My project\n' > "$t/CLAUDE.md"
   git -C "$t" add CLAUDE.md
   git -C "$t" commit -q -m "initial"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local sha_claude_local_before sha_exclude_before out rc
   sha_claude_local_before="$(filehash "$t/CLAUDE.local.md")"
   sha_exclude_before="$(filehash "$t/.git/info/exclude")"
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
   local sha_claude_local_after sha_exclude_after
   sha_claude_local_after="$(filehash "$t/CLAUDE.local.md")"
   sha_exclude_after="$(filehash "$t/.git/info/exclude")"
@@ -194,7 +200,7 @@ scenario_guest_dry_run_fresh() {
   exclude_before="$(filehash "$t/.git/info/exclude")"
 
   local out rc exclude_after
-  out="$("$DOM" "$t" --guest --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest --dry-run 2>&1)"; rc=$?
   exclude_after="$(filehash "$t/.git/info/exclude")"
 
   check "exit 0" test "$rc" -eq 0
@@ -212,7 +218,7 @@ scenario_non_git_target() {
   local t="$WORKROOT/s4"; mkdir -p "$t"
 
   local out rc
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "warning mentions git" bash -c 'printf "%s" "$1" | grep -qi "git repository"' _ "$out"
@@ -235,7 +241,7 @@ scenario_worktree_common_dir() {
   git -C "$main" worktree add -q -b s5-wt-branch "$second" >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$second" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$second" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "common dir exclude has managed block" grep -qF "# BEGIN domestique (managed)" "$main/.git/info/exclude"
@@ -266,10 +272,10 @@ scenario_worktree_common_dir() {
 scenario_sticky_plain_rerun() {
   local t="$WORKROOT/s6a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "sticky note printed" bash -c 'printf "%s" "$1" | grep -q "staying in guest mode"' _ "$out"
@@ -286,10 +292,10 @@ scenario_sticky_plain_rerun() {
 scenario_no_guest_conversion() {
   local t="$WORKROOT/s6b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$t" --no-guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --no-guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "mode marker removed" test ! -e "$t/$MODE_MARKER_REL"
@@ -305,7 +311,7 @@ scenario_guest_and_no_guest_conflict() {
   local t="$WORKROOT/s7a"; mkdir -p "$t"
 
   local out rc
-  out="$("$DOM" "$t" --guest --no-guest 2>&1)"
+  out="$(claude_install "$DOM" "$t" --guest --no-guest 2>&1)"
   rc=$?
 
   check "exit 2" test "$rc" -eq 2
@@ -324,11 +330,11 @@ scenario_guest_and_no_guest_conflict() {
 scenario_corrupt_marker() {
   local t="$WORKROOT/s7b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
   printf 'banana\n' > "$t/$MODE_MARKER_REL"
 
   local out rc
-  out="$("$DOM" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "warning mentions unexpected content" bash -c 'printf "%s" "$1" | grep -q "unexpected content"' _ "$out"
@@ -342,12 +348,12 @@ scenario_corrupt_marker() {
 scenario_sticky_dry_run() {
   local t="$WORKROOT/s8a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
   local sha_before
   sha_before="$(filehash "$t/$MODE_MARKER_REL")"
 
   local out rc sha_after
-  out="$("$DOM" "$t" --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --dry-run 2>&1)"; rc=$?
   sha_after="$(filehash "$t/$MODE_MARKER_REL")"
 
   check "exit 0" test "$rc" -eq 0
@@ -362,10 +368,10 @@ scenario_sticky_dry_run() {
 scenario_no_guest_dry_run_keeps_marker() {
   local t="$WORKROOT/s8b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$t" --no-guest --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --no-guest --dry-run 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "marker still present" test -e "$t/$MODE_MARKER_REL"
@@ -385,7 +391,7 @@ scenario_tracked_path_warning() {
   git -C "$t" commit -q -m "accidentally tracked CLAUDE.local.md"
 
   local out rc
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "warning about already-tracked path printed" bash -c 'printf "%s" "$1" | grep -q "already tracked"' _ "$out"
@@ -399,7 +405,7 @@ scenario_tracked_path_warning() {
 scenario_guest_upstream_merge() {
   local t="$WORKROOT/s10a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   # Local edit OUTSIDE the managed block, added after the v1 install and
   # before the v2 run. This is v1 evidence that (a) can only exist if the v1
@@ -411,7 +417,7 @@ scenario_guest_upstream_merge() {
   printf '\nMY LOCAL NOTE SENTINEL\n' >> "$t/CLAUDE.local.md"
 
   local out rc
-  out="$("$V2G" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$V2G" "$t" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "upstream v2 line merged into CLAUDE.local.md" grep -q "(v2-guest-test)" "$t/CLAUDE.local.md"
@@ -454,11 +460,11 @@ scenario_guest_upstream_merge() {
 scenario_mixed_dir_plain_merge() {
   local t="$WORKROOT/s10b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$V2G" "$t" --no-guest 2>&1)"; rc=$?
+  out="$(claude_install "$V2G" "$t" --no-guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "upstream v2 line merged into CLAUDE.md" grep -q "(v2-guest-test)" "$t/CLAUDE.md"
@@ -486,7 +492,7 @@ scenario_mixed_dir_plain_merge() {
 scenario_claude_setup_protocol() {
   local t="$WORKROOT/setup-protocol"; mkdir -p "$t"
   git_init "$t"
-  check "guest installer succeeds" "$DOM" "$t" --guest
+  check "guest installer succeeds" claude_install "$DOM" "$t" --guest
   check "installed protocol/aliases (static, not native qualification)" python3 - "$t" <<'PY'
 from pathlib import Path
 import sys
@@ -646,14 +652,14 @@ PY
 scenario_guest_configured_roles() {
   local t="$WORKROOT/setup-guest"; mkdir -p "$t"
   git_init "$t"
-  check "guest install" "$DOM" "$t" --guest
+  check "guest install" claude_install "$DOM" "$t" --guest
   local exclude_before i_before r_before base_before
   exclude_before="$(filehash "$t/.git/info/exclude")"
   base_before="$(filehash "$t/.claude/.domestique/base/.claude/agents/implementer.md")"
   check "synthetic configured-pair fixture" python3 "$SCRIPT_DIR/fixtures/claude-configured-pair.py" "$t"
   i_before="$(filehash "$t/.claude/agents/implementer.md")"
   r_before="$(filehash "$t/.claude/agents/reviewer.md")"
-  check "guest repeat install" "$DOM" "$t"
+  check "guest repeat install" claude_install "$DOM" "$t"
   check "configured implementer unchanged" test "$i_before" = "$(filehash "$t/.claude/agents/implementer.md")"
   check "configured reviewer unchanged" test "$r_before" = "$(filehash "$t/.claude/agents/reviewer.md")"
   check "original pristine base unchanged" test "$base_before" = "$(filehash "$t/.claude/.domestique/base/.claude/agents/implementer.md")"

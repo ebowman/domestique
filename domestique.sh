@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # domestique.sh — install the domestique orchestration config into a repo.
-# Claude Code remains the default projection; --platform also supports Codex
-# and explicit Copilot or simultaneous Claude+Codex installs. Runtime assets remain embedded
+# No selector installs Claude+Codex+Copilot; explicit both means Claude+Codex.
+# Runtime assets remain embedded
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
@@ -1299,7 +1299,7 @@ usage() {
 Usage: domestique.sh [TARGET_DIR] [options]
 
 Installs domestique orchestration config into TARGET_DIR (default: current
-directory). Claude is the compatibility default; Codex uses native surfaces:
+directory). Without a selector, installs all three native projections:
   CLAUDE.md                        orchestration policy (in a managed block)
   .claude/agents/implementer.md    implementer subagent
   .claude/agents/reviewer.md       reviewer subagent
@@ -1314,9 +1314,9 @@ directory). Claude is the compatibility default; Codex uses native surfaces:
   .github/copilot-instructions.md Copilot policy (normal only)
 
 Options:
-  --platform <p> Select claude, codex, both, or copilot. A fresh selector-less install
-                 remains Claude-only. Explicit installs add to the persisted
-                 provider set; later selector-less runs update that set.
+  --platform <p> Select claude, codex, both, copilot, or all. Both means only
+                 Claude+Codex. No selector (fresh or rerun) selects all three.
+                 Explicit installs add to the persisted provider set.
   --dry-run      Print planned changes; touch nothing.
   --with-beads   If `bd` is on PATH, initialize with safe skip flags when
                  needed. Normal mode runs setup only for selected providers;
@@ -1336,7 +1336,7 @@ Options:
                  --guest (passing both is a usage error).
   --uninstall    Remove everything domestique installed from TARGET_DIR, and
                  only that. With --platform it removes only the selected
-                 projection; without it, it scans both. Modified owned files
+                 projection; without it, it scans all three. Modified owned files
                  are kept as <file>.uninstalled.<timestamp> unless --force.
                  Managed policy/exclude blocks and provider state are removed,
                  and only empty owned directories are pruned. Never touches
@@ -1388,7 +1388,11 @@ Behavior:
     in that provider's domestique state. A later plain re-run detects it and
     stays in guest mode instead of silently un-guesting the install; pass
     --no-guest to convert
-    back to normal on purpose.
+    back to normal on purpose. Missing providers inherit a wholly guest or
+    wholly normal installed set (fresh is normal). Mixed modes with a missing
+    selected provider refuse before writes; choose --guest or --no-guest.
+  * Requires local Git and Python (3.11+ with tomllib when selecting Codex).
+    Native clients are optional for configuration installation, not readiness.
   * Running twice in a row makes no changes on the second run.
   * Pre-existing install with no provider snapshot yet
     and a differing file: ADOPTED, not overwritten — local edits are left in
@@ -1441,10 +1445,10 @@ while [ $# -gt 0 ]; do
 done
 TARGET_DIR="${TARGET_DIR:-.}"
 
-case "${PLATFORM_ARG:-claude}" in
-  claude|codex|both|copilot) ;;
+case "${PLATFORM_ARG:-all}" in
+  claude|codex|both|copilot|all) ;;
   *)
-    echo "Error: --platform must be one of: claude, codex, both, copilot (got '$PLATFORM_ARG')." >&2
+    echo "Error: --platform must be one of: claude, codex, both, copilot, all (got '$PLATFORM_ARG')." >&2
     usage >&2
     exit 2
     ;;
@@ -1461,6 +1465,15 @@ if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   usage >&2
   exit 2
 fi
+
+# Check even the tools used to construct inventories and temporary staging
+# before using them. These are local prerequisites, never installed for users.
+for dependency in git python3 awk sed grep find wc cut paste head tail cmp cp mkdir rm mv rmdir touch date mktemp cat dirname tr sort; do
+  command -v "$dependency" >/dev/null 2>&1 || {
+    echo "Error: required local dependency '$dependency' is unavailable. No project writes." >&2
+    exit 3
+  }
+done
 
 COPILOT_ENTRIES='.github/agents/domestique-v2-copilot-implementer.agent.md|emit_copilot_implementer
 .github/agents/domestique-v2-copilot-reviewer.agent.md|emit_copilot_reviewer
@@ -1680,7 +1693,8 @@ install_current_provider() {
         install_plain "$TARGET_DIR/$rel" "$emitter"
       done <<< "$COPILOT_ENTRIES"
       if [ "$DRY_RUN" -eq 0 ]; then
-        cp "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"
+        cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes" ||
+          cp "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"
       fi
       echo "Copilot configuration installed; native readiness is NOT established. Use a fresh native invocation and the role setup gate."
       ;;
@@ -1691,7 +1705,8 @@ install_current_provider() {
       note_dry "write mode marker -> $MODE_MARKER (guest)"
     else
       mkdir -p "$(dirname "$MODE_MARKER")"
-      printf 'guest\n' > "$MODE_MARKER"
+      [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ] ||
+        printf 'guest\n' > "$MODE_MARKER"
     fi
   fi
   write_provider_manifest
@@ -1734,8 +1749,7 @@ fi
 # ---------------------------------------------------------------------------
 # Platform selection. Provider-owned `platforms` files all carry the same
 # canonical installed set. Explicit installs add to that set; selector-less
-# reruns use it. A legacy Claude state dir without a platforms file counts as
-# Claude, while a genuinely fresh selector-less install remains Claude-only.
+# reruns select all three. Legacy state directories count as installed too.
 # ---------------------------------------------------------------------------
 SELECT_CLAUDE=0
 SELECT_CODEX=0
@@ -1745,19 +1759,28 @@ PERSISTED_CODEX=0
 PERSISTED_COPILOT=0
 
 read_platform_state() {
-  local statefile="$1" value
+  local statefile="$1" value provider
+  local members
   [ -e "$statefile" ] || return 0
   value="$(cat "$statefile" 2>/dev/null || true)"
   case "$value" in
-    claude) PERSISTED_CLAUDE=1 ;;
-    codex) PERSISTED_CODEX=1 ;;
-    both) PERSISTED_CLAUDE=1; PERSISTED_CODEX=1 ;;
-    copilot) PERSISTED_COPILOT=1 ;;
-    claude,copilot) PERSISTED_CLAUDE=1; PERSISTED_COPILOT=1 ;;
-    codex,copilot) PERSISTED_CODEX=1; PERSISTED_COPILOT=1 ;;
-    claude,codex,copilot) PERSISTED_CLAUDE=1; PERSISTED_CODEX=1; PERSISTED_COPILOT=1 ;;
-    *) echo "Warning: ignoring invalid domestique platform state '$value' in $statefile." >&2 ;;
+    both) value=claude,codex ;;
+    all) value=claude,codex,copilot ;;
   esac
+  case "$value" in
+    ""|,*|*,|*,,*|*$'\n'*)
+      echo "Error: invalid domestique platform state in $statefile. No project writes." >&2
+      exit 3 ;;
+  esac
+  IFS=, read -r -a members <<< "$value"
+  for provider in "${members[@]}"; do
+    case "$provider" in
+      claude) PERSISTED_CLAUDE=1 ;;
+      codex) PERSISTED_CODEX=1 ;;
+      copilot) PERSISTED_COPILOT=1 ;;
+      *) echo "Error: invalid domestique platform state in $statefile. No project writes." >&2; exit 3 ;;
+    esac
+  done
 }
 
 read_platform_state "$TARGET_DIR/.claude/.domestique/platforms"
@@ -1776,8 +1799,10 @@ if [ -d "$TARGET_DIR/.github/.domestique" ]; then
 fi
 
 if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
-  SELECT_CLAUDE="$PERSISTED_CLAUDE"
-  SELECT_CODEX="$PERSISTED_CODEX"
+  if [ "$UNINSTALL" -eq 0 ]; then
+    SELECT_CLAUDE="$PERSISTED_CLAUDE"
+    SELECT_CODEX="$PERSISTED_CODEX"
+  fi
   # An explicit unrelated provider operation retains Copilot unchanged.
   # In particular it must not convert/hide normal assets or expose guest ones.
   SELECT_COPILOT=0
@@ -1786,13 +1811,12 @@ if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
     codex) SELECT_CODEX=1 ;;
     both) SELECT_CLAUDE=1; SELECT_CODEX=1 ;;
     copilot) SELECT_COPILOT=1 ;;
+    all) SELECT_CLAUDE=1; SELECT_CODEX=1; SELECT_COPILOT=1 ;;
   esac
-elif [ "$PERSISTED_CLAUDE" -eq 1 ] || [ "$PERSISTED_CODEX" -eq 1 ] || [ "$PERSISTED_COPILOT" -eq 1 ]; then
-  SELECT_CLAUDE="$PERSISTED_CLAUDE"
-  SELECT_CODEX="$PERSISTED_CODEX"
-  SELECT_COPILOT="$PERSISTED_COPILOT"
 else
   SELECT_CLAUDE=1
+  SELECT_CODEX=1
+  SELECT_COPILOT=1
 fi
 
 platform_set() {
@@ -1817,7 +1841,8 @@ REQUESTED_GUEST="$GUEST"
 
 TS="$(date +%Y%m%d%H%M%S)"
 TMPDIR_WORK="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_WORK"' EXIT
+MUTATION_STARTED=0
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ]; then echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2; fi; rm -rf "$TMPDIR_WORK"; exit "$rc"' EXIT
 
 # Summary accumulators.
 SUM_CREATED=()
@@ -1911,6 +1936,61 @@ shared_safe_path() {
   done
 }
 
+# Backups are new evidence, never an overwrite target (even a regular file).
+policy_backup_preflight() {
+  local rel="$1.bak.$TS"
+  shared_safe_path "$rel" && [ ! -e "$TARGET_DIR/$rel" ] ||
+    shared_refuse "unsafe or occupied policy backup $rel; preserve it and retry with a new timestamp"
+}
+
+# Pin destination directories and refuse links/collisions again at publication.
+# Used for policy backups and uninstall preservation: neither may follow links
+# or overwrite an occupied destination when publishing new evidence.
+policy_copy() {
+  python3 - "$1" "$2" "${3:-replace}" "$TARGET_DIR" <<'PY'
+import os
+from pathlib import Path
+import shutil
+import stat
+import sys
+
+source, destination, action, root = sys.argv[1:]
+# Preflight permits system aliases above the physical project root (e.g.
+# macOS /var). Pin that root, then disallow symlinks in every project component.
+path = Path(os.path.relpath(destination, root))
+if ".." in path.parts:
+    raise ValueError(f"policy destination outside project: {destination}")
+directory = os.open(str(Path(root).resolve()), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    for part in path.parts[:-1]:
+        child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=directory)
+        os.close(directory)
+        directory = child
+    with os.fdopen(os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as incoming:
+        source_info = os.fstat(incoming.fileno())
+        if not stat.S_ISREG(source_info.st_mode) or source_info.st_nlink != 1:
+            raise ValueError(f"unsafe policy source: {source}")
+        mode = stat.S_IMODE(os.fstat(incoming.fileno()).st_mode)
+        flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        try:
+            fd = os.open(path.name, flags | os.O_CREAT | os.O_EXCL, mode,
+                         dir_fd=directory)
+        except FileExistsError:
+            if action == "new":
+                raise
+            fd = os.open(path.name, flags, dir_fd=directory)
+        with os.fdopen(fd, "wb") as outgoing:
+            info = os.fstat(outgoing.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError(f"unsafe policy destination: {destination}")
+            os.ftruncate(outgoing.fileno(), 0)
+            shutil.copyfileobj(incoming, outgoing)
+finally:
+    os.close(directory)
+PY
+}
+
 snapshot_has_file() {
   local state="$1" platform="$2" rel="$3" manifest="$TARGET_DIR/$1/manifest"
   shared_safe_path "$state/manifest" && [ -f "$manifest" ] || return 1
@@ -1927,7 +2007,7 @@ snapshot_has_file() {
     }
     END { exit bad || format != "1" || provider != platform || found != 1 }
   ' "$manifest" || return 1
-  shared_safe_path "$state/base/$rel" && [ -f "$TARGET_DIR/$state/base/$rel" ]
+  shared_safe_path "$state/base/$rel${4:-}" && [ -f "$TARGET_DIR/$state/base/$rel${4:-}" ]
 }
 
 shared_consumer_valid() {
@@ -2008,42 +2088,144 @@ PY
     shared_refuse "native role discovery description guard $rel"
 }
 
+# All dependencies, selected inventories and provider modes are checked before
+# any provider, shared owner or exclude is changed. No native client is needed.
+lifecycle_preflight() {
+  local provider state rel selected mode guests=0 normals=0 missing=0
+  local paths=""
+  if [ "$SELECT_CODEX" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+    python3 -c 'import tomllib' >/dev/null 2>&1 ||
+      shared_refuse "Python 3.11+ with tomllib is required for Codex role validation"
+  fi
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    state="${SNAPSHOT_DIR#"$TARGET_DIR"/}"
+    selected=0
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE" ;;
+      codex) selected="$SELECT_CODEX" ;;
+      copilot) selected="$SELECT_COPILOT" ;;
+    esac
+    shared_safe_path "$state" directory || shared_refuse "unsafe $state"
+    for rel in mode platforms manifest guest-excludes beads-owned; do
+      shared_safe_path "$state/$rel" || shared_refuse "unsafe $state/$rel"
+    done
+    if [ -d "$SNAPSHOT_DIR" ]; then
+      mode="$(cat "$MODE_MARKER" 2>/dev/null || true)"
+      case "$mode" in
+        guest) guests=$((guests + 1)) ;;
+        "")
+          if [ "$SELECT_COPILOT" -eq 1 ] || [ "$provider" = copilot ]; then
+            [ ! -e "$MODE_MARKER" ] || shared_refuse "invalid mode $state"
+          fi
+          normals=$((normals + 1)) ;;
+        *)
+          [ "$SELECT_COPILOT" -eq 0 ] && [ "$provider" != copilot ] ||
+            shared_refuse "invalid mode $state"
+          normals=$((normals + 1)) ;;
+      esac
+    elif [ "$selected" -eq 1 ]; then
+      missing=1
+    fi
+    [ "$selected" -eq 1 ] || continue
+    for rel in mode platforms manifest guest-excludes beads-owned; do
+      paths="$paths$state/$rel"$'\n'
+    done
+    local files
+    IFS=, read -r -a files <<< "$MANAGED_PLAIN_FILES"
+    for rel in "${files[@]}"; do
+      shared_safe_path "$rel" && shared_safe_path "$state/base/$rel" &&
+        shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" &&
+        shared_safe_path "$rel.uninstalled.$TS" ||
+        shared_refuse "unsafe selected $provider path $rel"
+      paths="$paths$rel"$'\n'"$state/base/$rel"$'\n'"$rel.bak.$TS"$'\n'"$rel.new"$'\n'"$rel.uninstalled.$TS"$'\n'
+    done
+  done
+  if [ "$UNINSTALL" -eq 0 ] && [ "$missing" -eq 1 ] &&
+     [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ]; then
+    [ "$guests" -eq 0 ] || [ "$normals" -eq 0 ] ||
+      shared_refuse "mixed-mode ambiguity with missing provider; explicitly choose --guest or --no-guest"
+    [ "$guests" -eq 0 ] || REQUESTED_GUEST=1
+  fi
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    for rel in $POLICY_CANDIDATES; do
+      shared_safe_path "$rel" && shared_safe_path "${SNAPSHOT_BASE#"$TARGET_DIR"/}/$rel.block" &&
+        shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" ||
+        shared_refuse "unsafe policy destination $rel"
+      paths="$paths$rel"$'\n'"${SNAPSHOT_BASE#"$TARGET_DIR"/}/$rel.block"$'\n'"$rel.bak.$TS"$'\n'"$rel.new"$'\n'
+    done
+  done
+  if [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ]; then
+    local shared_files
+    IFS=, read -r -a shared_files <<< "$SHARED_FILES"
+    for rel in "${shared_files[@]}" manifest mode guest-excludes; do
+      case "$rel" in
+        .agents/*)
+          shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" &&
+            shared_safe_path "$rel.uninstalled.$TS" || shared_refuse "unsafe shared output $rel"
+          paths="$paths$rel"$'\n'".agents/.domestique/base/$rel"$'\n'"$rel.bak.$TS"$'\n'"$rel.new"$'\n'"$rel.uninstalled.$TS"$'\n' ;;
+        *) paths="$paths.agents/.domestique/$rel"$'\n' ;;
+      esac
+    done
+  fi
+  # Writable ancestors and the Git-common exclude need checking together with
+  # prospective leaves. This is a read-only check, not a write probe.
+  python3 - "$TARGET_DIR" "$paths" <<'PY' ||
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+
+root = Path(sys.argv[1]).resolve()
+paths = [root / p for p in sys.argv[2].splitlines()]
+common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+                        capture_output=True, text=True)
+if common.returncode == 0:
+    directory = Path(common.stdout.strip())
+    if not directory.is_absolute():
+        directory = root / directory
+    paths.append(directory / "info" / "exclude")
+try:
+    for candidate in paths:
+        checked_parent = False
+        for item in (candidate, *candidate.parents):
+            if item.is_symlink():
+                raise ValueError(f"symlink: {item}")
+            if not item.exists():
+                continue
+            info = item.stat()
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise ValueError(f"non-file/directory: {item}")
+            if item == candidate and item.is_file() and info.st_nlink != 1:
+                raise ValueError(f"hardlinked leaf: {item}")
+            if not checked_parent:
+                if not os.access(item, os.W_OK) or not info.st_mode & 0o222:
+                    raise ValueError(f"not writable: {item}")
+                checked_parent = item.is_dir()
+            if item == root or item == root.parent:
+                break
+except (OSError, ValueError) as exc:
+    print(f"Lifecycle path preflight: {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
+    shared_refuse "unsafe or unwritable lifecycle paths"
+}
+
 # Copilot projection preflight reuses snapshot ownership and three-way merge.
 # It never writes project state or confirms a model pair.
 copilot_preflight() {
   [ "$SELECT_COPILOT" -eq 1 ] || [ -e "$TARGET_DIR/.github/.domestique" ] ||
     [ -L "$TARGET_DIR/.github/.domestique" ] || return 0
   command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
-  local state=".github/.domestique" rel emitter path base rc provider mode
-  local guests=0 normals=0
+  local state=".github/.domestique" rel emitter path base rc
   for path in .domestique-private/copilot-preview.json .github/skills/dom-decompose .github/skills/dom-goal; do
     if [ -e "$TARGET_DIR/$path" ] || [ -L "$TARGET_DIR/$path" ]; then
       shared_refuse "competing preview ownership/path $path; explicit migration is separate"
     fi
   done
   shared_safe_path "$state" directory || shared_refuse "unsafe Copilot state"
-  for provider in .claude .codex .github; do
-    path="$provider/.domestique"
-    shared_safe_path "$path" directory || shared_refuse "unsafe $path"
-    for rel in mode platforms manifest guest-excludes beads-owned; do
-      shared_safe_path "$path/$rel" || shared_refuse "unsafe $path/$rel"
-    done
-    if [ -d "$TARGET_DIR/$path" ]; then
-      mode="$(cat "$TARGET_DIR/$path/mode" 2>/dev/null || true)"
-      case "$mode" in
-        guest) guests=$((guests + 1)) ;;
-        "") [ ! -e "$TARGET_DIR/$path/mode" ] || shared_refuse "invalid mode $path"; normals=$((normals + 1)) ;;
-        *) shared_refuse "invalid mode $path" ;;
-      esac
-    fi
-  done
-  if [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ] &&
-     [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ]; then
-    [ "$guests" -eq 0 ] || [ "$normals" -eq 0 ] ||
-      shared_refuse "mixed-mode ambiguity; explicitly choose --guest or --no-guest"
-    # Adding a projection to a wholly guest project must not expose it.
-    [ "$guests" -eq 0 ] || REQUESTED_GUEST=1
-  fi
   : > "$TMPDIR_WORK/copilot-excludes"
   : > "$TMPDIR_WORK/shared-new-excludes"
   if [ -d "$TARGET_DIR/$state" ]; then
@@ -2361,21 +2543,9 @@ shared_preflight() {
       shared_refuse "shared state has no valid native consumer"
     SHARED_PRESENT=1
     [ ! -e "$TARGET_DIR/$state/mode" ] || SHARED_GUEST=1
-    if [ "$SHARED_COPILOT" -eq 1 ] && [ -e "$TARGET_DIR/$state/mode" ] &&
-       [ ! -e "$TARGET_DIR/.github/.domestique/mode" ]; then
-      shared_refuse "guest shared visibility conflicts with a normal Copilot consumer"
-    fi
   fi
   [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ] || return 0
   [ "$UNINSTALL" -eq 0 ] || return 0
-  if [ "$SHARED_COPILOT" -eq 1 ] && [ "$SELECT_COPILOT" -eq 0 ]; then
-    local requested="$REQUESTED_GUEST" shared_guest=0
-    [ "$GUEST_EXPLICIT" -eq 1 ] || [ "$NO_GUEST" -eq 1 ] ||
-      { [ "$(cat "$TARGET_DIR/$legacy/mode" 2>/dev/null || true)" != guest ] || requested=1; }
-    [ ! -e "$TARGET_DIR/$state/mode" ] || shared_guest=1
-    [ "$requested" -eq "$shared_guest" ] ||
-      shared_refuse "another consumer retains shared visibility; cannot convert it implicitly"
-  fi
   while IFS='|' read -r rel emitter; do
     shared_safe_path "$rel" || shared_refuse "unsafe canonical path $rel"
     base="$TARGET_DIR/$state/base/$rel"
@@ -2394,20 +2564,48 @@ shared_preflight() {
   done <<< "$SHARED_ENTRIES"
 }
 
+# Shared routes are private only when every surviving valid consumer is guest.
+# Selected installs supply their resolved modes; uninstall excludes removed owners.
+resolve_shared_visibility() {
+  local provider valid selected guest state
+  SHARED_GUEST=1
+  for provider in codex copilot; do
+    case "$provider" in
+      codex) valid="$SHARED_CODEX"; selected="$SELECT_CODEX"; guest="${CODEX_GUEST_SELECTED:-0}"; state=.codex ;;
+      copilot) valid="$SHARED_COPILOT"; selected="$SELECT_COPILOT"; guest="${COPILOT_GUEST_SELECTED:-0}"; state=.github ;;
+    esac
+    if [ "$UNINSTALL" -eq 1 ]; then
+      [ "$selected" -eq 0 ] && [ "$valid" -eq 1 ] || continue
+      guest=0
+      [ "$(cat "$TARGET_DIR/$state/.domestique/mode" 2>/dev/null || true)" != guest ] || guest=1
+    elif [ "$selected" -eq 0 ]; then
+      [ "$valid" -eq 1 ] || continue
+      guest=0
+      [ "$(cat "$TARGET_DIR/$state/.domestique/mode" 2>/dev/null || true)" != guest ] || guest=1
+    fi
+    [ "$guest" -eq 1 ] || SHARED_GUEST=0
+  done
+}
+
+write_shared_mode() {
+  [ "$DRY_RUN" -eq 0 ] || return 0
+  local marker="$TARGET_DIR/.agents/.domestique/mode"
+  if [ "$SHARED_GUEST" -eq 1 ]; then
+    [ "$(cat "$marker" 2>/dev/null || true)" = guest ] || printf 'guest\n' > "$marker"
+  else
+    rm -f "$marker"
+  fi
+}
+
 install_shared() {
   local rel emitter
   configure_provider shared
-  # Visibility follows the sole current consumer, or stays with the shared
-  # owner while a second valid consumer survives. Never broaden to .agents/.
+  # Visibility follows all consumers, not the last installed provider.
   while IFS='|' read -r rel emitter; do
     install_plain "$TARGET_DIR/$rel" "$emitter"
   done <<< "$SHARED_ENTRIES"
   write_provider_manifest
-  if [ "$SELECT_COPILOT" -eq 1 ]; then
-    SHARED_GUEST="$COPILOT_GUEST_SELECTED"
-  elif [ "$SHARED_COPILOT" -eq 0 ]; then
-    SHARED_GUEST="$CODEX_GUEST_SELECTED"
-  fi
+  resolve_shared_visibility
   if [ "$DRY_RUN" -eq 0 ]; then
     if [ "$SHARED_PRESENT" -eq 0 ]; then
       : > "$SNAPSHOT_DIR/guest-excludes"
@@ -2418,13 +2616,7 @@ install_shared() {
         fi
       done <<< "$SHARED_ENTRIES"
     fi
-    if [ "$SELECT_COPILOT" -eq 1 ] || [ "$SHARED_COPILOT" -eq 0 ]; then
-      if [ "$SHARED_GUEST" -eq 1 ]; then
-        printf 'guest\n' > "$MODE_MARKER"
-      else
-        rm -f "$MODE_MARKER"
-      fi
-    fi
+    write_shared_mode
   fi
   if [ "$SHARED_MIGRATE" -eq 1 ]; then
     configure_provider codex
@@ -2437,13 +2629,18 @@ install_shared() {
   [ "$DRY_RUN" -eq 1 ] || SHARED_PRESENT=1
 }
 
-# Every retained owned root block needs isolation, even if an override or mode
-# switch makes it inactive. Stage proof before any project writes. Already
-# scoped inactive blocks and unowned host instructions are not update targets.
+# Every retained owned root block needs a preserving merge preflight, even if
+# already guarded or inactive. Guarded inactive blocks are not update targets.
 policy_preflight() {
-  [ "$UNINSTALL" -eq 0 ] || return 0
-  local provider requested state rel status bc ec block expected base emitter mode merged rc
+  local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active
   for provider in claude codex copilot; do
+    configure_provider "$provider"
+    selected=0
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE" ;;
+      codex) selected="$SELECT_CODEX" ;;
+      copilot) selected="$SELECT_COPILOT" ;;
+    esac
     state=".$provider/.domestique"
     [ "$provider" != copilot ] || state=".github/.domestique"
     shared_safe_path "$state/mode" || shared_refuse "unsafe $state/mode"
@@ -2453,14 +2650,35 @@ policy_preflight() {
        [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]; then
       requested=1
     fi
+    active=""
+    if [ "$selected" -eq 1 ]; then
+      case "$provider:$requested" in
+        claude:0) active=CLAUDE.md ;;
+        claude:1) active=CLAUDE.local.md ;;
+        codex:0)
+          active=AGENTS.md
+          [ ! -e "$TARGET_DIR/AGENTS.override.md" ] || active=AGENTS.override.md ;;
+        copilot:0) active=.github/copilot-instructions.md ;;
+      esac
+    fi
     for rel in CLAUDE.md CLAUDE.local.md AGENTS.md AGENTS.override.md .github/copilot-instructions.md; do
       case "$provider:$rel" in claude:AGENTS*|codex:CLAUDE*|claude:.github/*|codex:.github/*|copilot:CLAUDE*|copilot:AGENTS*) continue ;; esac
       shared_safe_path "$rel" || shared_refuse "unsafe root policy $rel"
       base="$state/base/$rel.block"
       shared_safe_path "$base" || shared_refuse "unsafe policy base $base"
+      if [ -f "$TARGET_DIR/$base" ] &&
+         ! grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/$rel" 2>/dev/null; then
+        snapshot_has_file "$state" "$provider" "$rel" .block ||
+          shared_refuse "unowned policy base collision $base"
+      fi
       [ -f "$TARGET_DIR/$rel" ] || continue
       read -r status bc ec < <(markers_sane "$TARGET_DIR/$rel")
-      [ "$status" != none ] || continue
+      if [ "$status" = none ]; then
+        if [ "$UNINSTALL" -eq 0 ] && [ "$rel" = "$active" ]; then policy_backup_preflight "$rel"; fi
+        continue
+      fi
+      # Uninstall retains its existing malformed-marker diagnostics.
+      if [ "$UNINSTALL" -eq 1 ] && { [ "$selected" -eq 0 ] || [ "$status" != ok ]; }; then continue; fi
       [ "$status" = ok ] || {
         echo "Error: malformed owned policy $rel ($status; duplicate, missing or inverted markers). Fix it by hand and re-run. No project writes." >&2
         exit 1
@@ -2472,18 +2690,29 @@ policy_preflight() {
         $0 == endm { exit }
         inblock { print }
       ' "$TARGET_DIR/$rel" > "$block"
+      emitter="$POLICY_EMITTER"
+      mode=normal
+      [ "$rel" != CLAUDE.local.md ] || mode=guest
+      "$emitter" "$mode" > "$TMPDIR_WORK/retained-upstream"
+      if [ "$UNINSTALL" -eq 1 ]; then
+        local reference="$TARGET_DIR/$base"
+        [ -f "$reference" ] || reference="$TMPDIR_WORK/retained-upstream"
+        cmp -s "$block" "$reference" || policy_backup_preflight "$rel"
+        continue
+      fi
       {
         [ "$provider" != codex ] || printf '# Domestique orchestration policy (Codex)\n\n'
         emit_harness_guard "$provider" policy
       } > "$expected"
+      guarded=0
       if head -c "$(wc -c < "$expected")" "$block" | cmp -s "$expected" -; then
+        guarded=1
         if [ "$requested" -eq 1 ] && [ "$rel" = CLAUDE.local.md ] &&
            git -C "$TARGET_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
           touch "$TMPDIR_WORK/keep-$rel"
         fi
-        continue
       fi
-      if [ "$requested" -eq 1 ]; then
+      if [ "$guarded" -eq 0 ] && [ "$requested" -eq 1 ]; then
         # Only the selected Claude provider's untracked personal root may be
         # upgraded in guest mode. Never silently edit a tracked host root.
         if [ "$rel" != CLAUDE.local.md ] || [ "$SELECT_CLAUDE" -eq 0 ] ||
@@ -2491,15 +2720,14 @@ policy_preflight() {
           shared_refuse "unguarded owned host policy $rel cannot be changed in guest mode; first upgrade in normal mode (--no-guest), or explicitly reconcile the owned block's harness guard, then retry --guest"
         fi
       fi
+      # Guarded pre-snapshot policies retain the existing adoption semantics.
+      if [ "$guarded" -eq 1 ] && [ ! -f "$TARGET_DIR/$base" ]; then
+        mkdir -p "$(dirname "$TMPDIR_WORK/preserve-$rel")"
+        touch "$TMPDIR_WORK/preserve-$rel"
+        continue
+      fi
       shared_safe_path "$base" && [ -f "$TARGET_DIR/$base" ] ||
         shared_refuse "unguarded owned policy $rel lacks a safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
-      emitter=emit_policy
-      [ "$provider" != codex ] || emitter=emit_codex_policy
-      [ "$provider" != copilot ] || emitter=emit_copilot_policy
-      mode=normal
-      # Retained personal policy remains personal even under --no-guest.
-      [ "$rel" != CLAUDE.local.md ] || mode=guest
-      "$emitter" "$mode" > "$TMPDIR_WORK/retained-upstream"
       merged="$TMPDIR_WORK/retained-merged"
       rc=0
       git merge-file -p "$block" "$TARGET_DIR/$base" "$TMPDIR_WORK/retained-upstream" > "$merged" || rc=$?
@@ -2507,7 +2735,11 @@ policy_preflight() {
         shared_refuse "owned policy merge conflict for $rel against $base; preserve custom text and reconcile the block explicitly before retrying"
       head -c "$(wc -c < "$expected")" "$merged" | cmp -s "$expected" - ||
         shared_refuse "merged owned policy $rel lacks the harness guard; reconcile the block against $base explicitly"
-      shared_safe_path "$rel.bak.$TS" || shared_refuse "unsafe policy backup $rel.bak.$TS"
+      mkdir -p "$(dirname "$TMPDIR_WORK/preserve-$rel")"
+      touch "$TMPDIR_WORK/preserve-$rel"
+      if [ "$guarded" -eq 1 ] && { [ "$rel" != "$active" ] || [ -f "$TMPDIR_WORK/keep-$rel" ]; }; then continue; fi
+      cmp -s "$merged" "$block" || policy_backup_preflight "$rel"
+      [ "$guarded" -eq 0 ] || continue
       # Ephemeral plan only, not another project registry. The existing block
       # installer performs the same preserving merge and documented backup.
       mkdir -p "$(dirname "$TMPDIR_WORK/scope-$rel")"
@@ -2579,7 +2811,7 @@ snapshot_claude_block() {
     return 0
   fi
   mkdir -p "$(dirname "$basepath")"
-  cp "$content" "$basepath"
+  policy_copy "$content" "$basepath"
 }
 
 # managed_files_list — provider inventory plus every sound managed policy
@@ -2815,7 +3047,7 @@ install_claude_md() {
   fi
   # --force does not discard customized text during an isolation upgrade,
   # including the later active-destination pass in this same invocation.
-  [ ! -f "$TMPDIR_WORK/scope-${dest##*/}" ] || FORCE=0
+  [ ! -f "$TMPDIR_WORK/preserve-${dest#"$TARGET_DIR"/}" ] || FORCE=0
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
   local policybody="$TMPDIR_WORK/policybody"
 
@@ -2833,7 +3065,7 @@ install_claude_md() {
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest (managed block only)"
     else
-      cp "$blk" "$dest"
+      policy_copy "$blk" "$dest" new
     fi
     SUM_CREATED+=("$dest")
     snapshot_claude_block "$policybody"
@@ -2923,8 +3155,8 @@ install_claude_md() {
             if [ "$DRY_RUN" -eq 1 ]; then
               note_dry "backup $dest -> $backup, then merge managed block (clean)"
             else
-              cp "$dest" "$backup"
-              cp "$result" "$dest"
+              policy_copy "$dest" "$backup" new
+              policy_copy "$result" "$dest"
             fi
             SUM_BACKEDUP+=("$backup")
             SUM_MERGED+=("$dest ($POLICY_LABEL block)")
@@ -2951,8 +3183,8 @@ install_claude_md() {
           if [ "$DRY_RUN" -eq 1 ]; then
             note_dry "merge $dest block ($kind) — would write $newfile, back up $dest -> $backup2, leave $dest untouched"
           else
-            cp "$conflictresult" "$newfile"
-            cp "$dest" "$backup2"
+            policy_copy "$conflictresult" "$newfile" new
+            policy_copy "$dest" "$backup2" new
             SUM_BACKEDUP+=("$backup2")
           fi
           SUM_CONFLICT+=("$dest ($kind; see $newfile)")
@@ -2999,8 +3231,8 @@ install_claude_md() {
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "backup $dest -> $backup, then update managed block"
   else
-    cp "$dest" "$backup"        # CLAUDE.md is ALWAYS backed up before change.
-    cp "$result" "$dest"
+    policy_copy "$dest" "$backup" new
+    policy_copy "$result" "$dest"
   fi
   SUM_BACKEDUP+=("$backup")
   SUM_UPDATED+=("$dest (managed block)")
@@ -3255,7 +3487,11 @@ do_uninstall() {
   done
 
   # --- 1. provider-owned plain files, safety-compared ----------------------
-  local provider state_rel rel emitter dest staged basepath reference
+  # Traverse the same ownership/selection inventory twice, so even the last
+  # preservation collision refuses before any earlier file/state is removed.
+  local provider state_rel rel emitter dest staged basepath reference phase
+  for phase in preflight apply; do
+    if [ "$phase" = apply ] && [ "$DRY_RUN" -eq 0 ]; then MUTATION_STARTED=1; fi
   while IFS='|' read -r provider state_rel rel emitter; do
     [ -z "$rel" ] && continue
     local ownership="$target/$state_rel/guest-excludes"
@@ -3280,7 +3516,7 @@ do_uninstall() {
     [ -e "$dest" ] || continue
     if [ "$provider" != "claude" ] && [ -e "$ownership" ] &&
        ! grep -qxF "$rel" "$ownership" 2>/dev/null; then
-      SUM_KEPT+=("$dest (pre-existing; never domestique-owned)")
+      [ "$phase" != apply ] || SUM_KEPT+=("$dest (pre-existing; never domestique-owned)")
       continue
     fi
     staged="$TMPDIR_WORK/uninstall_staged"
@@ -3288,6 +3524,14 @@ do_uninstall() {
     basepath="$target/$state_rel/base/$rel"
     reference="$basepath"
     [ -e "$reference" ] || reference="$staged"
+
+    if [ "$phase" = preflight ]; then
+      if [ "$FORCE" -eq 0 ] && ! cmp -s "$dest" "$reference"; then
+        shared_safe_path "$rel.uninstalled.$TS" && [ ! -e "$dest.uninstalled.$TS" ] ||
+          shared_refuse "unsafe or occupied uninstall preservation $rel.uninstalled.$TS; preserve it and retry with a new timestamp"
+      fi
+      continue
+    fi
 
     if cmp -s "$dest" "$reference"; then
       anything_done=1
@@ -3311,7 +3555,8 @@ do_uninstall() {
       if [ "$DRY_RUN" -eq 1 ]; then
         note_dry "keep $dest (modified) -> would rename to $kept"
       else
-        mv "$dest" "$kept"
+        policy_copy "$dest" "$kept" new
+        rm -f "$dest"
       fi
       SUM_KEPT+=("$kept")
     fi
@@ -3337,6 +3582,7 @@ copilot|.github/.domestique|.github/skills/domestique-v2-copilot/SKILL.md|emit_c
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill
 UNINSTALL_FILES
+  done
 
   # --- 2. managed policy blocks for selected providers --------------------
   local policyfile policymode policyemitter policybase
@@ -3427,7 +3673,7 @@ UNINSTALL_FILES
       if [ "$DRY_RUN" -eq 1 ]; then
         note_dry "backup $dest -> $backup (managed block was modified)"
       else
-        cp "$dest" "$backup"
+        policy_copy "$dest" "$backup" new
       fi
       SUM_BACKEDUP+=("$backup")
     fi
@@ -3436,7 +3682,7 @@ UNINSTALL_FILES
       if [ "$DRY_RUN" -eq 1 ]; then
         note_dry "strip managed block from $dest, leaving the rest of the file intact"
       else
-        cp "$result" "$dest"
+        policy_copy "$result" "$dest"
       fi
       SUM_REMOVED+=("$dest (managed block)")
     else
@@ -3467,6 +3713,10 @@ UNINSTALL_POLICIES
   fi
   if [ "$UNINSTALL_COPILOT" -eq 0 ] && [ "$(cat "$target/.github/.domestique/mode" 2>/dev/null || true)" = "guest" ]; then
     keep_copilot_guest=1
+  fi
+  if [ "$SHARED_PRESENT" -eq 1 ] && [ "$SHARED_REMOVE" -eq 0 ]; then
+    resolve_shared_visibility
+    write_shared_mode
   fi
 
   if [ "$keep_claude_guest" -eq 1 ] || [ "$keep_codex_guest" -eq 1 ] || [ "$keep_copilot_guest" -eq 1 ] ||
@@ -3614,6 +3864,7 @@ UNINSTALL_POLICIES
   echo "Done."
 }
 
+lifecycle_preflight
 copilot_preflight
 shared_preflight
 policy_preflight
@@ -3631,6 +3882,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
       codex) UNINSTALL_CODEX=1 ;;
       both) UNINSTALL_CLAUDE=1; UNINSTALL_CODEX=1 ;;
       copilot) UNINSTALL_COPILOT=1 ;;
+      all) UNINSTALL_CLAUDE=1; UNINSTALL_CODEX=1; UNINSTALL_COPILOT=1 ;;
     esac
   fi
   echo "domestique: uninstalling from $TARGET_DIR (platform=${PLATFORM_ARG:-all})"
@@ -3642,6 +3894,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "domestique: installing into $TARGET_DIR (platforms=$PLATFORM_SET)"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
+[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
 
 install_retained_policies
 
@@ -3649,6 +3902,16 @@ ANY_GUEST=0
 CLAUDE_GUEST_SELECTED=0
 CODEX_GUEST_SELECTED=0
 COPILOT_GUEST_SELECTED=0
+if [ "$SELECT_CLAUDE" -eq 0 ] &&
+   [ "$(cat "$TARGET_DIR/.claude/.domestique/mode" 2>/dev/null || true)" = guest ]; then
+  CLAUDE_GUEST_SELECTED=1
+  ANY_GUEST=1
+fi
+if [ "$SELECT_CODEX" -eq 0 ] &&
+   [ "$(cat "$TARGET_DIR/.codex/.domestique/mode" 2>/dev/null || true)" = guest ]; then
+  CODEX_GUEST_SELECTED=1
+  ANY_GUEST=1
+fi
 if [ "$SELECT_COPILOT" -eq 0 ] &&
    [ "$(cat "$TARGET_DIR/.github/.domestique/mode" 2>/dev/null || true)" = guest ]; then
   COPILOT_GUEST_SELECTED=1

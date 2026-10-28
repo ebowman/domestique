@@ -170,7 +170,7 @@ class Copilot(unittest.TestCase):
         self.assertTrue(self.hidden(ROLES["implementer"]))
         self.assertFalse(self.hidden(".github/issues/host.md"))
         tree = snapshot(self.root)
-        self.run_dom()
+        self.install()  # Copilot-only idempotency; default-all is covered separately.
         self.assertEqual(snapshot(self.root), tree)
         self.install("--dry-run")
         self.assertEqual(snapshot(self.root), tree)
@@ -381,13 +381,13 @@ class Copilot(unittest.TestCase):
     def test_sticky_guest_unrelated_normal_and_explicit_mixed_resolution(self):
         self.install("--guest")
         before = snapshot(self.root / ".github")
-        self.run_dom("--platform", "claude")
+        self.run_dom("--platform", "claude", "--no-guest")
         self.assertEqual(snapshot(self.root / ".github"), before)
         self.assertTrue(self.hidden(SHARED))
         self.assertTrue(self.hidden(ROLES["reviewer"]))
         self.assertFalse(self.hidden(".claude/commands/dom-goal.md"))
         tree = snapshot(self.root)
-        self.install(ok=False)
+        self.run_dom(ok=False)  # missing Codex plus mixed installed modes
         self.assertEqual(snapshot(self.root), tree)
         self.install("--no-guest")
         self.assertFalse(self.hidden(SHARED))
@@ -452,12 +452,13 @@ class Copilot(unittest.TestCase):
         self.install("--force", ok=False)
         self.assertEqual(snapshot(self.root), before)
 
-    def test_default_remains_claude_and_no_all_selector(self):
+    def test_default_and_all_select_three(self):
         self.run_dom()
         self.assertTrue((self.root / ".claude").exists())
-        self.assertFalse((self.root / ".github").exists())
+        self.assertTrue((self.root / ".codex").exists())
+        self.assertTrue((self.root / ".github").exists())
         before = snapshot(self.root)
-        self.run_dom("--platform", "all", ok=False)
+        self.run_dom("--platform", "all")
         self.assertEqual(snapshot(self.root), before)
 
 
