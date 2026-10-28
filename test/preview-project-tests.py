@@ -249,18 +249,42 @@ class PreviewProjectTests(unittest.TestCase):
                         # Emitted protocol ordering, NOT execution by a native
                         # assistant or proof that it obeys these instructions.
                         for path in (claude, codex):
-                            body = path.read_text()
-                            positions = [body.index(text) for text in (
-                                "### Lossless bounded publication, setup only",
-                                "## End role setup gate",
+                            # Assert shared obligations, not provider-specific
+                            # headings or Markdown line wrapping.
+                            body = " ".join(path.read_text().split())
+                            ordered = (
+                                "Match declared model AND effort and required tools",
+                                "Save the displayed minimal diff to these two files?",
+                                "setup mean ZERO writes and NO Beads/workflow calls",
+                                "Invalidate any old implementer completion marker first",
+                                "Write the reviewer update.",
+                                "Publish implementer with the new pair marker LAST.",
+                                "SETUP ONLY: no planning beads, claim, code, dispatch, "
+                                "branch/commit or goal cycle.",
+                                "NOT queued for automatic continuation",
+                                "Only an unchanged confirmed, ready pair can enter "
+                                "the unattended loop below.",
                                 "Only after the role setup gate passes without setup writes",
                                 "check ALL tracked/index dirtiness",
-                                "Then create")]
-                            self.assertEqual(positions, sorted(positions))
-                            self.assertIn("never auto-stage, commit, stash,", body)
-                            self.assertIn("NOT queued for automatic continuation", body)
-                            self.assertIn("no planning\nbeads, claim, code, dispatch, branch/commit",
-                                          body)
+                                "Then create")
+                            required = (
+                                "registration must be present and unambiguous",
+                                "Verify the stored pair, ownership, physical ROOT, "
+                                "BOTH marker hashes",
+                                "known defeating override/unavailability means STOP "
+                                "without workflow or writes.",
+                                "A catalog, file syntax, user assertion or marker alone "
+                                "is not dispatch proof.",
+                                "Missing optional exact-origin/loaded-byte APIs or "
+                                "not-yet-existent child telemetry alone do not block",
+                                "After saving, require a fresh client session and "
+                                "explicit reinvocation.",
+                                "never auto-stage, commit, stash, discard or hide it.")
+                            with self.subTest(protocol=str(path.relative_to(root))):
+                                for text in ordered + required:
+                                    self.assertIn(text, body)
+                                positions = [body.index(text) for text in ordered]
+                                self.assertEqual(positions, sorted(positions))
                     for path in (claude, alias, codex, short):
                         definitions[path] = path.read_bytes()
                     locators = []
