@@ -51,6 +51,43 @@ Native qualification (hq-7sm.6) precedes final release handoff (hq-7sm.7);
 offline tests/install success do not establish native support or user acceptance.
 For acceptance against actively used repositories, compare installer-relevant files, Git indexes and exclusions immediately before and after each operation; retain later drift separately rather than claiming whole-session immutability. In one candidate dry-run, the index remained byte-identical through the post-copy check, then changed more than thirteen minutes later in entries outside installer-managed paths. The writer is unknown: this establishes the operation-window result, not a general attribution or permission to reset the user's index.
 
+**Existing-install qualification (hq-7sm.19, 2026-10-29).** Product bytes remain
+the tested `5b8f3a9`; `e6e9eba` changes documentation only. All **159** inventoried
+locations are accounted for: **157** original dry-runs and isolated-copy
+lifecycles, **2** inventory-only exclusions. The active candidate is an additional
+supplemental exclusion, not part of 159. Original dry-runs yielded **34 accepted,
+123 preserving refusals**: 106 retained-projection conflicts, 14 unknown retained
+ownership, 2 policy-merge conflicts and 1 missing policy base. These are not 157
+upgrade passes or automatically bugs; actionable per-project diagnostics remain
+private. Copy install/rerun outcomes matched those categories; scoped and unified
+removal each succeeded on all **157 copies**. Original installer modifications
+attempted: **0**. No live upgrades, force/recovery writes or native-client
+qualification occurred.
+
+All **157** immediate post-operation and post-copy original comparisons preserved
+the observed file hashes/modes, indexes, config and exclusions. Fresh read-only
+accounting at **19:12:08–19:12:27 UTC** found **154 exact matches**, **4 later
+index-drift items** and **1 inventory-only directory-metadata drift**. The four
+items involve three indexes: two have logical changes outside the observed
+installer surfaces; two items share the third, whose path/stage/mode/blob entries
+are unchanged despite different raw bytes. Writers remain **unknown**; neither
+stat-cache attribution nor installer mutation is inferred. Relevant surface
+bytes/modes, config/excludes and tracked/ignored query results still match for
+all 159, with no observed managed-surface loss. The supplemental candidate's
+index change corresponds to the intervening documentation revision. Earlier
+drift artifacts, operation timestamps and new per-item observations are retained
+privately for review; this is operation-window preservation, not perpetual
+directory immutability or permission to disregard index writes.
+
+Copy checks covered byte/mode-faithful relevant surfaces, tracked presence,
+effective queried ignores, preservation on refusal, rerun stability, removal
+backups and unowned exclusion bytes. Copies contain relevant surfaces only:
+controlled Git models do **not** reproduce staged bytes, history, shared-worktree
+effects or inherited-policy fidelity. Symlink targets and pruned directories are
+inventory gaps. Final accounting reused the unchanged product's retained runs,
+not new installer executions. Wrapper (.16), unknown-marker (.17) and native
+qualification (.6) remain separate.
+
 **Configuration, not software installation:** no native client/model software is
 installed. Project role files are `.claude/agents/{implementer,reviewer}.md`,
 `.codex/agents/{implementer,reviewer}.toml`, and
