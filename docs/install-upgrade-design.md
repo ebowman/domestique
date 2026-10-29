@@ -2,6 +2,98 @@
 
 ## Reading this document
 
+### Remote install and upgrade
+
+The standalone candidate's selector-less **fresh install and rerun select all
+three**: Claude Code, Codex and GitHub Copilot. The `VERSION` notice uses the
+script's actual version (currently `0.1.0`, not a new release announcement) and
+shows the physical target and actual selected normal/guest modes after safe
+preflight, before the first target mutation. Dry-run prints the same plan without
+target writes; preflight failures instead give preserving diagnostics. There is
+no installer stdin questionnaire or stored consent state.
+
+Run from the intended project root; an explicit target can also follow `--`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --
+# Preview any explicit selection before applying it without --dry-run:
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform claude --dry-run
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform codex --dry-run
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform copilot --dry-run
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform both --dry-run
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform all --dry-run
+```
+
+**`both` means Claude+Codex, not Copilot.** Explicit installs are additive, not a
+way to remove existing providers: persisted Claude/Codex may also be selected;
+an existing unselected Copilot is retained unchanged. Read the actual selection
+in the notice. `--uninstall --platform copilot` removes only Copilot's owned
+projection; selector-less uninstall scans all three.
+
+**Moving URL:** pushing `main` changes what existing remote commands/aliases
+receive on their **next execution**. Nothing updates installed projects in the
+background. A release tag alone does not change main or rewrite an alias.
+Two main downloads can differ between preview and apply. Pin both to the same
+full reviewed commit SHA by replacing `/main/` with `/<FULL_COMMIT_SHA>/`
+(substitute the actual published SHA, not the placeholder). An explicit
+published-version URL is:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/v0.1.0/domestique.sh | bash -s -- --dry-run
+```
+
+That tag contains historical code, not this candidate's all-three/migration
+contract; consult the selected revision's help. Pinning selects script bytes,
+not a rollback of project state. The candidate still reports `0.1.0`; version
+text alone does not identify a commit. No publication/version bump happens here.
+Native qualification (hq-7sm.6) precedes final release handoff (hq-7sm.7);
+offline tests/install success do not establish native support or user acceptance.
+
+**Configuration, not software installation:** no native client/model software is
+installed. Project role files are `.claude/agents/{implementer,reviewer}.md`,
+`.codex/agents/{implementer,reviewer}.toml`, and
+`.github/agents/domestique-v2-copilot-{implementer,reviewer}.agent.md`.
+Commands/workflows live under `.claude/commands`, `.agents/skills` and
+`.github/skills`; provider snapshots live under `.claude/.domestique`,
+`.codex/.domestique`, `.github/.domestique`, with shared routes owned by
+`.agents/.domestique`. Normal policies are managed blocks in `CLAUDE.md`,
+`AGENTS.md` (or an existing `AGENTS.override.md`) and
+`.github/copilot-instructions.md`.
+
+Preserving snapshot merges retain existing model choices/customizations;
+`--force` can replace provider files and is not a migration/refusal bypass.
+There is **no global model override registry**. Each harness independently
+requires explicit first-use confirmation of its implementer/reviewer pair using
+native availability evidence, then reload/fresh invocation before work. Generated
+defaults are suggestions, not consent; changed role bytes invalidate confirmation.
+Use `/dom-decompose configure role models` in Claude/Copilot or
+`$dom-decompose configure role models` in Codex. Installation is not readiness.
+
+**Guest/private scope:** modes are sticky per provider; missing providers inherit
+a wholly guest or normal installed set (fresh is normal). Mixed modes with a
+missing selected provider refuse until explicitly resolved with `--guest` or
+`--no-guest`. Claude guest policy is personal `CLAUDE.local.md`; Codex/Copilot
+leave host policies untouched and bootstrap via `$domestique` /
+`/domestique-v2-copilot`. Local Git-common exclusions hide owned guest paths, not
+tracked files or arbitrary host content; linked worktrees share those ignore
+effects. Shared routes are private only when all valid Codex/Copilot consumers
+are guest. This is Git visibility, not access control. Old unguarded owned host
+policies refuse in guest mode; see [preserving policy conversion](#single-script-shared-skill-foundation-hq-7sm10).
+
+**Preview migration/recovery:** supported original five-definition and
+seven-definition (`public-names`) Copilot project receipts migrate without the
+machine preview/source. Copilot stays private unless `--no-guest` is explicit.
+Compatible model metadata is preserved, but new workflows need fresh pair
+confirmation. Unknown ownership, unsupported metadata/body forks, unsafe paths
+and merge conflicts refuse rather than discarding edits. See the
+[exact supported layouts, refusals and backup recovery](#supported-copilot-preview-project-migration-hq-7sm13)
+below. Keep `.domestique-private/copilot-preview-migration/` and all custom files;
+after interruption preview/retry the **same installer and flags**, reconciling
+unknown afterimages explicitly. Do not blindly reinstall an older script as a
+downgrade: it cannot reverse migrated ownership/workflows. Preserve backups and
+review the complete project state before any manual recovery.
+
 ### Supported Copilot preview project migration (hq-7sm.13)
 
 Run the same standalone `bash domestique.sh ROOT --dry-run`, inspect its plan,

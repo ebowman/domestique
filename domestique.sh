@@ -1295,6 +1295,7 @@ DOM_EOF
 
 # ---------------------------------------------------------------------------
 usage() {
+  printf 'domestique VERSION %s — project configuration installer\n\n' "$DOMESTIQUE_VERSION"
   cat <<'EOF'
 Usage: domestique.sh [TARGET_DIR] [options]
 
@@ -1400,12 +1401,66 @@ Behavior:
     (not the edited file) so the next run 3-way-merges in upstream changes
     while keeping the edits. Use --force to overwrite verbatim instead.
 
-Periodic updates:
+Before applying:
+  Selector-less fresh installs AND reruns now select ALL Claude Code, Codex
+  and GitHub Copilot. Use --platform claude/codex/copilot/both/all to choose;
+  both remains Claude+Codex. Explicit installs are additive, not removal.
+  This installs project config, not native clients or model software.
+  Preserving upgrades retain model choices (--force can replace provider files).
+  Each harness independently needs first-use role confirmation, then reload/
+  fresh invocation. Installing config does not establish native readiness.
+  Guest privacy, supported five/seven-definition preview migration, preserving
+  refusals and recovery: https://github.com/ebowman/domestique/blob/main/docs/install-upgrade-design.md#remote-install-and-upgrade
+
+Remote examples (run from the intended project root; no stdin prompts):
+  curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run
+  curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform claude
+  main is a moving channel: the next invocation gets pushed changes, not a
+  background auto-update. Preview/pinning guidance is in the guide above.
+
+Manual updates:
   Use update.sh to fetch the latest domestique.sh from GitHub and re-run it
   against a target directory via this same merge path (see
   docs/install-upgrade-design.md §5). Run `./update.sh --help` for details.
 EOF
 }
+
+# Subshell keeps this read-only rendering from changing install state. Reuse
+# the real mode resolver in dry-run mode, including sticky/migration rules.
+print_install_notice() (
+  local provider selected label mode separator=""
+  printf 'domestique VERSION %s — install plan' "$DOMESTIQUE_VERSION"
+  [ "$DRY_RUN" -eq 0 ] || printf ' (dry-run; no target changes)'
+  printf '\nTarget: %s\n' "$(cd -- "$TARGET_DIR" && pwd -P)"
+  if [ "$PLATFORM_EXPLICIT" -eq 0 ]; then
+    echo "No --platform: fresh installs AND reruns now select ALL Claude Code, Codex and GitHub Copilot."
+  else
+    printf 'Explicit --platform %s (additive; resolved selection below).\n' "$PLATFORM_ARG"
+  fi
+  printf 'Selected: '
+  DRY_RUN=1
+  for provider in claude codex copilot; do
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE"; label="Claude Code" ;;
+      codex) selected="$SELECT_CODEX"; label="Codex" ;;
+      copilot) selected="$SELECT_COPILOT"; label="GitHub Copilot" ;;
+    esac
+    [ "$selected" -eq 1 ] || continue
+    configure_provider "$provider"
+    resolve_provider_mode >/dev/null 2>&1
+    mode=normal
+    [ "$GUEST" -eq 0 ] || mode=guest
+    printf '%s%s (%s)' "$separator" "$label" "$mode"
+    separator=", "
+  done
+  printf '\n'
+  echo "Project config only, not native clients/model software. Preserving upgrades retain model choices; --force can replace provider files."
+  echo "First use: confirm roles independently in each harness, then reload/start a fresh invocation; config is not native readiness."
+  echo "Choose with --platform claude/codex/copilot/both/all; both remains Claude+Codex."
+  echo "Preview: curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run"
+  echo "Explicit: curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform claude"
+  echo "Guest/privacy, supported preview migration, refusals and recovery: https://github.com/ebowman/domestique/blob/main/docs/install-upgrade-design.md#remote-install-and-upgrade"
+)
 
 TARGET_DIR=""
 PLATFORM_ARG=""
@@ -4418,8 +4473,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-echo "domestique: installing into $TARGET_DIR (platforms=$PLATFORM_SET)"
-[ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
+print_install_notice
 [ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
 
 if [ "$PREVIEW_MIGRATE" -eq 1 ]; then

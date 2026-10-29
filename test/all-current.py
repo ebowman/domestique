@@ -2,6 +2,8 @@
 import itertools
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,10 @@ ROLES = (
 )
 SHARED = ".agents/skills/dom-goal/SKILL.md"
 POLICY_ANCHOR = "loop for each bead. Stop and report between beads."
+VERSION = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', SCRIPT, re.M).group(1)
+GUIDE = ("https://github.com/ebowman/domestique/blob/main/"
+         "docs/install-upgrade-design.md#remote-install-and-upgrade")
+LABELS = {"claude": "Claude Code", "codex": "Codex", "copilot": "GitHub Copilot"}
 
 
 def snapshot(root):
@@ -77,12 +83,42 @@ class AllProviders(unittest.TestCase):
             self.run_dom(root, "--platform", provider, *flags)
         self.assertEqual(self.installed(root), set(providers))
 
+    def assert_notice(self, result, root, modes, *, explicit=False, dry=False):
+        output = result.stdout
+        self.assertIn(f"VERSION {VERSION}", output)
+        self.assertIn(f"Target: {root}", output)
+        selection = next(line for line in output.splitlines() if line.startswith("Selected:"))
+        for provider, label in LABELS.items():
+            if provider in modes:
+                self.assertIn(f"{label} ({modes[provider]})", selection)
+            else:
+                self.assertNotIn(label, selection)
+        self.assertEqual("No --platform:" in output, not explicit)
+        if not explicit:
+            self.assertIn("fresh installs AND reruns", output)
+            self.assertIn("ALL Claude Code, Codex and GitHub Copilot", output)
+        self.assertIn("both remains Claude+Codex", output)
+        self.assertIn("Project config only", output)
+        self.assertIn("not native clients/model software", output)
+        self.assertIn("retain model choices", output)
+        self.assertIn("--force can replace", output)
+        self.assertIn("independently in each harness", output)
+        self.assertIn("reload/start a fresh invocation", output)
+        self.assertIn("not native readiness", output)
+        self.assertIn("| bash -s -- --dry-run", output)
+        self.assertIn("| bash -s -- --platform claude", output)
+        self.assertIn("migration, refusals and recovery", output)
+        self.assertIn(GUIDE, output)
+        self.assertEqual("(dry-run; no target changes)" in output, dry)
+        self.assertLess(output.index(GUIDE), output.index("Summary"))
+
     def test_fresh_stdin_default_all_and_rerun(self):
         root = self.root("fresh")
         before = snapshot(root)
-        self.run_dom(root, "--dry-run")
+        modes = dict.fromkeys(STATES, "normal")
+        self.assert_notice(self.run_dom(root, "--dry-run"), root, modes, dry=True)
         self.assertEqual(before, snapshot(root))
-        self.run_dom(root)
+        self.assert_notice(self.run_dom(root), root, modes)
         self.assertEqual(self.installed(root), set(STATES))
         for role in ROLES:
             self.assertTrue((root / role).is_file())
@@ -94,9 +130,9 @@ class AllProviders(unittest.TestCase):
                 self.assertNotIn("current/bin", body)
         self.assertFalse((root / ".beads").exists())
         before = snapshot(root)
-        self.run_dom(root)
+        self.assert_notice(self.run_dom(root), root, modes)
         self.assertEqual(before, snapshot(root))
-        self.run_dom(root, "--platform=all")
+        self.assert_notice(self.run_dom(root, "--platform=all"), root, modes, explicit=True)
         self.assertEqual(before, snapshot(root))
 
     def test_absolute_target_system_ancestor_alias(self):
@@ -138,7 +174,8 @@ class AllProviders(unittest.TestCase):
             ("all", set(STATES)),
         ):
             root = self.root(selector)
-            self.run_dom(root, f"--platform={selector}")
+            self.assert_notice(self.run_dom(root, f"--platform={selector}"), root,
+                               dict.fromkeys(expected, "normal"), explicit=True)
             self.assertEqual(self.installed(root), expected)
             self.run_dom(root, "--platform", "both")
             self.assertEqual(self.installed(root), expected | {"claude", "codex"})
@@ -166,7 +203,8 @@ class AllProviders(unittest.TestCase):
             root = self.root(missing)
             self.seed(root, [p for p in STATES if p != missing], "--guest")
             before = snapshot(root)
-            self.run_dom(root, "--dry-run")
+            self.assert_notice(self.run_dom(root, "--dry-run"), root,
+                               dict.fromkeys(STATES, "guest"), dry=True)
             self.assertEqual(before, snapshot(root))
             self.run_dom(root)
             for state in (*STATES.values(), ".agents/.domestique"):
@@ -188,8 +226,12 @@ class AllProviders(unittest.TestCase):
             for args in ((), ("--dry-run",), ("--force",), ("--platform", "all")):
                 result = self.run_dom(root, *args, ok=False)
                 self.assertIn("mixed-mode ambiguity", result.stderr)
+                self.assertIn("--guest or --no-guest", result.stderr)
+                self.assertNotIn("install plan", result.stdout)
+                self.assertNotIn("Selected:", result.stdout)
                 self.assertEqual(before, snapshot(root))
-            self.run_dom(root, flag)
+            self.assert_notice(self.run_dom(root, flag), root,
+                               dict.fromkeys(STATES, "guest" if flag == "--guest" else "normal"))
             for state in (*STATES.values(), ".agents/.domestique"):
                 self.assertEqual((root / state / "mode").exists(), flag == "--guest")
 
@@ -200,7 +242,8 @@ class AllProviders(unittest.TestCase):
         # explicit CLI's established additive conversion semantics.
         (root / STATES["claude"] / "mode").write_text("guest\n")
         before = {state: (root / state / "mode").exists() for state in STATES.values()}
-        self.run_dom(root)
+        self.assert_notice(self.run_dom(root), root,
+                           {"claude": "guest", "codex": "normal", "copilot": "normal"})
         self.assertEqual(before, {s: (root / s / "mode").exists() for s in STATES.values()})
         self.assertFalse(subprocess.run(
             ["git", "-C", str(root), "check-ignore", "-q", SHARED], env=self.env
@@ -255,8 +298,125 @@ class AllProviders(unittest.TestCase):
         result = self.run_dom(root, ok=False)
         self.assertEqual(result.returncode, 17)
         self.assertIn("partial results may remain", result.stderr)
+        self.assertIn(f"VERSION {VERSION}", result.stdout)
+        self.assertIn("install plan", result.stdout)
+        self.assertNotIn("\nDone.", result.stdout)
         self.assertTrue((root / ROLES[0]).is_file())
         self.assertFalse((root / ROLES[2]).exists())
+
+    def test_notice_precedes_first_target_mutation_and_dry_run_plan(self):
+        # Combined xtrace/output observes real execution order, including mode
+        # removal before provider writes and policy backups before role creation.
+        for scenario in ("fresh", "host-policy", "conversion", "dry-run"):
+            with self.subTest(scenario=scenario):
+                root = self.root(scenario)
+                args = []
+                if scenario == "host-policy":
+                    (root / "CLAUDE.md").write_text("host policy\n")
+                elif scenario == "conversion":
+                    self.run_dom(root, "--guest")
+                    args = ["--no-guest"]
+                elif scenario == "dry-run":
+                    args = ["--dry-run"]
+                before = snapshot(root)
+                result = subprocess.run(
+                    ["bash", "-x", "-s", "--", str(root), *args], cwd=root, input=SCRIPT,
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    env=self.env, timeout=60)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                lines = result.stdout.splitlines()
+                notice_end = next(i for i, line in enumerate(lines)
+                                  if not line.startswith("+") and GUIDE in line)
+                writes = []
+                for i, line in enumerate(lines):
+                    if not re.match(r"^\++ (mkdir|cp|rm|mv|policy_copy) ", line):
+                        continue
+                    words = shlex.split(line.lstrip("+ "))
+                    # Preflight may copy FROM the project into temp staging.
+                    # Only destinations count for copy; mv also mutates source.
+                    targets = (words[-1:] if words[0] == "cp" else
+                               words[2:3] if words[0] == "policy_copy" else words[1:])
+                    if any(p == str(root) or p.startswith(str(root) + "/") for p in targets):
+                        writes.append(i)
+                if scenario == "dry-run":
+                    self.assertFalse(writes)
+                    self.assertEqual(before, snapshot(root))
+                    first_plan = next(i for i, line in enumerate(lines)
+                                      if line.startswith("  [dry-run]"))
+                    self.assertLess(notice_end, first_plan)
+                else:
+                    self.assertTrue(writes, result.stdout)
+                    self.assertLess(notice_end, min(writes))
+                    self.assertNotEqual(before, snapshot(root))
+                # The read-only notice resolver must not run a real conversion.
+                self.assertFalse(any("converting guest install" in line
+                                     and not line.startswith("+")
+                                     for line in lines[:notice_end]))
+
+    def test_notice_does_not_consume_stdin_or_prompt(self):
+        for args in ((), ("--platform", "claude"), ("--dry-run",)):
+            root = self.root(f"stdin-{len(list(self.work.iterdir()))}")
+            # Pipe transport: a trailing shell command must still execute.
+            result = self.run_dom(root, *args, script=SCRIPT + "\nprintf 'PIPE-END\\n'\n")
+            self.assertTrue(result.stdout.endswith("PIPE-END\n"))
+            # Script supplied separately: arbitrary stdin remains for the caller.
+            result = subprocess.run(
+                ["bash", "-c", 'bash "$@" || exit $?\nIFS= read -r remaining\n'
+                 'printf "UNCONSUMED:%s\\n" "$remaining"\n',
+                 "stdin-check", str(SOURCE), *args],
+                cwd=root, input="caller-owned stdin\n", text=True, capture_output=True,
+                env=self.env, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(result.stdout.endswith("UNCONSUMED:caller-owned stdin\n"))
+
+    def test_notice_absent_on_help_errors_and_scoped_uninstall(self):
+        root = self.root("non-install")
+        before = snapshot(root)
+        help_result = self.run_dom(root, "--help")
+        self.assertIn(f"VERSION {VERSION}", help_result.stdout)
+        self.assertIn("fresh installs AND reruns", help_result.stdout)
+        self.assertIn(GUIDE, help_result.stdout)
+        results = [help_result]
+        for args in (("--platform", "invalid"), ("--guest", "--no-guest"),
+                     ("missing-target",)):
+            results.append(self.run_dom(root, *args, ok=False))
+        (root / ".github/agents").mkdir(parents=True)
+        (root / ROLES[2]).mkdir()
+        obstructed = snapshot(root)
+        refusal = self.run_dom(root, ok=False)
+        self.assertIn("No project writes", refusal.stderr)
+        self.assertIn("repair", refusal.stderr)
+        self.assertEqual(obstructed, snapshot(root))
+        results.append(refusal)
+        shutil.rmtree(root / ".github")
+        # Ignore parent-directory mtime changed by this fixture's obstruction.
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root)
+        for flags in (("--dry-run",), ()):
+            removal = self.run_dom(root, "--uninstall", "--platform", "copilot", *flags)
+            self.assertIn("uninstalling", removal.stdout)
+            self.assertIn("platform=copilot", removal.stdout)
+            results.append(removal)
+        self.assertEqual(self.installed(root), {"claude", "codex"})
+        for result in results:
+            self.assertNotIn("install plan", result.stdout + result.stderr)
+            self.assertNotIn("Selected:", result.stdout + result.stderr)
+            self.assertNotIn("No --platform:", result.stdout + result.stderr)
+
+    def test_explicit_notice_reports_additive_selection_not_retained_copilot(self):
+        root = self.root("additive")
+        self.run_dom(root, "--guest")
+        # Existing Claude/Codex remain additive; unselected Copilot stays guest
+        # and must not be announced as selected or converted.
+        result = self.run_dom(root, "--platform", "claude", "--no-guest")
+        self.assert_notice(result, root, {"claude": "normal", "codex": "normal"},
+                           explicit=True)
+        self.assertEqual((root / STATES["copilot"] / "mode").read_text(), "guest\n")
+        before = snapshot(root)
+        self.assert_notice(self.run_dom(root, "--platform", "claude", "--dry-run"),
+                           root, {"claude": "normal", "codex": "normal"},
+                           explicit=True, dry=True)
+        self.assertEqual(before, snapshot(root))
 
     def test_policy_backup_collision_zero_writes_including_outside_victim(self):
         fixed = SCRIPT.replace('TS="$(date +%Y%m%d%H%M%S)"', 'TS="20990101000000"')

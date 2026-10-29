@@ -1,5 +1,43 @@
 # domestique
 
+## Remote install and upgrade
+
+**Candidate behavior:** selector-less fresh installs **and reruns** now select
+**ALL Claude Code, Codex and GitHub Copilot**. Explicit `--platform claude`,
+`codex`, `copilot`, `both` or `all` remain available; **both means Claude+Codex**.
+The version-labelled plan shows the actual target, selected providers and resolved
+normal/guest modes before any target writes, including dry-run. No installer
+stdin prompts: `curl | bash` still works.
+
+From the intended project root, preview before applying:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run
+# Apply the reviewed plan (or repeat with --platform claude --dry-run first):
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --
+curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform claude
+```
+
+`main` is a **moving channel**: pushing main changes the next remote execution,
+including an existing alias using that URL. There is no background auto-update;
+publishing a tag alone does not change that URL or update an alias. For repeatable
+preview/apply, replace `main` with the same full reviewed commit SHA in both
+commands. Published-version form:
+`https://raw.githubusercontent.com/ebowman/domestique/v0.1.0/domestique.sh`
+(historical published code, **not** this candidate's new behavior or a safe
+downgrade of migrated state).
+
+This installs **project configuration only**, not native clients or model software.
+Preserving upgrades keep existing model choices; `--force` can replace provider
+files. Claude, Codex and Copilot confirm their role pairs independently on first
+use, then require reload/fresh invocation; there is no global model override
+registry. Config paths, other selectors, guest scope, supported five/seven-definition
+preview migration, preserving refusals and recovery are in the
+[install/upgrade guide](docs/install-upgrade-design.md#remote-install-and-upgrade).
+Do not blindly reinstall an older script to downgrade. Native qualification
+(hq-7sm.6) and final release handoff (hq-7sm.7) remain pending; this is not a
+publication, version bump or claim of user acceptance/native readiness.
+
 ## Small Copilot/macOS preview — retained-CLI workflow and separate goal skill load demonstrated
 
 The [Copilot/macOS preview contract](docs/v2-preview.md) now has a small,
