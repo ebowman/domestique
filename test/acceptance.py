@@ -933,6 +933,37 @@ def environment(work, native=False, suite=None):
     return env
 
 
+def bootstrap_python(root):
+    """Validate supported source layouts without executing installer code."""
+    path = root / "install-v2.sh"
+    require(path.is_file(), "install-v2.sh: missing bootstrap source")
+    source = path.read_text()
+    lines = source.splitlines()
+    thin = 'exec python3 -I -S -B "$here/preview/install.py" "$@"'
+    marker = "DOMESTIQUE_V2_TRUSTED_PY"
+    if marker in source:
+        require(thin not in lines, "install-v2.sh: ambiguous thin/embedded bootstrap shape")
+        opening = [i for i, line in enumerate(lines)
+                   if re.fullmatch(r"[^#\n]*<<'DOMESTIQUE_V2_TRUSTED_PY'", line)]
+        require(len(opening) == 1,
+                "install-v2.sh: expected one embedded Python opening delimiter")
+        closing = [i for i, line in enumerate(lines) if line == marker]
+        require(len(closing) == 1 and closing[0] > opening[0],
+                "install-v2.sh: expected one embedded Python closing delimiter after opening")
+        payload = "\n".join(lines[opening[0] + 1:closing[0]])
+        tree = ast.parse(payload, filename=f"{path}:{marker}")
+        require(tree.body, "install-v2.sh: empty Python payload")
+        return 1
+    require(lines.count(thin) == 1 and
+            'here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)' in lines,
+            "install-v2.sh: unsupported bootstrap shape; expected thin preview/install.py "
+            "delegation or embedded DOMESTIQUE_V2_TRUSTED_PY payload")
+    for leaf in ("install.py", "machine.py", "__init__.py", "cli.py", "launcher.sh"):
+        require((root / "preview" / leaf).is_file(),
+                f"install-v2.sh: missing standalone source preview/{leaf}")
+    return 0
+
+
 def validation(env, control=None, transcript=None):
     def run(argv, env, timeout):
         entry = {"command": [str(a) for a in argv], "timeout": timeout}
@@ -948,16 +979,17 @@ def validation(env, control=None, transcript=None):
                          exit=getattr(exc, "returncode", None))
             raise
 
-    shells = sorted([*ROOT.glob("*.sh"), *ROOT.glob("test/*.sh")])
-    python_files = sorted([*ROOT.glob("test/*.py"), *ROOT.glob("v2/*.py")])
+    shells = sorted([*ROOT.glob("*.sh"), *ROOT.glob("test/*.sh"), *ROOT.glob("preview/*.sh")])
+    python_files = sorted([*ROOT.glob("test/*.py"), *ROOT.glob("v2/*.py"),
+                           *ROOT.glob("preview/*.py")])
     for path in python_files:
         if control:
             control.check()
         ast.parse(path.read_text(), filename=str(path))
-    # Standalone trusted source, including its generated dispatcher renderer.
-    bootstrap = (ROOT / "install-v2.sh").read_text()
-    ast.parse(bootstrap.split("<<'DOMESTIQUE_V2_TRUSTED_PY'\n", 1)[1]
-              .split("\nDOMESTIQUE_V2_TRUSTED_PY\n", 1)[0])
+    # Current standalone sources above, or the retained embedded bootstrap.
+    if control:
+        control.check()
+    bootstrap_embedded = bootstrap_python(ROOT)
     source = preview_fixture.source().decode()
     ast.parse(source.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0])
     ast.parse(source.split("<<'DOM_INSPECT_PY' || inspect_rc=$?\n", 1)[1]
@@ -999,7 +1031,7 @@ def validation(env, control=None, transcript=None):
     out, err, rc = run(["git", "--no-pager", "diff", "--check"], env, 60)
     require(rc == 0, f"git diff --check: {out}{err}")
     return {"status": "PASS", "shell_files": len(shells), "emitted_helpers": 5,
-            "python_files": len(python_files), "embedded_python": 3,
+            "python_files": len(python_files), "embedded_python": 2 + bootstrap_embedded,
             "shellcheck_warning_exceptions": 0}
 
 

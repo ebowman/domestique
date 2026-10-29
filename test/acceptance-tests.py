@@ -21,6 +21,86 @@ A = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(A)
 
 
+class StaticValidationTests(unittest.TestCase):
+    @contextmanager
+    def checkout(self, bootstrap=None):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "install-v2.sh").write_text(
+                bootstrap if bootstrap is not None
+                else (A.ROOT / "install-v2.sh").read_text())
+            preview = root / "preview"
+            preview.mkdir()
+            for name in ("__init__.py", "install.py", "machine.py", "cli.py"):
+                (preview / name).write_text("pass\n")
+            (preview / "launcher.sh").write_text("#!/bin/bash\n")
+            tmp = root / "tmp"
+            tmp.mkdir()
+
+            def execute(argv, *_args):
+                return ("[]" if argv[0] == "shellcheck" else "", "", 0)
+
+            with mock.patch.object(A, "ROOT", root), \
+                    mock.patch.object(A.shutil, "which", return_value="/shellcheck"), \
+                    mock.patch.object(A, "execute", side_effect=execute) as run:
+                yield root, {"PATH": "/synthetic", "TMPDIR": str(tmp)}, run
+
+    def test_current_thin_bootstrap_checks_standalone_sources_and_launcher(self):
+        with self.checkout() as (root, env, run):
+            result = A.validation(env)
+            self.assertEqual(result["python_files"], 4)
+            self.assertEqual(result["embedded_python"], 2)
+            commands = [call.args[0] for call in run.call_args_list]
+            launcher = str(root / "preview/launcher.sh")
+            self.assertIn(["/bin/bash", "-n", launcher], commands)
+            lint = next(argv for argv in commands if argv[0] == "shellcheck")
+            self.assertIn("--severity=warning", lint)
+            self.assertIn(launcher, lint)
+            self.assertIn(["git", "--no-pager", "diff", "--check"], commands)
+            self.assertTrue(all(call.args[2] in (60, 120) for call in run.call_args_list))
+
+    def test_retained_embedded_bootstrap_is_parsed(self):
+        bootstrap = "#!/bin/bash\npython3 - <<'DOMESTIQUE_V2_TRUSTED_PY'\n{}\nDOMESTIQUE_V2_TRUSTED_PY\n"
+        with self.checkout(bootstrap.format("pass")) as (_root, env, _run):
+            self.assertEqual(A.validation(env)["embedded_python"], 3)
+        with self.checkout(bootstrap.format("def broken(")) as (_root, env, run):
+            with self.assertRaises(SyntaxError):
+                A.validation(env)
+            run.assert_not_called()
+
+    def test_bootstrap_malformed_or_unsupported_has_explicit_diagnostic(self):
+        for bootstrap, message in (
+            ("#!/bin/bash\nexit 0\n", "unsupported bootstrap shape"),
+            ("#!/bin/bash\n# DOMESTIQUE_V2_TRUSTED_PY\n", "opening delimiter"),
+            ("#!/bin/bash\npython3 - <<'DOMESTIQUE_V2_TRUSTED_PY'\npass\n",
+             "closing delimiter"),
+            ("#!/bin/bash\npython3 - <<'DOMESTIQUE_V2_TRUSTED_PY'\n"
+             "\nDOMESTIQUE_V2_TRUSTED_PY\n", "empty Python payload"),
+            ("#!/bin/bash\npython3 - <<'DOMESTIQUE_V2_TRUSTED_PY'\npass\n"
+             "DOMESTIQUE_V2_TRUSTED_PY\nDOMESTIQUE_V2_TRUSTED_PY\n",
+             "closing delimiter"),
+        ):
+            with self.subTest(message=message), \
+                    self.checkout(bootstrap) as (_root, env, run):
+                with self.assertRaisesRegex(ValueError, "install-v2.sh: .*" + message):
+                    A.validation(env)
+                run.assert_not_called()
+
+    def test_thin_bootstrap_missing_sources_and_invalid_standalone_python(self):
+        for name in ("install.py", "machine.py", "cli.py", "__init__.py", "launcher.sh"):
+            with self.subTest(missing=name), self.checkout() as (root, env, run):
+                (root / "preview" / name).unlink()
+                with self.assertRaisesRegex(ValueError, "missing standalone source.*" + name):
+                    A.validation(env)
+                run.assert_not_called()
+        with self.checkout() as (root, env, run):
+            (root / "preview/extra.py").write_text("def broken(\n")
+            with self.assertRaises(SyntaxError) as failure:
+                A.validation(env)
+            self.assertEqual(failure.exception.filename, str(root / "preview/extra.py"))
+            run.assert_not_called()
+
+
 class AcceptanceTests(unittest.TestCase):
     @contextmanager
     def expire_after(self, ready):
