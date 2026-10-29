@@ -198,6 +198,175 @@ class AllProviders(unittest.TestCase):
             self.assertTrue((root / ".agents/.domestique/manifest").is_file())
             self.assertFalse((root / ".codex/.domestique/base" / SHARED).exists())
 
+    def legacy_claude(self, name, *, guest=False, ref="415fb69"):
+        # Public Git objects only: v0.1.0 is the released normal installer;
+        # 415fb69 is the last Claude-only installer, including sticky guest.
+        old = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", f"{ref}:domestique.sh"],
+            text=True,
+        )
+        root = self.root(name)
+        # Normal recovery adds host text after removing the old managed region.
+        # Avoid an unrelated same-second backup from the initial old install.
+        if guest:
+            (root / "CLAUDE.md").write_bytes(b"# Host instructions\nKeep host bytes.\n")
+        self.run_dom(root, *(("--guest",) if guest else ()), script=old)
+        state = root / STATES["claude"]
+        manifest = (state / "manifest").read_text()
+        rel = "CLAUDE.local.md" if guest else "CLAUDE.md"
+        self.assertIn("snapshot_format=1\n", manifest)
+        self.assertNotIn("platform=", manifest)
+        self.assertIn(rel, next(line for line in manifest.splitlines()
+                               if line.startswith("files=")).split("=", 1)[1].split(","))
+        self.assertTrue((state / f"base/{rel}.block").is_file())
+        return root, rel
+
+    def test_platformless_legacy_claude_policy_recovery(self):
+        for ref, guest in (("v0.1.0", False), ("415fb69", False), ("415fb69", True)):
+            for missing in (False, True):
+                with self.subTest(ref=ref, guest=guest, missing=missing):
+                    root, rel = self.legacy_claude(
+                        f"legacy-{ref}-{guest}-{missing}", guest=guest, ref=ref)
+                    policy = root / rel
+                    host = b"# Host instructions\nKeep host bytes.\n"
+                    # The legitimate old base remains after the owner removes
+                    # the managed region, or removes the live policy entirely.
+                    if missing:
+                        policy.unlink()
+                    else:
+                        policy.write_bytes(host)
+                        policy.chmod(0o600)
+                    private = [root / STATES["claude"], root / ".claude/agents"]
+                    for directory in private:
+                        directory.chmod(0o700)
+                    for evidence in ("manifest", f"base/{rel}.block"):
+                        path = root / STATES["claude"] / evidence
+                        path.chmod(0o600)
+                        private.append(path)
+                    for role, model in (("implementer", "opus"), ("reviewer", "sonnet")):
+                        path = root / f".claude/agents/{role}.md"
+                        body = re.sub(r"(?m)^model: .+$", f"model: {model}",
+                                      path.read_text())
+                        path.write_text(body + "\nPublic fixture role customization.\n")
+                        path.chmod(0o600)
+                        private.append(path)
+                    modes = {p: p.stat().st_mode for p in private}
+                    old_backups = {p: p.read_bytes() for p in root.glob(f"{rel}.bak.*")}
+                    before = snapshot(root)
+                    self.run_dom(root, "--dry-run")
+                    self.assertEqual(before, snapshot(root))
+                    self.run_dom(root)
+                    self.assertEqual(self.installed(root), set(STATES))
+                    self.assertEqual(modes, {p: p.stat().st_mode for p in private})
+                    if not missing:
+                        self.assertTrue(policy.read_bytes().startswith(host))
+                        self.assertEqual(policy.stat().st_mode & 0o777, 0o600)
+                        backups = [p for p in root.glob(f"{rel}.bak.*") if p not in old_backups]
+                        self.assertEqual(len(backups), 1)
+                        self.assertEqual(backups[0].read_bytes(), host)
+                        self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+                    else:
+                        self.assertEqual(set(root.glob(f"{rel}.bak.*")), set(old_backups))
+                    self.assertEqual(old_backups, {p: p.read_bytes() for p in old_backups})
+                    if guest:
+                        self.assertEqual((root / "CLAUDE.md").read_bytes(), host)
+                        for state in STATES.values():
+                            self.assertEqual((root / state / "mode").read_text(), "guest\n")
+                    for role, model in (("implementer", "opus"), ("reviewer", "sonnet")):
+                        body = (root / f".claude/agents/{role}.md").read_text()
+                        self.assertIn(f"\nmodel: {model}\n", body)
+                        self.assertIn("Public fixture role customization.", body)
+                        self.assertNotIn("# domestique-model-setup:", body)
+                    self.assertIn("platform=claude\n",
+                                  (root / STATES["claude"] / "manifest").read_text())
+
+    def test_platformless_legacy_claude_invalid_ownership_zero_writes(self):
+        for guest in (False, True):
+            root, rel = self.legacy_claude(f"invalid-{guest}", guest=guest)
+            (root / rel).write_text("# Host policy without managed markers\n")
+            manifest = root / STATES["claude"] / "manifest"
+            original = manifest.read_text()
+            invalid = {
+                "foreign": original + "platform=codex\n",
+                "empty": original + "platform=\n",
+                "duplicate-platform": original + "platform=claude\nplatform=claude\n",
+                "ambiguous-platform": original + "platform=\nplatform=claude\n",
+                "unsupported-schema": original.replace("snapshot_format=1", "snapshot_format=2"),
+                "missing-schema": original.replace("snapshot_format=1\n", ""),
+                "duplicate-schema": original + "snapshot_format=1\n",
+                "malformed": original + "not-a-field\n",
+                "extra-equals": original + "platform=claude=other\n",
+                "duplicate-inventory": original + f"files={rel}\n",
+                "duplicate-file": re.sub(r"(?m)^(files=.*)$", rf"\1,{rel}", original),
+                "unowned-base": re.sub(r"(?m)^files=.*$", "files=.claude/agents/implementer.md",
+                                       original),
+            }
+            for kind, body in invalid.items():
+                with self.subTest(guest=guest, kind=kind):
+                    manifest.write_text(body)
+                    before = snapshot(root)
+                    for flags in (("--dry-run",), (), ("--force",)):
+                        result = self.run_dom(root, *flags, ok=False)
+                        self.assertIn("unowned policy base collision", result.stderr)
+                        self.assertIn("No project writes", result.stderr)
+                        self.assertEqual(before, snapshot(root))
+            manifest.unlink()
+            before = snapshot(root)
+            self.run_dom(root, ok=False)
+            self.assertEqual(before, snapshot(root))
+
+    def test_platformless_legacy_claude_unsafe_evidence_zero_writes(self):
+        for evidence in ("manifest", "base/CLAUDE.md.block"):
+            for kind in ("symlink", "hardlink", "directory", "parent-symlink"):
+                with self.subTest(evidence=evidence, kind=kind):
+                    root, rel = self.legacy_claude(f"unsafe-{kind}-{evidence.replace('/', '-')}")
+                    (root / rel).unlink()
+                    path = root / STATES["claude"] / evidence
+                    outside = self.work / f"outside-{root.name}"
+                    if kind == "parent-symlink":
+                        path.parent.rename(outside)
+                        path.parent.symlink_to(outside, target_is_directory=True)
+                    else:
+                        path.rename(outside)
+                        if kind == "symlink":
+                            path.symlink_to(outside)
+                        elif kind == "hardlink":
+                            os.link(outside, path)
+                        else:
+                            path.mkdir()
+                    before = snapshot(self.work)
+                    for flags in (("--dry-run",), (), ("--force",)):
+                        result = self.run_dom(root, *flags, ok=False)
+                        self.assertIn("unsafe", result.stderr)
+                        self.assertEqual(before, snapshot(self.work))
+
+    def test_platformless_ownership_exception_exact_state_and_provider(self):
+        # Exercise the actual helper in isolation as well as policy_preflight:
+        # absence must not become generic provider/shared-state ownership.
+        helpers = "\n".join(
+            f"{name}() {{" + SCRIPT.split(f"{name}() {{", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+            for name in ("shared_safe_path", "snapshot_has_file")
+        )
+        root, rel = self.legacy_claude("helper")
+        for state, provider, valid in (
+            (STATES["claude"], "claude", True),
+            (STATES["claude"], "codex", False),
+            (STATES["codex"], "claude", False),
+            (STATES["codex"], "codex", False),
+            (STATES["copilot"], "copilot", False),
+            (".agents/.domestique", "shared", False),
+        ):
+            with self.subTest(state=state, provider=provider):
+                if state != STATES["claude"]:
+                    shutil.copytree(root / STATES["claude"], root / state, dirs_exist_ok=True)
+                before = snapshot(root)
+                result = subprocess.run(
+                    ["bash", "-s", "--", str(root), state, provider, rel],
+                    input=helpers + '\nTARGET_DIR="$1"\nsnapshot_has_file "$2" "$3" "$4" .block\n',
+                    text=True, capture_output=True, env=self.env)
+                self.assertEqual(result.returncode, 0 if valid else 1, result.stderr)
+                self.assertEqual(before, snapshot(root))
+
     def test_wholly_guest_missing_providers_inherit(self):
         for missing in STATES:
             root = self.root(missing)

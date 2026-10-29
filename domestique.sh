@@ -2560,7 +2560,9 @@ PY
 snapshot_has_file() {
   local state="$1" platform="$2" rel="$3" manifest="$TARGET_DIR/$1/manifest"
   shared_safe_path "$state/manifest" && [ -f "$manifest" ] || return 1
-  awk -F= -v platform="$platform" -v wanted="$rel" '
+  # Claude-only legacy snapshots predate the platform field. This is scoped
+  # ownership evidence, never consent or native-role readiness.
+  awk -F= -v state="$state" -v platform="$platform" -v wanted="$rel" '
     NF != 2 || seen[$1]++ { bad=1 }
     $1 == "snapshot_format" { format=$2 }
     $1 == "platform" { provider=$2 }
@@ -2571,7 +2573,12 @@ snapshot_has_file() {
         if (files[paths[i]]++) bad=1
       }
     }
-    END { exit bad || format != "1" || provider != platform || found != 1 }
+    END {
+      provider_ok = provider == platform
+      if (!seen["platform"])
+        provider_ok = state == ".claude/.domestique" && platform == "claude"
+      exit bad || format != "1" || !provider_ok || found != 1
+    }
   ' "$manifest" || return 1
   shared_safe_path "$state/base/$rel${4:-}" && [ -f "$TARGET_DIR/$state/base/$rel${4:-}" ]
 }
