@@ -12,7 +12,8 @@ trap 'rm -rf "$WORKROOT"' EXIT
 if [ "${1:-}" = "--current" ]; then
   export HOME="$WORKROOT/current-home"
   mkdir -p "$HOME"
-  python3 "$SCRIPT_DIR/copilot-current.py" "$DOM" "$WORKROOT"
+  python3 -B -Werror "$SCRIPT_DIR/copilot-current.py" "$DOM" "$WORKROOT" || exit $?
+  python3 -B -Werror "$SCRIPT_DIR/copilot-preview-migration.py"
   exit $?
 fi
 # shellcheck source=test/historical-fixture.sh

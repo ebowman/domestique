@@ -2,6 +2,69 @@
 
 ## Reading this document
 
+### Supported Copilot preview project migration (hq-7sm.13)
+
+Run the same standalone `bash domestique.sh ROOT --dry-run`, inspect its plan,
+then rerun without `--dry-run`. `--platform copilot` scopes the selection;
+the default selects all three providers. The exact physical Git root must match
+the active `.domestique-private/copilot-preview.json` receipt, its Git/common
+identities, native names, created path identities and exact exclusion contribution.
+Supported inventories are the original five (absent inventory discriminator)
+and seven (`public-names`). Original five-definition locators without `--harness`
+and the subsequent explicit-harness locators are recognized from their source
+templates. No machine/source directory is opened, executed or required.
+
+Before **any selected-provider writes**, the bounded embedded helper validates
+source bytes, metadata, shared ownership and replacement workflows; the existing
+snapshot, policy, merge and lifecycle preflights validate the rest of the plan.
+Dry-run uses the same candidates and performs no project writes. Malformed,
+foreign, copied, disabled/partial or unknown receipts, experimental authority,
+symlinks/hardlinks, tracked paths, unowned shared collisions (even identical),
+custom alias leftovers and prompt-body forks refuse with preserving diagnostics.
+`--force` cannot bypass these checks or discard the metadata transfer.
+
+Every accepted scalar native frontmatter field, comment and unaffected byte is
+retained, plus flat JSON string arrays for `tools`; unknown scalar keys acquire
+no invented semantics. Complex YAML, duplicates, invalid scalars and Copilot
+`effort`/`model_reasoning_effort` are unsupported and refuse. Names remain exact.
+Only the known generated description is replaced with the generated guarded
+description. A custom description must already start with the exact current
+Copilot harness boundary, or the human must reconcile it explicitly. No prose
+classifier or metadata allowlist substitutes for the existing scalar contract.
+Known locator bodies become standalone workflows; any other body refuses.
+Model examples are not selections. Selected model/tools/metadata survive, but
+the old pair marker is removed: new workflow bytes require fresh explicit
+confirmation and native readiness checks, never automatic approval.
+
+A complete bounded source/output backup is staged before cutover at
+`.domestique-private/copilot-preview-migration/`. It retains original receipt,
+native files, exclusion bytes and file modes; its exact directory is locally
+excluded even after normal conversion. The old project receipt is revoked before
+publishing snapshot authority. Only unchanged proven obsolete `.github` public
+aliases are removed; canonical entries live under `.agents`. Pristine generated
+bases, not configured files, seed the normal snapshot merge contract.
+Copilot remains guest/private unless `--no-guest` is explicit. The Git-common
+exclude union retains host lines, other-provider privacy and existing Beads
+ownership. Neither the preview machine install, original source, `dom2`, nor
+Beads data is migrated or removed.
+
+Failures/interruption return nonzero and disclose partial results. Retain the
+backup and rerun the **same installer and mode flags**, first with `--dry-run`.
+Pending recovery verifies the fixed source/output inventory and accepts only
+old bytes, planned afterimages, or removals bounded by that plan. It never
+overwrites edits made during recovery. Unknown/incomplete backup staging,
+changed files, custom leftovers or changed installer outputs require explicit
+preserving reconciliation; do not delete them merely to make installation pass.
+The `complete` file marks an inert source backup, not another native authority;
+later runs use ordinary snapshots. This is cooperative single-writer recovery
+using staging/atomic file replacement, not an adversarial transaction service.
+
+`bash test/copilot.sh --current` includes real five/seven creation, model writer,
+refusal, source-independent stdin, exclusion preservation and interrupted-cutover
+fixtures. Historical shell mode is unchanged. These are offline lifecycle
+checks, **not native qualification** of the migrated workflows; that remains
+pending separately.
+
 ### Single-script shared skill foundation (hq-7sm.10)
 
 This candidate's source-free `domestique.sh` installs Claude, Codex and Copilot
@@ -9,8 +72,8 @@ on both fresh and repeat selector-less runs (hq-7sm.12). `--platform all` select
 the same three; `both` remains Claude+Codex only. Explicit selections add to the
 persisted subset, never silently remove another provider. Uninstall without a
 selector scans all three; explicit uninstall removes only that selection.
-The self-contained Copilot projection (hq-7sm.11) does **not** migrate the
-separate preview. Migration .13, native qualification .6, and publication remain pending.
+The self-contained Copilot projection supports the bounded preview project
+migration below (.13). Native qualification .6 and publication remain pending.
 Installed provider modes stay sticky; missing providers inherit wholly guest or
 wholly normal installations (fresh is normal). With mixed installed modes and
 a missing selected provider, preflight refuses without changing provider, shared,

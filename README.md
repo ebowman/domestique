@@ -75,8 +75,19 @@ Missing bodies stop rather than falling back.
 Requires local Git and Python 3.11+ (`tomllib` for Codex); optional native clients
 need not be installed to install configuration. No client/dependency installation,
 launcher, alias, global settings or implicit Beads initialization occurs.
-Preview migration (hq-7sm.13), native qualification (hq-7sm.6), and release
-publication remain pending; this does not migrate or qualify the separate preview.
+Supported five/seven-definition Copilot preview projects can now migrate through
+this same installer (hq-7sm.13), including `--dry-run`. Copilot stays private unless
+`--no-guest` explicitly converts it. The machine preview and `dom2` are untouched.
+Native qualification (hq-7sm.6) and release publication remain pending.
+Migration retains bounded scalar native metadata/comments and flat tools arrays,
+but refuses unsupported effort, complex/duplicate fields, unscoped custom
+descriptions, unknown ownership and customized prompt bodies before provider writes.
+Selections survive; changed workflows require **fresh explicit pair confirmation**.
+The byte-preserving source backup remains under
+`.domestique-private/copilot-preview-migration/`, locally excluded from Git.
+An interrupted cutover returns nonzero: retain that backup and retry the same
+installer/flags. Changed/unknown afterimages refuse rather than overwriting edits.
+See [supported migration and recovery](docs/install-upgrade-design.md#supported-copilot-preview-project-migration-hq-7sm13).
 Guest upgrades refuse old unguarded owned host policies without changing them;
 upgrade those policies in normal mode or explicitly reconcile them first.
 Normal upgrades also scope retained inactive owned blocks (including an old

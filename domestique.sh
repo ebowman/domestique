@@ -1527,6 +1527,8 @@ configure_provider() {
 resolve_provider_mode() {
   local marker_content=""
   GUEST="$REQUESTED_GUEST"
+  if [ "$CURRENT_PROVIDER" = copilot ] && [ "${PREVIEW_MIGRATE:-0}" -eq 1 ] &&
+     [ "$NO_GUEST" -eq 0 ]; then GUEST=1; fi
   if [ -e "$MODE_MARKER" ]; then
     marker_content="$(cat "$MODE_MARKER" 2>/dev/null || true)"
     case "$marker_content" in
@@ -1908,6 +1910,515 @@ SHARED_CODEX=0
 SHARED_COPILOT=0
 SHARED_REMOVE=0
 SHARED_GUEST=0
+PREVIEW_MIGRATE=0
+
+# Supported project-only preview cutover. This deliberately embeds the small
+# old locator/receipt contract: installed scripts never import preview sources
+# or inspect the machine installation. The durable directory is a bounded
+# source backup, not a second provider authority.
+preview_migration() {
+  python3 - "$TARGET_DIR" "$TMPDIR_WORK" "$1" "$NO_GUEST" "$COPILOT_FILES" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import stat
+import subprocess
+import sys
+import tempfile
+
+root = Path(sys.argv[1]).resolve()
+work, action, normal, files_arg = Path(sys.argv[2]).resolve(), sys.argv[3], sys.argv[4], sys.argv[5]
+receipt = ".domestique-private/copilot-preview.json"
+archive = ".domestique-private/copilot-preview-migration"
+state = ".github/.domestique"
+roles = ("implementer", "reviewer")
+definitions = {
+    "ordinary": ("domestique-v2-copilot", "Load the shared Domestique Copilot instructions."),
+    "decompose": ("domestique-v2-copilot-decompose", "Load Domestique planning instructions without coding."),
+    "goal": ("domestique-v2-copilot-goal", "Load an explicitly requested Domestique epic workflow."),
+    "implementer": ("domestique-v2-copilot-implementer", "Implement one caller-assigned Domestique task."),
+    "reviewer": ("domestique-v2-copilot-reviewer", "Independently review one caller-assigned Domestique task."),
+}
+entries = {**definitions, **{f"dom-{k}": (f"dom-{k}", definitions[k][1])
+                            for k in ("decompose", "goal")}}
+leaves = {k: (f".github/agents/{v[0]}.agent.md" if k in roles else
+              f".github/skills/{v[0]}/SKILL.md") for k, v in entries.items()}
+marker = "# domestique-model-setup:"
+guard = "Copilot only; never match in Claude, Codex or an unknown harness."
+
+def need(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+def ident(path):
+    info = path.stat()
+    return [info.st_dev, info.st_ino]
+
+def identity(value):
+    return type(value) is list and len(value) == 2 and all(type(n) is int and n >= 0 for n in value)
+
+def digest(value):
+    return type(value) is str and re.fullmatch("[0-9a-f]{64}", value)
+
+def safe(path):
+    for p in (*reversed(path.parents), path):
+        need(not p.is_symlink(), f"symlink: {p}")
+        if p.exists():
+            info = p.stat()
+            need(stat.S_ISDIR(info.st_mode) or (p == path and stat.S_ISREG(info.st_mode)
+                 and info.st_nlink == 1), f"unsafe path: {p}")
+
+def read(path, limit=1048576):
+    safe(path)
+    need(path.is_file() and path.stat().st_size <= limit and path.stat().st_mode & 0o400,
+         f"missing/oversize/unreadable file: {path}")
+    return path.read_bytes()
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        need(key not in result, "duplicate JSON key")
+        result[key] = value
+    return result
+
+def load(data):
+    return json.loads(data, object_pairs_hook=unique)
+
+def git(*args):
+    return subprocess.check_output(["git", "-C", str(root), *args]).decode().rstrip("\n")
+
+def scalar(value):
+    value = value.strip()
+    need(bool(value), "empty scalar")
+    if value.startswith('"'):
+        item, end = json.JSONDecoder().raw_decode(value)
+        need(type(item) is str and (not value[end:].strip() or
+             value[end:].startswith((" #", "\t#"))), "invalid scalar suffix")
+        return item
+    if value.startswith("'"):
+        match = re.fullmatch(r"'((?:[^']|'')*)'(?:[ \t]+#.*)?", value)
+        need(match is not None, "invalid single-quoted scalar")
+        return match[1].replace("''", "'")
+    need(not any(c in value for c in "[]{}&*!|>'\"`%@") and
+         not value.startswith(("-", "?", ":", "#")) and ": " not in value and
+         not re.search(r":\s*$", value), "unsupported complex/invalid scalar")
+    return re.split(r"[ \t]+#", value, maxsplit=1)[0].rstrip()
+
+def parse(data, kind, source=True):
+    text = data.decode("utf-8")
+    need("\r" not in text and not any(ord(c) < 32 and c not in "\n\t" for c in text),
+         "unsupported controls/line endings")
+    lines = text.splitlines(keepends=True)
+    need(lines and lines[0] == "---\n", "missing frontmatter")
+    end = lines.index("---\n", 1)
+    # Generated workflow bodies document the marker protocol literally; only
+    # source role markers are approval evidence, never those examples.
+    markers = [i for i, line in enumerate(lines if source else lines[:end]) if marker in line]
+    if markers:
+        need(kind == "implementer" and markers == [1] and lines[1].startswith(marker + " "),
+             "misplaced setup marker")
+        value = load(lines[1][len(marker):])
+        need(type(value) is dict and set(value) == {
+            "v", "project", "harness", "implementer_sha256", "reviewer_sha256"} and
+            type(value["v"]) is int and value["v"] == 1 and value["project"] == str(root) and
+            value["harness"] == "copilot" and all(digest(value[r + "_sha256"]) for r in roles),
+            "invalid setup marker")
+    fields = {}
+    for i, line in enumerate(lines[1:end], 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(.*?)\n", line)
+        need(match is not None and match[1] not in fields, "complex/duplicate YAML field")
+        key, value = match.groups()
+        if key == "tools" and value.startswith("["):
+            item = load(value)
+            need(type(item) is list and all(type(t) is str for t in item), "invalid tools")
+        else:
+            item = scalar(value)
+        if key == "model":
+            need(type(item) is str and 0 < len(item) <= 512 and item == item.strip() and
+                 all(c.isprintable() for c in item), "invalid model selection")
+            need(value.startswith(("'", '"')) or
+                 (item.lower() not in ("null", "~", "true", "false", "yes", "no", "on", "off") and
+                  not re.match(r"^[+\-0-9.]", item)), "ambiguous model scalar")
+        fields[key] = (i, item)
+    need("effort" not in fields and "model_reasoning_effort" not in fields,
+         "Copilot effort is unsupported; preserve and explicitly repair")
+    need(fields.get("name", (None, None))[1] == entries[kind][0], "wrong native identity/name")
+    return lines, end, fields, markers
+
+def original(kind, launcher, harness=True):
+    name, description = entries[kind]
+    actual = kind.removeprefix("dom-")
+    text = f"---\nname: {name}\ndescription: {description}\n---\n\n"
+    command = shlex.join([launcher, "workflow", actual, "--project", str(root)] +
+                        (["--harness", "copilot"] if harness else []))
+    if kind in roles:
+        text += ("Delegated role only: await the caller's explicit bounded task and retained\n"
+                 "shared-source instructions/context. Do not start a workflow, resolve the\n"
+                 "current revision independently, or run this locator autonomously.\n"
+                 "The caller's shared role-definition locator is:\n\n")
+    else:
+        if actual == "goal":
+            text += ("Use only for an explicit Domestique goal request naming an epic.\n"
+                     "Native goal/autopilot and ordinary planning are not authorization.\n\n")
+        text += ("Load instructions from the shared preview command for this explicit project;\n"
+                 "follow the returned instructions, not a copied local workflow engine:\n\n")
+    return (text + f"```sh\n{command}\n```\n\n"
+            "If loading fails, report that failure; do not invent a local fallback.\n"
+            "Definition discovery alone does not establish operational workflow readiness.\n").encode()
+
+def transfer(data, kind, launcher, upstream):
+    lines, end, fields, markers = parse(data, kind)
+    old = original(kind, launcher)
+    bodies = [old.split(b"---\n", 2)[2]]
+    if "inventory" not in record:
+        # Original five-definition source (6544140) predates --harness.
+        bodies.append(original(kind, launcher, False).split(b"---\n", 2)[2])
+    need(data.split(b"---\n", 2)[2] in bodies,
+         f"custom prompt fork: {leaves[kind]}; retain source and explicitly reconcile it")
+    new_lines, new_end, new_fields, _ = parse(upstream, kind, source=False)
+    need("description" in fields, "missing description")
+    index, description = fields["description"]
+    if description == entries[kind][1]:
+        # Replace only the known generated value, retaining inline comments.
+        raw = lines[index].split(":", 1)[1].strip()
+        if raw.startswith('"'):
+            _, stop = json.JSONDecoder().raw_decode(raw)
+            suffix = raw[stop:]
+        elif raw.startswith("'"):
+            suffix = raw[re.match(r"'(?:[^']|'')*'", raw).end():]
+        else:
+            comment = re.search(r"[ \t]+#", raw)
+            suffix = raw[comment.start():] if comment else ""
+        lines[index] = new_lines[new_fields["description"][0]].rstrip("\n") + suffix + "\n"
+    else:
+        need(description == guard or description.startswith(guard + " "),
+             f"custom description lacks exact harness boundary: {leaves[kind]}")
+    # Preserve every accepted field and comment, not an arbitrary allowlist.
+    return ("".join(line for i, line in enumerate(lines[:end]) if i not in markers) +
+            "".join(new_lines[new_end:])).encode()
+
+def atomic(path, data, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    safe(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".copilot-migration-", delete=False) as out:
+            temporary = Path(out.name)
+            os.fchmod(out.fileno(), mode)
+            out.write(data)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+try:
+    safe(root / receipt)
+    safe(root / archive)
+    private = root / ".domestique-private"
+    if private.exists():
+        need(all(p.name in ("copilot-preview.json", "copilot-preview-migration")
+                 for p in private.iterdir()), "unknown experimental/private authority or staging leftover")
+    for base in (".github", ".copilot"):
+        need(not os.path.lexists(root / base / ".domestique") or base == ".github",
+             "unknown experimental authority")
+    for rel in (".github/skills/domestique", ".github/skills/domestique-decompose",
+                ".github/skills/domestique-goal", ".github/agents/domestique-implementer.agent.md",
+                ".github/agents/domestique-reviewer.agent.md"):
+        need(not os.path.lexists(root / rel), f"unknown legacy authority: {rel}")
+    if (root / archive / "complete").exists():
+        need(read(root / archive / "complete") == b"source backup only; snapshot authority\n" and
+             not (root / receipt).exists(), "conflicting completed migration/preview authority")
+        sys.exit(0)
+    if not (root / receipt).exists() and not (root / archive).exists():
+        sys.exit(0)
+    need(Path(os.path.abspath(sys.argv[1])) == root, "symlink/aliased project root")
+    need(git("rev-parse", "--show-toplevel") == str(root), "exact physical Git project root required")
+    git_dir = Path(git("rev-parse", "--absolute-git-dir"))
+    common = Path(os.path.abspath(root / git("rev-parse", "--git-common-dir")))
+    project = {"root": str(root), "root_identity": ident(root),
+               "git_dir": str(git_dir), "git_identity": ident(git_dir),
+               "common_dir": str(common), "common_identity": ident(common)}
+    exclude = common / "info/exclude"
+    safe(exclude)
+    pending = (root / archive).exists()
+    if pending:
+        plan = load(read(root / archive / "plan.json", 65536))
+        need(type(plan) is dict and set(plan) == {"v", "project", "normal", "source", "output"} and
+             plan["v"] == 1 and plan["project"] == project and plan["normal"] == normal,
+             "invalid migration backup or changed mode; retry with the original flags")
+        need(type(plan["source"]) is dict and set(plan["source"]) <= {receipt, "exclude", *leaves.values()}
+             and receipt in plan["source"] and type(plan["output"]) is dict,
+             "invalid migration source inventory")
+        source = {rel: read(root / archive / "source" / rel) for rel in plan["source"]}
+        # Receipt and output schema are independently rederived below.
+        record_data = source[receipt]
+    else:
+        need(not (root / state).exists(), "dual preview/snapshot authority")
+        record_data = read(root / receipt, 65536)
+        source = {receipt: record_data}
+    record = load(record_data)
+    need(type(record) is dict and set(record) in (
+        {"kind", "state", "project", "installation", "native_ids", "token", "files",
+         "directories", "exclusion", "receipt_identity"},
+        {"kind", "state", "project", "installation", "native_ids", "token", "files",
+         "directories", "exclusion", "receipt_identity", "inventory"}), "unknown/malformed preview receipt")
+    need(record["kind"] == "domestique-copilot-preview" and record["state"] == "active" and
+         record["project"] == project, "unsupported/foreign/partial preview receipt")
+    need(record.get("inventory", "original-five") in ("original-five", "public-names") and
+         ("inventory" not in record or record["inventory"] == "public-names"), "unknown inventory")
+    selected = leaves if "inventory" in record else {k: leaves[k] for k in definitions}
+    need(record["native_ids"] == {k: v[0] for k, v in definitions.items()}, "unknown native IDs")
+    installation = record["installation"]
+    need(type(installation) is dict and set(installation) == {
+        "root", "root_identity", "launcher", "launcher_identity", "launcher_sha256"} and
+        all(type(installation[k]) is str and Path(installation[k]).is_absolute() and
+            os.path.normpath(installation[k]) == installation[k] for k in ("root", "launcher")) and
+        all(identity(installation[k]) for k in ("root_identity", "launcher_identity")) and
+        digest(installation["launcher_sha256"]), "invalid installed identity")
+    need(identity(record["receipt_identity"]) and (pending or ident(root / receipt) ==
+         record["receipt_identity"]), "copied/replaced receipt identity")
+    need(type(record["token"]) is str and re.fullmatch("[0-9a-f]{32}", record["token"]),
+         "invalid exclusion token")
+    facts = record["files"]
+    need(type(facts) is dict and set(facts) == set(selected.values()), "unknown/incomplete owned paths")
+    parents = {str(p) for rel in (*selected.values(), receipt) for p in Path(rel).parents if str(p) != "."}
+    directories = record["directories"]
+    need(type(directories) is dict and directories.keys() <= parents and
+         all(identity(v) for v in directories.values()), "invalid directory ownership")
+    for rel, value in directories.items():
+        if not pending:
+            safe(root / rel)
+            need(ident(root / rel) == value, f"replaced owned directory: {rel}")
+    output = {}
+    for kind, rel in selected.items():
+        value = facts[rel]
+        need(type(value) is dict and {"identity", "sha256"} <= set(value) and
+             set(value) <= {"identity", "sha256", "model_setup"} and
+             identity(value["identity"]) and digest(value["sha256"]), "invalid creation facts")
+        setup = value.get("model_setup")
+        if setup is not None:
+            need(kind in roles and type(setup) is dict and {"identity", "sha256", "removable"} <= set(setup)
+                 and set(setup) <= {"identity", "sha256", "removable", "confirmed"} and
+                 identity(setup["identity"]) and digest(setup["sha256"]) and
+                 type(setup["removable"]) is bool and type(setup.get("confirmed", True)) is bool,
+                 "invalid model setup facts")
+        if not pending:
+            source[rel] = read(root / rel)
+            need(ident(root / rel) in (value["identity"], (setup or {}).get("identity")),
+                 f"replaced native ownership: {rel}")
+        # A known source body, not approval hashes, bounds prompt provenance.
+        if kind in definitions:
+            output[rel] = transfer(source[rel], kind, installation["launcher"],
+                                   read(work / "preview-upstream" / rel))
+        else:
+            need(sha(source[rel]) == value["sha256"] and source[rel] ==
+                 original(kind, installation["launcher"]), f"edited obsolete alias: {rel}")
+    for kind in set(leaves) - set(selected):
+        need(not os.path.lexists(root / leaves[kind]), "unowned public alias collision")
+    # Reject leftovers in obsolete directories, even if the owned leaf agrees.
+    for kind in ("dom-decompose", "dom-goal"):
+        directory = root / Path(leaves[kind]).parent
+        safe(directory)
+        if directory.exists():
+            need(all(p.name == "SKILL.md" for p in directory.iterdir()), "custom obsolete alias leftover")
+    exclusion = record["exclusion"]
+    token = record["token"]
+    block = (f"# domestique-copilot-preview BEGIN {token}\n" +
+             "".join(f"/{rel}\n" for rel in (*selected.values(), receipt)) +
+             f"# domestique-copilot-preview END {token}\n").encode()
+    need(type(exclusion) is dict and set(exclusion) == {
+        "state", "identity", "prefix_size", "prefix_sha256", "separator", "block"} and
+        exclusion["state"] == "present" and identity(exclusion["identity"]) and
+        type(exclusion["prefix_size"]) is int and 0 <= exclusion["prefix_size"] <= 1048576 and
+        digest(exclusion["prefix_sha256"]) and exclusion["separator"] in ("", "\n") and
+        exclusion["block"] == block.decode(), "invalid exclusion receipt")
+    if not pending:
+        source["exclude"] = read(exclude)
+        need(ident(exclude) == exclusion["identity"], "replaced Git-common exclude")
+    before = source["exclude"]
+    offset = exclusion["prefix_size"]
+    contribution = exclusion["separator"].encode() + block
+    need(before.count(b"# domestique-copilot-preview ") == 2 and
+         sha(before[:offset]) == exclusion["prefix_sha256"] and
+         before[offset:offset + len(contribution)] == contribution,
+         "edited/foreign/shared preview exclusion contribution")
+    remainder = before[:offset] + before[offset + len(contribution):]
+    need(("/" + archive).encode() not in remainder, "unowned migration exclusion collision")
+    begin, end = b"# BEGIN domestique (managed)", b"# END domestique"
+    need(remainder.count(begin) == remainder.count(end) and remainder.count(begin) <= 1 and
+         (begin not in remainder or remainder.index(begin) < remainder.index(end)),
+         "malformed existing managed exclusion")
+    # Preserve the host bytes and existing provider contribution. The main
+    # installer subsequently reconciles this block using its exact union.
+    output["exclude"] = remainder + (b"\n" if remainder and not remainder.endswith(b"\n") else b"")
+    output["exclude"] += ("/" + archive + "/\n").encode()
+    for rel in files_arg.split(","):
+        output[f"{state}/base/{rel}"] = read(work / "preview-upstream" / rel)
+    output[f"{state}/guest-excludes"] = (state + "/\n" + "\n".join(files_arg.split(",")) + "\n").encode()
+    if normal == "0":
+        output[f"{state}/mode"] = b"guest\n"
+        begin, end = b"# BEGIN domestique (managed)\n", b"# END domestique\n"
+        data = output["exclude"]
+        need(data.count(begin) == data.count(end) and data.count(begin) <= 1,
+             "malformed existing managed exclusion")
+        extra = (state + "/\n" + "\n".join(files_arg.split(",")) + "\n").encode()
+        if begin in data:
+            need(data.index(begin) < data.index(end), "reversed managed exclusion")
+            output["exclude"] = data.replace(end, extra + end)
+        else:
+            output["exclude"] += begin + extra + end
+    output[f"{state}/manifest"] = (
+        "snapshot_format=1\nplatform=copilot\ndomestique_version=preview-migration\n"
+        "installed_ref=unknown\nfiles=" + files_arg + "\n").encode()
+    # Keep the old exact exclusions until their aliases are gone. During a
+    # partial cutover neither source backups nor new snapshots become visible.
+    output["exclude-pending"] = before + (b"\n" if before and not before.endswith(b"\n") else b"")
+    output["exclude-pending"] += ("/" + archive + "/\n/" + state + "/\n").encode()
+    source_keys = {receipt, "exclude", *selected.values()}
+    need(set(source) == source_keys, "unknown migration source paths")
+    if pending:
+        expected = {archive + "/plan.json", *(archive + "/source/" + p for p in source),
+                    *(archive + "/output/" + p for p in output)}
+        parents = {str(p) for rel in expected for p in Path(rel).parents}
+        for path in (root / archive).rglob("*"):
+            safe(path)
+            need(str(path.relative_to(root)) in expected | parents, "unknown migration backup leftover")
+        actual = {str(p.relative_to(root)) for p in (root / archive).rglob("*") if not p.is_dir()}
+        need(actual == expected, "unknown/incomplete migration backup")
+        for category, values in (("source", source), ("output", output)):
+            need(set(plan[category]) == set(values), "invalid migration inventory")
+            for rel, data in values.items():
+                item = plan[category][rel]
+                need(type(item) is dict and set(item) == {"sha256", "mode"} and
+                     item["sha256"] == sha(data) and type(item["mode"]) is int and
+                     0 <= item["mode"] <= 0o777 and
+                     read(root / archive / category / rel) == data, "changed migration source/output")
+    else:
+        plan = {"v": 1, "project": project, "normal": normal, "source": {}, "output": {}}
+        for category, values in (("source", source), ("output", output)):
+            for rel, data in values.items():
+                path = exclude if rel.startswith("exclude") else root / rel
+                mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+                need(mode <= 0o777, f"unsupported special mode: {rel}")
+                plan[category][rel] = {"sha256": sha(data), "mode": mode}
+    # Every live cutover path must be an exact old or planned afterimage.
+    # Metadata edited since an interruption is NOT silently reinterpreted.
+    for rel in (source_keys | set(output)) - {"exclude-pending"}:
+        path = exclude if rel == "exclude" else root / rel
+        safe(path)
+        need(not any(path.parent.glob(".copilot-migration-*")),
+             f"unresolved cutover staging leftover in {path.parent}; preserve and reconcile it")
+        if path.exists():
+            observed = read(path)
+            candidates = [v[rel] for v in (source, output) if rel in v]
+            if rel == "exclude":
+                candidates.append(output["exclude-pending"])
+            need(observed in candidates,
+                 f"changed migration path: {rel}; preserve backup and reconcile explicitly")
+        else:
+            removable = {receipt, leaves["dom-decompose"], leaves["dom-goal"]}
+            need(rel not in source or (pending and rel in removable), f"missing source: {rel}")
+    # Unknown snapshot or alias leftovers cannot hide behind resumable state.
+    if (root / state).exists():
+        need(pending, "dual authority")
+        need((root / state).is_dir(), "wrong partial snapshot root type")
+        expected_files = {rel for rel in output if rel.startswith(state + "/")}
+        expected_directories = {str(parent) for rel in expected_files
+                                for parent in Path(rel).parents
+                                if str(parent).startswith(state + "/")}
+        for path in (root / state).rglob("*"):
+            safe(path)
+            expected = expected_directories if path.is_dir() else expected_files
+            need(str(path.relative_to(root)) in expected, "unknown partial snapshot leftover")
+    tracked = git("ls-files", "--cached", "-z").split("\0")
+    for rel in (source_keys | set(output) | {archive}) - {"exclude", "exclude-pending"}:
+        need(not any(p and (p == rel or p.startswith(rel + "/") or rel.startswith(p + "/"))
+                     for p in tracked), f"tracked migration path: {rel}")
+    # Expose only a temporary projection to the existing read-only preflights.
+    for rel, data in output.items():
+        if not rel.startswith("exclude"):
+            path = work / "preview-root" / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            os.chmod(path, plan[category][rel]["mode"])
+    (work / "preview-active").write_text("pending\n")
+    print(f"Copilot preview migration: {len(selected)} definitions; byte-preserving source backup "
+          f"{archive}; replace five native workflows, retire proven public aliases/receipt, "
+          "seed pristine snapshots; selected metadata retained, pair UNCONFIRMED.")
+    if action == "apply":
+        if not pending:
+            # Publish the complete bounded backup before changing any authority.
+            temporary = Path(tempfile.mkdtemp(prefix=".copilot-migration-", dir=private))
+            for category, values in (("source", source), ("output", output)):
+                for rel, data in values.items():
+                    path = temporary / category / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+            (temporary / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
+            os.rename(temporary, root / archive)
+        atomic(exclude, output["exclude-pending"], plan["output"]["exclude-pending"]["mode"])
+        # Revoke the old project receipt, never the machine installation.
+        # All replacement bytes and their preserving plan have been validated.
+        path = root / receipt
+        if path.exists():
+            path.unlink()
+        # Publish only after project receipt revocation.
+        for rel, data in output.items():
+            if not rel.startswith("exclude"):
+                atomic(root / rel, data, plan["output"][rel]["mode"])
+        for kind in ("dom-decompose", "dom-goal"):
+            if kind in selected:
+                path = root / leaves[kind]
+                if path.exists():
+                    path.unlink()
+                if path.parent.exists():
+                    path.parent.rmdir()
+        atomic(exclude, output["exclude"], plan["output"]["exclude"]["mode"])
+        atomic(root / archive / "complete", b"source backup only; snapshot authority\n")
+        print("Copilot preview cutover complete; backup retained; fresh pair confirmation required.")
+except (OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.CalledProcessError) as exc:
+    print(f"Copilot preview migration REFUSED/PARTIAL: {exc}. No source is discarded; "
+          f"retain {archive} and all custom files. Retry the same installer/flags for "
+          "verified partial afterimages; unknown state requires explicit preserving reconciliation.",
+          file=sys.stderr)
+    sys.exit(3)
+PY
+}
+
+preview_preflight() {
+  [ "$SELECT_COPILOT" -eq 1 ] || return 0
+  local path rel emitter
+  for path in .domestique-private/copilot-preview.json .domestique-private/copilot-preview-migration; do
+    if [ -e "$TARGET_DIR/$path" ] || [ -L "$TARGET_DIR/$path" ]; then
+      [ "$UNINSTALL" -eq 0 ] || [ -f "$TARGET_DIR/.domestique-private/copilot-preview-migration/complete" ] ||
+        shared_refuse "preview migration requires install, not uninstall; preserve source"
+    fi
+  done
+  while IFS='|' read -r rel emitter; do
+    mkdir -p "$TMPDIR_WORK/preview-upstream/$(dirname "$rel")"
+    "$emitter" > "$TMPDIR_WORK/preview-upstream/$rel"
+  done <<< "$COPILOT_ENTRIES"
+  preview_migration plan || exit $?
+  [ -f "$TMPDIR_WORK/preview-active" ] || return 0
+  PREVIEW_MIGRATE=1
+  # Do not adopt identical unowned shared files during this migration.
+  while IFS='|' read -r rel emitter; do
+    if [ -e "$TARGET_DIR/$rel" ] || [ -L "$TARGET_DIR/$rel" ] ||
+       [ -d "$TARGET_DIR/$(dirname "$rel")" ]; then
+      snapshot_has_file .agents/.domestique shared "$rel" ||
+        snapshot_has_file .codex/.domestique codex "$rel" ||
+        shared_refuse "unowned shared collision during preview migration: $rel"
+    fi
+  done <<< "$SHARED_ENTRIES"
+}
 
 shared_refuse() {
   echo "Error: shared skills preflight: $*. No project writes; repair ownership/merge by hand and retry (including with --force)." >&2
@@ -2219,16 +2730,22 @@ copilot_preflight() {
   [ "$SELECT_COPILOT" -eq 1 ] || [ -e "$TARGET_DIR/.github/.domestique" ] ||
     [ -L "$TARGET_DIR/.github/.domestique" ] || return 0
   command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
-  local state=".github/.domestique" rel emitter path base rc
-  for path in .domestique-private/copilot-preview.json .github/skills/dom-decompose .github/skills/dom-goal; do
-    if [ -e "$TARGET_DIR/$path" ] || [ -L "$TARGET_DIR/$path" ]; then
-      shared_refuse "competing preview ownership/path $path; explicit migration is separate"
-    fi
-  done
+  local state=".github/.domestique" rel emitter path base rc native_root="$TARGET_DIR"
+  if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+    native_root="$TMPDIR_WORK/preview-root"
+  else
+    for path in .domestique-private/copilot-preview.json .github/skills/dom-decompose .github/skills/dom-goal; do
+      if [ -e "$TARGET_DIR/$path" ] || [ -L "$TARGET_DIR/$path" ]; then
+        shared_refuse "competing preview ownership/path $path; supported receipt required"
+      fi
+    done
+  fi
   shared_safe_path "$state" directory || shared_refuse "unsafe Copilot state"
   : > "$TMPDIR_WORK/copilot-excludes"
   : > "$TMPDIR_WORK/shared-new-excludes"
-  if [ -d "$TARGET_DIR/$state" ]; then
+  if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+    cp "$native_root/$state/guest-excludes" "$TMPDIR_WORK/copilot-excludes"
+  elif [ -d "$TARGET_DIR/$state" ]; then
     shared_consumer_valid copilot || shared_refuse "unknown Copilot authority"
     while IFS='|' read -r rel emitter; do
       snapshot_has_file "$state" copilot "$rel" || shared_refuse "incomplete Copilot inventory: $rel"
@@ -2267,31 +2784,26 @@ copilot_preflight() {
     shared_safe_path "$rel" && shared_safe_path "$state/base/$rel" &&
       shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.uninstalled.$TS" ||
       shared_refuse "unsafe Copilot path $rel"
-    base="$TARGET_DIR/$state/base/$rel"
-    if [ -e "$TARGET_DIR/$rel" ] && [ ! -f "$base" ]; then
+    base="$native_root/$state/base/$rel"
+    if [ -e "$native_root/$rel" ] && [ ! -f "$base" ]; then
       shared_refuse "unowned Copilot path $rel; no silent preview adoption"
     fi
-    if [ ! -e "$TARGET_DIR/$rel" ]; then
+    if [ ! -e "$native_root/$rel" ]; then
       printf '%s\n' "$rel" >> "$TMPDIR_WORK/copilot-excludes"
     elif [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
       "$emitter" > "$TMPDIR_WORK/copilot-upstream"
       rc=0
-      git merge-file -p "$TARGET_DIR/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" > "$TMPDIR_WORK/copilot-candidate" || rc=$?
+      git merge-file -p "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" > "$TMPDIR_WORK/copilot-candidate" || rc=$?
       [ "$rc" -eq 0 ] || shared_refuse "Copilot merge conflict $rel"
-      case "$rel" in
-        .github/agents/*)
-          native_role_description_preflight copilot "$TMPDIR_WORK/copilot-candidate" "$rel" ;;
-      esac
+      native_role_description_preflight copilot "$TMPDIR_WORK/copilot-candidate" "$rel"
       emit_harness_guard copilot > "$TMPDIR_WORK/copilot-guard"
       python3 - "$TMPDIR_WORK/copilot-guard" "$TMPDIR_WORK/copilot-candidate" "$rel" <<'PY' ||
 import pathlib
 import sys
 guard, candidate = (pathlib.Path(p).read_bytes() for p in sys.argv[1:3])
-# Native descriptions are checked separately; neither discovery nor body
-# boundaries can substitute for the other.
-role = sys.argv[3].startswith(".github/agents/")
-sys.exit(guard not in candidate or (
-    not role and b"\ndescription: Copilot only;" not in candidate))
+# Decoded descriptions are checked separately for roles and skills; neither
+# discovery nor body boundaries can substitute for the other.
+sys.exit(guard not in candidate)
 PY
         shared_refuse "missing Copilot caller guard $rel"
     fi
@@ -2317,7 +2829,7 @@ PY
   fi
   # Validate native syntax without a YAML dependency or any confirmation write.
   command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
-  python3 - "$TARGET_DIR" <<'PY' || shared_refuse "malformed Copilot role or unsafe exclude path"
+  python3 - "$native_root" <<'PY' || shared_refuse "malformed Copilot role or unsafe exclude path"
 import json
 import pathlib
 import re
@@ -2508,6 +3020,7 @@ shared_preflight() {
   done <<< "$SHARED_ENTRIES"
   shared_consumer_valid codex && SHARED_CODEX=1
   shared_consumer_valid copilot && SHARED_COPILOT=1
+  [ "$PREVIEW_MIGRATE" -eq 0 ] || SHARED_COPILOT=1
   if [ -e "$TARGET_DIR/.github/.domestique" ] || [ -L "$TARGET_DIR/.github/.domestique" ]; then
     [ "$SHARED_COPILOT" -eq 1 ] || shared_refuse "uncertain Copilot consumer ownership"
   fi
@@ -2645,6 +3158,8 @@ policy_preflight() {
     [ "$provider" != copilot ] || state=".github/.domestique"
     shared_safe_path "$state/mode" || shared_refuse "unsafe $state/mode"
     requested="$REQUESTED_GUEST"
+    if [ "$provider" = copilot ] && [ "$PREVIEW_MIGRATE" -eq 1 ] &&
+       [ "$NO_GUEST" -eq 0 ]; then requested=1; fi
     if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
        [ -f "$TARGET_DIR/$state/mode" ] &&
        [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]; then
@@ -2872,6 +3387,16 @@ write_manifest() {
 # See docs/install-upgrade-design.md §2.
 install_plain() {
   local dest="$1" emitter="$2" staged
+  # Cutover has already preserved native metadata against pristine snapshots.
+  # Force cannot discard that transfer on this same invocation.
+  local FORCE="$FORCE"
+  if [ "$PREVIEW_MIGRATE" -eq 1 ] && [ "$CURRENT_PROVIDER" = copilot ]; then FORCE=0; fi
+  if [ "$PREVIEW_MIGRATE" -eq 1 ] && [ "$CURRENT_PROVIDER" = copilot ] &&
+     [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "publish validated preview replacement $dest (metadata retained, pristine snapshot)"
+    SUM_UPDATED+=("$dest (preview migration)")
+    return 0
+  fi
   staged="$TMPDIR_WORK/staged"
   "$emitter" > "$staged"
 
@@ -3865,6 +4390,7 @@ UNINSTALL_POLICIES
 }
 
 lifecycle_preflight
+preview_preflight
 copilot_preflight
 shared_preflight
 policy_preflight
@@ -3895,6 +4421,14 @@ fi
 echo "domestique: installing into $TARGET_DIR (platforms=$PLATFORM_SET)"
 [ "$DRY_RUN" -eq 1 ] && echo "(dry run — no files will be modified)"
 [ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
+
+if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "validated preview cutover: preserve source, revoke old receipt, publish five replacements and snapshots, remove only unchanged .github public aliases and their exact exclusion contribution"
+  else
+    preview_migration apply || exit $?
+  fi
+fi
 
 install_retained_policies
 

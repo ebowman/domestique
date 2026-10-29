@@ -17,6 +17,14 @@ discoverable metadata alone do not establish a project's workflow readiness.
 
 ## Boundary and source
 
+The standalone `domestique.sh` candidate can now migrate supported active
+five/seven-definition **project** receipts, without reading or changing this
+machine installation. See [the bounded migration/refusal/recovery contract](install-upgrade-design.md#supported-copilot-preview-project-migration-hq-7sm13).
+This revokes that project's old receipt, retains source backups and selections,
+and requires fresh pair confirmation. It does not change `dom2` or qualify the
+new standalone workflows; the native evidence below still belongs only to the
+retained preview.
+
 Support the observed macOS environment and Copilot first: install once from a
 trusted, explicitly selected Git revision, explicitly enable one project, and
 update the shared workflow source once. Released Claude/Codex v1
