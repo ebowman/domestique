@@ -49,6 +49,7 @@ not a rollback of project state. The candidate still reports `0.1.0`; version
 text alone does not identify a commit. No publication/version bump happens here.
 Native qualification (hq-7sm.6) precedes final release handoff (hq-7sm.7);
 offline tests/install success do not establish native support or user acceptance.
+For acceptance against actively used repositories, compare installer-relevant files, Git indexes and exclusions immediately before and after each operation; retain later drift separately rather than claiming whole-session immutability. In one candidate dry-run, the index remained byte-identical through the post-copy check, then changed more than thirteen minutes later in entries outside installer-managed paths. The writer is unknown: this establishes the operation-window result, not a general attribution or permission to reset the user's index.
 
 **Configuration, not software installation:** no native client/model software is
 installed. Project role files are `.claude/agents/{implementer,reviewer}.md`,
