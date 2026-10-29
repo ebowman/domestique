@@ -2,6 +2,83 @@
 
 ## Reading this document
 
+### Integrated offline gate for native handoff (hq-7sm.14, 2026-10-29)
+
+Candidate: `f928cb270613f32d378b196854fa3ecf93b686da`, with only the bounded
+`test/all-current.py` extension and this evidence update uncommitted. Product
+bytes are unchanged. SHA-256 pins:
+
+| Input | SHA-256 |
+| --- | --- |
+| `domestique.sh` | `d3c317aae01929a9aac858e37deec95ae60f4e30203ff9affe997ea76f927a93` |
+| `domestique2.sh` | `0fb14c892e67fe062a6611139deefe355c402eed4a693ca08a522ee60be1b16b` |
+| `test/all-current.py` | `76fffb01ae2ea03256ccc37c0f215a6667e1640ef10fdd2ab44f086f3023899e` |
+| `test/acceptance.py` | `3153af110c5d5863e5e79a1da1bf839f5ed8839f3d6a3f6bcb59b98cd030a8c8` |
+
+The combined fixture uses source-free stdin in independent normal/guest Git
+projects. Six independently customized native-format roles carry synthetic
+pair confirmations, distinct model strings and retained tools/metadata.
+Sequential single-harness body upgrades preserve exact unrelated bytes and
+markers: only the changed role's hash becomes stale; other pairs remain valid
+until their own update. These are **hash-contract checks, not native consent**.
+Reruns preserve bytes/modes; configured three-way merges may refresh mtimes.
+The first targeted attempt incorrectly demanded mtime stability on those real
+merges; that test assertion was narrowed, without a product change. Dry-runs
+still require full filesystem/mode/mtime, index and exclusion invariance.
+
+Static enumeration checks eight physical skill entries, with exactly one
+canonical `dom-goal` and one `dom-decompose`, plus all four Claude command names.
+Actual ordinary/bootstrap, compatibility, canonical, role and policy contents
+are checked for caller boundaries and explicit-authority requirements.
+This is **static inventory/isolation evidence, not native discovery**.
+The same configured fixture exercises full removal on a copy and scoped
+Codex → Claude → Copilot removal, remaining shared ownership, exact private
+exclude unions, modified-role preservation, unchanged index/isolated HOME,
+and no implicit Beads/dependency installation.
+
+Existing suites were reused rather than duplicated: platformless Claude
+`v0.1.0`/`415fb69` ownership/recovery; `64f4e09` Claude/Codex upgrades (now both
+normal and guest through stdin); five/seven preview creation and preserving
+cutover; retained policies; invalid options; conflict, symlink, no-clobber and
+pre-write refusals. The hq-7sm.19 private corpus was **not rerun or copied into
+tests**; its separately qualified aggregate and limitations below still apply.
+
+Full actual-current results, with frozen product/test inputs and no full-suite
+retries or 600-second suite cutoff:
+
+| Invocation (`python3 -B -Werror` for Python suites) | Result |
+| --- | --- |
+| `test/all-current.py` | 33/33 (3304.865 s) |
+| `bash test/copilot.sh --current` | 15/15 + 8/8 migration (2128.510 + 492.726 s) |
+| `bash test/guest.sh --current` | 16/16 |
+| `bash test/codex.sh --current` | 30/30 |
+| `bash test/upgrade.sh --current` | 13/13 |
+| `bash test/uninstall.sh --current` | 24/24, including purge reporting and END-only refusal |
+| `test/preview-project-tests.py` | 15/15 |
+| `test/preview-workflow-tests.py` | 12/12 |
+| `test/preview-inspect-tests.py` | 9/9 |
+| `test/preview-machine-tests.py` | 4/4 |
+| `test/acceptance-tests.py` | 107/107 |
+
+The actual static runner scope is
+`python3 -B -Werror test/acceptance.py --exhaustive --total-seconds 4200 --suite-seconds 3600 --suite CURRENT:syntax-lint-ast-diff`.
+It **passed**: 18 shell files, 5 emitted helpers, 73 Python files, 2 embedded
+Python payloads, and zero warning-level ShellCheck exceptions; the current thin
+bootstrap is checked explicitly. This selected scope is not the runner's
+exhaustive full-offline manifest.
+
+**Remaining gates:** hq-7sm.17's historical END-only cause remains unproven;
+this current pass does not close it or claim a fix. Existing diagnostics and
+the separately reported 100 current/30 baseline focused passes remain historical
+evidence, not new runs here. hq-7sm.6 requires separate operator-approved native
+budgets, an isolated all-installed project, actual client discovery/precedence
+and role registration, independently consented pairs with available native
+model/tool evidence, fresh reload/reinvocation, and observed bounded
+implementer/reviewer dispatch with no cross-harness fallback. No installed
+native versions, model availability, user acceptance or publication are claimed.
+No native clients, paid PTYs, live projects or real Beads initialization were
+used by this offline gate.
+
 ### Remote install and upgrade
 
 The standalone candidate's selector-less **fresh install and rerun select all

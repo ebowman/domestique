@@ -1,5 +1,7 @@
 """Current standalone all-provider contract. Offline, no native clients."""
 import itertools
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -39,6 +41,12 @@ def snapshot(root):
         )
         for p in root.rglob("*")
     }
+
+
+def byte_snapshot(root):
+    # Customized three-way merges may republish unchanged bytes. The rerun
+    # contract is byte/mode stability; dry-run still checks mtimes above.
+    return {rel: (mode, data) for rel, (mode, _mtime, data) in snapshot(root).items()}
 
 
 class AllProviders(unittest.TestCase):
@@ -135,6 +143,223 @@ class AllProviders(unittest.TestCase):
         self.assert_notice(self.run_dom(root, "--platform=all"), root, modes, explicit=True)
         self.assertEqual(before, snapshot(root))
 
+    def assert_static_inventory(self, root):
+        """Physical discovery surfaces, NOT observed native discovery/dispatch."""
+        inventory = {}
+        for directory in (".agents/skills", ".github/skills", ".claude/skills"):
+            for path in (root / directory).glob("*/SKILL.md"):
+                name = re.search(r"(?m)^name: (.+)$", path.read_text()).group(1)
+                inventory.setdefault(name, []).append(path)
+        expected = {
+            "dom-goal", "dom-decompose", "domestique", "domestique-goal",
+            "domestique-decompose", "domestique-v2-copilot",
+            "domestique-v2-copilot-goal", "domestique-v2-copilot-decompose",
+        }
+        self.assertEqual(set(inventory), expected)
+        for name, paths in inventory.items():
+            self.assertEqual(len(paths), 1, name)
+            self.assertFalse(paths[0].is_symlink())
+            body = paths[0].read_text()
+            if name in ("dom-goal", "dom-decompose"):
+                self.assertEqual(paths[0], root / f".agents/skills/{name}/SKILL.md")
+                for text in ("description: Codex or Copilot only.",
+                             "Unknown, ambiguous, or unsupported callers STOP",
+                             "Merely loading or implicitly matching this skill is not",
+                             "loading the routed body cannot grant it.",
+                             "Preserve the ORIGINAL user request verbatim"):
+                    self.assertIn(text, body)
+                for rel in (f".agents/skills/domestique-{name[4:]}/SKILL.md",
+                            f".github/skills/domestique-v2-copilot-{name[4:]}/SKILL.md"):
+                    self.assertIn(rel, body)
+                    self.assertTrue((root / rel).is_file())
+            else:
+                harness = "copilot" if "copilot" in name else "codex"
+                self.assertIn(f"description: {harness.capitalize()} only;", body)
+                self.assertIn(f"These instructions apply only to the native `{harness}` client.", body)
+                self.assertIn("An explicit foreign-harness invocation must STOP without setup", body)
+                self.assertIn("skill matching/loading and this text are NOT caller identity.", body)
+                # Boundary precedes the real ordinary/bootstrap or setup gate.
+                gate = ({"domestique": "## Role model gate",
+                         "domestique-v2-copilot": "## Read-only role gate"}.get(
+                             name, f"## {harness.capitalize()} first-use role setup"))
+                after_guard = body.index("and /dom-goal commands, but do not invoke them automatically.")
+                self.assertIn(gate, body[after_guard:])
+                if name == "domestique":
+                    self.assertIn("Instruction/bootstrap loading alone neither starts setup nor grants goal",
+                                  body)
+                    self.assertIn("do not start another questionnaire", body)
+                elif name == "domestique-v2-copilot":
+                    self.assertIn("no ordinary/bootstrap questionnaire", body)
+                    self.assertIn("never authorize an epic by matching", body)
+        for provider, impl in zip(STATES, ROLES):
+            for role in ("implementer", "reviewer"):
+                body = (root / impl.replace("implementer", role)).read_text()
+                label = "Claude Code" if provider == "claude" else provider.capitalize()
+                self.assertRegex(body, rf'description[:= ]+"?{label} only;')
+                if provider == "codex":
+                    self.assertIn("ambiguous callers stop without work. Installed directories do not identify it.",
+                                  body)
+                else:
+                    self.assertIn("An explicit foreign-harness invocation must STOP without setup", body)
+        commands = list((root / ".claude/commands").glob("*.md"))
+        self.assertEqual({p.stem for p in commands},
+                         {"dom-goal", "dom-decompose", "goal", "decompose"})
+        for path in commands:
+            body = path.read_text()
+            self.assertIn("description: Claude Code only;", body)
+            self.assertIn("These instructions apply only to the native `claude` client.", body)
+            self.assertIn("An explicit foreign-harness invocation must STOP without setup", body)
+        for rel, harness in (("CLAUDE.md", "claude"), ("CLAUDE.local.md", "claude"),
+                             ("AGENTS.md", "codex"),
+                             (".github/copilot-instructions.md", "copilot")):
+            path = root / rel
+            if path.exists() and "<!-- BEGIN domestique" in path.read_text():
+                self.assertIn(f"These instructions apply only to the native `{harness}` client.",
+                              path.read_text())
+                self.assertIn("Other harnesses must ignore this entire owned policy block",
+                              path.read_text())
+
+    def assert_private_union(self, root, guest, remaining, host_exclude):
+        exclude = (root / ".git/info/exclude").read_text()
+        self.assertTrue(exclude.startswith(host_exclude))
+        expected = set()
+        if guest:
+            if "claude" in remaining:
+                expected.update(("CLAUDE.local.md", ".claude/"))
+            for provider in ("codex", "copilot"):
+                if provider in remaining:
+                    expected.update((root / STATES[provider] / "guest-excludes").read_text().splitlines())
+            if remaining & {"codex", "copilot"}:
+                expected.add(".agents/.domestique/")
+                expected.update((root / ".agents/.domestique/guest-excludes").read_text().splitlines())
+        if expected:
+            block = exclude.split("# BEGIN domestique (managed)\n", 1)[1].split("# END domestique", 1)[0]
+            lines = block.splitlines()
+            self.assertEqual(set(lines), expected)
+            self.assertEqual(len(lines), len(expected))
+        else:
+            self.assertNotIn("# BEGIN domestique (managed)", exclude)
+
+    def test_combined_confirmed_pair_update_and_complete_lifecycle(self):
+        # Synthetic confirmations test the emitted hash contract, not consent
+        # or native model availability. Each harness has a distinct pair.
+        marker_prefix = "# domestique-model-setup: "
+        changes = {
+            "claude": ("Keep the return small.", "Keep the return concise."),
+            "codex": ("- Stay inside the brief. Do not refactor adjacent code or start another bead.",
+                      "- Stay inside the brief. Do not refactor adjacent code or start another bead. (updated)"),
+            "copilot": ("Return a terse summary: files changed, actual validation/results, discovered",
+                        "Return a brief summary: files changed, actual validation/results, discovered"),
+        }
+        for guest in (False, True):
+            with self.subTest(guest=guest):
+                root = self.root(f"combined-{guest}")
+                home = Path(self.env["HOME"])
+                home.mkdir(exist_ok=True)
+                (home / ".gitconfig").write_text("# isolated host configuration\n")
+                host_home = snapshot(home)
+                (root / "host.txt").write_text("tracked host bytes\n")
+                subprocess.run(["git", "-C", str(root), "add", "host.txt"],
+                               env=self.env, check=True)
+                index = (root / ".git/index").read_bytes()
+                exclude = root / ".git/info/exclude"
+                host_exclude = exclude.read_text() + "\n# host exclusion\nhost-private/\n"
+                exclude.write_text(host_exclude)
+                flags = ("--guest",) if guest else ()
+                before = snapshot(self.work)
+                self.run_dom(root, *flags, "--dry-run")
+                self.assertEqual(before, snapshot(self.work))
+                self.run_dom(root, *flags)
+                self.assert_static_inventory(root)
+                self.assert_private_union(root, guest, set(STATES), host_exclude)
+                before = byte_snapshot(root)
+                self.run_dom(root)
+                self.assertEqual(before, byte_snapshot(root))
+                pairs, markers = {}, {}
+                for provider, impl in zip(STATES, ROLES):
+                    pair = {}
+                    for role in ("implementer", "reviewer"):
+                        path = root / impl.replace("implementer", role)
+                        text = path.read_text()
+                        model = f"fixture-{provider}-{role}"
+                        if provider == "codex":
+                            text = re.sub(r'(?m)^model = .+$', f'model = "{model}"', text)
+                            text += f'\n[fixture]\nmetadata = "{provider}-{role}"\n'
+                        else:
+                            text = re.sub(r"(?m)^model: .+\n", "", text)
+                            text = text.replace("\n---\n",
+                                                f'\nmodel: "{model}"\nfixture: "{provider}-{role}"\n---\n', 1)
+                            # Independently preserve actual native tools fields.
+                            text = text.replace("Read, Write, Edit, Bash, Glob, Grep",
+                                                "Read, Edit, Bash, Grep")
+                            text = text.replace('"search", "execute"', '"search"')
+                        pair[role] = text.encode()
+                    marker = dict(v=1, project=str(root.resolve()), harness=provider)
+                    marker.update({r + "_sha256": hashlib.sha256(data).hexdigest()
+                                   for r, data in pair.items()})
+                    line = (marker_prefix + json.dumps(marker) + "\n").encode()
+                    data = pair["implementer"]
+                    pair["implementer"] = (line + data if provider == "codex"
+                                           else data[:4] + line + data[4:])
+                    for role, data in pair.items():
+                        (root / impl.replace("implementer", role)).write_bytes(data)
+                    pairs[provider], markers[provider] = pair, line
+                before = byte_snapshot(root)
+                self.run_dom(root)
+                self.assertEqual(before, byte_snapshot(root))
+                upstream = SCRIPT
+                for changed, (old, new) in changes.items():
+                    self.assertEqual(upstream.count(old), 1)
+                    upstream = upstream.replace(old, new)
+                    before = snapshot(self.work)
+                    self.run_dom(root, "--dry-run", script=upstream)
+                    self.assertEqual(before, snapshot(self.work))
+                    self.run_dom(root, script=upstream)
+                    pairs[changed]["implementer"] = pairs[changed]["implementer"].replace(
+                        old.encode(), new.encode())
+                    for provider, impl in zip(STATES, ROLES):
+                        marker = json.loads(markers[provider].decode()[len(marker_prefix):])
+                        for role, expected in pairs[provider].items():
+                            data = (root / impl.replace("implementer", role)).read_bytes()
+                            self.assertEqual(data, expected)  # tools, metadata, marker, body
+                            clean = data.replace(markers[provider], b"")
+                            valid = hashlib.sha256(clean).hexdigest() == marker[role + "_sha256"]
+                            updated = list(changes).index(provider) <= list(changes).index(changed)
+                            self.assertEqual(valid, role == "reviewer" or not updated)
+                    before = byte_snapshot(root)
+                    self.run_dom(root, script=upstream)
+                    self.assertEqual(before, byte_snapshot(root))
+                self.assert_static_inventory(root)
+                # Branch the SAME configured fixture for full versus scoped removal.
+                full = self.work / f"full-{guest}"
+                shutil.copytree(root, full)
+                for target, selections in ((full, (None,)), (root, ("codex", "claude", "copilot"))):
+                    remaining = set(STATES)
+                    for selected in selections:
+                        args = ("--uninstall",) + (("--platform", selected) if selected else ())
+                        before = snapshot(self.work)
+                        self.run_dom(target, *args, "--dry-run", script=upstream)
+                        self.assertEqual(before, snapshot(self.work))
+                        self.run_dom(target, *args, script=upstream)
+                        removed = {selected} if selected else set(STATES)
+                        remaining -= removed
+                        self.assertEqual(self.installed(target), remaining)
+                        self.assertEqual((target / SHARED).exists(),
+                                         bool(remaining & {"codex", "copilot"}))
+                        self.assert_private_union(target, guest, remaining, host_exclude)
+                        for provider, impl in zip(STATES, ROLES):
+                            for role, data in pairs[provider].items():
+                                path = target / impl.replace("implementer", role)
+                                if provider in remaining:
+                                    self.assertEqual(path.read_bytes(), data)
+                                elif provider in removed:
+                                    kept = list(path.parent.glob(path.name + ".uninstalled.*"))
+                                    self.assertEqual(len(kept), 1)
+                                    self.assertEqual(kept[0].read_bytes(), data)
+                        self.assertEqual((target / ".git/index").read_bytes(), index)
+                        self.assertFalse((target / ".beads").exists())
+                self.assertEqual(host_home, snapshot(home))
+
     def test_absolute_target_system_ancestor_alias(self):
         root = self.root("absolute-target")
         # Do not resolve the tempfile spelling: macOS supplies /var/... while
@@ -190,13 +415,21 @@ class AllProviders(unittest.TestCase):
             text=True,
         )
         for provider in ("claude", "codex"):
-            root = self.root(provider)
-            self.run_dom(root, "--platform", provider, script=old)
-            (root / STATES[provider] / "platforms").unlink()
-            self.run_dom(root)
-            self.assertEqual(self.installed(root), set(STATES))
-            self.assertTrue((root / ".agents/.domestique/manifest").is_file())
-            self.assertFalse((root / ".codex/.domestique/base" / SHARED).exists())
+            for guest in (False, True):
+                with self.subTest(provider=provider, guest=guest):
+                    root = self.root(f"{provider}-{guest}")
+                    self.run_dom(root, "--platform", provider,
+                                 *(("--guest",) if guest else ()), script=old)
+                    (root / STATES[provider] / "platforms").unlink()
+                    before = snapshot(self.work)
+                    self.run_dom(root, "--dry-run")
+                    self.assertEqual(before, snapshot(self.work))
+                    self.run_dom(root)
+                    self.assertEqual(self.installed(root), set(STATES))
+                    self.assertTrue((root / ".agents/.domestique/manifest").is_file())
+                    self.assertFalse((root / ".codex/.domestique/base" / SHARED).exists())
+                    for state in STATES.values():
+                        self.assertEqual((root / state / "mode").exists(), guest)
 
     def legacy_claude(self, name, *, guest=False, ref="415fb69"):
         # Public Git objects only: v0.1.0 is the released normal installer;
