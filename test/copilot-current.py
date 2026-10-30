@@ -18,6 +18,8 @@ ROLES = {
 SHARED = ".agents/skills/dom-goal/SKILL.md"
 STATE = ".github/.domestique"
 MARKER = "# domestique-model-setup: "
+OLD_ROLES = Path(__file__).parent / "fixtures/copilot-9f33930"
+DELEGATED = "This delegated role inherits Copilot routing"
 DESCRIPTION_GUARDS = {
     "codex": "Codex only; never match in another harness.",
     "copilot": "Copilot only; never match in Claude, Codex or an unknown harness.",
@@ -113,6 +115,114 @@ class Copilot(unittest.TestCase):
         ordinary = (self.root / ".github/skills/domestique-v2-copilot/SKILL.md").read_text()
         self.assertIn("no ordinary/bootstrap questionnaire", ordinary)
         self.assertIn("one explicitly assigned bounded bead", ordinary)
+
+    def test_old_role_guard_upgrade_preserves_custom_pair(self):
+        # Bounded pristine role bytes from 9f339305a4f900176b647248f68907499dcc0620.
+        # Seed only the two owned role snapshots, as in old-inventory helper tests.
+        # Synthetic confirmation tests hash invalidation, NOT native consent.
+        parent = self.root
+        for mode in ("normal", "guest"):
+            for custom in (False, True):
+                with self.subTest(mode=mode, custom=custom):
+                    self.root = parent / f"{mode}-{custom}"
+                    self.root.mkdir()
+                    self.git("init", "-q")
+                    self.install(*(["--guest"] if mode == "guest" else []))
+                    current = {r: (self.root / rel).read_text() for r, rel in ROLES.items()}
+                    pair = {}
+                    for role, rel in ROLES.items():
+                        old = (OLD_ROLES / f"{role}.agent.md").read_text()
+                        (self.root / STATE / "base" / rel).write_text(old)
+                        if custom:
+                            old = old.replace("\n---\n", '\nmodel: "custom-native-id"\n'
+                                              'custom: "retained"\n---\n', 1)
+                            old = old.replace('"search", "execute"', '"search"')
+                            old = old.replace("an unknown harness.", "an unknown harness. Custom discovery.", 1)
+                            old += "\nUser-owned instructions.\n"
+                        pair[role] = old
+                    marker = dict(v=1, project=str(self.root.resolve()), harness="copilot")
+                    marker.update({r + "_sha256": hashlib.sha256(text.encode()).hexdigest()
+                                   for r, text in pair.items()})
+                    marker_line = MARKER + json.dumps(marker) + "\n"
+                    for role, rel in ROLES.items():
+                        text = pair[role]
+                        if role == "implementer":
+                            text = text[:4] + marker_line + text[4:]
+                        (self.root / rel).write_text(text)
+                    before = snapshot(self.root)
+                    self.install("--dry-run")
+                    self.assertEqual(snapshot(self.root), before)
+                    self.install()
+                    for role, rel in ROLES.items():
+                        path = self.root / rel
+                        text = path.read_text()
+                        self.assertIn(DELEGATED, text)
+                        self.assertNotIn("Before applying ANY instructions below", text)
+                        old_body = pair[role].split("Delegated role only:", 1)[1]
+                        self.assertEqual(text.split("Delegated role only:", 1)[1], old_body)
+                        if custom:
+                            self.assertIn('model: "custom-native-id"', text)
+                            self.assertIn('custom: "retained"', text)
+                            self.assertIn("Custom discovery.", text)
+                            self.assertNotIn('"execute"', text)
+                        clean = "".join(line for line in text.splitlines(keepends=True)
+                                        if not line.startswith(MARKER))
+                        self.assertNotEqual(hashlib.sha256(clean.encode()).hexdigest(),
+                                            marker[role + "_sha256"])
+                        self.assertEqual((self.root / STATE / "base" / rel).read_text(),
+                                         current[role])
+                    self.assertIn(marker_line, (self.root / ROLES["implementer"]).read_text())
+                    upgraded = snapshot(self.root)
+                    self.install()
+                    self.assertEqual(snapshot(self.root), upgraded)
+
+    def test_role_guard_migration_and_current_tampering_refuse_atomically(self):
+        parent = self.root
+        for mode in ("normal", "guest"):
+            self.root = parent / mode
+            self.root.mkdir()
+            self.git("init", "-q")
+            self.install(*(["--guest"] if mode == "guest" else []))
+            for role, rel in ROLES.items():
+                path = self.root / rel
+                base = self.root / STATE / "base" / rel
+                current = path.read_text()
+                legacy = (OLD_ROLES / f"{role}.agent.md").read_text()
+                for generation, source in (("old", legacy), ("current", current)):
+                    base.write_text(source)
+                    prefix, task = source.split("Delegated role only:", 1)
+                    front, guard = prefix.split("\n## Active harness boundary", 1)
+                    guard = "\n## Active harness boundary" + guard
+                    mutations = {
+                        "removed": front + "Delegated role only:" + task,
+                        "tampered": source.replace("STOP", "CONTINUE", 1),
+                        "quoted": front + "Delegated role only:" + task + "\n```text\n" + guard + "```\n",
+                        "wrong-surface": legacy if generation == "current" else current,
+                        "malformed": source.replace("---\n", "BROKEN\n", 1),
+                        "unowned": source,
+                        "tampered-base": source,
+                    }
+                    for kind, changed in mutations.items():
+                        with self.subTest(mode=mode, role=role, generation=generation, kind=kind):
+                            path.write_text(changed)
+                            base.write_text(source)
+                            if kind == "unowned":
+                                base.unlink()
+                            elif kind == "tampered-base":
+                                base.write_text(source.replace("STOP", "CONTINUE", 1))
+                            before = snapshot(self.root)
+                            directories = {p.relative_to(self.root) for p in self.root.rglob("*")
+                                           if p.is_dir()}
+                            for flags in ((), ("--force", "--dry-run")):
+                                result = self.install(*flags, ok=False)
+                                self.assertEqual(result.returncode, 3)
+                                self.assertIn("No project writes", result.stderr)
+                                self.assertEqual(snapshot(self.root), before)
+                                self.assertEqual(directories, {
+                                    p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
+                            base.write_text(source)
+                path.write_text(current)
+                base.write_text(current)
 
     def test_rerun_merge_marker_and_modified_removal(self):
         self.install()

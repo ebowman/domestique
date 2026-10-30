@@ -86,13 +86,33 @@ DOM_EOF
 emit_harness_guard() {
   local harness="$1" surface="${2:-entry}"
   printf '\n## Active harness boundary (%s only)\n\n' "$harness"
-  cat <<'DOM_EOF'
+  if [ "$harness" = copilot ] && [ "$surface" = delegated ]; then
+    cat <<'DOM_EOF'
+This delegated role inherits Copilot routing from the actual native parent and
+the runtime's exact registered-role selection. The parent must identify Copilot
+from its native session context and pass the confirmed-pair, physical-root,
+readiness, model, precedence and override gates before native dispatch.
+The runtime delivers the selected profile as the child's controlling role,
+not merely read, quoted or pasted role text. Within this chain the child need
+not independently rediscover product identity or prove native selection using
+an unavailable API. This trusts parent/runtime behavior, not independent child
+authentication or cryptographic provenance.
+A plain parent assertion "this is Copilot", file paths, model names or generic
+tool aliases do not establish this chain. Unknown parent context or unavailable
+or ambiguous native selection must STOP at the parent before dispatch.
+Role text loaded outside this chain is not authority: STOP and ask the human.
+Known foreign or contradictory native context overrides inherited routing:
+STOP without setup, Beads, task, branch or dispatch writes. No fallback.
+DOM_EOF
+  else
+    cat <<'DOM_EOF'
 Before applying ANY instructions below, identify the ACTUAL native caller from
 the client's available session context and native tools. Installed directories,
 file names, skill matching/loading and this text are NOT caller identity.
 There is no required identity API; if available context/tools do not establish
 the client unambiguously, STOP and ask the human. Do not guess.
 DOM_EOF
+  fi
   printf 'These instructions apply only to the native `%s` client.\n' "$harness"
   if [ "$surface" = policy ]; then
     cat <<'DOM_EOF'
@@ -1499,7 +1519,7 @@ description: Copilot only; never match in Claude, Codex or an unknown harness. C
 tools: ["read", "edit", "search", "execute"]
 ---
 DOM_EOF
-  emit_harness_guard copilot
+  emit_harness_guard copilot delegated
   cat <<'DOM_EOF'
 Delegated role only: await an explicit bounded brief from the caller, with
 physical project root, bead ID, scope and done criteria. Never start setup or
@@ -1521,7 +1541,7 @@ description: Copilot only; never match in Claude, Codex or an unknown harness. I
 tools: ["read", "search", "execute"]
 ---
 DOM_EOF
-  emit_harness_guard copilot
+  emit_harness_guard copilot delegated
   cat <<'DOM_EOF'
 Delegated role only: await the caller's explicit bounded brief, project root,
 bead ID and done criteria. Never start setup or an autonomous workflow.
@@ -1671,6 +1691,20 @@ DOM_EOF
 
 emit_copilot_loop() { cat <<'DOM_EOF'
 ## Bounded native cycle
+Before task work or Beads writes, the parent owns the routing check: identify
+ACTUAL Copilot from native session context, not a plain parent assertion, file
+paths, model names or generic tool aliases. Unknown, foreign or contradictory
+parent context means STOP without setup, Beads, task, branch or dispatch writes.
+Pass the existing confirmed-pair, physical-root, readiness, model, precedence
+and override gates. Before each dispatch, select the exact actual native
+registered role: `domestique-v2-copilot-implementer` for implementation,
+`domestique-v2-copilot-reviewer` for fresh independent review. Unavailable or
+ambiguous native selection means STOP before dispatch; no fallback.
+Use native role selection so the runtime delivers that profile as the child's
+controlling role, not merely a read, quoted or pasted profile in a task prompt.
+The child inherits this guarded routing; no independent product rediscovery
+or unavailable child provenance API is required. Trust is in the actual
+parent/runtime behavioral chain, not a textual claim or child authentication.
 Use the existing user's `bd` in the exact physical project root. Require actual
 command success and usable scoped output; errors are never an empty queue.
 Missing prerequisites mean STOP, not install/init/repair. Treat brief/model
@@ -3446,13 +3480,42 @@ copilot_preflight() {
       git merge-file -p "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" > "$TMPDIR_WORK/copilot-candidate" || rc=$?
       [ "$rc" -eq 0 ] || shared_refuse "Copilot merge conflict $rel"
       native_role_description_preflight copilot "$TMPDIR_WORK/copilot-candidate" "$rel"
-      emit_harness_guard copilot > "$TMPDIR_WORK/copilot-guard"
-      python3 - "$TMPDIR_WORK/copilot-guard" "$TMPDIR_WORK/copilot-candidate" "$rel" <<'PY' ||
+      case "$rel" in
+        .github/agents/domestique-v2-copilot-implementer.agent.md|.github/agents/domestique-v2-copilot-reviewer.agent.md)
+          emit_harness_guard copilot delegated > "$TMPDIR_WORK/copilot-guard" ;;
+        *) emit_harness_guard copilot > "$TMPDIR_WORK/copilot-guard" ;;
+      esac
+      emit_harness_guard copilot > "$TMPDIR_WORK/copilot-entry-guard"
+      python3 - "$TMPDIR_WORK/copilot-guard" "$TMPDIR_WORK/copilot-candidate" "$rel" \
+        "$base" "$native_root/$rel" "$TMPDIR_WORK/copilot-entry-guard" <<'PY' ||
 import pathlib
 import sys
 guard, candidate = (pathlib.Path(p).read_bytes() for p in sys.argv[1:3])
 # Decoded descriptions are checked separately for roles and skills; neither
 # discovery nor body boundaries can substitute for the other.
+if sys.argv[3] in (
+        ".github/agents/domestique-v2-copilot-implementer.agent.md",
+        ".github/agents/domestique-v2-copilot-reviewer.agent.md"):
+    def body(data):
+        lines = data.splitlines(keepends=True)
+        if not lines or lines[0] != b"---\n":
+            return b""
+        try:
+            end = lines.index(b"---\n", 1)
+        except ValueError:
+            return b""
+        return b"".join(lines[end + 1:])
+
+    base, live, old_guard = (pathlib.Path(p).read_bytes() for p in sys.argv[4:])
+    # Recognize the owned old entry-guard migration only at the role boundary.
+    # The preserving merge must produce the new guard, never either alternative
+    # somewhere in a quoted/custom body. Snapshots remain ownership, not consent.
+    if body(base).startswith(guard):
+        valid_source = body(live).startswith(guard)
+    else:
+        valid_source = (body(base).startswith(old_guard) and
+                        body(live).startswith(old_guard))
+    sys.exit(not (valid_source and body(candidate).startswith(guard)))
 sys.exit(guard not in candidate)
 PY
         shared_refuse "missing Copilot caller guard $rel"

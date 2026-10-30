@@ -153,6 +153,17 @@ diff, obtain explicit Save setup only consent, then stop for fresh invocation/
 reload and human disposition of tracked setup changes before goal work.
 Absent model means native inheritance, not prior consent. Any role byte change
 invalidates confirmation; upgrades preserve custom model/tools/metadata/body.
+Only Copilot's two delegated roles inherit routing from an actually identified
+native Copilot parent and exact registered-role delivery as the child's
+controlling instruction. The parent owns routing and existing readiness gates
+before dispatch; the child need not independently rediscover product identity.
+This trusts parent/runtime behavior, not child authentication. A parent saying
+"this is Copilot", paths, model/tool aliases, or merely read/pasted role text
+are not authority. Unknown parent context or unavailable/ambiguous selection
+stops at the parent; known foreign/contradictory native context still stops
+without writes or fallback. Entry/shared/policy guards are unchanged.
+Owned old role guards upgrade through preserving merges, requiring renewed
+pair confirmation normally; this is not native execution qualification.
 Native role descriptions are customizable **after** their exact discovery
 boundary: `Copilot only; never match in Claude, Codex or an unknown harness.`
 or `Codex only; never match in another harness.` followed by a space and custom

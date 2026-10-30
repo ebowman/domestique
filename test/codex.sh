@@ -1154,9 +1154,16 @@ for path in native:
     assert ("Claude Code only" if harness == "claude" else f"{harness.title()} only") in description
     assert "never match" in description
     assert f"Active harness boundary ({harness} only)" in text
-    for phrase in ("ACTUAL native caller", "context and native tools",
-                   "There is no required identity API", "STOP and ask",
-                   "An explicit foreign-harness invocation must STOP",
+    delegated = path.relative_to(root).as_posix() in {
+        f".github/agents/domestique-v2-copilot-{role}.agent.md"
+        for role in ("implementer", "reviewer")
+    }
+    assert ("This delegated role inherits Copilot routing" in text) == delegated
+    specific = ("the child's controlling role", "not independently rediscover product identity",
+                "Known foreign or contradictory native context", "must STOP at the parent before dispatch") if delegated else (
+                    "ACTUAL native caller", "context and native tools",
+                    "There is no required identity API", "STOP and ask")
+    for phrase in (*specific, "An explicit foreign-harness invocation must STOP",
                    "without setup, Beads, task", "do not invoke them automatically"):
         assert phrase in text, (path, phrase)
     if "first-use role setup" in text:

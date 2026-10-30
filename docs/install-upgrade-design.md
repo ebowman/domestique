@@ -362,6 +362,22 @@ authorization and epic arguments must survive routing; loading is not consent.
 Descriptions, bootstrap/legacy bodies, and owned root policies are scoped too,
 because Copilot can discover `.agents/skills` and read CLAUDE/AGENTS instructions.
 Host instructions outside owned policy blocks remain untouched.
+Only the two Copilot delegated roles inherit the actual native parent's guarded
+routing when the runtime delivers the exact registered profile as the child's
+controlling role. The parent checks native identity and the existing confirmed
+pair/root/readiness/model/precedence/override gates before dispatch; the child
+does not independently authenticate this chain or rediscover product identity.
+Plain parent assertions, paths/model/tool aliases and read/quoted/pasted profiles
+are not authority. Unknown parent context or unavailable/ambiguous selection
+stops before dispatch; foreign or contradictory native context overrides routing
+and stops without writes or fallback. This is behavioral parent/runtime trust,
+not cryptographic provenance; entry/shared/policy guards are unchanged.
+Owned old entry guards at those two role boundaries migrate through the existing
+three-way merge to the exact delegated guard. Compatible custom bodies and
+metadata/tools survive; malformed, unowned or tampered boundaries refuse before
+project writes. Changed role bytes invalidate existing confirmation, never renew
+consent automatically. Offline lifecycle/text tests do not qualify native child
+behavior.
 Guest upgrades inspect host root policies read-only: an old owned block without
 the harness guard refuses before any project writes (also with `--force` or
 `--dry-run`). First upgrade the policy in normal mode (`--no-guest`), or

@@ -385,6 +385,7 @@ class PreviewProjectTests(unittest.TestCase):
                                   else "Codex only", description)
                     self.assertIn("never match", description)
                     self.assertIn(f"Active harness boundary ({harness} only)", text)
+                    self.assertNotIn("This delegated role inherits Copilot routing", text)
                     body = " ".join(text.split())
                     self.assertIn("An explicit foreign-harness invocation must STOP "
                                   "without setup, Beads, task, branch or dispatch writes", body)
