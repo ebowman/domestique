@@ -185,6 +185,19 @@ defaults are suggestions, not consent; changed role bytes invalidate confirmatio
 Use `/dom-decompose configure role models` in Claude/Copilot or
 `$dom-decompose configure role models` in Codex. Installation is not readiness.
 
+Codex setup distinguishes **pre-save persistent role-file support** from
+**post-save fresh-session registration readiness**. Immutable roles loaded in
+the current conversation need not match the proposed pair: that mismatch alone
+does not prohibit a supported persistent edit. Verify installed role-file
+semantics and provider/tool compatibility; a model catalog alone is insufficient.
+Show the actual diff, obtain setup-only consent and required native scoped
+protected-write approval, save only, and stop for fresh reload/reinvocation.
+No in-session Task/spawn override or old-default fallback is permitted.
+Fresh registrations must match the chosen/native-effective pair before dispatch;
+genuine capability, inheritance, tool or permission restrictions still stop.
+This instruction clarification is not native qualification; effectiveness
+requires new, separately authorized native evidence after reload.
+
 **Guest/private scope:** modes are sticky per provider; missing providers inherit
 a wholly guest or normal installed set (fresh is normal). Mixed modes with a
 missing selected provider refuse until explicitly resolved with `--guest` or

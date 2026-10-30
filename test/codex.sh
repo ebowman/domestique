@@ -879,6 +879,35 @@ assert "Ordinary unconfigured delegation instead" in entry
 assert "without a confirmed pair STOP without persistence" in " ".join(entry.split())
 assert "Setup consumes this request: no task, Beads or implementation" in " ".join(entry.split())
 
+# Persistence support is checked before save; loaded registration matching is
+# required after fresh reload, not used to veto a supported setup-only edit.
+pre_save, post_save = setup.split("After saving, require a fresh client session", 1)
+for phrase in (
+    "PRE-SAVE check concerns supported persistent native role-file/config semantics",
+    "not readiness to dispatch through this conversation's loaded roles",
+    "Verify that this installed client supports the proposed persistent model/effort fields for these roles and their required tools",
+    "Catalog presence alone does not guarantee role compatibility or provider permission",
+    "actually disallows the requested persistent model/effort, STOP before writes, preserving all bytes",
+    "unknown capability or ambiguous inheritance also stops",
+    "Current immutable/non-overridable role registrations are not expected to change in this conversation",
+    "Their mismatch with a proposed pair during SETUP alone is NOT grounds to reject supported persistent reconfiguration or refuse its actual diff/consent flow",
+    "does not bypass fixed tool registration or provider permissions",
+    "No Task/spawn override attempt, dispatch test, or fallback to old generated defaults",
+    "show the actual complete diff, obtain Save setup only consent",
+    "required ordinary native scoped protected-write approval",
+    "save only, then STOP for a fresh session and reinvocation",
+):
+    assert phrase in " ".join(pre_save.split()), phrase
+for phrase in (
+    "POST-SAVE readiness check is distinct from PRE-SAVE persistence support",
+    "freshly loaded registered pair must match the chosen values and their native-effective model/effort resolution before dispatch",
+    "saving files does not change current-session registrations or authorize an in-session override",
+    "registration must be present and unambiguous",
+    "Missing/ambiguous registration, actual mismatch, unresolved inheritance",
+    "Send no conflicting spawn model/effort override",
+):
+    assert phrase in " ".join(post_save.split()), phrase
+
 # Read-only pair/diff first; consent and native approval precede BOTH-role checks
 # inside the publication command, with denial/change/unwritable paths fail-closed.
 ordered = (
@@ -961,6 +990,15 @@ for path in (root / "AGENTS.md", skills / "domestique/SKILL.md"):
         "known defeating override or unavailability means STOP, never fallback",
         "during/after each authorized assignment before accepting work",
         "selection failure/mismatch stops",
+        "distinguish PRE-SAVE persistent role-file support from POST-SAVE fresh-session registered-role readiness",
+        "immutable registrations need not match a proposed pair during setup alone",
+        "that mismatch does not forbid a supported persistent edit",
+        "Verify installed role-file semantics and provider/tool compatibility, not just catalog presence",
+        "Show the actual diff, obtain Save setup only consent and required native scoped protected-write approval",
+        "save only, then STOP for fresh reload/reinvocation",
+        "Do not attempt an in-session Task/spawn override or use old defaults as fallback",
+        "freshly loaded registered pair must match the chosen/native-effective model and effort before dispatch",
+        "persistence never bypasses fixed tool registration, provider permissions or genuine capability restrictions",
     ):
         assert phrase in " ".join(text.split()), phrase
     for obsolete in (

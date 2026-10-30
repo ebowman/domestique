@@ -605,6 +605,22 @@ tools/docs yourself; missing evidence means STOP, not a helper call.
 Before saving, use supported evidence from the installed client's documented
 capabilities/current selectable models and efforts to establish that BOTH
 proposed selections are supported and available with the required role tools.
+This PRE-SAVE check concerns supported persistent native role-file/config
+semantics, not readiness to dispatch through this conversation's loaded roles.
+Verify that this installed client supports the proposed persistent model/effort
+fields for these roles and their required tools. Catalog presence alone does
+not guarantee role compatibility or provider permission. If the installed client
+actually disallows the requested persistent model/effort, STOP before writes,
+preserving all bytes; unknown capability or ambiguous inheritance also stops.
+Current immutable/non-overridable role registrations are not expected to change
+in this conversation. Their mismatch with a proposed pair during SETUP alone
+is NOT grounds to reject supported persistent reconfiguration or refuse its
+actual diff/consent flow. This does not bypass fixed tool registration or
+provider permissions. No Task/spawn override attempt, dispatch test, or fallback
+to old generated defaults is allowed during setup.
+With supported persistent selections, show the actual complete diff, obtain
+Save setup only consent and any required ordinary native scoped protected-write
+approval as below, save only, then STOP for a fresh session and reinvocation.
 Display the evidence and its limits. Check applicable native precedence and
 overrides with non-secret evidence; do not edit client/provider settings.
 Include available non-secret provider/model compatibility evidence (supported
@@ -626,6 +642,10 @@ No fallback, silent default substitution, invented verification API or paid prob
 After saving, require a fresh client session and explicit reinvocation. Before
 any workflow action on a confirmed pair, establish this supported pre-dispatch
 minimum, read-only:
+This POST-SAVE readiness check is distinct from PRE-SAVE persistence support.
+The freshly loaded registered pair must match the chosen values and their
+native-effective model/effort resolution before dispatch; saving files does not
+change current-session registrations or authorize an in-session override.
 - Identify the active native client and its registered intended `implementer`
   and `reviewer` role IDs; registration must be present and unambiguous.
 - Verify the stored pair, ownership, physical ROOT, BOTH marker hashes and
@@ -787,6 +807,14 @@ STOP and direct the human to `$dom-decompose configure role models` (alias
 or call Beads. Do not infer the active harness from directories.
 Instruction/bootstrap loading alone neither starts setup nor grants goal
 authority. Generated defaults are suggestions, never confirmation.
+For explicit setup, distinguish PRE-SAVE persistent role-file support from
+POST-SAVE fresh-session registered-role readiness in that protocol. Current
+immutable registrations need not match a proposed pair during setup alone;
+that mismatch does not forbid a supported persistent edit. Verify installed
+role-file semantics and provider/tool compatibility, not just catalog presence.
+Show the actual diff, obtain Save setup only consent and required native scoped
+protected-write approval, save only, then STOP for fresh reload/reinvocation.
+Do not attempt an in-session Task/spawn override or use old defaults as fallback.
 Before dispatch, apply the supported pre-dispatch minimum in that protocol:
 active native client and registered intended role IDs; verified stored
 pair/ownership/root/hashes and required reload; matching declared/resolved
@@ -796,6 +824,9 @@ compatibility evidence. Missing optional exact-origin/loaded-byte APIs or future
 child telemetry alone do not block explicitly authorized work once this minimum
 passes. Missing/ambiguous registration, actual mismatch, unresolved inheritance,
 known defeating override or unavailability means STOP, never fallback.
+The freshly loaded registered pair must match the chosen/native-effective
+model and effort before dispatch; persistence never bypasses fixed tool
+registration, provider permissions or genuine capability restrictions.
 Send no conflicting spawn model/effort overrides. Check available child telemetry
 during/after each authorized assignment before accepting work; selection
 failure/mismatch stops. Native dispatch qualification remains separate. Explicit
