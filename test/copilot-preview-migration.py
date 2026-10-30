@@ -1,10 +1,14 @@
 """Real five/seven preview creation -> standalone cutover; offline only."""
 import importlib.util
+import io
 import json
 from pathlib import Path
+import shlex
 import subprocess
 import sys
+import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("preview_project_fixture", ROOT / "test/preview-project-tests.py")
@@ -14,6 +18,20 @@ DOM = ROOT / "domestique.sh"
 ARCHIVE = ".domestique-private/copilot-preview-migration"
 STATE = ".github/.domestique"
 SHARED = ".agents/skills/dom-goal/SKILL.md"
+
+
+def timeout_output(output):
+    """Retain bounded head/tail progress from these generated fixture logs."""
+    if output is None:
+        return "<no output captured>"
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    if not output:
+        return "<empty output>"
+    if len(output) > 4096:
+        return (output[:2048] + f"\n<{len(output) - 4096} characters omitted>\n"
+                + output[-2048:])
+    return output
 
 
 class Migration(F.PreviewProjectTests):
@@ -32,9 +50,20 @@ class Migration(F.PreviewProjectTests):
     def dom(self, *flags, root=None, script=None, stdin=False, ok=True):
         root = root or self.a
         argv = ["bash", "-s", "--"] if stdin else ["bash", str(script or DOM)]
-        result = subprocess.run([*argv, str(root), *flags], cwd=self.area, env=self.env,
-                                input=DOM.read_text() if stdin else None,
-                                capture_output=True, text=True, timeout=60)
+        command = [*argv, str(root), *flags]
+        started = time.monotonic()
+        try:
+            result = subprocess.run(command, cwd=self.area, env=self.env,
+                                    input=DOM.read_text() if stdin else None,
+                                    capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(
+                f"Installer timeout: scenario={self.id()}\n"
+                f"command={shlex.join(command)}\n"
+                f"timeout={exc.timeout}s elapsed={time.monotonic() - started:.3f}s\n"
+                f"stdout:\n{timeout_output(exc.stdout)}\n"
+                f"stderr:\n{timeout_output(exc.stderr)}"
+            ) from exc
         if ok:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         else:
@@ -383,8 +412,89 @@ class Migration(F.PreviewProjectTests):
                     self.assertFalse((root / ARCHIVE / "complete").exists())
 
 
+class DomDiagnostics(unittest.TestCase):
+    def setUp(self):
+        # Only exercise dom(); never initialize the real installer fixture.
+        self.migration = Migration("test_migration_pristine_five_and_seven")
+        self.migration.a = Path("/fixture/seven")
+        self.migration.area = Path("/fixture")
+        self.migration.env = {"FIXTURE_PRIVATE_SENTINEL": "must-not-appear"}
+
+    def run_timeout(self, stdout, stderr, **flags):
+        command = ["bash", str(DOM), "/fixture/seven"]
+        timeout = subprocess.TimeoutExpired(command, 60, output=stdout, stderr=stderr)
+        caught = []
+
+        def scenario():
+            try:
+                self.migration.dom(**flags)
+            except AssertionError as exc:
+                caught.append(exc)
+                raise
+
+        stream = io.StringIO()
+        with mock.patch.object(subprocess, "run", side_effect=timeout) as run, \
+                mock.patch.object(time, "monotonic", side_effect=[100, 160.125]):
+            result = unittest.TextTestRunner(stream=stream).run(
+                unittest.FunctionTestCase(scenario))
+        self.assertFalse(result.wasSuccessful())
+        self.assertEqual(len(result.failures), 1)
+        self.assertIs(caught[0].__cause__, timeout)
+        run.assert_called_once_with(command, cwd=self.migration.area,
+                                    env=self.migration.env, input=None,
+                                    capture_output=True, text=True, timeout=60)
+        diagnostic = stream.getvalue()
+        self.assertIn("scenario=" + self.migration.id(), diagnostic)
+        self.assertIn("command=" + shlex.join(command), diagnostic)
+        self.assertIn("timeout=60s elapsed=60.125s", diagnostic)
+        self.assertNotIn("must-not-appear", diagnostic)
+        return diagnostic
+
+    def test_timeout_partial_output_is_emitted_and_bounded(self):
+        for as_bytes in (True, False):
+            with self.subTest(as_bytes=as_bytes):
+                stdout = "begin\n" + "x" * 5000 + "\nlast phase"
+                stderr = "warning: \ufffd"
+                if as_bytes:
+                    stdout = stdout.encode()
+                    stderr = b"warning: \xff"
+                diagnostic = self.run_timeout(stdout, stderr)
+                self.assertIn("stdout:\nbegin\n", diagnostic)
+                self.assertIn("<921 characters omitted>", diagnostic)
+                self.assertIn("\nlast phase\nstderr:\nwarning: \ufffd", diagnostic)
+                self.assertNotIn("x" * 2049, diagnostic)
+                self.assertLess(len(diagnostic), 8000)
+
+    def test_timeout_without_output_still_fails_even_when_nonzero_expected(self):
+        diagnostic = self.run_timeout(None, None, ok=False)
+        self.assertIn("stdout:\n<no output captured>", diagnostic)
+        self.assertIn("stderr:\n<no output captured>", diagnostic)
+        diagnostic = self.run_timeout(b"", "")
+        self.assertIn("stdout:\n<empty output>", diagnostic)
+        self.assertIn("stderr:\n<empty output>", diagnostic)
+
+    def test_completed_success_and_nonzero_handling_unchanged(self):
+        for code, ok, stderr, fails in (
+                (0, True, "", False),
+                (3, False, "REFUSED/PARTIAL: fixture", False),
+                (3, True, "REFUSED/PARTIAL: fixture", True),
+                (0, False, "", True),
+                (3, False, "unexpected fixture failure", True)):
+            with self.subTest(code=code, ok=ok, stderr=stderr):
+                completed = subprocess.CompletedProcess([], code, "fixture output", stderr)
+                with mock.patch.object(subprocess, "run", return_value=completed) as run:
+                    if fails:
+                        with self.assertRaises(AssertionError):
+                            self.migration.dom(ok=ok)
+                    else:
+                        self.assertIs(self.migration.dom(ok=ok), completed)
+                run.assert_called_once()
+                self.assertEqual(run.call_args.kwargs["timeout"], 60)
+
+
 if __name__ == "__main__":
     suite = unittest.TestSuite(Migration(name) for name in sorted(dir(Migration))
                                if name.startswith("test_migration_"))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(DomDiagnostics))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     sys.exit(not result.wasSuccessful())
