@@ -544,20 +544,21 @@ for phrase in (
     "Cancel, incomplete/missing values, or noninteractive",
     "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
     "Noninteractive callers may only use an already confirmed pair",
-    "JSON-quoted strings", "JSON serializer", "control characters/newlines",
-    "preserve ALL unrelated bytes, comments", "line endings and modes",
-    "lossless bounded patch cannot be established, STOP",
-    "recheck safe paths, current identities, modes and bytes",
-    "same-directory temporary files", "atomic per-file replacement",
-    "NOT a two-file transaction", "verify exact approved bytes/modes",
-    "reports exactly which paths changed", "NO workflow authority",
+    "Use the installed helper for ALL mechanical preflight",
+    "exec(compile(code", "assert code == read(base)",
+    "Prepare is READ-ONLY", "independently retained",
+    "all evidence immediately before EVERY publication",
+    "unknown leftovers", "No blind rollback",
     "no planning\nbeads, claim, code, dispatch, branch/commit or goal cycle",
     "fresh client\nsession", "NOT queued for automatic continuation",
     "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
 ):
     assert phrase in setup, phrase
-assert setup.index("1. Invalidate") < setup.index("2. Write the reviewer")
-assert setup.index("2. Write the reviewer") < setup.index("3. Publish implementer")
+# Actual byte preservation/publication/race coverage lives in the installed
+# all-format helper suite, not an assistant-written writer inferred from prose.
+helper = root / ".claude/domestique-model-setup.py"
+assert helper.read_bytes() == (root / ".claude/.domestique/base/.claude/domestique-model-setup.py").read_bytes()
+compile(helper.read_bytes(), str(helper), "exec")
 
 # Setup forbids helper delegation at entry AND during native evidence gathering.
 entry, preflight = setup.split("### Read-only preflight", 1)

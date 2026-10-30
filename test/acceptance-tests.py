@@ -26,6 +26,7 @@ class StaticValidationTests(unittest.TestCase):
     def checkout(self, bootstrap=None):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            (root / "domestique.sh").write_text((A.ROOT / "domestique.sh").read_text())
             (root / "install-v2.sh").write_text(
                 bootstrap if bootstrap is not None
                 else (A.ROOT / "install-v2.sh").read_text())
@@ -50,6 +51,7 @@ class StaticValidationTests(unittest.TestCase):
             result = A.validation(env)
             self.assertEqual(result["python_files"], 4)
             self.assertEqual(result["embedded_python"], 2)
+            self.assertEqual(result["model_setup_projections"], 3)
             commands = [call.args[0] for call in run.call_args_list]
             launcher = str(root / "preview/launcher.sh")
             self.assertIn(["/bin/bash", "-n", launcher], commands)

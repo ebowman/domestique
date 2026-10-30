@@ -177,6 +177,597 @@ DOM_EOF
 
 # One instruction body, embedded verbatim in both command families and aliases.
 # This is a native assistant protocol, not an installer-time settings engine.
+# One implementation, three fixed projections. No installed source dependency.
+emit_model_setup_helper() {
+  printf 'HARNESS = "%s"\n' "$CURRENT_PROVIDER"
+  cat <<'PY'
+"""Bounded filesystem-only model-pair editor. Native consent is external."""
+import difflib
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import unicodedata
+
+LIMIT = 1048576
+MARKER = "# domestique-model-setup:"
+ROLES = ("implementer", "reviewer")
+DIRECTORY = {"claude": ".claude", "codex": ".codex", "copilot": ".github"}[HARNESS]
+
+
+def need(value, message):
+    if not value:
+        raise ValueError(message)
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        need(key not in result, "duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def load(data):
+    return json.loads(data, object_pairs_hook=unique)
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False,
+                      separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def selection(value):
+    need(value is None or (type(value) is str and 0 < len(value) <= 512
+         and value == value.strip() and all(unicodedata.category(c)[0] != "C" and c not in "\u2028\u2029"
+                                          for c in value)), "invalid selection")
+    return value
+
+
+def choices(value):
+    need(type(value) is dict and set(value) == set(ROLES), "both role choices required")
+    for role in ROLES:
+        need(type(value[role]) is dict and set(value[role]) == {"model", "effort"},
+             "explicit model and effort (null = inheritance) required")
+        for item in value[role].values():
+            selection(item)
+        if HARNESS == "copilot":
+            need(value[role]["effort"] is None, "Copilot effort unsupported")
+        elif HARNESS == "codex":
+            need(value[role]["model"] != "inherit", "Codex inheritance requires null")
+    return value
+
+
+def metadata(info):
+    return [info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid]
+
+
+class Pair:
+    def __init__(self):
+        self.root = Path.cwd()
+        need(all(unicodedata.category(c)[0] != "C" and c not in "\u2028\u2029" for c in str(self.root)),
+             "unsafe root characters")
+        gitroot = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")
+        need(str(self.root) == gitroot and self.root.resolve() == self.root,
+             "invoke at physical Git worktree root")
+        self.helper = f"{DIRECTORY}/domestique-model-setup.py"
+        need(Path(__file__) == self.root / self.helper, "helper location/root mismatch")
+        self.paths = {
+            role: (f"{DIRECTORY}/agents/{role}.toml" if HARNESS == "codex" else
+                   f"{DIRECTORY}/agents/domestique-v2-copilot-{role}.agent.md"
+                   if HARNESS == "copilot" else f"{DIRECTORY}/agents/{role}.md")
+            for role in ROLES
+        }
+        self.state = f"{DIRECTORY}/.domestique"
+        self.manifest = f"{self.state}/manifest"
+        self.files = [*self.paths.values(), self.manifest,
+                      *(f"{self.state}/base/{p}" for p in self.paths.values()),
+                      self.helper, f"{self.state}/base/{self.helper}"]
+
+    def snapshot(self):
+        records, contents, parents = {}, {}, {}
+        for rel in self.files:
+            path = self.root / rel
+            for parent in reversed(path.parents):
+                info = parent.lstat()
+                need(stat.S_ISDIR(info.st_mode), f"unsafe directory: {parent}")
+                if parent == self.root or self.root in parent.parents:
+                    need(info.st_uid == os.getuid() and not info.st_mode & 0o022,
+                         f"unsafe directory ownership/mode: {parent}")
+                # Directory nlink includes ordinary children on APFS; our
+                # operation-owned temporary changes it. Bind identity/mode/
+                # ownership, not a filesystem-dependent child count.
+                parents[str(parent)] = [info.st_dev, info.st_ino, info.st_mode, info.st_uid]
+            info = path.lstat()
+            need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
+                 info.st_size <= LIMIT and info.st_mode & 0o444 and
+                 not info.st_mode & 0o7022 and info.st_uid == os.getuid(),
+                 f"unsafe file ownership/mode: {rel}")
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                need(metadata(os.fstat(fd)) == metadata(info), f"changed identity: {rel}")
+                with os.fdopen(fd, "rb", closefd=False) as stream:
+                    data = stream.read(LIMIT + 1)
+                need(len(data) <= LIMIT and metadata(path.lstat()) == metadata(info),
+                     f"changed file: {rel}")
+            finally:
+                os.close(fd)
+            records[rel] = metadata(info) + [sha(data)]
+            contents[rel] = data
+        need(contents[self.helper] == contents[f"{self.state}/base/{self.helper}"],
+             "modified helper; explicit installer repair required")
+        manifest = {}
+        for line in contents[self.manifest].decode("utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            need(sep and key not in manifest and re.fullmatch("[a-z_][a-z_0-9]*", key),
+                 "ambiguous manifest")
+            manifest[key] = value
+        need(manifest.get("snapshot_format") == "1" and
+             manifest.get("platform", "claude") == HARNESS, "wrong snapshot authority")
+        inventory = manifest.get("files", "").split(",")
+        need(len(inventory) == len(set(inventory)) and
+             all(p and not p.startswith("/") and ".." not in p.split("/")
+                 and not any(unicodedata.category(c)[0] == "C" for c in p)
+                 for p in inventory) and
+             all(p in inventory for p in (*self.paths.values(), self.helper)),
+             "incomplete/unsafe inventory; preserving installer upgrade required")
+        for role in ROLES:
+            parse(contents[self.paths[role]], role)
+            _, _, marker = parse(contents[f"{self.state}/base/{self.paths[role]}"], role)
+            need(marker is None, "pristine base must not confirm a pair")
+        return {"files": records, "parents": parents}, contents
+
+    def publication_writable(self):
+        # Only apply, in the consented/protected-write-approved context, checks
+        # effective write access. Filesystem modes remain in the read-only
+        # snapshot; native sandbox permissions are not persistent plan evidence.
+        for rel in self.paths.values():
+            for path in (self.root / rel, (self.root / rel).parent):
+                need(path.stat().st_mode & 0o222 and os.access(path, os.W_OK),
+                     f"not writable: {path}")
+
+
+def split_marker(data, role):
+    text = data.decode("utf-8")
+    lines = text.splitlines(keepends=True)
+    indices = [i for i, line in enumerate(lines) if MARKER in line]
+    marker = None
+    if indices:
+        position = 0 if HARNESS == "codex" else 1
+        need(role == "implementer" and indices == [position] and
+             lines[position].startswith(MARKER + " "), "misplaced/duplicate marker")
+        marker = load(lines[position][len(MARKER):])
+        need(type(marker) is dict and set(marker) == {
+            "v", "project", "harness", "implementer_sha256", "reviewer_sha256"} and
+             type(marker["v"]) is int and marker["v"] == 1 and
+             type(marker["project"]) is str and marker["harness"] == HARNESS and
+             all(type(marker[r + "_sha256"]) is str and
+                 re.fullmatch("[0-9a-f]{64}", marker[r + "_sha256"]) for r in ROLES),
+             "malformed marker")
+        del lines[position]
+    return "".join(lines), marker
+
+
+def scalar_span(raw, toml=False):
+    """Return decoded scalar and exact value end, leaving whitespace/comment intact."""
+    if raw.startswith('"'):
+        # TOML strings use the JSON-compatible subset here; ambiguous existing
+        # escape syntax refuses rather than rewriting it.
+        value, end = json.JSONDecoder().raw_decode(raw)
+        need(type(value) is str, "non-string scalar")
+    elif raw.startswith("'"):
+        expression = r"'[^']*'" if toml else r"'(?:[^']|'')*'"
+        match = re.match(expression, raw)
+        need(match is not None, "invalid quoted scalar")
+        end = match.end()
+        value = raw[1:end-1] if toml else raw[1:end-1].replace("''", "'")
+    else:
+        need(not toml, "TOML selection must be a string")
+        end = re.search(r"[ \t]+#|$", raw).start()
+        value = raw[:end].rstrip()
+        end = len(value)
+        need(value and not any(c in value for c in "[]{}&*!|>`%@") and
+             not value.startswith(("-", "?", ":", "#")) and ": " not in value and
+             not value.endswith(":") and
+             value.lower() not in ("null", "~", "true", "false", "yes", "no", "on", "off")
+             and not re.match(r"^[+\-0-9.]", value), "ambiguous YAML scalar")
+    need(not raw[end:].strip() or re.fullmatch(r"[ \t]+#.*", raw[end:]),
+         "ambiguous scalar suffix")
+    selection(value)
+    return value, end
+
+
+def parse(data, role):
+    text, marker = split_marker(data, role)
+    need(not any(unicodedata.category(c) == "Cc" and c not in "\r\n\t" for c in text),
+         "unsupported controls")
+    # Preserve LF/CRLF exactly; mixed/lone-CR documents require human repair.
+    newline = "\r\n" if "\r\n" in text else "\n"
+    need("\r" not in text.replace("\r\n", "") and
+         (newline == "\n" or "\n" not in text.replace("\r\n", "")), "mixed line endings")
+    lines = text.splitlines(keepends=True)
+    fields, spans = {}, {}
+    effort = "model_reasoning_effort" if HARNESS == "codex" else "effort"
+    if HARNESS == "codex":
+        import tomllib
+        fields = tomllib.loads(text)
+        prompt = fields.get("developer_instructions")
+        need(type(prompt) is str and prompt.strip(), "missing/invalid developer_instructions")
+        # Prefix parsing recognizes top-level assignments outside multiline
+        # instructions/tables, without interpreting their contents as fields.
+        prefix = ""
+        insertion = 0
+        for i, line in enumerate(lines):
+            try:
+                before = tomllib.loads(prefix)
+                complete = True
+            except tomllib.TOMLDecodeError:
+                complete = False
+            if complete and line.lstrip().startswith("["):
+                break
+            if complete:
+                match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)([ \t]*=[ \t]*)(.*?)(\r?\n)?$", line)
+                if match and match[1] in ("model", effort):
+                    value, end = scalar_span(match[3], True)
+                    spans[match[1]] = (i, len(match[1] + match[2]), end)
+                    need(fields[match[1]] == value, "ambiguous TOML value")
+            prefix += line
+        for key in ("model", effort):
+            need(key not in fields or key in spans, "unsupported selection placement")
+    else:
+        need(lines and lines[0] == "---" + newline, "missing YAML frontmatter")
+        end = next((i for i in range(1, len(lines)) if lines[i] == "---" + newline), None)
+        need(end is not None, "unterminated YAML frontmatter")
+        need("".join(lines[end + 1:]).strip(), "missing native prompt body")
+        insertion = end
+        for i in range(1, end):
+            line = lines[i]
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*)(:[ \t]*)(.*?)(?:\r?\n)", line)
+            need(match is not None and match[1] not in fields, "complex/duplicate YAML field")
+            key, _, raw = match.groups()
+            if key == "tools" and raw.startswith("["):
+                value, stop = json.JSONDecoder().raw_decode(raw)
+                need(type(value) is list and all(type(t) is str for t in value) and
+                     (not raw[stop:].strip() or re.fullmatch(r"[ \t]+#.*", raw[stop:])),
+                     "unsupported tools")
+            else:
+                value, stop = scalar_span(raw)
+            fields[key] = value
+            if key in ("model", effort):
+                spans[key] = (i, len(key + match[2]), stop)
+        if HARNESS == "copilot":
+            need("effort" not in fields and "model_reasoning_effort" not in fields,
+                 "Copilot effort unsupported")
+    native_name = f"domestique-v2-copilot-{role}" if HARNESS == "copilot" else role
+    need(type(fields.get("name")) is str and fields["name"] == native_name,
+         "wrong/missing native role name")
+    need(type(fields.get("description")) is str and fields["description"].strip(),
+         "missing/invalid native description")
+    return (lines, newline, insertion, spans), fields, marker
+
+
+def patch(data, role, choice):
+    (lines, newline, insertion, spans), fields, _ = parse(data, role)
+    effort = "model_reasoning_effort" if HARNESS == "codex" else "effort"
+    selected = {"model": choice["model"]}
+    if HARNESS == "claude" and selected["model"] is None:
+        selected["model"] = "inherit"
+    if HARNESS != "copilot":
+        selected[effort] = choice["effort"]
+    additions = []
+    for key, value in selected.items():
+        encoded = json.dumps(value, ensure_ascii=False) if value is not None else None
+        if key in spans:
+            index, start, length = spans[key]
+            line = lines[index]
+            suffix = line[start + length:]
+            if encoded is None:
+                # Retain the exact unrelated inline comment (and its spacing).
+                lines[index] = suffix if "#" in suffix else ""
+            elif fields[key] != value:
+                lines[index] = line[:start] + encoded + suffix
+        elif encoded is not None:
+            additions.append(key + (" = " if HARNESS == "codex" else ": ") + encoded + newline)
+    lines[insertion:insertion] = additions
+    output = "".join(lines).encode("utf-8")
+    _, actual, _ = parse(output, role)
+    expected = dict(fields)
+    for key, value in selected.items():
+        if value is None:
+            expected.pop(key, None)
+        else:
+            expected[key] = value
+    need(actual == expected, "patch changed unrelated metadata")
+    return output
+
+
+def build(pair, selected, snapshot, contents):
+    outputs = {r: patch(contents[pair.paths[r]], r, selected[r]) for r in ROLES}
+    marker = {"v": 1, "project": str(pair.root), "harness": HARNESS,
+              **{r + "_sha256": sha(outputs[r]) for r in ROLES}}
+    lines = outputs["implementer"].splitlines(keepends=True)
+    newline = b"\r\n" if b"\r\n" in outputs["implementer"] else b"\n"
+    lines.insert(0 if HARNESS == "codex" else 1, MARKER.encode() + b" " + canonical(marker) + newline)
+    outputs["implementer"] = b"".join(lines)
+    diff = ""
+    for role in ROLES:
+        rel = pair.paths[role]
+        # Explicit no-final-newline annotation, never hide that byte distinction.
+        chunks = difflib.unified_diff(contents[rel].decode().splitlines(keepends=True),
+                                     outputs[role].decode().splitlines(keepends=True),
+                                     fromfile="a/" + rel, tofile="b/" + rel)
+        for line in chunks:
+            diff += line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+    plan = {"v": 1, "root": str(pair.root), "harness": HARNESS,
+            "choices": selected, "snapshot": snapshot, "diff": diff}
+    return plan, outputs
+
+
+def verify(pair, contents):
+    hashes, selected = {}, {}
+    marker = None
+    for role in ROLES:
+        data = contents[pair.paths[role]]
+        _, fields, found = parse(data, role)
+        bare, _ = split_marker(data, role)
+        hashes[role] = sha(bare.encode())
+        selected[role] = {"model": fields.get("model"),
+                          "effort": fields.get("model_reasoning_effort" if HARNESS == "codex" else "effort")}
+        if role == "implementer":
+            marker = found
+    confirmed = bool(marker and marker["project"] == str(pair.root) and
+                     all(marker[r + "_sha256"] == hashes[r] for r in ROLES))
+    return {"scope": "filesystem-only", "confirmed": confirmed, "root": str(pair.root),
+            "harness": HARNESS, "selected": selected, "pair_hashes": hashes}
+
+
+def publish(pair, plan, digest):
+    need(type(digest) is str and re.fullmatch("[0-9a-f]{64}", digest) and
+         sha(canonical(plan)) == digest, "displayed plan digest mismatch")
+    need(type(plan) is dict and set(plan) == {"v", "root", "harness", "choices", "snapshot", "diff"}
+         and type(plan["v"]) is int and plan["v"] == 1 and
+         plan["root"] == str(pair.root) and plan["harness"] == HARNESS, "plan binding mismatch")
+    selected = choices(plan["choices"])
+    expected, contents = pair.snapshot()
+    computed, outputs = build(pair, selected, expected, contents)
+    need(canonical(computed) == canonical(plan), "stale/tampered plan; prepare and consent again")
+    pair.publication_writable()
+    # A plan cannot be replayed after successful publication: even reconfirmation
+    # replaces the implementer inode. No registry/receipt is needed.
+    owned, changed = {}, []
+    try:
+        bare, _ = split_marker(contents[pair.paths["implementer"]], "implementer")
+        stages = []
+        if bare.encode() != contents[pair.paths["implementer"]]:
+            stages.append(("implementer", bare.encode()))
+        stages += [(r, outputs[r]) for r in ("reviewer", "implementer")]
+        for role, data in stages:
+            current, _ = pair.snapshot()
+            need(current == expected, "prepublication state changed")
+            pair.publication_writable()
+            path = pair.root / pair.paths[role]
+            fd, name = tempfile.mkstemp(prefix=".domestique-model-setup-", dir=path.parent)
+            temp = Path(name)
+            try:
+                owned[temp] = (metadata(os.fstat(fd)), b"")
+                os.fchmod(fd, stat.S_IMODE(expected["files"][pair.paths[role]][2]))
+                owned[temp] = (metadata(os.fstat(fd)), b"")
+                with os.fdopen(fd, "wb", closefd=False) as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(fd)
+                info = metadata(os.fstat(fd))
+                owned[temp] = (info, data)
+            finally:
+                os.close(fd)
+            current, _ = pair.snapshot()
+            need(current == expected and metadata(temp.lstat()) == info and
+                 temp.read_bytes() == data, "prepublication state/temp changed")
+            pair.publication_writable()
+            os.replace(temp, path)
+            del owned[temp]
+            changed.append(pair.paths[role])
+            expected["files"][pair.paths[role]] = info + [sha(data)]
+        current, contents = pair.snapshot()
+        need(current == expected and all(contents[pair.paths[r]] == outputs[r] for r in ROLES),
+             "postpublication state changed")
+        result = verify(pair, contents)
+        need(result["confirmed"], "postpublication marker invalid")
+        return result
+    except (OSError, ValueError) as exc:
+        raise ValueError(json.dumps({
+            "scope": "filesystem-only", "error": str(exc), "partial": bool(changed),
+            "published": changed, "workflow_authorized": False,
+            "recovery": "No rollback. Inspect current pair; prepare/show diff and obtain new consent.",
+            "operation_temporaries": [str(p) for p in owned],
+        })) from exc
+    finally:
+        for path, (identity, data) in owned.items():
+            try:
+                if metadata(path.lstat()) == identity and path.read_bytes() == data:
+                    path.unlink()
+                    print("Removed operation temporary: " + str(path), file=sys.stderr)
+                else:
+                    print("Retained unknown temporary: " + str(path), file=sys.stderr)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(f"Retained temporary {path}: {exc}", file=sys.stderr)
+
+
+def main():
+    pair = Pair()
+    need(len(sys.argv) >= 2, "expected prepare, apply or verify")
+    action = sys.argv[1]
+    if action == "verify":
+        need(len(sys.argv) == 2, "verify takes no overrides")
+        _, contents = pair.snapshot()
+        result = verify(pair, contents)
+    elif action == "prepare":
+        need(len(sys.argv) == 3, "prepare requires both choices as JSON")
+        snapshot, contents = pair.snapshot()
+        plan, _ = build(pair, choices(load(sys.argv[2])), snapshot, contents)
+        result = {"plan": plan, "digest": sha(canonical(plan))}
+    elif action == "apply":
+        need(len(sys.argv) == 3, "apply requires independent displayed digest; plan on stdin")
+        raw = sys.stdin.buffer.read(8 * LIMIT + 1)
+        need(len(raw) <= 8 * LIMIT, "oversize plan")
+        result = publish(pair, load(raw), sys.argv[2])
+    else:
+        raise ValueError("unknown action")
+    print(canonical(result).decode())
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        print(json.dumps({"scope": "filesystem-only", "error": str(error)}), file=sys.stderr)
+        sys.exit(1)
+PY
+}
+
+emit_claude_model_helper() { local CURRENT_PROVIDER=claude; emit_model_setup_helper; }
+emit_codex_model_helper() { local CURRENT_PROVIDER=codex; emit_model_setup_helper; }
+emit_copilot_model_helper() { local CURRENT_PROVIDER=copilot; emit_model_setup_helper; }
+
+emit_model_setup_protocol() {
+  cat <<'DOM_EOF'
+### Deterministic helper: filesystem only, not provider attestation
+Use the installed helper for ALL mechanical preflight, preparation, publication
+and read-only pair verification. Do not regenerate role bodies or write another
+writer. The existing manifest/pristine bases and native pair marker remain the
+sole authority; a stdout plan is not another receipt or proof of human consent.
+
+Before EVERY helper execution, run this fixed trusted bootstrap with isolated
+`python3 -I -B -c`, at physical ROOT. It checks safe ownership/path and byte
+equality to the pristine helper externally, then executes those SAME verified
+bytes in memory, never a later pathname read. Substitute only the fixed
+DIRECTORY literal shown below for this actual harness, not user input:
+DOM_EOF
+  case "$1" in
+    claude) printf 'DIRECTORY is `.claude`.\n' ;;
+    codex) printf 'DIRECTORY is `.codex`.\n' ;;
+    copilot) printf 'DIRECTORY is `.github`.\n' ;;
+  esac
+  cat <<'DOM_EOF'
+```python
+import os, stat, subprocess, sys
+from pathlib import Path
+root = Path.cwd()
+assert str(root) == subprocess.check_output(
+    ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")
+assert root == root.resolve()
+DOM_EOF
+  case "$1" in
+    claude) printf 'directory = ".claude"\n' ;;
+    codex) printf 'directory = ".codex"\n' ;;
+    copilot) printf 'directory = ".github"\n' ;;
+  esac
+  cat <<'DOM_EOF'
+helper = root / directory / "domestique-model-setup.py"
+base = root / directory / ".domestique/base" / directory / helper.name
+manifest = root / directory / ".domestique/manifest"
+def read(path):
+    for parent in reversed(path.parents):
+        info = parent.lstat()
+        assert stat.S_ISDIR(info.st_mode)
+        if parent == root or root in parent.parents:
+            assert info.st_uid == os.getuid() and not info.st_mode & 0o022
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+        assert info.st_uid == os.getuid() and not info.st_mode & 0o7022
+        assert info.st_mode & 0o444 and info.st_size <= 1048576
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(1048577)
+        assert len(data) <= 1048576
+        assert (info.st_dev, info.st_ino) == (path.lstat().st_dev, path.lstat().st_ino)
+        return data
+    finally:
+        os.close(fd)
+records = {}
+for line in read(manifest).decode("utf-8").splitlines():
+    key, separator, value = line.partition("=")
+    assert separator and key not in records
+    records[key] = value
+harness = {".claude": "claude", ".codex": "codex", ".github": "copilot"}[directory]
+assert records.get("snapshot_format") == "1"
+assert records.get("platform", "claude") == harness
+inventory = records.get("files", "").split(",")
+assert len(inventory) == len(set(inventory))
+assert str(helper.relative_to(root)) in inventory
+code = read(helper)
+assert code == read(base), "Modified helper; stop for explicit lifecycle repair"
+sys.argv = [str(helper), *sys.argv[1:]]
+exec(compile(code, str(helper), "exec"),
+     {"__name__": "__main__", "__file__": str(helper)})
+```
+
+Pass `verify` to that bootstrap on every fresh goal/delegation entry. Its JSON
+`scope: filesystem-only`, `confirmed`, selected values and pair hashes are NOT
+native availability/readiness. Still check actual native registration,
+discovery/precedence, overrides, inheritance resolution and available telemetry
+as specified above. Existing native hooks are not controlled by this helper;
+do not claim zero external hook reads.
+
+After asking BOTH role choices inline and establishing supported persistent
+native model/effort availability, pass `prepare` and one JSON argument:
+`{"implementer":{"model":"EXACT-ID","effort":null},"reviewer":{"model":"EXACT-ID","effort":null}}`.
+Both fields are mandatory for both roles; JSON null means native inheritance.
+Copilot requires effort null and refuses effort settings. Claude model null
+emits `inherit`; Codex/Copilot null removes model. No shipped model registry.
+Prepare is READ-ONLY: no staging, permission probe, marker edit or other write.
+It returns `plan` and `digest`. Display the plan's ACTUAL complete diff,
+including marker, exact root/paths, choices, inherited semantics and tracked
+effects. Retain its digest independently in the conversation/tool invocation,
+not in an editable plan or by recalculating it from a later regenerated plan.
+Changes require prepare/show diff/new explicit human `Save setup only` consent.
+Cancellation, missing input or denied native write approval: do not call apply;
+ZERO target writes, no Beads. The digest binds integrity, NOT human consent.
+
+Only after explicit consent AND the normal native one-command protected-write
+approval, invoke the SAME bootstrap with `apply` and that independently retained
+displayed digest as its only argument, supplying ONLY the exact plan JSON on
+stdin. No file staging before approval; no model/body/path/root overrides at
+apply. Do not try ordinary writes as permission probes. No persistent prefix,
+broad permission or sandbox bypass. If approval is unavailable, STOP.
+
+The helper recomputes the scalar-only patch against the full seven-file
+snapshot (both roles, both pristine roles, manifest, helper and its base),
+including file path/mode/device/inode/nlink/hash and parent identities/modes.
+Prepare/verify require only safe readable evidence, including read-only roles
+and parents. Native sandbox write access is not tracked filesystem mode state.
+Only apply checks writable roles/parents in the approved execution context;
+changed filesystem modes still require prepare/show diff/new consent.
+After approval it creates collision-safe operation-owned temporaries, rechecks
+all evidence immediately before EVERY publication, invalidates an old marker
+first if present, publishes reviewer then implementer with the marker LAST,
+and verifies exact bytes/modes/hashes. Not a hostile-writer/two-file transaction.
+Failures are nonzero, with published paths/partial state and owned recovery
+information. No blind rollback; never overwrite concurrent user changes.
+Cleanup removes only unchanged operation-owned temporaries; unknown leftovers
+are retained and reported. No permanent transaction registry/receipt.
+On stale/manual body edits, show current choices and a new actual diff for
+explicit reconfirmation, never infer approval or silently complete a pair.
+Success is SETUP ONLY: STOP, no Beads or queued workflow. Require a fresh native
+invocation and explicit reinvocation before native readiness checks and work.
+DOM_EOF
+}
+
 emit_claude_model_setup() { cat <<'DOM_EOF'
 ## Claude first-use role setup — mandatory gate
 
@@ -220,9 +811,12 @@ existing explicit install lifecycle/human repair, never adopt through setup.
 Validate both roles and management evidence before proposing changes: bounded
 UTF-8 regular files (at most 1 MiB each), no symlinks in any path component,
 no hardlinked files (link count must be one), fixed paths confined to ROOT,
-readable metadata and writable role parents. Record current device/inode,
+readable metadata. After consent/approval, apply requires writable roles and
+role parents. Record current device/inode,
 modes and complete bytes of both roles and evidence for operation-local rechecks.
-Require one well-formed YAML frontmatter block per role, with unique top-level
+Require exact native names `implementer` / `reviewer`, a nonempty string
+description and nonempty prompt body. Require one well-formed YAML frontmatter
+block per role, with unique top-level
 scalar model/effort fields if present. Reject duplicate keys, nested/aliased/
 multiline or otherwise ambiguous field syntax, malformed metadata, and
 duplicate/misplaced setup markers for human repair. Never whole-file format.
@@ -337,30 +931,9 @@ setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
 Noninteractive callers may only use an already confirmed pair after readiness
 checks; otherwise report the interactive setup/reinvoke action and STOP.
 
-### Lossless bounded publication, setup only
-Reject control characters/newlines in model/effort inputs. Serialize inserted
-YAML values as JSON-quoted strings and marker JSON with a JSON serializer, never
-shell interpolation/eval. Patch only selected scalar value spans, necessary
-field additions/removals and the marker; preserve ALL unrelated bytes, comments,
-line endings and modes. When removing effort retain any unrelated inline comment
-as a comment. If a lossless bounded patch cannot be established, STOP for manual
-resolution. Never modify tools, permissions, parent/global configuration,
-pristine bases, manifest, guest exclusions, repository instructions or Beads.
-
-Preflight both outputs and ownership together. Immediately before publication,
-recheck safe paths, current identities, modes and bytes of both roles/evidence;
-any change means STOP/re-prompt, not overwrite. Under cooperative single-writer
-operation, use same-directory temporary files and atomic per-file replacement,
-preserving original modes. Recheck expected state before each replacement:
-1. Invalidate any old implementer completion marker first (remove only its line).
-2. Write the reviewer update.
-3. Publish implementer with the new pair marker LAST.
-This is NOT a two-file transaction or hostile-writer guarantee. Re-read both
-outputs, verify exact approved bytes/modes and marker hashes before reporting
-success. Any failure stops, reports exactly which paths changed and any unknown
-state, and grants NO workflow authority. Retain user bytes; clean only this
-operation's known temporary files. No rollback, journal or silent repair.
-Retry uses the same explicit two-role preflight/question over current bytes.
+DOM_EOF
+  emit_model_setup_protocol claude
+  cat <<'DOM_EOF'
 
 Every successful first confirmation/reconfiguration is SETUP ONLY: no planning
 beads, claim, code, dispatch, branch/commit or goal cycle. End with a fresh client
@@ -566,7 +1139,8 @@ be one), fixed paths confined to ROOT and readable metadata.
 Record current device/inode, modes and complete bytes of both roles
 and evidence for operation-local rechecks, not historical provenance.
 Parse each complete role with a TOML parser; require exact name = "implementer"
-or name = "reviewer", respectively, and valid developer_instructions. Require
+or name = "reviewer", respectively, and nonempty string description and
+developer_instructions. Require
 unique top-level scalar string model/model_reasoning_effort fields if present.
 Reject duplicate keys, malformed TOML, non-string or multiline selection fields,
 duplicate/misplaced setup markers, and any syntax whose selected value spans
@@ -717,24 +1291,6 @@ setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
 Noninteractive callers may only use an already confirmed pair after readiness
 checks; otherwise report the interactive setup/reinvoke action and STOP.
 
-### Lossless bounded preparation, setup only
-Reject newlines and control characters in model/effort input (Unicode Cc,
-including DEL/C1); never interpolate inputs into shell commands or eval.
-Serialize inserted TOML values as double-quoted basic strings: escape backslash
-as \\ and double quote as \"; preserve other allowed Unicode/special characters
-literally. A JSON string serializer with ensure_ascii=False is suitable after
-that control/newline rejection; do not emit JSON-only escapes such as \/ or
-surrogate pairs. Round-trip both proposed files through a TOML parser, comparing
-decoded selections and every unrelated key, including developer_instructions.
-Serialize marker JSON with a JSON serializer, never shell interpolation/eval.
-Patch only selected top-level value spans, necessary field additions/removals
-and the marker. Insert absent fields in the top-level region, not inside a
-table or multiline string. Preserve ALL unrelated bytes, comments, line endings
-and modes; when removing a field retain its unrelated inline comment as a
-comment. If a lossless bounded patch cannot be established, STOP for manual
-resolution. Never change tools, sandbox/permissions, parent/global configuration,
-pristine bases, manifest, guest exclusions, repository instructions or Beads.
-
 ### After save consent — native scoped approval, then publication
 Only AFTER explicit Save setup only consent to the exact prepared diff, if
 native sandbox protection requires permission to write these config paths,
@@ -749,28 +1305,9 @@ Save consent is not native permission; use the supported native approval flow.
 If approval is denied or unavailable, STOP with ZERO mutation and NO success;
 preserve the prior pair. Never bypass a client that cannot approve this operation.
 
-Final writable preflight runs INSIDE the approved command/context (or the
-existing permitted context when no additional approval is needed), before ANY
-mutation, including temporary files or marker invalidation. Preflight BOTH
-roles, outputs and ownership together. Immediately before publication,
-recheck safe paths, current identities, modes and bytes of both roles/evidence
-against the original read-only snapshot,
-and verify both role files and parents are actually writable in this context.
-Changed inputs or an actually unwritable file/parent mean STOP with ZERO mutation
-and NO success; re-prompt for changed inputs, never overwrite or repair permissions.
-Only after all checks pass, the SAME prepared command performs publication.
-Under cooperative single-writer operation, use same-directory temporary files
-and atomic per-file replacement, preserving original modes.
-Recheck expected state before each replacement:
-1. Invalidate any old implementer completion marker first (remove only its line).
-2. Write the reviewer update.
-3. Publish implementer with the new pair marker LAST.
-This is NOT a two-file transaction or hostile-writer guarantee. Re-read both
-outputs, verify exact approved bytes/modes and marker hashes before reporting
-success. Any failure stops, reports exactly which paths changed and any unknown
-state, and grants NO workflow authority. Retain user bytes; clean only this
-operation's known temporary files. No rollback, journal or silent repair.
-Retry uses the same explicit two-role preflight/question over current bytes.
+DOM_EOF
+  emit_model_setup_protocol codex
+  cat <<'DOM_EOF'
 
 Every successful first confirmation/reconfiguration is SETUP ONLY: no planning
 beads, claim, code, dispatch, branch/commit or goal cycle. End with a fresh client
@@ -1034,6 +1571,7 @@ in any component, no hardlinks, paths confined to ROOT. Record current complete
 bytes, modes and device/inode identities for operation-local rechecks.
 Require one well-formed YAML frontmatter block and exact names
 `domestique-v2-copilot-implementer` / `domestique-v2-copilot-reviewer`.
+Require a nonempty string description and nonempty prompt body.
 Reject duplicate keys, malformed metadata, nested/aliased/multiline selection
 syntax, non-string models and duplicate/misplaced markers for human repair.
 Retain native tools arrays and all other metadata/body bytes. No Copilot effort
@@ -1100,28 +1638,9 @@ native evidence before confirmation. Generated defaults/unset fields are not
 consent. Inheritance removes the model field and follows native resolution,
 not necessarily the direct parent; resolve it anew each session.
 
-Prepare both outputs in memory. Patch only model value spans/addition/removal
-and the implementer marker, preserving unrelated fields, tools, comments,
-body, modes and line endings. Preserve an inline comment when removing model.
-Reject control characters/newlines in input; serialize inserted values as
-JSON-quoted YAML strings and marker JSON with a serializer, never shell/eval.
-If lossless patching is uncertain, STOP. Show the ACTUAL complete proposed diff
-(including marker) and require explicit `Save setup only` consent to that diff.
-Changed selections require a new diff/consent. Goal consent is not save consent.
-Cancel, partial/missing input or noninteractive setup means ZERO writes and
-NO workflow. No global/provider/auth/trust/tool/MCP/settings changes.
-
-After consent preflight both outputs and writable parents together; recheck
-safe paths, identities, modes and complete bytes of roles AND evidence.
-Any concurrent change means STOP/re-prompt, never overwrite. Under cooperative
-single-writer operation use same-directory temporary files and atomic per-file
-replacement, retaining modes: invalidate old implementer marker first, publish
-reviewer next, publish implementer with new pair marker LAST. Recheck expected
-state before each replacement. This is not a two-file transaction or hostile-
-writer guarantee. Re-read exact approved bytes/modes and verify both hashes.
-Failure reports changed paths/unknown state, grants no workflow authority and
-retains user bytes for explicit retry; clean only operation-owned temporaries.
-Never update pristine snapshots/manifest/excludes or add receipts/journals.
+DOM_EOF
+  emit_model_setup_protocol copilot
+  cat <<'DOM_EOF'
 
 Every successful confirmation/reconfiguration is SETUP ONLY: no Beads, planning,
 code, branch/commit or dispatch. End with fresh Copilot invocation/reload and
@@ -1566,7 +2085,10 @@ COPILOT_ENTRIES='.github/agents/domestique-v2-copilot-implementer.agent.md|emit_
 .github/skills/domestique-v2-copilot/SKILL.md|emit_copilot_skill
 .github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
 .github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill'
-COPILOT_FILES="$(printf '%s\n' "$COPILOT_ENTRIES" | cut -d'|' -f1 | paste -sd, -)"
+COPILOT_OLD_FILES="$(printf '%s\n' "$COPILOT_ENTRIES" | cut -d'|' -f1 | paste -sd, -)"
+COPILOT_ENTRIES="$COPILOT_ENTRIES
+.github/domestique-model-setup.py|emit_copilot_model_helper"
+COPILOT_FILES="$COPILOT_OLD_FILES,.github/domestique-model-setup.py"
 
 # configure_provider <claude|codex|copilot|shared> — select inventory and
 # snapshot namespace. Policy destination is finalized after sticky guest mode
@@ -1581,14 +2103,14 @@ configure_provider() {
       POLICY_EMITTER="emit_policy"
       POLICY_LABEL="CLAUDE.md"
       POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
-      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/dom-decompose.md,.claude/commands/dom-goal.md"
+      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/dom-decompose.md,.claude/commands/dom-goal.md,.claude/domestique-model-setup.py"
       ;;
     codex)
       SNAPSHOT_DIR="$TARGET_DIR/.codex/.domestique"
       POLICY_EMITTER="emit_codex_policy"
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
-      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml"
+      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml,.codex/domestique-model-setup.py"
       ;;
     copilot)
       SNAPSHOT_DIR="$TARGET_DIR/.github/.domestique"
@@ -1723,6 +2245,7 @@ write_codex_guest_ownership() {
     [ "${CODEX_PREEXIST_IMPL:-0}" -eq 1 ] || printf '.codex/agents/implementer.toml\n'
     [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
     printf '.codex/.domestique/\n'
+    printf '.codex/domestique-model-setup.py\n'
     [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
     [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
     [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
@@ -1765,6 +2288,7 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.claude/commands/goal.md" emit_goal
       install_plain "$TARGET_DIR/.claude/commands/dom-decompose.md" emit_decompose
       install_plain "$TARGET_DIR/.claude/commands/dom-goal.md" emit_goal
+      install_plain "$TARGET_DIR/.claude/domestique-model-setup.py" emit_claude_model_helper
       ;;
     codex)
       install_plain "$TARGET_DIR/.codex/agents/implementer.toml" emit_codex_implementer
@@ -1773,6 +2297,7 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" emit_codex_decompose_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" emit_codex_goal_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" emit_codex_goal_metadata
+      install_plain "$TARGET_DIR/.codex/domestique-model-setup.py" emit_codex_model_helper
       write_codex_guest_ownership
       ;;
     copilot)
@@ -2348,6 +2873,9 @@ try:
     output["exclude"] += ("/" + archive + "/\n").encode()
     for rel in files_arg.split(","):
         output[f"{state}/base/{rel}"] = read(work / "preview-upstream" / rel)
+        if rel == ".github/domestique-model-setup.py":
+            need(pending or not os.path.lexists(root / rel), "unowned helper collision")
+            output[rel] = read(work / "preview-upstream" / rel)
     output[f"{state}/guest-excludes"] = (state + "/\n" + "\n".join(files_arg.split(",")) + "\n").encode()
     if normal == "0":
         output[f"{state}/mode"] = b"guest\n"
@@ -2742,6 +3270,19 @@ lifecycle_preflight() {
         shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" &&
         shared_safe_path "$rel.uninstalled.$TS" ||
         shared_refuse "unsafe selected $provider path $rel"
+      case "$rel" in
+        */domestique-model-setup.py)
+          if [ -e "$TARGET_DIR/$rel" ]; then
+            snapshot_has_file "$state" "$provider" "$rel" &&
+              [ -f "$TARGET_DIR/$state/base/$rel" ] &&
+              cmp -s "$TARGET_DIR/$rel" "$TARGET_DIR/$state/base/$rel" ||
+              shared_refuse "modified/unowned helper $rel; no adoption or merge"
+          else
+            [ ! -e "$TARGET_DIR/$state/base/$rel" ] ||
+              shared_refuse "missing owned helper $rel; explicit repair required"
+          fi
+          ;;
+      esac
       paths="$paths$rel"$'\n'"$state/base/$rel"$'\n'"$rel.bak.$TS"$'\n'"$rel.new"$'\n'"$rel.uninstalled.$TS"$'\n'
     done
   done
@@ -2819,6 +3360,15 @@ PY
 
 # Copilot projection preflight reuses snapshot ownership and three-way merge.
 # It never writes project state or confirms a model pair.
+python_helper_preflight() {
+  python3 -I -B - "$1" <<'PY' || shared_refuse "invalid Python helper"
+import ast
+from pathlib import Path
+import sys
+ast.parse(Path(sys.argv[1]).read_bytes(), filename="domestique-model-setup.py")
+PY
+}
+
 copilot_preflight() {
   [ "$SELECT_COPILOT" -eq 1 ] || [ -e "$TARGET_DIR/.github/.domestique" ] ||
     [ -L "$TARGET_DIR/.github/.domestique" ] || return 0
@@ -2841,11 +3391,13 @@ copilot_preflight() {
   elif [ -d "$TARGET_DIR/$state" ]; then
     shared_consumer_valid copilot || shared_refuse "unknown Copilot authority"
     while IFS='|' read -r rel emitter; do
+      [ "$rel" != ".github/domestique-model-setup.py" ] || continue
       snapshot_has_file "$state" copilot "$rel" || shared_refuse "incomplete Copilot inventory: $rel"
     done <<< "$COPILOT_ENTRIES"
     local files
     files="$(sed -n 's/^files=//p' "$TARGET_DIR/$state/manifest")"
     [ "$files" = "$COPILOT_FILES" ] || [ "$files" = "$COPILOT_FILES,.github/copilot-instructions.md" ] ||
+      [ "$files" = "$COPILOT_OLD_FILES" ] || [ "$files" = "$COPILOT_OLD_FILES,.github/copilot-instructions.md" ] ||
       shared_refuse "unknown Copilot inventory"
     while IFS= read -r path; do
       rel="${path#"$TARGET_DIR/$state"/}"
@@ -2885,6 +3437,11 @@ copilot_preflight() {
       printf '%s\n' "$rel" >> "$TMPDIR_WORK/copilot-excludes"
     elif [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
       "$emitter" > "$TMPDIR_WORK/copilot-upstream"
+      if [ "$rel" = ".github/domestique-model-setup.py" ]; then
+        cmp -s "$native_root/$rel" "$base" || shared_refuse "modified Copilot helper"
+        python_helper_preflight "$TMPDIR_WORK/copilot-upstream"
+        continue
+      fi
       rc=0
       git merge-file -p "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" > "$TMPDIR_WORK/copilot-candidate" || rc=$?
       [ "$rc" -eq 0 ] || shared_refuse "Copilot merge conflict $rel"
@@ -3492,6 +4049,7 @@ install_plain() {
   fi
   staged="$TMPDIR_WORK/staged"
   "$emitter" > "$staged"
+  case "$dest" in */domestique-model-setup.py) python_helper_preflight "$staged" ;; esac
 
   if [ ! -e "$dest" ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -3895,7 +4453,7 @@ install_git_exclude() {
   if command -v git >/dev/null 2>&1; then
     local trackme tracked_paths=".beads"
     [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths="CLAUDE.local.md .claude $tracked_paths"
-    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal .agents/skills/dom-decompose .agents/skills/dom-goal $tracked_paths"
+    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/domestique-model-setup.py .codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal .agents/skills/dom-decompose .agents/skills/dom-goal $tracked_paths"
     for trackme in $tracked_paths; do
       if git -C "$target" ls-files --error-unmatch "$trackme" >/dev/null 2>&1; then
         echo "Warning: $trackme is already tracked in $target — a git exclude entry cannot hide a tracked path. Run 'git rm --cached -r $trackme' if you want it hidden." >&2
@@ -3920,6 +4478,7 @@ install_git_exclude() {
         [ "${CODEX_PREEXIST_IMPL:-0}" -eq 1 ] || printf '.codex/agents/implementer.toml\n'
         [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
         printf '.codex/.domestique/\n'
+        printf '.codex/domestique-model-setup.py\n'
         [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
         [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
         [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
@@ -4185,12 +4744,14 @@ claude|.claude/.domestique|.claude/commands/decompose.md|emit_decompose
 claude|.claude/.domestique|.claude/commands/goal.md|emit_goal
 claude|.claude/.domestique|.claude/commands/dom-decompose.md|emit_decompose
 claude|.claude/.domestique|.claude/commands/dom-goal.md|emit_goal
+claude|.claude/.domestique|.claude/domestique-model-setup.py|emit_claude_model_helper
 codex|.codex/.domestique|.codex/agents/implementer.toml|emit_codex_implementer
 codex|.codex/.domestique|.codex/agents/reviewer.toml|emit_codex_reviewer
 codex|.codex/.domestique|.agents/skills/domestique/SKILL.md|emit_codex_skill
 codex|.codex/.domestique|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
 codex|.codex/.domestique|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
 codex|.codex/.domestique|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
+codex|.codex/.domestique|.codex/domestique-model-setup.py|emit_codex_model_helper
 codex|.codex/.domestique|.agents/skills/dom-decompose/SKILL.md|emit_codex_dom_decompose_skill
 codex|.codex/.domestique|.agents/skills/dom-goal/SKILL.md|emit_codex_dom_goal_skill
 codex|.codex/.domestique|.agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata
@@ -4199,6 +4760,7 @@ copilot|.github/.domestique|.github/agents/domestique-v2-copilot-reviewer.agent.
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot/SKILL.md|emit_copilot_skill
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill
+copilot|.github/.domestique|.github/domestique-model-setup.py|emit_copilot_model_helper
 UNINSTALL_FILES
   done
 

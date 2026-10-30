@@ -321,9 +321,9 @@ class PreviewProjectTests(unittest.TestCase):
                                 "Match declared model AND effort and required tools",
                                 "Save the displayed minimal diff to these two files?",
                                 "setup mean ZERO writes and NO Beads/workflow calls",
-                                "Invalidate any old implementer completion marker first",
-                                "Write the reviewer update.",
-                                "Publish implementer with the new pair marker LAST.",
+                                "The helper recomputes the scalar-only patch",
+                                "invalidates an old marker first if present",
+                                "publishes reviewer then implementer with the marker LAST",
                                 "SETUP ONLY: no planning beads, claim, code, dispatch, "
                                 "branch/commit or goal cycle.",
                                 "NOT queued for automatic continuation",
@@ -350,6 +350,11 @@ class PreviewProjectTests(unittest.TestCase):
                             compatibility = ("/goal <epic-id>" if path == claude
                                              else "$domestique-goal <epic-id>")
                             with self.subTest(protocol=str(path.relative_to(root))):
+                                directory = ".claude" if path == claude else ".codex"
+                                helper = root / directory / "domestique-model-setup.py"
+                                self.assertEqual(helper.read_bytes(), (
+                                    root / directory / ".domestique/base" / directory / helper.name).read_bytes())
+                                compile(helper.read_bytes(), str(helper), "exec")
                                 for text in ordered + required + (explicit, compatibility):
                                     self.assertIn(text, body)
                                 self.assertIn("not unattended authority", body)

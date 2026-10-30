@@ -2,6 +2,51 @@
 
 ## Reading this document
 
+### Deterministic native model setup (hq-7sm.22)
+
+The same standalone installer now installs a harness-bound
+`domestique-model-setup.py` in `.claude`, `.codex`, or `.github`. It uses existing
+Python (3.11+ for Codex TOML), without packages, native clients, a model registry,
+service or second installer. Old provider inventories remain upgrade inputs;
+the preserving lifecycle adds the helper and its pristine base. Modified or
+unowned helpers refuse rather than being adopted or merged. Customized native
+role bodies remain supported under existing ownership guards. Guest visibility,
+preview migration and scoped removal use the existing provider state.
+
+Native UX is still two-phase: establish the ACTUAL caller, ask BOTH role choices
+inline, check supported persistent native selections, then prepare and display
+the actual minimal diff. Preparation and filesystem verification write nothing.
+Explicit human save consent and normal native protected-write approval precede
+apply. The independently retained displayed-plan digest binds integrity, not
+consent. Apply accepts no replacement body, destination or model overrides.
+Read-only preparation/verification accept safe readable roles and parents
+without requiring write access. Apply checks writable roles/parents only in the
+approved execution context; filesystem modes remain stale/race evidence,
+distinct from the current native sandbox's write permission.
+Native instructions externally verify helper ownership/path and equality to its
+pristine snapshot and execute those same verified bytes, not a later path read.
+
+The shared emitter patches only model/effort scalars and the existing marker,
+preserving unrelated metadata, comments, body, line endings and modes. Full
+role/base/manifest/helper and parent snapshots are rechecked before publication.
+Live roles and pristine bases are validated separately for exact native names,
+nonempty string descriptions and native prompt content (including a nonempty
+string `developer_instructions` for Codex), without replacing customized bodies.
+The old marker is invalidated first when present; reviewer is published before
+the new implementer marker. Failure is nonzero with partial-state recovery
+information, never blind rollback or inferred approval. Only operation-owned
+temporaries are cleaned; unknown leftovers remain for explicit reconciliation.
+The native files, pair marker and existing snapshots remain the sole authority.
+
+After saving, STOP for a fresh native invocation; no queued goal or Beads work.
+On fresh goals, helper JSON is **filesystem-only**, not native readiness or
+qualification. The assistant still checks actual roles, discovery/precedence,
+overrides, resolved inheritance, availability and available telemetry. Existing
+native hooks are not controlled; no zero-external-hook-read claim is made.
+Manual body edits invalidate confirmation and require an actual diff and new
+explicit consent. Native effectiveness remains the separate hq-7sm.6 gate.
+Historical validation tables below describe their pinned inputs, not this change.
+
 ### Integrated offline gate for native handoff (hq-7sm.14, 2026-10-29)
 
 Candidate: `f928cb270613f32d378b196854fa3ecf93b686da`, with only the bounded

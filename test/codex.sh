@@ -842,19 +842,11 @@ for phrase in (
     "Cancel, incomplete/missing values, or noninteractive",
     "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
     "Noninteractive callers may only use an already confirmed pair",
-    "Reject newlines and control characters", "including DEL/C1",
-    "double-quoted basic strings", r"as \\ and double quote as \"",
-    "ensure_ascii=False", "surrogate pairs", "Round-trip both proposed files",
-    "every unrelated key, including developer_instructions",
-    "never shell interpolation/eval", "selected top-level value spans",
-    "not inside a\ntable or multiline string", "Preserve ALL unrelated bytes",
-    "line endings\nand modes", "retain its unrelated inline comment",
-    "lossless bounded patch cannot be established, STOP",
-    "recheck safe paths, current identities, modes and bytes",
-    "same-directory temporary files", "atomic per-file replacement",
-    "NOT a two-file transaction", "verify exact approved bytes/modes",
-    "reports exactly which paths changed", "NO workflow authority",
-    "No rollback, journal or silent repair", "SETUP ONLY: no planning",
+    "Use the installed helper for ALL mechanical preflight",
+    "exec(compile(code", "assert code == read(base)",
+    "Prepare is READ-ONLY", "independently retained",
+    "all evidence immediately before EVERY publication",
+    "unknown leftovers", "No blind rollback", "SETUP ONLY: no planning",
     "beads, claim, code, dispatch, branch/commit or goal cycle",
     "fresh client\nsession", "NOT queued for automatic continuation",
     "Missing setup during truly noninteractive/autopilot goal execution means STOP",
@@ -863,8 +855,9 @@ for phrase in (
     "never reset pristine\nbases to configured bytes",
 ):
     assert phrase in setup, phrase
-assert setup.index("1. Invalidate") < setup.index("2. Write the reviewer")
-assert setup.index("2. Write the reviewer") < setup.index("3. Publish implementer")
+helper = root / ".codex/domestique-model-setup.py"
+assert helper.read_bytes() == (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").read_bytes()
+compile(helper.read_bytes(), str(helper), "exec")
 
 # Real emitted aliases share inline entry and a setup-scoped ban on helpers.
 entry, preflight = setup.split("### Read-only preflight", 1)
@@ -915,9 +908,9 @@ ordered = (
     "ACTUAL complete proposed diff", "before explicit Save setup only consent",
     "Only AFTER explicit Save setup only consent",
     "request native one-command scoped approval", "sandbox_permissions=require_escalated",
-    "Final writable preflight runs INSIDE the approved command/context",
-    "Preflight BOTH", "both role files and parents are actually writable",
-    "the SAME prepared command performs publication", "1. Invalidate",
+    "### Deterministic helper", "Only after explicit consent AND",
+    "The helper recomputes the scalar-only patch",
+    "all evidence immediately before EVERY publication",
 )
 positions = [setup.index(phrase) for phrase in ordered]
 assert positions == sorted(positions)
@@ -929,9 +922,11 @@ for phrase in (
     "specific justification naming both exact role paths",
     "No persistent prefix rule, sandbox-mode change, broad permission grant or bypass",
     "If approval is denied or unavailable, STOP with ZERO mutation and NO success",
-    "before ANY mutation, including temporary files or marker invalidation",
-    "against the original read-only snapshot",
-    "Changed inputs or an actually unwritable file/parent mean STOP with ZERO mutation and NO success",
+    "No file staging before approval",
+    "including file path/mode/device/inode/nlink/hash and parent identities/modes",
+    "Prepare/verify require only safe readable evidence",
+    "Only apply checks writable roles/parents in the approved execution context",
+    "changed filesystem modes still require prepare/show diff/new consent",
 ):
     assert phrase in " ".join(setup.split()), phrase
 

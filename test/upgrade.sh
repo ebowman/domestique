@@ -297,6 +297,8 @@ scenario_legacy_fallback() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  # A real pre-helper legacy install has no executable to silently adopt.
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   sed -i.orig 's/^tools:/tools: EDITED/' "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
@@ -342,6 +344,7 @@ scenario_adopt_then_upgrade_merges_plain() {
   local t="$WORKROOT/s10"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   # Local edit: append an mcp__ tool to the tools: line.
   sed -i.orig \
@@ -379,6 +382,7 @@ scenario_adopt_then_upgrade_merges_claude_md() {
   local t="$WORKROOT/s11"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   # Local edit inside the block, on a DIFFERENT line than v2's emit_policy change.
   sed -i.orig \
@@ -422,6 +426,7 @@ scenario_predates_emitter_change_conflict() {
   local t="$WORKROOT/s12"; mkdir -p "$t"
   claude_install "$V0" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   # Unrelated local edit (legacy user edit), on a different line than the
   # Blockers region v0/v2 touch.

@@ -73,6 +73,7 @@ SPEC = importlib.util.spec_from_file_location("beads_fixture", ROOT / "test/bead
 F = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(F)
 CURRENT = (
+    "model-setup-tests.py",
     "private-core.sh", "global.sh", "local-preflight.sh", "local-profiles.sh",
     "global-uninstall.py", "local-uninstall.py", "beads-guard.py",
     "beads-private.py", "beads-cleanup.py", "native-discovery-tests.py",
@@ -990,6 +991,12 @@ def validation(env, control=None, transcript=None):
     if control:
         control.check()
     bootstrap_embedded = bootstrap_python(ROOT)
+    model_source = (ROOT / "domestique.sh").read_text()
+    payload = model_source.split("emit_model_setup_helper() {", 1)[1]
+    payload = payload.split("cat <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    for harness in ("claude", "codex", "copilot"):
+        ast.parse(f'HARNESS = "{harness}"\n' + payload,
+                  filename=f"{harness}/domestique-model-setup.py")
     source = preview_fixture.source().decode()
     ast.parse(source.split("<<'DOM_BEADS_PY'\n", 1)[1].split("\nDOM_BEADS_PY", 1)[0])
     ast.parse(source.split("<<'DOM_INSPECT_PY' || inspect_rc=$?\n", 1)[1]
@@ -1032,6 +1039,7 @@ def validation(env, control=None, transcript=None):
     require(rc == 0, f"git diff --check: {out}{err}")
     return {"status": "PASS", "shell_files": len(shells), "emitted_helpers": 5,
             "python_files": len(python_files), "embedded_python": 2 + bootstrap_embedded,
+            "model_setup_projections": 3,
             "shellcheck_warning_exceptions": 0}
 
 
