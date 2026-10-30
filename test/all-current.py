@@ -556,6 +556,132 @@ class AllProviders(unittest.TestCase):
                     self.assertIn("platform=claude\n",
                                   (root / STATES["claude"] / "manifest").read_text())
 
+    def native_metadata_fixture(self, name):
+        # b557549 is a historical manifest identity, not a required Git object.
+        # Seed from the public 0.1.0 installer: never read a user's project.
+        root, _ = self.legacy_claude(name, ref="v0.1.0")
+        manifest = root / STATES["claude"] / "manifest"
+        manifest.write_text(re.sub(r"(?m)^installed_ref=.*$", "installed_ref=b557549",
+                                   manifest.read_text()))
+        self.assertIn("domestique_version=0.1.0\n", manifest.read_text())
+        return root
+
+    def test_native_metadata_independent_legacy_upgrade(self):
+        root = self.native_metadata_fixture("metadata")
+        expected = {}
+        for role in ("implementer", "reviewer"):
+            rel = f".claude/agents/{role}.md"
+            path = root / rel
+            text = path.read_text()
+            text = re.sub(r"(?m)^(tools: .*)$", r"\1, mcp__example__search", text)
+            text = re.sub(r"(?m)^model: .*$", 'model: "example-native"  # keep exactly', text)
+            text = text.replace("\n---\n", "\neffort: high  # keep exactly\n---\n", 1)
+            path.write_bytes(text.encode() + b"\nFixture body bytes: \xc3\xa9\t \n")
+            expected[rel] = path.read_bytes()
+        before = snapshot(root)
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show",
+             "349591de0baf95ba162e6e6d7712a6a07c82de65:domestique.sh"], text=True)
+        result = self.run_dom(root, "--dry-run", script=released, ok=False)
+        self.assertIn("retained projection conflict .claude/agents/implementer.md", result.stderr)
+        self.assertEqual(snapshot(root), before)  # regression negative control
+        self.run_dom(root, "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        self.run_dom(root)
+        for rel, data in expected.items():
+            path = root / rel
+            header, body = data.split(b"\n---\n", 1)
+            actual_header, actual_body = path.read_bytes().split(b"\n---\n", 1)
+            for line in header.splitlines():
+                if not line.startswith(b"description:"):
+                    self.assertIn(line + b"\n", actual_header + b"\n")
+            self.assertIn(b"description: Claude Code only;", actual_header)
+            self.assertTrue(actual_body.endswith(body))
+            self.assertIn(b"## Active harness boundary (claude only)", actual_body)
+            base = (root / STATES["claude"] / "base" / rel).read_bytes()
+            self.assertNotIn(b"mcp__example__search", base)
+            self.assertNotIn(b"example-native", base)
+            self.assertNotIn(b"Fixture body bytes", base)
+        before = byte_snapshot(root)
+        self.run_dom(root)
+        self.assertEqual(byte_snapshot(root), before)
+
+    def test_native_metadata_conflicts_and_unsafe_refuse(self):
+        root = self.native_metadata_fixture("metadata-refusal")
+        rel = ".claude/agents/implementer.md"
+        path = root / rel
+        base = root / STATES["claude"] / "base" / rel
+        original = path.read_text()
+        customized = re.sub(r"(?m)^(tools: .*)$", r"\1, mcp__example__search", original)
+        anchor = "You are an implementer."
+        revised = SCRIPT.replace(anchor, "You are the upstream implementer.")
+        cases = {
+            "field": (re.sub(r"(?m)^description:.*$", "description: Local competing description",
+                             customized), SCRIPT),
+            "body": (customized.replace(anchor, "You are the local implementer."), revised),
+            "duplicate": (customized.replace("\n---\n", "\ntools: Read\n---\n", 1), SCRIPT),
+            "multiline": (re.sub(r"(?m)^tools:.*$", "tools: |\n  Read", customized), SCRIPT),
+            "ambiguous": (re.sub(r"(?m)^model:.*$", "model: null", customized), SCRIPT),
+            "malformed": (re.sub(r"(?m)^model:.*$", 'model: "unterminated', customized), SCRIPT),
+        }
+        for kind, (text, script) in cases.items():
+            with self.subTest(kind=kind):
+                path.write_text(text)
+                before = snapshot(root)
+                for flags in (("--dry-run",), ()):
+                    result = self.run_dom(root, *flags, script=script, ok=False)
+                    self.assertEqual(result.returncode, 3)
+                    self.assertIn(f"local: ./{rel}", result.stderr)
+                    self.assertIn(f"pristine base: ./{STATES['claude']}/base/{rel}", result.stderr)
+                    self.assertIn("upstream: Domestique", result.stderr)
+                    self.assertIn("empty disposable directory", result.stderr)
+                    self.assertIn("No project writes", result.stderr)
+                    self.assertEqual(snapshot(root), before)
+                if kind == "field":
+                    self.run_dom(root, "--force", script=script, ok=False)
+                    self.assertEqual(snapshot(root), before)
+        path.write_text(customized)
+        saved = base.read_bytes()
+        base.unlink()
+        before = snapshot(root)
+        self.run_dom(root, "--dry-run", ok=False)
+        self.assertEqual(snapshot(root), before)
+        outside = self.work / "pristine-role"
+        outside.write_bytes(saved)
+        base.symlink_to(outside)
+        before = snapshot(root)
+        self.run_dom(root, ok=False)
+        self.assertEqual(snapshot(root), before)
+        self.assertEqual(outside.read_bytes(), saved)
+
+    def test_native_metadata_copilot_preflight_matches_apply(self):
+        root = self.root("metadata-copilot")
+        self.run_dom(root, "--platform", "copilot")
+        expected = {}
+        for role in ("implementer", "reviewer"):
+            rel = f".github/agents/domestique-v2-copilot-{role}.agent.md"
+            path = root / rel
+            pristine = path.read_bytes()
+            prefix = b"Copilot only; never match in Claude, Codex or an unknown harness. "
+            old = pristine.replace(prefix, b"")
+            (root / STATES["copilot"] / "base" / rel).write_bytes(old)
+            custom = old.replace(b'"search"', b'"search", "mcp__example__search"')
+            custom = custom.replace(b"\n---\n", b'\nmodel: "example-native" # exact\n---\n', 1)
+            custom += b"\nUnrelated fixture body.\n"
+            path.write_bytes(custom)
+            expected[rel] = custom.replace(
+                b"description: ", b"description: " + prefix, 1)
+        before = snapshot(root)
+        self.run_dom(root, "--platform", "copilot", "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        self.run_dom(root, "--platform", "copilot")
+        for rel, data in expected.items():
+            self.assertEqual((root / rel).read_bytes(), data)
+            self.assertNotIn(b"example-native", (root / STATES["copilot"] / "base" / rel).read_bytes())
+        before = byte_snapshot(root)
+        self.run_dom(root, "--platform", "copilot")
+        self.assertEqual(byte_snapshot(root), before)
+
     def test_platformless_legacy_claude_invalid_ownership_zero_writes(self):
         for guest in (False, True):
             root, rel = self.legacy_claude(f"invalid-{guest}", guest=guest)

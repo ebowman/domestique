@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.2.0"
+DOMESTIQUE_VERSION="0.2.1"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -3477,8 +3477,8 @@ copilot_preflight() {
         continue
       fi
       rc=0
-      git merge-file -p "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" > "$TMPDIR_WORK/copilot-candidate" || rc=$?
-      [ "$rc" -eq 0 ] || shared_refuse "Copilot merge conflict $rel"
+      merge_native_plain "$rel" "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" "$TMPDIR_WORK/copilot-candidate" || rc=$?
+      [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$native_root/$rel" "$base"
       native_role_description_preflight copilot "$TMPDIR_WORK/copilot-candidate" "$rel"
       case "$rel" in
         .github/agents/domestique-v2-copilot-implementer.agent.md|.github/agents/domestique-v2-copilot-reviewer.agent.md)
@@ -3670,8 +3670,8 @@ PY
     if [ -f "$TARGET_DIR/$rel" ]; then
       [ -f "$TARGET_DIR/$base" ] || shared_refuse "unknown retained ownership $rel"
       rc=0
-      git merge-file -p "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" > "$TMPDIR_WORK/legacy-candidate" || rc=$?
-      [ "$rc" -eq 0 ] || shared_refuse "retained projection conflict $rel"
+      merge_native_plain "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate" || rc=$?
+      [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base"
     fi
     case "$rel" in
       *.yaml) continue ;;
@@ -4083,6 +4083,144 @@ write_manifest() {
   } > "$manifest"
 }
 
+# Use the same candidate in native preflight and publication. Only known native
+# YAML roles get the fallback; policy blocks, TOML, skills and other text retain
+# ordinary Git merge semantics. Ownership/path/guard checks remain with callers.
+merge_native_plain() {
+  local rel="$1" ours="$2" base="$3" upstream="$4" output="$5" rc=0
+  git merge-file -p --diff3 \
+    -L "yours (local edits)" -L "base (last installed)" -L "upstream (new domestique)" \
+    "$ours" "$base" "$upstream" > "$output" || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -lt 128 ] || return "$rc"
+  case "$rel" in
+    .claude/agents/implementer.md|.claude/agents/reviewer.md|\
+    .github/agents/domestique-v2-copilot-implementer.agent.md|\
+    .github/agents/domestique-v2-copilot-reviewer.agent.md) ;;
+    *) return "$rc" ;;
+  esac
+  # Not a YAML parser: accept only the existing native single-line subset.
+  # Keep raw field lines, merge each by ordinary three-way equality, and ask
+  # Git to merge the remaining layout/comments and body independently. Never
+  # pick ours on a competing field, or overwrite Git's conflict artifact unless
+  # every part succeeds. All scratch files live outside the target project.
+  python3 - "$ours" "$base" "$upstream" "$output" "$TMPDIR_WORK" <<'PY'
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+
+def scalar(value):
+    if value.startswith('"'):
+        item, end = json.JSONDecoder().raw_decode(value)
+        if not isinstance(item, str) or not re.fullmatch(r"(?:[ \t]+#.*|[ \t]*)", value[end:]):
+            raise ValueError("invalid quoted scalar")
+    elif value.startswith("'"):
+        if not re.fullmatch(r"'((?:[^']|'')*)'(?:[ \t]+#.*)?", value):
+            raise ValueError("invalid quoted scalar")
+    else:
+        if (not value or any(c in value for c in "[]{}&*!|>`%@") or
+                value.startswith(("-", "?", ":", "#")) or
+                re.search(r":(?:\s|$)", value)):
+            raise ValueError("unsupported scalar")
+        plain = re.split(r"[ \t]+#", value, maxsplit=1)[0].rstrip()
+        if (plain.lower() in ("null", "~", "true", "false", "yes", "no", "on", "off") or
+                re.match(r"^[+\-0-9.]", plain)):
+            raise ValueError("ambiguous scalar")
+
+
+def parse(path):
+    lines = Path(path).read_bytes().splitlines(keepends=True)
+    if not lines or lines[0] != b"---\n":
+        raise ValueError("missing frontmatter")
+    end = lines.index(b"---\n", 1)
+    fields, layout = {}, []
+    for raw in lines[1:end]:
+        line = raw.decode("utf-8")
+        if (any(ord(c) < 32 and c not in "\n\t" for c in line) or
+                any(c in line for c in "\x7f\x85\u2028\u2029\ufeff")):
+            raise ValueError("unsupported header controls")
+        if not line.strip() or line.startswith("#"):
+            layout.append(raw)
+            continue
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(.*?)\n", line)
+        if not match or match[1] in fields:
+            raise ValueError("malformed/duplicate/multiline field")
+        key, value = match.groups()
+        if key == "tools" and value.startswith("["):
+            tools = json.loads(value)
+            if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                raise ValueError("invalid native tools")
+        else:
+            scalar(value)
+        fields[key] = raw
+        layout.append((key + ":\n").encode())
+    if not {"name", "description", "tools"} <= fields.keys():
+        raise ValueError("incomplete role metadata")
+    return fields, b"".join(layout), b"".join(lines[end + 1:])
+
+
+def merge(parts, directory):
+    paths = [directory / str(i) for i in range(3)]
+    for path, data in zip(paths, parts):
+        path.write_bytes(data)
+    result = subprocess.run(["git", "merge-file", "-p", *map(str, paths)],
+                            capture_output=True)
+    if result.returncode:
+        raise ValueError("layout or body conflict")
+    return result.stdout
+
+
+try:
+    parsed = [parse(path) for path in sys.argv[1:4]]
+    ours, base, upstream = [item[0] for item in parsed]
+    fields = {}
+    for key in ours.keys() | base.keys() | upstream.keys():
+        a, b, c = (item.get(key) for item in (ours, base, upstream))
+        if a == b:
+            fields[key] = c
+        elif c == b or a == c:
+            fields[key] = a
+        else:
+            raise ValueError("competing metadata field")
+    with tempfile.TemporaryDirectory(dir=sys.argv[5]) as scratch:
+        directory = Path(scratch)
+        layout = merge([item[1] for item in parsed], directory)
+        body = merge([item[2] for item in parsed], directory)
+    header, seen = [], set()
+    for line in layout.splitlines(keepends=True):
+        if not line.strip() or line.startswith(b"#"):
+            header.append(line)
+            continue
+        key = line.decode("utf-8").removesuffix(":\n")
+        if key in seen or fields.get(key) is None:
+            raise ValueError("ambiguous merged layout")
+        seen.add(key)
+        header.append(fields[key])
+    if seen != {key for key, value in fields.items() if value is not None}:
+        raise ValueError("incomplete merged layout")
+    Path(sys.argv[4]).write_bytes(b"---\n" + b"".join(header) + b"---\n" + body)
+except (OSError, ValueError) as exc:
+    reason = str(exc) if type(exc) is ValueError else "malformed or unreadable frontmatter"
+    print(f"Native role fallback refused: {reason}; "
+          "retain all three versions for explicit reconciliation.",
+          file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+native_merge_refuse() {
+  echo "Error: native projection merge conflict: $1" >&2
+  echo "  local: $2" >&2
+  echo "  pristine base: $3" >&2
+  echo "  upstream: Domestique $DOMESTIQUE_VERSION emitted by $0" >&2
+  echo "No project writes. Keep local and base copies; install this same script into an empty disposable directory with the same --platform selection to inspect pristine upstream at $1. Reconcile only the competing edits in the local file, keep the pristine base unchanged, then retry --dry-run before applying. --force is not conflict recovery." >&2
+  exit 3
+}
+
 # install_plain <dest> <emitter-fn>
 # Missing -> write. Identical -> skip. --force -> overwrite verbatim, no merge.
 # Differs (no --force):
@@ -4175,9 +4313,7 @@ install_plain() {
   # 3-way merge: ours=$dest, base=$basepath, theirs=$staged.
   local merged rc=0
   merged="$TMPDIR_WORK/merged"
-  git merge-file -p --diff3 \
-    -L "yours (local edits)" -L "base (last installed)" -L "upstream (new domestique)" \
-    "$dest" "$basepath" "$staged" > "$merged" || rc=$?
+  merge_native_plain "${dest#"$TARGET_DIR"/}" "$dest" "$basepath" "$staged" "$merged" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
