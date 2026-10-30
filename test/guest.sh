@@ -4,7 +4,7 @@
 # sandbox, reports PASS/FAIL per scenario, prints a final tally, and exits
 # non-zero if any scenario failed. No external test framework, no network.
 #
-# Run: bash test/guest.sh
+# Run: bash test/guest.sh --current (released v1); omit for frozen history.
 #
 # Conventions follow test/upgrade.sh exactly: scratch dirs via mktemp -d,
 # check()/run_scenario() helpers, collect-then-report (never exit early on a
@@ -23,7 +23,20 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
+if [ "${1:-}" = "--current" ]; then
+  CURRENT_TEST=1
+  export HOME="$WORKROOT/current-home"
+  mkdir -p "$HOME"
+else
+  # shellcheck source=test/historical-fixture.sh
+  source "$SCRIPT_DIR/historical-fixture.sh"
+fi
 
+# Claude-scoped fixtures run the actual candidate; historical calls are unchanged.
+claude_install() {
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then "$@" --platform claude
+  else "$@"; fi
+}
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -119,7 +132,7 @@ scenario_fresh_guest_install() {
 
   local sha_before out rc sha_after
   sha_before="$(filehash "$t/CLAUDE.md")"
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
   sha_after="$(filehash "$t/CLAUDE.md")"
 
   check "exit 0" test "$rc" -eq 0
@@ -153,12 +166,12 @@ scenario_guest_idempotent() {
   printf '# My project\n' > "$t/CLAUDE.md"
   git -C "$t" add CLAUDE.md
   git -C "$t" commit -q -m "initial"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local sha_claude_local_before sha_exclude_before out rc
   sha_claude_local_before="$(filehash "$t/CLAUDE.local.md")"
   sha_exclude_before="$(filehash "$t/.git/info/exclude")"
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
   local sha_claude_local_after sha_exclude_after
   sha_claude_local_after="$(filehash "$t/CLAUDE.local.md")"
   sha_exclude_after="$(filehash "$t/.git/info/exclude")"
@@ -187,7 +200,7 @@ scenario_guest_dry_run_fresh() {
   exclude_before="$(filehash "$t/.git/info/exclude")"
 
   local out rc exclude_after
-  out="$("$DOM" "$t" --guest --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest --dry-run 2>&1)"; rc=$?
   exclude_after="$(filehash "$t/.git/info/exclude")"
 
   check "exit 0" test "$rc" -eq 0
@@ -205,7 +218,7 @@ scenario_non_git_target() {
   local t="$WORKROOT/s4"; mkdir -p "$t"
 
   local out rc
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "warning mentions git" bash -c 'printf "%s" "$1" | grep -qi "git repository"' _ "$out"
@@ -228,7 +241,7 @@ scenario_worktree_common_dir() {
   git -C "$main" worktree add -q -b s5-wt-branch "$second" >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$second" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$second" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "common dir exclude has managed block" grep -qF "# BEGIN domestique (managed)" "$main/.git/info/exclude"
@@ -259,10 +272,10 @@ scenario_worktree_common_dir() {
 scenario_sticky_plain_rerun() {
   local t="$WORKROOT/s6a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "sticky note printed" bash -c 'printf "%s" "$1" | grep -q "staying in guest mode"' _ "$out"
@@ -279,10 +292,10 @@ scenario_sticky_plain_rerun() {
 scenario_no_guest_conversion() {
   local t="$WORKROOT/s6b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$t" --no-guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --no-guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "mode marker removed" test ! -e "$t/$MODE_MARKER_REL"
@@ -298,7 +311,7 @@ scenario_guest_and_no_guest_conflict() {
   local t="$WORKROOT/s7a"; mkdir -p "$t"
 
   local out rc
-  out="$("$DOM" "$t" --guest --no-guest 2>&1)"
+  out="$(claude_install "$DOM" "$t" --guest --no-guest 2>&1)"
   rc=$?
 
   check "exit 2" test "$rc" -eq 2
@@ -317,11 +330,11 @@ scenario_guest_and_no_guest_conflict() {
 scenario_corrupt_marker() {
   local t="$WORKROOT/s7b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
   printf 'banana\n' > "$t/$MODE_MARKER_REL"
 
   local out rc
-  out="$("$DOM" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "warning mentions unexpected content" bash -c 'printf "%s" "$1" | grep -q "unexpected content"' _ "$out"
@@ -335,12 +348,12 @@ scenario_corrupt_marker() {
 scenario_sticky_dry_run() {
   local t="$WORKROOT/s8a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
   local sha_before
   sha_before="$(filehash "$t/$MODE_MARKER_REL")"
 
   local out rc sha_after
-  out="$("$DOM" "$t" --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --dry-run 2>&1)"; rc=$?
   sha_after="$(filehash "$t/$MODE_MARKER_REL")"
 
   check "exit 0" test "$rc" -eq 0
@@ -355,10 +368,10 @@ scenario_sticky_dry_run() {
 scenario_no_guest_dry_run_keeps_marker() {
   local t="$WORKROOT/s8b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$DOM" "$t" --no-guest --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --no-guest --dry-run 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "marker still present" test -e "$t/$MODE_MARKER_REL"
@@ -378,7 +391,7 @@ scenario_tracked_path_warning() {
   git -C "$t" commit -q -m "accidentally tracked CLAUDE.local.md"
 
   local out rc
-  out="$("$DOM" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "warning about already-tracked path printed" bash -c 'printf "%s" "$1" | grep -q "already tracked"' _ "$out"
@@ -392,7 +405,7 @@ scenario_tracked_path_warning() {
 scenario_guest_upstream_merge() {
   local t="$WORKROOT/s10a"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   # Local edit OUTSIDE the managed block, added after the v1 install and
   # before the v2 run. This is v1 evidence that (a) can only exist if the v1
@@ -404,7 +417,7 @@ scenario_guest_upstream_merge() {
   printf '\nMY LOCAL NOTE SENTINEL\n' >> "$t/CLAUDE.local.md"
 
   local out rc
-  out="$("$V2G" "$t" --guest 2>&1)"; rc=$?
+  out="$(claude_install "$V2G" "$t" --guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "upstream v2 line merged into CLAUDE.local.md" grep -q "(v2-guest-test)" "$t/CLAUDE.local.md"
@@ -447,11 +460,11 @@ scenario_guest_upstream_merge() {
 scenario_mixed_dir_plain_merge() {
   local t="$WORKROOT/s10b"; mkdir -p "$t"
   git_init "$t"
-  "$DOM" "$t" >/dev/null 2>&1
-  "$DOM" "$t" --guest >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" --guest >/dev/null 2>&1
 
   local out rc
-  out="$("$V2G" "$t" --no-guest 2>&1)"; rc=$?
+  out="$(claude_install "$V2G" "$t" --no-guest 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "upstream v2 line merged into CLAUDE.md" grep -q "(v2-guest-test)" "$t/CLAUDE.md"
@@ -475,6 +488,186 @@ scenario_mixed_dir_plain_merge() {
   check "--no-guest removed the mode marker" test ! -e "$t/$MODE_MARKER_REL"
 }
 
+# Static assertions over REAL installed output; not assistant/native execution.
+scenario_claude_setup_protocol() {
+  local t="$WORKROOT/setup-protocol"; mkdir -p "$t"
+  git_init "$t"
+  check "guest installer succeeds" claude_install "$DOM" "$t" --guest
+  check "installed protocol/aliases (static, not native qualification)" python3 - "$t" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+commands = root / ".claude/commands"
+decompose = (commands / "dom-decompose.md").read_text()
+goal = (commands / "dom-goal.md").read_text()
+assert decompose == (commands / "decompose.md").read_text()
+assert goal == (commands / "goal.md").read_text()
+start = "## Claude first-use role setup — mandatory gate"
+end = "## End role setup gate — continue only for an unchanged confirmed, ready pair"
+def body(text):
+    assert text.count(start) == text.count(end) == 1
+    return text.split(start)[1].split(end)[0]
+setup = body(decompose)
+assert setup == body(goal), "one shared setup body"
+for text, action in ((decompose, "Decompose the following"),
+                     (goal, "Drive epic $ARGUMENTS")):
+    assert text.index(end) < text.index(action), "gate before workflow"
+
+# State/consent paths, including repeat, inheritance, owned customization.
+for phrase in (
+    "BEFORE any Beads command (including readiness/create/claim)",
+    "harness as `claude`", "exact physical Git worktree",
+    "ROOT/.claude/.domestique/manifest",
+    "base/.claude/agents/{implementer,reviewer}.md",
+    "snapshot_format=1", "NOT historical inode proof",
+    "Missing or\nunmanaged evidence",
+    "Current owned customized bytes may be confirmed",
+    "original pristine bases", "no symlinks in any path component",
+    "link count must be one", "at most 1 MiB each",
+    "unique top-level\nscalar model/effort", "duplicate/misplaced setup markers",
+    "immediately after the opening\nimplementer frontmatter delimiter",
+    "`# domestique-model-setup: JSON`", "Reviewer must contain no setup marker",
+    "`v` (integer 1)", "`project`", "`harness`",
+    "`implementer_sha256`, `reviewer_sha256`", "removing only that entire marker line",
+    "BOTH digests", "JSON types/unique keys",
+    "pristine generated defaults", "copied/moved",
+    "Any manual edit", "NO questionnaire and NO writes",
+    "including confirmed inheritance", "request `configure role models`",
+    "Show ROOT / claude", "current model and effort values",
+    "Both roles may use the same\nmodel", "fresh reviewer context",
+    "existing settings, inherited semantics and tracked-file",
+    "explicitly confirm it", 'Write `model: "inherit"`',
+    "omit effort for inherited", "new explicit\nchoices require exact IDs",
+    "displayed native resolution and explicit confirmation",
+    "ACTUAL complete proposed diff", "Save setup only / Cancel",
+    "Cancel, incomplete/missing values, or noninteractive",
+    "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
+    "Noninteractive callers may only use an already confirmed pair",
+    "Use the installed helper for ALL mechanical preflight",
+    "exec(compile(code", "assert code == read(base)",
+    "Prepare is READ-ONLY", "independently retained",
+    "all evidence immediately before EVERY publication",
+    "unknown leftovers", "No blind rollback",
+    "no planning\nbeads, claim, code, dispatch, branch/commit or goal cycle",
+    "fresh client\nsession", "NOT queued for automatic continuation",
+    "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
+):
+    assert phrase in setup, phrase
+# Actual byte preservation/publication/race coverage lives in the installed
+# all-format helper suite, not an assistant-written writer inferred from prose.
+helper = root / ".claude/domestique-model-setup.py"
+assert helper.read_bytes() == (root / ".claude/.domestique/base/.claude/domestique-model-setup.py").read_bytes()
+compile(helper.read_bytes(), str(helper), "exec")
+
+# Setup forbids helper delegation at entry AND during native evidence gathering.
+entry, preflight = setup.split("### Read-only preflight", 1)
+evidence = preflight.split("### Native evidence", 1)[1].split("Before saving", 1)[0]
+for section in (entry, evidence):
+    assert "do NOT use ANY Agent/Task/agent delegation" in section
+    assert "documentation/research helpers or `claude-code-guide`" in section
+    assert "missing evidence means STOP, not a helper call" in section
+assert "the workflow still requires implementer and independent reviewer delegation" in entry
+assert "questionnaire INLINE here; do not redirect to decompose" in entry
+assert "Ordinary unconfigured delegation instead redirects" in entry
+assert "without a confirmed pair STOP without persistence" in " ".join(entry.split())
+assert "Setup consumes this request: no task, Beads or implementation" in entry
+
+# Supported readiness is not exact-byte attestation or future execution proof.
+for phrase in (
+    "Before saving, use supported evidence", "supported and available",
+    "Force-model settings, spawn hooks", "Effort order is environment override",
+    "Unknown support/availability", "STOP before writes",
+    "After saving, require a fresh client session",
+    "Send no conflicting spawn", "a conflict stops",
+    "STOP without workflow or writes", "not dispatch proof",
+    "Do not invent a verification API", "no paid probe",
+    "Actual observed role dispatch/reload qualification is separate",
+    "static emitted-protocol/lifecycle tests do not qualify runtime",
+):
+    assert phrase in setup, phrase
+for phrase in (
+    "supported pre-dispatch minimum, read-only",
+    "active native client and its registered intended `implementer` and `reviewer` role IDs",
+    "registration must be present and unambiguous",
+    "stored pair, ownership, physical ROOT, BOTH marker hashes",
+    "required fresh-session reload",
+    "Match declared model AND effort and required tools",
+    "Explicit non-overridable registered selections plus documented native resolution are sufficient",
+    "documented project-local discovery and precedence",
+    "competing project/ancestor/global definitions",
+    "current provider/model compatibility with available non-secret native evidence",
+    "not a future entitlement/runtime guarantee",
+    "A doctor subprocess describes its own provider/session, not automatically the active thread",
+    "establish applicability before using it as active-session evidence",
+    "Use native source provenance when exposed",
+    "do not invent exact-origin or loaded-byte attestation",
+    "Missing optional exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not block ordinary explicitly authorized work when this minimum is established",
+    "Missing/ambiguous registration, actual mismatch, unresolved inheritance or a known defeating override/unavailability means STOP",
+    "During/after each authorized assignment, check actual available child telemetry",
+    "before accepting work",
+    "selection failure/mismatch means STOP; never silently fall back",
+    "declared selections are not execution proof",
+    "require an unavailable telemetry API or demand a separate paid probe",
+):
+    assert phrase in " ".join(setup.split()), phrase
+policy = (root / "CLAUDE.local.md").read_text()
+# Ordinary/bootstrap policy must route to the same positive minimum, not revive
+# the impossible gate that used to contradict "no invented API".
+for phrase in (
+    "supported pre-dispatch minimum in that protocol",
+    "registered intended role IDs", "pair/ownership/root/hashes and required reload",
+    "matching declared/resolved model/effort and tools",
+    "documented project discovery/precedence", "competing definitions and known overrides checked",
+    "available non-secret provider/model compatibility evidence",
+    "Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes",
+    "Missing/ambiguous registration, actual mismatch, unresolved inheritance",
+    "known defeating override or unavailability means STOP, never fallback",
+    "during/after each authorized assignment before accepting work",
+    "selection failure/mismatch stops",
+):
+    assert phrase in " ".join(policy.split()), phrase
+for obsolete in (
+    "verify that these exact files loaded", "verify exact local role loading",
+    "If exact loading/effective selection",
+    "prevention of silent substitution cannot be verified",
+):
+    assert obsolete not in " ".join((policy + decompose + goal).split()), obsolete
+assert "Ordinary bounded delegation" in policy
+assert "read-only" in policy
+assert "STOP and direct the human to `/dom-decompose configure role models`" in policy
+assert policy.index("questionnaire INLINE") < policy.index("Ordinary bounded delegation")
+assert "not a redirect to decompose" in policy
+assert "noninteractive/autopilot callers without a confirmed pair STOP without persistence" in policy
+assert goal.index("Interactive first-use goal setup") < goal.index("Drive epic $ARGUMENTS")
+assert "not the ordinary-delegation redirect" in goal
+assert "selected role model" in policy
+assert "Sonnet" not in policy + decompose and "Opus" not in policy
+assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create or switch")
+for role in ("implementer", "reviewer"):
+    assert b"domestique-model-setup:" not in (root / f".claude/agents/{role}.md").read_bytes()
+assert not (root / ".beads").exists(), "installer must not initialize Beads"
+PY
+}
+
+scenario_guest_configured_roles() {
+  local t="$WORKROOT/setup-guest"; mkdir -p "$t"
+  git_init "$t"
+  check "guest install" claude_install "$DOM" "$t" --guest
+  local exclude_before i_before r_before base_before
+  exclude_before="$(filehash "$t/.git/info/exclude")"
+  base_before="$(filehash "$t/.claude/.domestique/base/.claude/agents/implementer.md")"
+  check "synthetic configured-pair fixture" python3 "$SCRIPT_DIR/fixtures/claude-configured-pair.py" "$t"
+  i_before="$(filehash "$t/.claude/agents/implementer.md")"
+  r_before="$(filehash "$t/.claude/agents/reviewer.md")"
+  check "guest repeat install" claude_install "$DOM" "$t"
+  check "configured implementer unchanged" test "$i_before" = "$(filehash "$t/.claude/agents/implementer.md")"
+  check "configured reviewer unchanged" test "$r_before" = "$(filehash "$t/.claude/agents/reviewer.md")"
+  check "original pristine base unchanged" test "$base_before" = "$(filehash "$t/.claude/.domestique/base/.claude/agents/implementer.md")"
+  check "guest excludes unchanged" test "$exclude_before" = "$(filehash "$t/.git/info/exclude")"
+  check "configured guest remains local-only" bash -c '[ -z "$(git -C "$1" status --porcelain)" ]' _ "$t"
+}
+
 # ---------------------------------------------------------------------------
 echo "domestique guest-mode test harness"
 echo "repo: $REPO_DIR"
@@ -494,6 +687,10 @@ run_scenario "--no-guest --dry-run keeps the marker"            scenario_no_gues
 run_scenario "tracked CLAUDE.local.md warning"                  scenario_tracked_path_warning
 run_scenario "upstream merge (guest, CLAUDE.local.md)"          scenario_guest_upstream_merge
 run_scenario "mixed-dir: plain merge unaffected by guest"       scenario_mixed_dir_plain_merge
+if [ "${1:-}" = "--current" ]; then
+  run_scenario "Claude setup emitted protocol (static assertions)" scenario_claude_setup_protocol
+  run_scenario "configured roles guest lifecycle (real installer)" scenario_guest_configured_roles
+fi
 
 echo
 TOTAL=$((PASS_COUNT + FAIL_COUNT))

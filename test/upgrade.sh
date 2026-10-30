@@ -4,7 +4,7 @@
 # mktemp -d sandbox, reports PASS/FAIL per scenario, prints a final tally,
 # and exits non-zero if any scenario failed. No external test framework.
 #
-# Run: bash test/upgrade.sh
+# Run: bash test/upgrade.sh --current (v1); omit for frozen history.
 #
 # Intentionally does NOT use `set -e`: scenarios expect nonzero exit codes
 # (conflicts exit 3) and we want to keep running all scenarios even if one
@@ -23,7 +23,20 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
+if [ "${1:-}" = "--current" ]; then
+  CURRENT_TEST=1
+  export HOME="$WORKROOT/current-home"
+  mkdir -p "$HOME"
+else
+  # shellcheck source=test/historical-fixture.sh
+  source "$SCRIPT_DIR/historical-fixture.sh"
+fi
 
+# Claude-scoped fixtures run the actual candidate; historical calls are unchanged.
+claude_install() {
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then "$@" --platform claude
+  else "$@"; fi
+}
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -121,7 +134,7 @@ MANIFEST_REL=".claude/.domestique/manifest"
 scenario_fresh_install() {
   local t="$WORKROOT/s1"; mkdir -p "$t"
   local out rc
-  out="$("$DOM" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "CLAUDE.md created" test -f "$t/$CLAUDE_REL"
@@ -140,11 +153,11 @@ scenario_fresh_install() {
 # ---------------------------------------------------------------------------
 scenario_idempotent_reinstall() {
   local t="$WORKROOT/s2"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   local hash_before hash_after out rc
   hash_before="$(treehash "$t")"
-  out="$("$DOM" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
   hash_after="$(treehash "$t")"
 
   check "exit 0" test "$rc" -eq 0
@@ -162,10 +175,10 @@ scenario_idempotent_reinstall() {
 # ---------------------------------------------------------------------------
 scenario_upgrade_no_local_edits() {
   local t="$WORKROOT/s3"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   local out rc
-  out="$("$V2" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$V2" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "implementer.md picked up upstream change" grep -q "(v2)" "$t/$IMPL_REL"
@@ -178,7 +191,7 @@ scenario_upgrade_no_local_edits() {
 # ---------------------------------------------------------------------------
 scenario_upgrade_preserves_local_edit_plain() {
   local t="$WORKROOT/s4"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   # Edit a DIFFERENT line than the one v2 changes.
   sed -i.orig \
@@ -187,7 +200,7 @@ scenario_upgrade_preserves_local_edit_plain() {
   rm -f "$t/$IMPL_REL.orig"
 
   local out rc
-  out="$("$V2" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$V2" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "user edit preserved" grep -q "(user-edit)" "$t/$IMPL_REL"
@@ -201,7 +214,7 @@ scenario_upgrade_preserves_local_edit_plain() {
 # ---------------------------------------------------------------------------
 scenario_conflict_plain() {
   local t="$WORKROOT/s5"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   # Edit the SAME line v2 changes, to a colliding value.
   sed -i.orig \
@@ -211,7 +224,7 @@ scenario_conflict_plain() {
 
   local before="$WORKROOT/s5.before" out rc
   cp "$t/$IMPL_REL" "$before"
-  out="$("$V2" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$V2" "$t" 2>&1)"; rc=$?
 
   check "exit 3" test "$rc" -eq 3
   check ".new written with conflict markers" bash -c 'grep -q "<<<<<<<" "$1" && grep -q ">>>>>>>" "$1"' _ "$t/$IMPL_REL.new"
@@ -224,7 +237,7 @@ scenario_conflict_plain() {
 # ---------------------------------------------------------------------------
 scenario_claude_md_inblock_preserved() {
   local t="$WORKROOT/s6"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   # Edit inside the block, on a DIFFERENT line than v2's emit_policy change.
   sed -i.orig \
@@ -235,7 +248,7 @@ scenario_claude_md_inblock_preserved() {
   printf '\n## My own notes\nSome text outside the managed block.\n' >> "$t/$CLAUDE_REL"
 
   local out rc
-  out="$("$V2" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$V2" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "in-block user edit preserved" grep -q "(user-edit-block)" "$t/$CLAUDE_REL"
@@ -250,7 +263,7 @@ scenario_claude_md_inblock_preserved() {
 # ---------------------------------------------------------------------------
 scenario_claude_md_conflict() {
   local t="$WORKROOT/s7"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   # Edit the SAME in-block line v2's emit_policy change touches.
   sed -i.orig \
@@ -258,14 +271,22 @@ scenario_claude_md_conflict() {
     "$t/$CLAUDE_REL"
   rm -f "$t/$CLAUDE_REL.orig"
 
-  local before="$WORKROOT/s7.before" out rc
+  local before="$WORKROOT/s7.before" out rc tree_before
   cp "$t/$CLAUDE_REL" "$before"
-  out="$("$V2" "$t" 2>&1)"; rc=$?
+  tree_before="$(treehash "$t")"
+  out="$(claude_install "$V2" "$t" 2>&1)"; rc=$?
 
   check "exit 3" test "$rc" -eq 3
-  check "CLAUDE.md.new written with conflict markers" bash -c 'grep -q "<<<<<<<" "$1" && grep -q ">>>>>>>" "$1"' _ "$t/$CLAUDE_REL.new"
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "policy conflict preflight leaves entire project unchanged" test "$tree_before" = "$(treehash "$t")"
+    check "policy conflict diagnostic names preflight" bash -c 'printf "%s" "$1" | grep -q "owned policy merge conflict"' _ "$out"
+    check "no policy conflict artifact" test ! -e "$t/$CLAUDE_REL.new"
+    check "no policy backup on preflight refusal" bash -c '! find "$1" -name "CLAUDE.md.bak.*" | grep -q .' _ "$t"
+  else
+    check "CLAUDE.md.new written with conflict markers" bash -c 'grep -q "<<<<<<<" "$1" && grep -q ">>>>>>>" "$1"' _ "$t/$CLAUDE_REL.new"
+    check ".bak present" bash -c 'find "$1" -maxdepth 1 -name "CLAUDE.md.bak.*" | grep -q .' _ "$t"
+  fi
   check "live CLAUDE.md unchanged" cmp -s "$before" "$t/$CLAUDE_REL"
-  check ".bak present" bash -c 'find "$1" -maxdepth 1 -name "CLAUDE.md.bak.*" | grep -q .' _ "$t"
 }
 
 # ---------------------------------------------------------------------------
@@ -274,15 +295,17 @@ scenario_claude_md_conflict() {
 # ---------------------------------------------------------------------------
 scenario_legacy_fallback() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  # A real pre-helper legacy install has no executable to silently adopt.
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   sed -i.orig 's/^tools:/tools: EDITED/' "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
   local before; before="$(cat "$t/$IMPL_REL")"
 
   local out rc
-  out="$("$DOM" "$t" 2>&1)"; rc=$?
+  out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
 
   check "exit 0" test "$rc" -eq 0
   check "no backup written" bash -c '! find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
@@ -298,13 +321,13 @@ scenario_legacy_fallback() {
 # ---------------------------------------------------------------------------
 scenario_dry_run_no_writes() {
   local t="$WORKROOT/s9"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
 
   # A pending (mergeable, non-conflicting) upstream change is queued up by
   # using v2 as the "next run" against an untouched install.
   local hash_before out rc hash_after
   hash_before="$(treehash "$t")"
-  out="$("$V2" "$t" --dry-run 2>&1)"; rc=$?
+  out="$(claude_install "$V2" "$t" --dry-run 2>&1)"; rc=$?
   hash_after="$(treehash "$t")"
 
   check "exit 0" test "$rc" -eq 0
@@ -319,8 +342,9 @@ scenario_dry_run_no_writes() {
 # ---------------------------------------------------------------------------
 scenario_adopt_then_upgrade_merges_plain() {
   local t="$WORKROOT/s10"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   # Local edit: append an mcp__ tool to the tools: line.
   sed -i.orig \
@@ -330,7 +354,7 @@ scenario_adopt_then_upgrade_merges_plain() {
   local before; before="$(cat "$t/$IMPL_REL")"
 
   local out1 rc1
-  out1="$("$DOM" "$t" 2>&1)"; rc1=$?
+  out1="$(claude_install "$DOM" "$t" 2>&1)"; rc1=$?
 
   check "adopt: exit 0" test "$rc1" -eq 0
   check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
@@ -339,7 +363,8 @@ scenario_adopt_then_upgrade_merges_plain() {
   check "adopt: base snapshot seeded (pristine, no local edit)" bash -c '! grep -q "mcp__filesystem" "$1"' _ "$t/$BASE_IMPL_REL"
 
   local out2 rc2
-  out2="$("$V2" "$t" 2>&1)"; rc2=$?
+  # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
+  out2="$(claude_install "$V2" "$t" 2>&1)"; rc2=$?
 
   check "upgrade: exit 0" test "$rc2" -eq 0
   check "upgrade: local mcp__ edit preserved" grep -q "mcp__filesystem" "$t/$IMPL_REL"
@@ -355,8 +380,9 @@ scenario_adopt_then_upgrade_merges_plain() {
 # ---------------------------------------------------------------------------
 scenario_adopt_then_upgrade_merges_claude_md() {
   local t="$WORKROOT/s11"; mkdir -p "$t"
-  "$DOM" "$t" >/dev/null 2>&1
+  claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   # Local edit inside the block, on a DIFFERENT line than v2's emit_policy change.
   sed -i.orig \
@@ -368,7 +394,7 @@ scenario_adopt_then_upgrade_merges_claude_md() {
   local before; before="$(cat "$t/$CLAUDE_REL")"
 
   local out1 rc1
-  out1="$("$DOM" "$t" 2>&1)"; rc1=$?
+  out1="$(claude_install "$DOM" "$t" 2>&1)"; rc1=$?
 
   check "adopt: exit 0" test "$rc1" -eq 0
   check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
@@ -377,7 +403,7 @@ scenario_adopt_then_upgrade_merges_claude_md() {
   check "adopt: base block snapshot seeded (pristine, no local edit)" bash -c '! grep -q "user-edit-block2" "$1"' _ "$t/$BASE_CLAUDE_BLOCK_REL"
 
   local out2 rc2
-  out2="$("$V2" "$t" 2>&1)"; rc2=$?
+  out2="$(claude_install "$V2" "$t" 2>&1)"; rc2=$?
 
   check "upgrade: exit 0" test "$rc2" -eq 0
   check "upgrade: local in-block edit preserved" grep -q "user-edit-block2" "$t/$CLAUDE_REL"
@@ -398,8 +424,9 @@ scenario_adopt_then_upgrade_merges_claude_md() {
 # ---------------------------------------------------------------------------
 scenario_predates_emitter_change_conflict() {
   local t="$WORKROOT/s12"; mkdir -p "$t"
-  "$V0" "$t" >/dev/null 2>&1
+  claude_install "$V0" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
+  rm -f "$t/.claude/domestique-model-setup.py"
 
   # Unrelated local edit (legacy user edit), on a different line than the
   # Blockers region v0/v2 touch.
@@ -412,7 +439,7 @@ scenario_predates_emitter_change_conflict() {
   # Adopt with the CURRENT script: seeds base from current-pristine, which
   # differs from ours at the Blockers line (ours still has v0's old wording).
   local out1 rc1
-  out1="$("$DOM" "$t" 2>&1)"; rc1=$?
+  out1="$(claude_install "$DOM" "$t" 2>&1)"; rc1=$?
 
   check "adopt: exit 0" test "$rc1" -eq 0
   check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
@@ -422,7 +449,8 @@ scenario_predates_emitter_change_conflict() {
   # diverges between ours (old wording) and base (current wording).
   local before2; before2="$(cat "$t/$IMPL_REL")"
   local out2 rc2
-  out2="$("$V2" "$t" 2>&1)"; rc2=$?
+  # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
+  out2="$(claude_install "$V2" "$t" 2>&1)"; rc2=$?
 
   if [ "$rc2" -eq 0 ]; then
     check "clean-merge exit 0 implies local edit preserved" grep -q "EDITED-legacy" "$t/$IMPL_REL"
@@ -434,6 +462,45 @@ scenario_predates_emitter_change_conflict() {
   else
     check "upgrade exit code is either 0 (merged) or 3 (conflict) — no silent loss" false
   fi
+}
+
+scenario_configured_pair_upgrade() {
+  local t="$WORKROOT/configured-pair"; mkdir -p "$t"
+  check "install" claude_install "$DOM" "$t"
+  check "synthetic configured-pair fixture" python3 "$SCRIPT_DIR/fixtures/claude-configured-pair.py" "$t"
+  cp "$t/$IMPL_REL" "$WORKROOT/configured-implementer"
+  cp "$t/.claude/agents/reviewer.md" "$WORKROOT/configured-reviewer"
+  cp "$t/$BASE_IMPL_REL" "$WORKROOT/original-base"
+  check "repeat install" claude_install "$DOM" "$t"
+  check "repeat preserves implementer bytes" cmp -s "$WORKROOT/configured-implementer" "$t/$IMPL_REL"
+  check "repeat preserves reviewer bytes" cmp -s "$WORKROOT/configured-reviewer" "$t/.claude/agents/reviewer.md"
+  check "repeat preserves pristine base" cmp -s "$WORKROOT/original-base" "$t/$BASE_IMPL_REL"
+  check "real three-way upstream upgrade" claude_install "$V2" "$t"
+  check "upstream merges without losing configured bytes; marker becomes stale" python3 - "$t" "$WORKROOT" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+root, scratch = map(Path, sys.argv[1:])
+i = (root / ".claude/agents/implementer.md").read_bytes()
+r = (root / ".claude/agents/reviewer.md").read_bytes()
+old = (scratch / "configured-implementer").read_bytes()
+expected = old.replace(b"Blockers or decisions the orchestrator should know about",
+                       b"Blockers or decisions the orchestrator should know about (v2)")
+assert i == expected
+assert r == (scratch / "configured-reviewer").read_bytes()
+marker_line = i.splitlines(keepends=True)[1]
+marker = json.loads(marker_line.removeprefix(b"# domestique-model-setup: "))
+assert marker["implementer_sha256"] == hashlib.sha256(old.replace(marker_line, b"", 1)).hexdigest()
+assert marker["implementer_sha256"] != hashlib.sha256(i.replace(marker_line, b"", 1)).hexdigest()
+assert marker["reviewer_sha256"] == hashlib.sha256(r).hexdigest()
+base = (root / ".claude/.domestique/base/.claude/agents/implementer.md").read_bytes()
+original_base = (scratch / "original-base").read_bytes()
+assert base == original_base.replace(b"Blockers or decisions the orchestrator should know about",
+                                     b"Blockers or decisions the orchestrator should know about (v2)")
+assert b"domestique-model-setup:" not in base
+assert b"LOCAL IMPLEMENTER INSTRUCTIONS" not in base
+PY
 }
 
 # ---------------------------------------------------------------------------
@@ -453,6 +520,9 @@ run_scenario "--dry-run makes no writes"                        scenario_dry_run
 run_scenario "adopt then upgrade merges (plain)"                scenario_adopt_then_upgrade_merges_plain
 run_scenario "adopt then upgrade merges (CLAUDE.md block)"      scenario_adopt_then_upgrade_merges_claude_md
 run_scenario "predates-emitter-change conflict"                 scenario_predates_emitter_change_conflict
+if [ "${1:-}" = "--current" ]; then
+  run_scenario "configured role pair three-way preservation (real installer)" scenario_configured_pair_upgrade
+fi
 
 echo
 TOTAL=$((PASS_COUNT + FAIL_COUNT))
