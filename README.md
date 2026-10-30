@@ -2,6 +2,15 @@
 
 ## Remote install and upgrade
 
+**Unpublished candidate:** the recommended path for this candidate is the single
+standalone `domestique.sh`, through the existing `dom` command. Remote `main`
+does **not yet contain it**. Native qualification independently passed at
+local candidate `75b0de30b7da5153b7f2fe68f52619bbd724380d`;
+publication still needs explicit residual-risk disposition, human acceptance
+and selected-branch tree **and retained candidate history** review. See the
+[release handoff](docs/install-upgrade-design.md#release-handoff-unpublished-2026-10-30).
+No `dom2`, enable step, source checkout or global runtime is required.
+
 **Candidate behavior:** selector-less fresh installs **and reruns** now select
 **ALL Claude Code, Codex and GitHub Copilot**. Explicit `--platform claude`,
 `codex`, `copilot`, `both` or `all` remain available; **both means Claude+Codex**.
@@ -9,7 +18,19 @@ The version-labelled plan shows the actual target, selected providers and resolv
 normal/guest modes before any target writes, including dry-run. No installer
 stdin prompts: `curl | bash` still works.
 
-From the intended project root, preview before applying:
+After publication, an existing moving-main alias needs no change:
+
+```sh
+alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
+dom --dry-run
+dom
+# Opt out of adding missing providers; both selects Claude+Codex only:
+dom --platform both --dry-run
+```
+
+Explicit installs are additive, not removal; persisted Claude/Codex may also
+be selected, while unselected Copilot is retained. Read the actual plan.
+From the intended **disposable** project root, the equivalent transport is:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run
@@ -34,11 +55,99 @@ use, then require reload/fresh invocation; there is no global model override
 registry. Config paths, other selectors, guest scope, supported five/seven-definition
 preview migration, preserving refusals and recovery are in the
 [install/upgrade guide](docs/install-upgrade-design.md#remote-install-and-upgrade).
-Do not blindly reinstall an older script to downgrade. Native qualification
-(hq-7sm.6) and final release handoff (hq-7sm.7) remain pending; this is not a
-publication, version bump or claim of user acceptance/native readiness.
+Do not blindly reinstall an older script to downgrade. This is not a
+publication, version bump or claim of user acceptance.
 
-## Small Copilot/macOS preview — retained-CLI workflow and separate goal skill load demonstrated
+### Current user guide and short changelog
+
+- One standalone installer now supplies all three native projections on fresh
+  **and repeat** default runs. Explicit selectors preserve opt-out; `both`
+  continues to mean Claude+Codex. Configuration installation needs existing
+  Bash, Git and Python 3.11+ for the all-three path, not installed native clients.
+- Codex **and Copilot** share the single canonical
+  `.agents/skills/dom-decompose/SKILL.md` and
+  `.agents/skills/dom-goal/SKILL.md`. Claude uses
+  `.claude/commands/dom-decompose.md` and `.claude/commands/dom-goal.md`.
+  Routing uses actual native context, not the presence of other clients' files.
+- Harness-local deterministic helpers preserve role bodies while preparing
+  consent-bound model/effort edits. They verify files, **not native execution**.
+  No personal model registry, credentials, providers or global dependencies
+  are changed.
+- Snapshot upgrades preserve compatible customizations and model choices.
+  Supported five/seven-definition Copilot preview project migration retains
+  backups and selections, but requires fresh pair confirmation; unsupported
+  ownership, fields or body edits refuse rather than silently replacing them.
+
+| Native client | Plan / configure both role models | Fresh explicit goal |
+| --- | --- | --- |
+| Claude Code | `/dom-decompose configure role models` | `/dom-goal EPIC_ID` |
+| Codex | `$dom-decompose configure role models` | `$dom-goal EPIC_ID` |
+| GitHub Copilot | `/dom-decompose configure role models` | `/dom-goal EPIC_ID` |
+
+Codex also offers `/skills` selection. Claude aliases `/decompose`, `/goal`,
+Codex `$domestique-decompose`, `$domestique-goal`, and Copilot
+`/domestique-v2-copilot-decompose`, `/domestique-v2-copilot-goal` retain the same
+setup gate. Loading an entry alone never authorizes goal work.
+
+**Acceptance checklist (human action, not a claim of acceptance):**
+
+1. In a disposable Git project, use the same reviewed script revision for
+   dry-run and apply. Until publication, use the reviewed local standalone file
+   (`bash /path/to/domestique.sh --dry-run`), not moving main. Review the target,
+   selectors, modes and diff. No real-project install is needed for this check.
+2. Open each intended native client separately. On first decompose **or first
+   interactive goal**, answer **both** implementer and reviewer model questions,
+   including supported effort. Defaults and absent model fields are not consent:
+   explicitly choose a supported model or native inheritance for each role.
+3. Check actual native availability and persistent role support; inspect the
+   actual minimal diff and explicitly consent to **Save setup only**. Preparation
+   is read-only: no scratch/staged plan before consent. Apply only with ordinary
+   scoped native write approval. Setup must **STOP**, without Beads/task work.
+4. Reload/start a fresh native session; verify registrations, effective choices
+   and precedence. Review and explicitly dispose of tracked setup changes before
+   a goal (for example, a separately reviewed setup commit). Never auto-stage,
+   stash or hide them. Then issue a **fresh** goal naming the intended epic.
+   Require a fresh independent reviewer **PASS before task commit/closure**.
+5. Rerun the installer and confirm compatible choices remain; unchanged confirmed
+   pairs should not reprompt. Changed role bytes require renewed confirmation.
+   Unavailable or mismatched models mean **STOP, no fallback**: reconfigure both
+   roles through decompose, approve a new actual diff, then reload again.
+6. Preview scoped removal with `dom --uninstall --platform copilot --dry-run`,
+   or unified removal with `dom --uninstall --dry-run`; remove `--dry-run` only
+   after review. Shared routes remain while Codex or Copilot still consumes them.
+   Modified owned files are preserved as timestamped uninstall backups unless
+   forced; unowned files and Beads are not ordinary removal targets.
+
+**Sharing and privacy:** normal configuration is repository-shared when committed;
+guest configuration is personal/local. Modes are sticky per provider; missing
+providers inherit an entirely normal or guest set (fresh defaults to normal).
+A mixed set plus a missing selected provider refuses until `--guest` or
+`--no-guest` explicitly resolves it. Shared routes are visible if any valid
+Codex/Copilot consumer is normal, private only if all are guest. Git-common
+exclusions affect linked worktrees and **cannot hide tracked files**. Claude
+guest policy uses `CLAUDE.local.md`; Codex/Copilot leave host policies untouched
+and bootstrap through `$domestique` / `/domestique-v2-copilot`. Review the
+[exact native pair/helper paths and ownership](docs/install-upgrade-design.md#remote-install-and-upgrade)
+and [migration/refusal recovery](docs/install-upgrade-design.md#supported-copilot-preview-project-migration-hq-7sm13).
+
+**Native evidence:** all three used the same all-installed disposable fixture,
+saved native defaults and a fresh reviewer; independent final review **PASS**
+(2026-10-30). Test choices were Copilot Astra/Luna, Claude Sonnet 5.5/Opus 5.5,
+Codex Astra/Astra — **not recommended user defaults**. Claude's initial
+scratch-staging mistakes remain recorded alongside a fully compliant new
+read-only-prepare/consent/apply/reload success. This qualifies capability, not
+mistake-free assistant behavior. See the
+[evidence limits and unresolved release gates](docs/install-upgrade-design.md#release-handoff-unpublished-2026-10-30).
+
+## Preserved experimental preview history — not the current recommendation
+
+Everything below through “Current authority and history” retains earlier
+experimental contracts and dated evidence. It is **not** the current standalone
+installation guide, a dependency of `dom`, or a recommendation to install a
+machine runtime. Historical “current”, “pending” and “unqualified” descriptions
+belong to their stated preview/checkpoint, not the qualified standalone candidate.
+
+### Small Copilot/macOS preview — retained-CLI workflow and separate goal skill load demonstrated
 
 The [Copilot/macOS preview contract](docs/v2-preview.md) now has a small,
 repository-owned `preview/` installer, offline version/help and explicit local
@@ -82,104 +191,6 @@ are unchanged. These additive
 names do **not** imply full Claude/Codex v2 parity. Naming/ownership evidence is
 offline regression coverage, not new native execution qualification; the earlier
 workflow-body demonstration above remains its separate, bounded evidence.
-
-**Single-script foundation (`domestique.sh`, this candidate):** Codex's public
-skills now live once under `.agents/skills/dom-{decompose,goal}/SKILL.md`,
-with shared snapshots in `.agents/.domestique`. They route by the actual native
-caller to project-local bodies, preserving the original request and epic
-authorization. All owned Claude/Codex policies and native entry descriptions
-are harness-scoped; foreign/ambiguous invocation stops before setup or work.
-The standalone candidate now installs **Claude + Codex + Copilot by default**:
-`bash domestique.sh /path/to/project` (optionally `--guest` or `--dry-run`).
-`--platform all` is equivalent. Explicit `claude`, `codex`, `copilot`, and
-`both` remain supported; **both means Claude + Codex only**.
-It embeds unique `.github` workflows and native role files,
-with no launcher, preview package or machine runtime required after install.
-Normal mode adds a scoped `.github/copilot-instructions.md` block; guest mode
-leaves host policies untouched and bootstraps via `/domestique-v2-copilot`,
-using exact local exclusions rather than hiding `.github`.
-Scoped removal is `--uninstall --platform copilot`; shared canonical skills
-remain until the last Codex/Copilot consumer is removed.
-Both fresh and repeat selector-less installs select all three, adding missing
-providers to every persisted subset. Explicit installs remain additive; explicit
-uninstall is scoped, while selector-less uninstall scans all three.
-Installed modes stay sticky. Missing providers inherit an entirely guest or
-normal installed set (fresh defaults to normal). Mixed existing modes plus a
-missing provider refuse **before writes** unless `--guest` or `--no-guest`
-intentionally resolves the selection. Shared routes stay visible if any valid
-Codex/Copilot consumer is normal; they are private only when all consumers are
-guest. Scoped removal preserves remaining guests' asset exclusions.
-Missing bodies stop rather than falling back.
-Requires local Git and Python 3.11+ (`tomllib` for Codex); optional native clients
-need not be installed to install configuration. No client/dependency installation,
-launcher, alias, global settings or implicit Beads initialization occurs.
-Supported five/seven-definition Copilot preview projects can now migrate through
-this same installer (hq-7sm.13), including `--dry-run`. Copilot stays private unless
-`--no-guest` explicitly converts it. The machine preview and `dom2` are untouched.
-Native qualification (hq-7sm.6) and release publication remain pending.
-Migration retains bounded scalar native metadata/comments and flat tools arrays,
-but refuses unsupported effort, complex/duplicate fields, unscoped custom
-descriptions, unknown ownership and customized prompt bodies before provider writes.
-Selections survive; changed workflows require **fresh explicit pair confirmation**.
-The byte-preserving source backup remains under
-`.domestique-private/copilot-preview-migration/`, locally excluded from Git.
-An interrupted cutover returns nonzero: retain that backup and retry the same
-installer/flags. Changed/unknown afterimages refuse rather than overwriting edits.
-See [supported migration and recovery](docs/install-upgrade-design.md#supported-copilot-preview-project-migration-hq-7sm13).
-Guest upgrades refuse old unguarded owned host policies without changing them;
-upgrade those policies in normal mode or explicitly reconcile them first.
-Normal upgrades also scope retained inactive owned blocks (including an old
-`AGENTS.md` behind a new host override, and personal `CLAUDE.local.md` after
-`--no-guest`). Snapshot-based merges preserve custom text and host bytes, with
-managed-policy backups even under `--force`; missing proof or conflicts refuse
-before project writes, even for already-guarded policies. Conflicts create no
-project artifacts; occupied backup names are never overwritten.
-Retained local policy keeps its personal guest wording;
-conversion removes the Claude guest exclusion, not personal content.
-See [shared ownership and migration](docs/install-upgrade-design.md#single-script-shared-skill-foundation-hq-7sm10).
-
-The v1 installer now emits shared **first-use role-model setup protocols**
-for Claude and Codex command/skill names and aliases. Generated defaults need explicit confirmation;
-setup ends without Beads/code/goal work and requires a fresh session/reinvocation.
-Use `/dom-decompose configure role models` (Claude) or
-`$dom-decompose configure role models` (Codex) to reconfigure both roles. Ordinary
-unconfirmed delegation redirects there. Existing snapshot update/uninstall
-semantics preserve customized roles. This is instruction-driven and **native
-unqualified**; unknown native support/selection stops without fallback.
-Standalone Copilot uses the same minimal `# domestique-model-setup: JSON`
-confirmed-pair marker and installer snapshots, without a second writer/receipt.
-Ask both roles using actual native availability evidence, show the complete
-diff, obtain explicit Save setup only consent, then stop for fresh invocation/
-reload and human disposition of tracked setup changes before goal work.
-Absent model means native inheritance, not prior consent. Any role byte change
-invalidates confirmation; upgrades preserve custom model/tools/metadata/body.
-Only Copilot's two delegated roles inherit routing from an actually identified
-native Copilot parent and exact registered-role delivery as the child's
-controlling instruction. The parent owns routing and existing readiness gates
-before dispatch; the child need not independently rediscover product identity.
-This trusts parent/runtime behavior, not child authentication. A parent saying
-"this is Copilot", paths, model/tool aliases, or merely read/pasted role text
-are not authority. Unknown parent context or unavailable/ambiguous selection
-stops at the parent; known foreign/contradictory native context still stops
-without writes or fallback. Entry/shared/policy guards are unchanged.
-Owned old role guards upgrade through preserving merges, requiring renewed
-pair confirmation normally; this is not native execution qualification.
-Native role descriptions are customizable **after** their exact discovery
-boundary: `Copilot only; never match in Claude, Codex or an unknown harness.`
-or `Codex only; never match in another harness.` followed by a space and custom
-text. This prefix governs the entire description; custom text cannot override
-it. Body guards are required separately. Copilot lifecycle preflight checks
-the preserving merge (including selected Codex roles, using Python 3.11+
-`tomllib`); missing/changed prefixes or conflicts refuse before any project
-writes, even with `--force` or `--dry-run`. Explicitly reconcile the reported
-description, preserving compatible custom text, and retry; no automatic repair
-or renewed model consent is implied.
-Installing without a Copilot executable is supported, but never proves native
-readiness. Supported pre-dispatch role/discovery/config/precedence evidence is
-required; optional loaded-file attestation or future telemetry is not.
-Native qualification remains pending. `bash test/copilot.sh --current` tests
-this standalone candidate; omitting `--current` retains frozen historical tests.
-`python3 -B -Werror test/all-current.py` covers the default-all standalone lifecycle.
 
 The **separate retained-CLI preview** uses a narrow owned writer:
 `/dom-decompose configure role models`, explicit pair/diff consent in an
@@ -338,7 +349,7 @@ These artifact meanings are historical, except for the explicitly replaced entry
 
 | Source | Current behavior |
 | --- | --- |
-| [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Standalone candidate based on public **v1**, with shared public names and default-all Claude/Codex/Copilot installation. Native qualification, preview migration and publication remain pending. The updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics are unchanged; the separate preview is not this runtime. |
+| [`domestique.sh`](domestique.sh), [`update.sh`](update.sh) | Standalone candidate based on public **v1**, with shared public names, default-all installation and bounded preview project migration. Native qualification passed at `75b0de3`; publication remains gated. The updater's URL, `--source PATH/URL`, and `DOMESTIQUE_UPDATE_SOURCE` semantics are unchanged; the separate preview is not this runtime. |
 | [`domestique2.sh`](domestique2.sh) | Source-only transition: reviewed read-only `--inspect` and help. **All installation/removal/activation operations refuse.** The format-1 preview engine is retained for fixture extraction/reuse, not executable setup through this entrypoint. |
 | [`update2.sh`](update2.sh) | Fail-closed transition: accepts explicit source/version selection syntax but **refuses all updates**, before candidate execution, fetch or destination writes. No default source; nonempty legacy source environment override refuses. Shell files, including this checkout's scripts, are not V2 packages. |
 | [`install-v2.sh`](install-v2.sh) | **Replaced on this preview branch** by the thin `--source CHECKOUT --ref REV` entrypoint above. The historical package/`--version`/`--dry-run` bootstrap interface no longer applies to this artifact. This is not automatic migration of existing installs. |
@@ -1377,6 +1388,10 @@ See [final evidence and unexecuted runtime gates](docs/install-upgrade-design.md
 for per-suite counts, exact blocked interfaces and independent-review boundary.
 
 ## Current authority and history
+
+[The current standalone guide](#remote-install-and-upgrade) and
+[unpublished release handoff](docs/install-upgrade-design.md#release-handoff-unpublished-2026-10-30)
+take precedence over the preserved experimental history above.
 
 [Install/upgrade design](docs/install-upgrade-design.md) separates current
 implemented behavior from historical normal/guest design and blocked future

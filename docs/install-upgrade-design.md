@@ -1,6 +1,286 @@
-# Install/upgrade design: current private preview and historical contracts
+# Install/upgrade guide: standalone candidate and preserved history
 
 ## Reading this document
+
+The current recommendation is **one standalone `domestique.sh` through the
+existing `dom` command**, not `dom2`, project enable, a source checkout or a
+global runtime. See the [user guide/checklist](../README.md#current-user-guide-and-short-changelog)
+and [remote usage](#remote-install-and-upgrade). The historical normal/guest
+design and experimental global/local contracts later in this document are
+preserved references, not competing current installation directions.
+
+### Release handoff (unpublished, 2026-10-30)
+
+**Qualified source:** local commit `75b0de30b7da5153b7f2fe68f52619bbd724380d`,
+branch `epic/hq-7sm`. `domestique.sh` SHA-256:
+`ef3420aea99286426ac3d00ff9dc24f7bbc6cb4e829678a89b0adfaa3de58e38`.
+This documentation handoff leaves qualified runtime bytes unchanged.
+
+**Native qualification: independent final review PASS; hq-7sm.6 closed.**
+All three actual clients used the same logical/physical all-installed disposable
+project (restored from verified archives between continuations), with independent
+first setup, changed-pair save, reload, dirty-tree refusal, invalid-model
+preservation and cross-harness isolation. Actual **saved-default** implementer
+and fresh reviewer runs passed before task commit and child closure; fixture
+epics remained open. Anonymized evidence summary:
+
+| Client | Tested saved defaults (implementer / reviewer) | Observed task acceptance |
+| --- | --- | --- |
+| Copilot | Astra / Luna | Fresh reviewer PASS before fixture commit `2b2ed3c` and child close |
+| Claude Code | Sonnet 5.5 / Opus 5.5 | Fresh reviewer PASS before fixture commit `2b680d4` and child close |
+| Codex | GPT-6 Astra / GPT-6 Astra | Fresh reviewer PASS before fixture commit `3da36a8` and child close |
+
+These are **test choices, not recommended user defaults**. Claude/Codex started
+with medium effort for both roles and explicitly reconfigured reviewer effort
+to high. Copilot does not support persisted effort in this helper.
+Review verified 66 evidence files and 206 fixture files, exact task outputs and
+saved pairs; six continuation PTYs exited normally and owned fixture cleanup
+completed. These are private fixture commit identifiers, not public product
+commits or links to private logs.
+
+Qualification is a capability result **with observed assistant fragility**, not
+a mistake-free guarantee. Claude's initial setup and first reconfiguration
+staged scratch before consent, violating the read-only preparation rule. The
+declined reconfiguration preserved the pair. A **new** fully compliant request
+then used read-only preparation, an actual inline plan, fresh explicit consent,
+inline apply and fresh reload successfully; this does not erase the earlier
+deviations. Copilot parent-facing tool returns exposed no child model/effort;
+independent review found no ignored mandatory telemetry. Actual native events
+corroborated default selections; controller UI labels shown later are **not**
+preacceptance proof. Optional loaded-byte attestation is not required. Correct
+foreign-parent refusal is a workflow-boundary STOP, not proof that a foreign
+child branch executed. Do not bypass a working boundary to manufacture evidence.
+
+**Two genuine residuals remain BLOCKED, not fixed or closed:**
+
+- **hq-7sm.17:** historical END-only uninstall assertions failed for exit 3,
+  the `CLAUDE.md` Conflicted bucket and snapshot-directory removal. Original
+  per-scenario return code/stderr was not retained, so the cause remains unknown.
+  Improved diagnostics, 100 current + 30 baseline focused passes and subsequent
+  full-suite passes do not establish a fix.
+- **hq-6pf:** the existing seven-definition preview migration rerun hit its
+  60-second test timeout. Original progress evidence is missing; cause remains
+  unknown, **not proven contention**. Unchanged candidate/baseline probes
+  (11.146/11.290 seconds) and an independent full Copilot suite pass
+  (3293.836 seconds) do not establish a fix or justify increasing the timeout.
+
+Both await a new diagnostic-bearing occurrence or explicit operator residual-risk
+disposition. **No blind repeat loops.** Publication additionally requires explicit
+residual-risk acceptance, human acceptance of the checklist, independent full
+matrix review of frozen final bytes, and review of the selected publication
+branch's **tree and retained candidate history**. Native PASS does not mean
+stable, ready to merge, or user accepted.
+Recovery is preserving diagnosis/reconciliation, not blindly running an older
+installer against migrated state.
+
+#### Remote state and version recommendation
+
+Read-only GitHub CLI inspection on 2026-10-30 found:
+
+- Remote `main`: [`4de726c2e38e731c67f5f37d4a16206d7b3d99af`](https://github.com/ebowman/domestique/commit/4de726c2e38e731c67f5f37d4a16206d7b3d99af)
+  (“Add native Codex support”, merged [#6](https://github.com/ebowman/domestique/pull/6)).
+- Latest/only release: [`v0.1.0`](https://github.com/ebowman/domestique/releases/tag/v0.1.0),
+  published 2026-08-11, neither draft nor prerelease. Both remote main and the
+  qualified standalone script still declare `DOMESTIQUE_VERSION="0.1.0"`.
+  This internal notice is not a candidate release identifier. GitHub's commit
+  API reports no commit for `75b0de3`; the qualified SHA is a local evidence pin,
+  not an available public download or working public commit link.
+- Recommend **`0.2.0` / tag `v0.2.0`**, only after the gates above: the intentional
+  all-three default on fresh **and rerun**, shared ownership layout, preserving
+  migration/refusal boundaries and first-use consent/reload contract are material
+  pre-1.0 behavioral changes, not a patch-only promise. No version bump is made
+  in this docs-only handoff. Until release preparation, identify the candidate
+  by the full qualified SHA and hash, not by `0.1.0`.
+
+Existing `dom` aliases fetch **moving main** on their next invocation. They
+receive new bits **only after main/domestique.sh is published**; a tag alone
+does not update the alias. Pin preview/apply to the same reviewed commit when
+repeatability matters. This candidate is currently unpublished.
+
+#### Select the publication, do not merge the experimental tree
+
+The actual diff from the inspected remote main to `75b0de3` is **116 files,
+56,653 insertions, 796 deletions**, not a small Copilot-only patch:
+
+| File group | Publication treatment |
+| --- | --- |
+| `domestique.sh` (+3432/−131); `update.sh` unchanged | Select standalone installer; preserve existing updater transport. |
+| Standalone lifecycle tests, configured-pair fixtures, helper tests | Select explicitly; verify fixture dependencies, never call historical runners current acceptance. |
+| `README.md`, `docs/install-upgrade-design.md`, `docs/v2-preview.md` | Review current guide/changelog/handoff hunks; retain only useful, clearly labeled history with working links in the publication branch. |
+| `preview/`, `install-v2.sh`, `domestique2.sh`, `update2.sh`, `v2/` | Exclude from the publication tree; the recipe below retains candidate history, requiring separate human review before publication. |
+| Historical bootstrap/global/local/Beads/native-framework tests and `docs/v2-{bootstrap,install-contract,install-interfaces,source-boundary}.md` | Deferred with their framework; not standalone release dependencies. |
+
+The small retained preview sources are used by migration regression fixtures;
+that does **not** make them a product runtime requirement. In particular,
+`test/copilot.sh --current` also loads `test/copilot-preview-migration.py`,
+which imports `test/preview-project-tests.py` and its retained source cohort.
+Run that coupled qualification in the retained candidate workspace against
+byte-identical selected installer bytes. Do not copy the wrapper alone and
+silently lose migration coverage or merge all deferred code just to satisfy it.
+Selected lifecycle tests require these historical Git objects:
+
+| Fixture ref | Retrieval | Ancestor of `75b0de3` / inspected public main |
+| --- | --- | --- |
+| `v0.1.0` (`4aa67aef5fdfecd1442a983e1dd500473ef6e955`) | `test/all-current.py`: `domestique.sh` | yes / yes |
+| `415fb697e542b2ca8600affd8d0238adce1bfe83` | `test/all-current.py`: `domestique.sh` | yes / yes |
+| `64f4e093df67e0db6d5aa89c681c3cd0e3986e6c` | `test/all-current.py`, `test/codex.sh`: `domestique.sh` | yes / no |
+| `654414025554defe9eeef50c39b14a87326088b8` | `test/codex.sh`: `domestique.sh` | yes / no |
+| `b60feef4d0d41b8d99b7afec68dd5e6ef648b027` | `test/historical-fixture.sh`: `domestique.sh`, `update.sh` | yes / no |
+
+The two selected Copilot role files are already vendored from
+`9f339305a4f900176b647248f68907499dcc0620` (also a candidate ancestor, not a
+public-main ancestor); `test/copilot-current.py` reads those files, not Git.
+The selected tests and their imports/source helpers have no other historical
+Git retrievals. A new branch based only on public main with copied test files
+is **not portable**: it loses the unpublished fixture ancestors.
+
+**Human-only preparation recipe — not executed here.** After review commits this
+documentation, set `DOC_REV` to its actual full reviewed commit. Recheck remote
+state; stop and re-review if main moved. Use a **new clean isolated worktree**
+based on the qualified candidate, then reconstruct its tracked **tree** from
+public main before restoring the explicit selection. Never run the tree
+reconstruction in the candidate, original worktree or an existing dirty checkout.
+
+**History tradeoff / prerequisite:** this retains *all* candidate ancestors,
+including deferred experimental history, while excluding deferred files from
+the publication tip's tree. Human review must explicitly accept publishing
+that history as well as the selected tree; it is **not claimed clean or already
+reviewed for publication**. If retaining that history is unacceptable, STOP:
+portable vendored-fixture work needs a separately reviewed change, not a squash
+or an improvised release. Preserve ancestry through publication (merge commit,
+not squash/rebase); use full-history, tag-enabled clones for these tests, not
+shallow clones or source archives.
+
+```sh
+set -eu
+BASE=4de726c2e38e731c67f5f37d4a16206d7b3d99af
+CODE=75b0de30b7da5153b7f2fe68f52619bbd724380d
+# Set DOC_REV to the actual reviewed documentation commit before continuing.
+test -n "${DOC_REV:-}" || exit 1
+test "$(gh api repos/ebowman/domestique/commits/main --jq .sha)" = "$BASE" || exit 1
+git cat-file -e "$BASE^{commit}" || exit 1
+git cat-file -e "$DOC_REV^{commit}" || exit 1
+git merge-base --is-ancestor "$BASE" "$CODE" || exit 1
+test "$(git rev-parse 'v0.1.0^{commit}')" = 4aa67aef5fdfecd1442a983e1dd500473ef6e955 || exit 1
+for ref in v0.1.0 415fb69 64f4e09 654414025554defe9eeef50c39b14a87326088b8 b60feef; do
+  git merge-base --is-ancestor "$ref" "$CODE" || exit 1
+  git cat-file -e "$ref:domestique.sh" || exit 1
+done
+git cat-file -e b60feef:update.sh || exit 1
+test ! -e ../domestique-release-0.2.0 || exit 1
+test ! -L ../domestique-release-0.2.0 || exit 1
+git worktree add -b release/standalone-0.2.0 ../domestique-release-0.2.0 "$CODE"
+cd ../domestique-release-0.2.0
+test -z "$(git status --porcelain --untracked-files=all)" || exit 1
+# Only in this newly created clean worktree: remove candidate-only tracked
+# files too, leaving the public-main tree in BOTH index and working tree.
+git restore --source="$BASE" --staged --worktree -- .
+git restore --source="$CODE" --staged --worktree -- \
+  domestique.sh test/all-current.py test/model-setup-tests.py \
+  test/codex.sh test/guest.sh test/upgrade.sh test/uninstall.sh \
+  test/copilot-current.py test/historical-fixture.sh \
+  test/fixtures/claude-configured-pair.py test/fixtures/codex-configured-pair.py \
+  test/fixtures/copilot-9f33930/implementer.agent.md \
+  test/fixtures/copilot-9f33930/reviewer.agent.md
+# Inspect the docs at DOC_REV, then transfer only reviewed current sections:
+git show "$DOC_REV:README.md"
+git show "$DOC_REV:docs/install-upgrade-design.md"
+git show "$DOC_REV:docs/v2-preview.md"
+```
+
+Manually apply the selected documentation sections to these same three paths;
+do not import the entire experimental README/design history or leave links to
+unpublished local files. Review the guide, short changelog, acceptance checklist,
+current ownership/migration/recovery sections and this handoff together.
+Resolve the test-fixture portability gate above explicitly; this recipe is a
+selection starting point, **not** an already-qualified publication branch.
+In a disposable local clone of the prepared branch, verify every fixture ref
+above with `git show REF:PATH` and run focused historical upgrade tests before
+full qualification. Clone with history and tags, without alternates/shared-object
+dependencies; resolving objects only in the original candidate is insufficient.
+Only in release preparation, update the installer version to `0.2.0`, review the
+exact diff, freeze it and rerun the independent matrix. Record that the native
+evidence is pinned to `75b0de3`; adjudicate any runtime changes rather than
+extending its qualification claim automatically.
+
+The reconstruction has already staged removals of deferred candidate files.
+Stage only the reviewed list, never `git add .`. Review both the change from the
+candidate parent and, critically, the final tree diff from public main; the
+latter must contain **only** the explicit list below, with `update.sh` unchanged.
+Review the retained commit history separately:
+
+```sh
+git add -- domestique.sh README.md docs/install-upgrade-design.md docs/v2-preview.md \
+  test/all-current.py test/model-setup-tests.py \
+  test/codex.sh test/guest.sh test/upgrade.sh test/uninstall.sh \
+  test/copilot-current.py test/historical-fixture.sh \
+  test/fixtures/claude-configured-pair.py test/fixtures/codex-configured-pair.py \
+  test/fixtures/copilot-9f33930/implementer.agent.md \
+  test/fixtures/copilot-9f33930/reviewer.agent.md
+git --no-pager diff --cached --check
+git --no-pager diff --cached --stat
+git --no-pager diff --cached
+git --no-pager diff --cached "$BASE" --name-status
+git --no-pager diff --cached "$BASE"
+git --no-pager log --oneline "$BASE..$CODE"
+```
+
+The independent reviewer runs the full existing current matrix serially on
+frozen candidate bytes: `test/all-current.py`, `test/model-setup-tests.py`,
+`bash test/{copilot,guest,codex,upgrade,uninstall}.sh --current` (each separately),
+`test/preview-{project,workflow,inspect,machine}-tests.py`,
+`test/acceptance-tests.py`, and the existing
+`CURRENT:syntax-lint-ast-diff` scope (Python suites use `python3 -B -Werror`).
+Retained preview fixtures are offline compatibility tests, not native acceptance
+of that runtime. Validate selected-branch standalone coverage and documentation
+links too. Stop on failure and preserve diagnostics; do not pass by blind rerun.
+
+**Only after all gates and explicit publication authorization**, the human may
+commit, push that selected branch, open a review PR, and merge that exact PR
+under repository policy. The merge must retain the reviewed candidate ancestry
+and the existing `v0.1.0` tag must remain available to fresh clones.
+Example commands (not authorization):
+
+```sh
+git commit -m "Release standalone all-client installer 0.2.0"
+git push -u origin release/standalone-0.2.0
+gh pr create --repo ebowman/domestique --base main --head release/standalone-0.2.0 \
+  --title "Standalone installer 0.2.0" --body-file /path/to/reviewed-release-notes.md
+# After human tree AND history acceptance, set RELEASE_PR to that new PR number.
+# Do not substitute squash/rebase: the fixture commits must remain ancestors.
+gh pr merge "$RELEASE_PR" --repo ebowman/domestique --merge
+PUBLISHED=$(gh api repos/ebowman/domestique/commits/main --jq .sha)
+# Verify this is the reviewed merge and inspect its actual installer before tagging:
+gh api "repos/ebowman/domestique/contents/domestique.sh?ref=$PUBLISHED" \
+  -H 'Accept: application/vnd.github.raw+json'
+# Only once that verification passes:
+gh release create v0.2.0 --repo ebowman/domestique --target "$PUBLISHED" \
+  --title "v0.2.0 — standalone all-client installer" \
+  --notes-file /path/to/reviewed-release-notes.md
+```
+
+Publication of main, not the final tag command, is what changes `dom`.
+No merge/push/tag, real-project install or human acceptance occurs in this task.
+
+#### Separate open PR discussion
+
+Read-only status checks found the following **open**, non-draft PRs; none is a
+merge dependency for this handoff. Discuss separately rather than merging them:
+
+| PR | Verified title |
+| --- | --- |
+| [#7](https://github.com/ebowman/domestique/pull/7) | feat: /drain as alias of /goal for unattended epic mode |
+| [#8](https://github.com/ebowman/domestique/pull/8) | decompose: print dependency tree + blocker table after epic creation |
+| [#9](https://github.com/ebowman/domestique/pull/9) | decompose: grill before, audit after — availability-checked feedback loops |
+| [#10](https://github.com/ebowman/domestique/pull/10) | feat: model routing — model:opus label rubric, Codex impl:heavy profile, dispatch override |
+
+[#11](https://github.com/ebowman/domestique/pull/11), “Add native Copilot CLI
+support”, is **open/draft**, two commits ahead of inspected main and zero behind.
+Its actual files are `domestique.sh`, `test/copilot.sh`, `update.sh`: native
+Copilot payloads and normal install/safe-upgrade work. It does **not** currently
+contain this epic's broad deferred experimental tree or final qualified
+candidate. Do not relabel/merge it as this release, or assume it supplies final
+qualification; if its contents change, inspect again for unrelated history.
 
 ### Deterministic native model setup (hq-7sm.22)
 
@@ -44,10 +324,14 @@ qualification. The assistant still checks actual roles, discovery/precedence,
 overrides, resolved inheritance, availability and available telemetry. Existing
 native hooks are not controlled; no zero-external-hook-read claim is made.
 Manual body edits invalidate confirmation and require an actual diff and new
-explicit consent. Native effectiveness remains the separate hq-7sm.6 gate.
+explicit consent. Native effectiveness was independently qualified at `75b0de3`;
+see the [limits and release gates](#release-handoff-unpublished-2026-10-30).
 Historical validation tables below describe their pinned inputs, not this change.
 
 ### Integrated offline gate for native handoff (hq-7sm.14, 2026-10-29)
+
+**Dated checkpoint:** the remaining-gates paragraph below records what was
+pending then; the 2026-10-30 handoff above supersedes its native status.
 
 Candidate: `f928cb270613f32d378b196854fa3ecf93b686da`, with only the bounded
 `test/all-current.py` extension and this evidence update uncommitted. Product
@@ -126,6 +410,11 @@ used by this offline gate.
 
 ### Remote install and upgrade
 
+**Unpublished:** remote main does not yet contain this qualified candidate.
+The examples below describe usage after publication; until then test the
+reviewed standalone script locally in a disposable project. No `dom2`, enable
+step, source checkout or global runtime is needed by the installed workflows.
+
 The standalone candidate's selector-less **fresh install and rerun select all
 three**: Claude Code, Codex and GitHub Copilot. The `VERSION` notice uses the
 script's actual version (currently `0.1.0`, not a new release announcement) and
@@ -169,8 +458,8 @@ That tag contains historical code, not this candidate's all-three/migration
 contract; consult the selected revision's help. Pinning selects script bytes,
 not a rollback of project state. The candidate still reports `0.1.0`; version
 text alone does not identify a commit. No publication/version bump happens here.
-Native qualification (hq-7sm.6) precedes final release handoff (hq-7sm.7);
-offline tests/install success do not establish native support or user acceptance.
+Native qualification (hq-7sm.6) independently passed at `75b0de3`;
+offline tests/install success alone do not establish native support or user acceptance.
 For acceptance against actively used repositories, compare installer-relevant files, Git indexes and exclusions immediately before and after each operation; retain later drift separately rather than claiming whole-session immutability. In one candidate dry-run, the index remained byte-identical through the post-copy check, then changed more than thirteen minutes later in entries outside installer-managed paths. The writer is unknown: this establishes the operation-window result, not a general attribution or permission to reset the user's index.
 
 **Existing-install qualification (hq-7sm.19, 2026-10-29).** Product bytes remain
@@ -214,6 +503,28 @@ qualification (.6) remain separate.
 installed. Project role files are `.claude/agents/{implementer,reviewer}.md`,
 `.codex/agents/{implementer,reviewer}.toml`, and
 `.github/agents/domestique-v2-copilot-{implementer,reviewer}.agent.md`.
+The exact pairs and helpers are:
+
+| Harness | Native pair (implementer / reviewer) | Deterministic helper |
+| --- | --- | --- |
+| Claude | `.claude/agents/implementer.md` / `.claude/agents/reviewer.md` | `.claude/domestique-model-setup.py` |
+| Codex | `.codex/agents/implementer.toml` / `.codex/agents/reviewer.toml` | `.codex/domestique-model-setup.py` |
+| Copilot | `.github/agents/domestique-v2-copilot-implementer.agent.md` / `.github/agents/domestique-v2-copilot-reviewer.agent.md` | `.github/domestique-model-setup.py` |
+
+Claude/Codex native role IDs are `implementer` and `reviewer`; Copilot IDs are
+`domestique-v2-copilot-implementer` and `domestique-v2-copilot-reviewer`.
+Each uses the existing flat `snapshot_format=1` provider `manifest`, pristine
+`base/<project-relative-path>` and optional `mode`/selection/exclusion records,
+not a new setup registry. The `# domestique-model-setup: JSON` marker in the
+implementer file contains `v`, `project`, `harness`, `implementer_sha256` and
+`reviewer_sha256`. It binds the physical project and both native role bodies
+(including their choices) by hash, not a separate model registry; filesystem
+confirmation is not attestation of loaded native bytes.
+Explicit native inheritance is a choice, not implied consent: Claude emits
+`model: inherit`; Codex/Copilot omit model. Helper model/effort JSON null means
+inheritance; Copilot effort must be null. The actual installed protocol governs
+preparation, exact diff/consent, protected apply and reload.
+
 Commands/workflows live under `.claude/commands`, `.agents/skills` and
 `.github/skills`; provider snapshots live under `.claude/.domestique`,
 `.codex/.domestique`, `.github/.domestique`, with shared routes owned by
@@ -240,8 +551,8 @@ protected-write approval, save only, and stop for fresh reload/reinvocation.
 No in-session Task/spawn override or old-default fallback is permitted.
 Fresh registrations must match the chosen/native-effective pair before dispatch;
 genuine capability, inheritance, tool or permission restrictions still stop.
-This instruction clarification is not native qualification; effectiveness
-requires new, separately authorized native evidence after reload.
+The clarification alone was not native qualification; the later `75b0de3`
+native evidence demonstrated persistent save and effective fresh reload.
 
 **Guest/private scope:** modes are sticky per provider; missing providers inherit
 a wholly guest or normal installed set (fresh is normal). Mixed modes with a
@@ -327,8 +638,9 @@ using staging/atomic file replacement, not an adversarial transaction service.
 `bash test/copilot.sh --current` includes real five/seven creation, model writer,
 refusal, source-independent stdin, exclusion preservation and interrupted-cutover
 fixtures. Historical shell mode is unchanged. These are offline lifecycle
-checks, **not native qualification** of the migrated workflows; that remains
-pending separately.
+checks, **not native qualification**. The later standalone native qualification
+at `75b0de3` is separate evidence, not automatic readiness of every migrated
+project or customized pair.
 
 ### Single-script shared skill foundation (hq-7sm.10)
 
@@ -338,7 +650,8 @@ the same three; `both` remains Claude+Codex only. Explicit selections add to the
 persisted subset, never silently remove another provider. Uninstall without a
 selector scans all three; explicit uninstall removes only that selection.
 The self-contained Copilot projection supports the bounded preview project
-migration below (.13). Native qualification .6 and publication remain pending.
+migration above (.13). Native qualification .6 passed at `75b0de3`; publication
+remains gated by the handoff above.
 Installed provider modes stay sticky; missing providers inherit wholly guest or
 wholly normal installations (fresh is normal). With mixed installed modes and
 a missing selected provider, preflight refuses without changing provider, shared,
@@ -479,8 +792,9 @@ invalidation; unrelated retained Copilot files remain untouched.
 Setup ends before Beads/work, requires fresh native invocation/reload and human
 disposition of tracked setup edits. Missing Copilot does not prevent installation
 but installation never claims readiness. Preview receipts/competing canonical
-paths, unknown ownership, malformed roles, unsafe paths and conflicts refuse;
-preview migration and native qualification remain separate work.
+paths require the explicitly supported migration contract above; unsupported
+layouts, unknown ownership, malformed roles, unsafe paths and conflicts refuse.
+Offline migration checks and the qualified native evidence remain distinct.
 
 Before **any project writes**, unknown/incomplete state in the new shared
 namespace refuses, even with identical bytes, dry-run, or `--force`. Existing
@@ -1085,6 +1399,11 @@ its exact exclude entries.
 ---
 
 ## Current private global/local contract (hq-b3q; implemented preview with blocked work)
+
+**Preserved experimental history, not the current recommendation.** “Current”
+in this historical heading refers to that checkpoint. The standalone guide and
+release handoff at the top of this document take precedence; this framework is
+not a dependency of the existing `dom` command.
 
 **Status and boundary.** The private-only replacement is implemented in this
 checkout for core/global/local profile lifecycle, with the blocked/open

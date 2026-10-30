@@ -1,4 +1,50 @@
-# Small Copilot-first preview
+# Preserved experimental preview history
+
+## Current recommendation: the single standalone installer
+
+Use the existing `dom` command backed by standalone `domestique.sh`, **not**
+`dom2`, enable, a source checkout or a global runtime. The candidate is
+**unpublished**: existing moving-main curl aliases receive it only after
+`main/domestique.sh` is published; a tag alone does not update them.
+See the [current guide, changelog and acceptance checklist](../README.md#remote-install-and-upgrade)
+and [exact version/publication handoff](install-upgrade-design.md#release-handoff-unpublished-2026-10-30).
+
+Selector-less fresh **and rerun** installs select Claude, Codex and Copilot;
+explicit `claude`, `codex`, `copilot`, `both`, `all` remain (`both` is
+Claude+Codex). Normal/guest modes are sticky; missing providers inherit a
+uniform installed mode, but mixed modes with a missing selected provider
+require explicit `--guest`/`--no-guest` resolution.
+Codex/Copilot share `.agents/skills/dom-{decompose,goal}/SKILL.md`.
+Claude commands are `/dom-decompose`, `/dom-goal`; Codex uses `$dom-decompose`,
+`$dom-goal`; Copilot uses `/dom-decompose`, `/dom-goal`.
+Each harness asks for both model choices, including explicit native inheritance,
+shows the actual diff, obtains setup-only consent, saves only its native pair
+and stops for reload and a fresh request. The installed deterministic helper
+verifies filesystem state, not native attestation.
+
+Independent final native review **PASS** at local candidate
+`75b0de30b7da5153b7f2fe68f52619bbd724380d`
+used one all-installed fixture and actual saved-default implementation plus
+fresh review before commit/closure in all three clients. This qualifies the
+standalone candidate with the observed assistant fragility and telemetry limits
+in the handoff, not the experimental runtime below. Residuals hq-7sm.17 and
+hq-6pf remain **BLOCKED**, causes unknown; publication requires explicit risk
+disposition, human acceptance and selected-branch tree **and retained candidate
+history** review. The handoff excludes deferred files from the publication tree,
+but retains their ancestry for portable historical test fixtures; publishing that
+history needs explicit human review.
+
+Supported five/seven-definition preview **project** receipts may migrate through
+the standalone installer with preserving backups/refusals and renewed pair
+confirmation. The existing machine preview and `dom2` remain untouched.
+See [migration and recovery](install-upgrade-design.md#supported-copilot-preview-project-migration-hq-7sm13).
+
+## Historical small Copilot-first preview
+
+**All sections below preserve experimental contracts and dated evidence, not
+the current recommendation.** Historical “current”, “unqualified” and “pending”
+claims refer to those retained preview/checkpoint inputs. Do not use them to
+override the standalone handoff above or mechanically publish the deferred tree.
 
 **COPILOT/MACOS PREVIEW: RETAINED-CLI WORKFLOW AND SEPARATE GOAL SKILL LOAD DEMONSTRATED.**
 The hq-iyu.2–.5 source implements installation, explicit update, offline
@@ -21,9 +67,9 @@ The standalone `domestique.sh` candidate can now migrate supported active
 five/seven-definition **project** receipts, without reading or changing this
 machine installation. See [the bounded migration/refusal/recovery contract](install-upgrade-design.md#supported-copilot-preview-project-migration-hq-7sm13).
 This revokes that project's old receipt, retains source backups and selections,
-and requires fresh pair confirmation. It does not change `dom2` or qualify the
-new standalone workflows; the native evidence below still belongs only to the
-retained preview.
+and requires fresh pair confirmation. It does not change `dom2`. The native
+evidence below belongs only to the retained preview; standalone qualification
+is recorded separately in the current handoff above.
 
 Support the observed macOS environment and Copilot first: install once from a
 trusted, explicitly selected Git revision, explicitly enable one project, and
