@@ -909,6 +909,8 @@ class InstallerPair(Pair):
             "partial": False, "published": [], "workflow_authorized": False,
         }))
         qualified = eligibility in ("fresh", "confirmed", "legacy")
+        historical = (eligibility == "custom-unconfirmed" and
+                      self.helper not in self.inventory(contents[self.manifest])["files"].split(","))
         need(qualified or not overrides,
              "unconfirmed pair; review/Save before model override")
         outputs = {}
@@ -920,12 +922,12 @@ class InstallerPair(Pair):
                 selected = overrides.get(role, model)
                 outputs[role] = patch(upstream, role, {
                     "model": selected, "effort": effort if selected == model else None})
-            elif qualified:
+            elif qualified or historical:
                 # No generic merge may decide that local==base unpins a scalar.
                 projected = [project_settings(data, role) for data in (local, base, upstream)]
                 merged = projected[0] if projected[1] == projected[2] else self.merge(*projected)
                 need(type(merged) is bytes and len(merged) <= LIMIT, "invalid preserving merge output")
-                if force:
+                if force and qualified:
                     self.guard(role, base, local, restore_settings(local, merged, role))
                     merged = projected[2]
                 outputs[role] = restore_settings(local, merged, role)
@@ -949,9 +951,9 @@ class InstallerPair(Pair):
                 outputs["implementer"] = contents[self.paths["implementer"]]
         dependencies = {p: self.pristine[p] for p in self.files if p not in self.paths.values()}
         if not qualified:
-            # No body upgrade occurred. Retain its corresponding real old base,
-            # otherwise new upstream bytes coinciding with an unreviewed custom
-            # body could silently qualify that body as legacy on the next rerun.
+            # Retain the real old base even after historical guard migration.
+            # Advancing it could make an unreviewed custom body that coincides
+            # with upstream silently qualify as legacy on the next rerun.
             for rel in self.paths.values():
                 base = f"{self.state}/base/{rel}"
                 dependencies[base] = contents[base]
@@ -962,7 +964,7 @@ class InstallerPair(Pair):
         plan = {
             "v": 1, "purpose": "installer-selected-pair", "root": str(self.root),
             "harness": HARNESS, "overrides": overrides, "eligibility": eligibility,
-            "force": force,
+            "force": force, "historical_migration": historical,
             "configured": qualified, "snapshot": snapshot,
             "selected": result["selected"],
             "outputs": {p: sha(data) for p, data in final.items()},
@@ -4801,18 +4803,29 @@ def prepare(provider):
                 bodies.append("".join(lines[end + 1:]).replace("\r\n", "\n"))
         scoped = [d == prefix or d.startswith(prefix + " ") for d in descriptions]
         unchanged_legacy = lib["project_settings"](base, role) == lib["project_settings"](live, role)
-        need(scoped[2] and (scoped[0] and scoped[1] or not scoped[0] and unchanged_legacy),
+        # A recognized historical pair may migrate without becoming eligible
+        # for confirmation. Authorize only the actual conflict-free preserving
+        # merge, not arbitrary insertion of guards into custom text. Retained
+        # historical bases also occur after migration and explicit helper Save.
+        preserving_legacy = False
+        if not scoped[0] and not scoped[1] and not unchanged_legacy:
+            projected = [lib["project_settings"](data, role) for data in (live, base, pristine[layout.paths[role]])]
+            preserving_legacy = (lib["project_settings"](candidate, role) ==
+                                 merge_for(layout.paths[role], *projected))
+        need(scoped[2] and (scoped[1] or not scoped[0] and
+                           (unchanged_legacy or preserving_legacy)),
              "missing native discovery guard: " + layout.paths[role])
         if provider == "codex":
             required = ("These instructions apply only in the actual native Codex client; foreign or\n"
                         "ambiguous callers stop without work. Installed directories do not identify it.")
             need(required in bodies[2] and
-                 (required in bodies[0] and required in bodies[1] or
-                  required not in bodies[0] and unchanged_legacy), "missing native Codex body guard")
+                 (required in bodies[1] or required not in bodies[0] and
+                  (unchanged_legacy or preserving_legacy)), "missing native Codex body guard")
         else:
             expected = entry if provider == "copilot" and bodies[0].startswith(entry) else guard
-            source_safe = (bodies[0].startswith(expected) and bodies[1].startswith(expected) or
-                           provider == "claude" and not bodies[0].startswith(expected) and unchanged_legacy)
+            source_safe = (bodies[1].startswith(expected) or bodies[1].startswith(guard) or
+                           provider == "claude" and not bodies[0].startswith(expected) and
+                           (unchanged_legacy or preserving_legacy))
             need(source_safe and (bodies[2].startswith(guard) or
                                   candidate == live and bodies[2].startswith(expected)),
                  "missing native body guard: " + layout.paths[role])
@@ -4825,8 +4838,8 @@ def prepare(provider):
              "unknown inventory generation")
         if layout.helper not in old["files"].split(","):
             # Even an unconfirmed historical pair must reach the existing native
-            # metadata conflict guards. This is read-only, not permission to
-            # publish a custom body or treat it as pristine.
+            # metadata conflict guards. prepare then reuses this preserving merge
+            # for migration, without confirming custom bodies or making them pristine.
             for rel in layout.paths.values():
                 base = contents[f"{layout.state}/base/{rel}"]
                 need(base is not None, "missing required role base")
@@ -4859,6 +4872,10 @@ def prepare(provider):
     print("  [model pair] " + provider + ": " + result["plan"]["eligibility"] +
           " -> " + ("configured locally" if result["plan"]["configured"] else
                     "reconfirmation-required"), flush=True)
+    if result["plan"]["historical_migration"]:
+        print("  [historical migration planned] " + provider +
+              ": preserving role/guard and helper authority upgrade; custom pair remains unconfirmed",
+              flush=True)
     (scratch / ("model-selected-" + provider)).touch()
     prepared.append((provider, pair, result))
 
@@ -4880,6 +4897,10 @@ try:
             completed.append(provider + ":" + outcome["outcome"])
             print("  [model publication] " + completed[-1] +
                   "; native readiness NOT established", flush=True)
+            if result["plan"]["historical_migration"]:
+                print("  [historical migration completed] " + provider +
+                      ": roles/guards and helper authority published; old pristine role bases retained; "
+                      "custom pair remains unconfirmed", flush=True)
     if any(not result["plan"]["configured"] for _, _, result in prepared):
         (scratch / "model-unconfirmed").write_text("review/Save required\n")
 except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -6178,6 +6199,7 @@ except (OSError, ValueError, subprocess.SubprocessError) as error:
 fi
 if [ -f "$TMPDIR_WORK/model-unconfirmed" ]; then
   echo "Configuration incomplete: review/Save required; no native readiness or workflow authorization." >&2
+  echo "Use dom-models --confirm in the selected native client to review the current pair, then Save." >&2
   CONFLICT_OCCURRED=1
 fi
 echo

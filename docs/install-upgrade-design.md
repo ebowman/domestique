@@ -225,6 +225,13 @@ older shipped defaults; other compatible customizations use three-way merges.
 | Recognized pre-helper inventory with required safe role bases | Install helper through preserving migration, then apply the legacy rules above. |
 | Missing partner, manifest/base, helper claimed by a current inventory, modified/unowned helper, unknown authority or unsafe path | Refuse for preserving repair; neither rerun nor `--force` blesses it. |
 
+For recognized pre-helper custom roles, a conflict-free preserving migration
+upgrades old guards and helper authority but leaves the pair unconfirmed and
+retains its old pristine role bases. The installer reports completed migration
+and exits `3` for review/Save; repeated runs do not approve the custom bytes.
+Use `dom-models --confirm` to review the migrated current pair, then Save.
+Dry-run reports the same confirmation requirement without project writes.
+
 `--force` may regenerate **qualified** role bodies but never resets saved
 model/effort or confirms unreviewed state. Default-looking values alone are not
 confirmation. Keep diagnostics, live files, pristine bases and backups; reconcile

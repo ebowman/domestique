@@ -775,6 +775,7 @@ class AllProviders(unittest.TestCase):
     def test_native_metadata_independent_legacy_upgrade(self):
         root = self.native_metadata_fixture("metadata")
         expected = {}
+        bases = {}
         for role in ("implementer", "reviewer"):
             rel = f".claude/agents/{role}.md"
             path = root / rel
@@ -784,6 +785,7 @@ class AllProviders(unittest.TestCase):
             text = text.replace("\n---\n", "\neffort: high  # keep exactly\n---\n", 1)
             path.write_bytes(text.encode() + b"\nFixture body bytes: \xc3\xa9\t \n")
             expected[rel] = path.read_bytes()
+            bases[rel] = (root / STATES["claude"] / "base" / rel).read_bytes()
         before = snapshot(root)
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show",
@@ -791,9 +793,16 @@ class AllProviders(unittest.TestCase):
         result = self.run_dom(root, "--dry-run", script=released, ok=False)
         self.assertIn("retained projection conflict .claude/agents/implementer.md", result.stderr)
         self.assertEqual(snapshot(root), before)  # regression negative control
-        self.run_dom(root, "--dry-run")
+        planned = self.run_dom(root, "--dry-run", ok=False)
+        self.assertEqual(planned.returncode, 3)
+        self.assertIn("reconfirmation-required", planned.stdout)
+        self.assertIn("dom-models --confirm", planned.stderr)
+        self.assertNotIn("missing native", planned.stderr)
         self.assertEqual(snapshot(root), before)
-        self.run_dom(root)
+        migrated = self.run_dom(root, ok=False)
+        self.assertEqual(migrated.returncode, 3)
+        self.assertIn("[historical migration completed] claude:", migrated.stdout)
+        self.assertIn("dom-models --confirm", migrated.stderr)
         for rel, data in expected.items():
             path = root / rel
             header, body = data.split(b"\n---\n", 1)
@@ -805,9 +814,69 @@ class AllProviders(unittest.TestCase):
             self.assertTrue(actual_body.endswith(body))
             self.assertIn(b"## Active harness boundary (claude only)", actual_body)
             base = (root / STATES["claude"] / "base" / rel).read_bytes()
+            self.assertEqual(base, bases[rel])
             self.assertNotIn(b"mcp__example__search", base)
             self.assertNotIn(b"example-native", base)
             self.assertNotIn(b"Fixture body bytes", base)
+        before = byte_snapshot(root)
+        self.run_dom(root, ok=False)
+        self.assertEqual(byte_snapshot(root), before)
+        # Retaining an old pristine base must not authorize later removal of
+        # either modern guard, even with --force and an unconfirmed pair.
+        path = root / ".claude/agents/implementer.md"
+        guarded = path.read_bytes()
+        for guard in (b"Claude Code only; never match in another harness. ",
+                      b"## Active harness boundary (claude only)"):
+            self.assertIn(guard, guarded)
+            path.write_bytes(guarded.replace(guard, b"", 1))
+            before = snapshot(root)
+            for flags in (("--dry-run",), ("--force",)):
+                refused = self.run_dom(root, "--platform", "claude", *flags, ok=False)
+                self.assertEqual(refused.returncode, 3)
+                # Description removal may conflict with the upstream metadata
+                # before guard validation; either refusal must precede writes.
+                self.assertIn("Publication not started; no project writes.", refused.stderr)
+                self.assertNotIn("[model publication]", refused.stdout)
+                self.assertEqual(snapshot(root), before)
+            path.write_bytes(guarded)
+        # Exercise the installed authority bootstrap and helper, not a synthetic
+        # marker. Current-pair review is read-only; only explicit Save confirms.
+        bootstrap = (root / ".claude/commands/dom-models.md").read_text()
+        bootstrap = bootstrap.split("```python\n", 1)[1].split("\n```", 1)[0]
+
+        def helper(*args, plan=None):
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                input=json.dumps(plan) if plan is not None else None,
+                cwd=root, env=self.env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        before = snapshot(root)
+        review = helper("request", "--confirm")
+        self.assertFalse(review["configured"])
+        self.assertEqual(review["chosen"], review["current"])
+        self.assertEqual(review["current"], {
+            r: {"model": "example-native", "effort": "high"}
+            for r in ("implementer", "reviewer")})
+        self.assertEqual(snapshot(root), before)
+        roles = {rel: (root / rel).read_bytes() for rel in expected}
+        self.assertTrue(helper("apply", review["digest"], plan=review["plan"])["confirmed"])
+        lib = self.model_library("claude")
+        for role in ("implementer", "reviewer"):
+            rel = f".claude/agents/{role}.md"
+            self.assertEqual(lib["split_marker"]((root / rel).read_bytes(), role)[0].encode(),
+                             roles[rel])
+        before = byte_snapshot(root)
+        self.run_dom(root)
+        self.assertTrue(helper("verify")["confirmed"])
+        # Explicit Save permits advancing to actual upstream bases, never custom
+        # bytes; the saved role pair itself must remain byte-identical.
+        for rel in roles:
+            data = (root / STATES["claude"] / "base" / rel).read_bytes()
+            self.assertNotIn(b"mcp__example__search", data)
+            self.assertNotIn(b"Fixture body bytes", data)
+            self.assertEqual((root / rel).read_bytes(), before[rel][1])
         before = byte_snapshot(root)
         self.run_dom(root)
         self.assertEqual(byte_snapshot(root), before)

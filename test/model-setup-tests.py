@@ -563,22 +563,32 @@ class ModelSetup(unittest.TestCase):
 
     def test_installer_unreviewed_body_cannot_become_pristine_on_rerun(self):
         for provider in PROVIDERS:
-            root = self.project()
-            roles = self.roles(root, provider)
-            for path in roles.values():
-                path.write_bytes(path.read_bytes() + b"\n# future upstream body\n")
+            for historical in (False, True):
+                with self.subTest(provider=provider, historical=historical):
+                    root = self.project()
+                    roles = self.roles(root, provider)
+                    for path in roles.values():
+                        path.write_bytes(path.read_bytes() + b"\n# future upstream body\n")
 
-            def upgrade(module, role, data):
-                return data + b"\n# future upstream body\n"
+                    def upgrade(module, role, data):
+                        return data + b"\n# future upstream body\n"
 
-            with self.installer(root, provider, upgrade) as (_, pair):
-                bases = {p: (root / p).read_bytes() for p in pair.files if "/base/" in p}
-                for _ in range(2):
-                    prepared = pair.prepare({})
-                    self.assertEqual(prepared["plan"]["eligibility"], "custom-unconfirmed")
-                    self.assertFalse(pair.apply(**prepared)["configured"])
-                for path, data in bases.items():
-                    self.assertEqual((root / path).read_bytes(), data)
+                    with self.installer(root, provider, upgrade) as (_, pair):
+                        if historical:
+                            (root / pair.helper).unlink()
+                            (root / f"{pair.state}/base/{pair.helper}").unlink()
+                            manifest = root / pair.manifest
+                            manifest.write_text(manifest.read_text().replace("," + pair.helper, ""))
+                        bases = {p: (root / p).read_bytes() for p in pair.files
+                                 if "/base/" in p and (root / p).exists()}
+                        for attempt in range(2):
+                            prepared = pair.prepare({}, force=True)
+                            self.assertEqual(prepared["plan"]["eligibility"], "custom-unconfirmed")
+                            self.assertEqual(prepared["plan"]["historical_migration"],
+                                             historical and attempt == 0)
+                            self.assertFalse(pair.apply(**prepared)["configured"])
+                        for path, data in bases.items():
+                            self.assertEqual((root / path).read_bytes(), data)
 
     def test_installer_tamper_races_and_partial_publication(self):
         for provider in PROVIDERS:
@@ -1055,6 +1065,40 @@ class ModelSetup(unittest.TestCase):
             else:
                 self.assertEqual(state["selected"], {
                     r: {"model": None, "effort": None} for r in ("implementer", "reviewer")})
+
+    def test_actual_v010_custom_tools_preserves_partner_until_save(self):
+        root, _ = self.fixture.legacy_claude("model-v010-tools", ref="v0.1.0")
+        roles = self.roles(root, "claude")
+        lib = self.namespace(self.seed, "claude")
+        old = {r: p.read_bytes() for r, p in roles.items()}
+        text = old["implementer"].replace(b"tools: ", b"tools: mcp__example__search, ", 1)
+        roles["implementer"].write_bytes(text)
+        before = CURRENT.snapshot(root)
+        self.fixture.run_dom(root, "--platform", "claude", "--dry-run", "--force", ok=False)
+        self.assertEqual(before, CURRENT.snapshot(root))
+        self.fixture.run_dom(root, "--platform", "claude", "--force", ok=False)
+        state = self.call(root, "claude", "verify")
+        self.assertFalse(state["confirmed"])
+        for role, path in roles.items():
+            self.assertEqual(state["selected"][role]["model"], lib["parse"](old[role], role)[1]["model"])
+            base = root / ".claude/.domestique/base" / path.relative_to(root)
+            self.assertEqual(base.read_bytes(), old[role])
+            self.assertTrue(path.read_bytes().endswith(old[role].split(b"\n---\n", 1)[1]))
+        self.assertIn(b"tools: mcp__example__search, ", roles["implementer"].read_bytes())
+        self.assertNotIn(b"mcp__example__search", roles["reviewer"].read_bytes())
+        migrated = {r: p.read_bytes() for r, p in roles.items()}
+        self.fixture.run_dom(root, "--platform", "claude", "--force", ok=False)
+        self.assertEqual(migrated, {r: p.read_bytes() for r, p in roles.items()})
+        before = CURRENT.snapshot(root)
+        review = self.native(root, "claude", "--confirm")
+        self.assertEqual(review["chosen"], state["selected"])
+        self.assertEqual(before, CURRENT.snapshot(root))
+        self.assertTrue(self.apply(root, "claude", review)["confirmed"])
+        self.fixture.run_dom(root, "--platform", "claude")
+        self.assertTrue(self.call(root, "claude", "verify")["confirmed"])
+        self.assertEqual(roles["reviewer"].read_bytes(), migrated["reviewer"])
+        for role, path in roles.items():
+            self.assertEqual(lib["split_marker"](path.read_bytes(), role)[0].encode(), migrated[role])
 
     def test_historical_inventory_table_matches_repository_sources(self):
         # Read actual source, never project-supplied inventory authority. Exercise
