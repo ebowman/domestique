@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.3.1"
+DOMESTIQUE_VERSION="0.4.0"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -5141,7 +5141,7 @@ def prepare(provider):
                                 ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
             for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
                 recognized.add((version, old_files + "," + layout.helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1"):
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0"):
                 recognized.add((version, files + suffix))
 
     def merge_for(rel, local, base, upstream):

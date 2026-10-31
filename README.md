@@ -7,9 +7,17 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.3.1: explicit parent Git approval
+## v0.4.0: complete named goals
 
-v0.3.1 fixes recognition of explicit parent Git approval, including “go ahead”
+v0.4.0 makes [named goals](#complete-named-goals) complete the full nested epic
+or exactly the named task, with continuing progress reports every 15 closures.
+Reviewed implementation and bounded offline qualification passed; **native
+coverage remains BLOCKED by missing user authorization, not authentication**.
+Publication does not fully qualify hq-xc2. See [evidence and limits](docs/install-upgrade-design.md#v040-release-status-and-limits).
+
+<a id="v031-explicit-parent-git-approval"></a>
+
+v0.3.1 introduced recognition of explicit parent Git approval, including “go ahead”
 for a concrete proposal, without a Beads/model gate. Normal native permissions,
 scope and guest privacy remain intact; no automatic drain, push or merge authority.
 v0.3.0 introduced ready-to-use defaults and optional model commands.
@@ -18,11 +26,6 @@ remains UNQUALIFIED pending user authorization for fixture/model usage**. Public
 that limitation disclosed; this is not native PASS or epic completion.
 Earlier [native evidence and two unresolved investigations](docs/install-upgrade-design.md#qualification-and-known-issues)
 are history, not qualification of these changes.
-
-**Public latest remains v0.3.1.** The [upcoming named-goal candidate](#upcoming-named-goals-reviewed-candidate)
-below is reviewed implementation on `epic/hq-xc2`, not yet published.
-Native qualification hq-xc2.6 is pending; version selection and publication
-are separate release work.
 
 ### What's new
 
@@ -44,7 +47,8 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-The existing alias fetches v0.3.1 from `main`; no alias change is needed:
+After v0.4.0 is published to `main`, the existing alias fetches it on its next
+invocation; no alias change is needed:
 
 ```sh
 alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
@@ -71,10 +75,9 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional for released features. The unpublished goal
-candidate requires its reviewed local source; remote `dom` does not contain it yet.
-To inspect reviewed source locally, run from that checkout against a disposable
-Git project:
+A source checkout is optional; v0.4.0's goal features are included in remote
+`dom` after publication to `main`. To inspect reviewed source locally, run from
+that checkout against a disposable Git project:
 
 ```sh
 TARGET=$(mktemp -d)
@@ -146,9 +149,8 @@ never authorizes goal work. Managed work requires fresh independent reviewer
 **PASS before task commit or closure**.
 Planning never requires model setup, helper verification, loaded roles or a
 restart—even with missing/unconfirmed/manually edited roles—and never delegates
-or executes tasks. Published v0.3.1 retains its explicit-epic goal routing and
-Copilot's **one reviewed bead** default. The candidate changes named-goal
-authorization and continuation as described below, not through the current remote alias.
+or executes tasks. Named goals now use the target scope and continuation below;
+ordinary next-ready work still defaults to **one reviewed bead**.
 
 1. Install and review Git changes. Valid configured pairs enter the existing
    execution gate without a questionnaire, Save or restart merely because fresh.
@@ -162,11 +164,12 @@ authorization and continuation as described below, not through the current remot
    installer repair. Unavailable/mismatched choices stop execution, not planning:
    fix through `--configure`, Save and reload if needed, never automatic substitution.
 
-### Upcoming named goals (reviewed candidate)
+<a id="upcoming-named-goals-reviewed-candidate"></a>
 
-**Unpublished:** hq-xc2.2/.3/.4 implementation and regression work has passed
-review; hq-xc2.6 native qualification remains pending. These are emitted
-instructions, not proof of native unattended execution.
+### Complete named goals
+
+These v0.4.0 instructions passed implementation/regression review and bounded
+offline checks, not native unattended-execution qualification.
 
 Use these in the native client with a real project Beads ID:
 
@@ -214,7 +217,8 @@ tests/lint, not a mandatory full suite every bead or checkpoint. Dirty/uncertain
 work needs human disposition; guest personal state stays local and unstaged.
 The loop does not automatically merge or push; [separate explicit Git approval](#direct-git-requests)
 still permits those operations. Model defaults and model-editor Save are unchanged.
-See [candidate scope and qualification limits](docs/install-upgrade-design.md#upcoming-named-goals-reviewed-candidate).
+See [scope](docs/install-upgrade-design.md#complete-named-goals) and
+[qualification limits](docs/install-upgrade-design.md#v040-release-status-and-limits).
 
 ### Direct Git requests
 
@@ -325,7 +329,7 @@ bash test/upgrade.sh --current
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.3.0 qualification limits](docs/install-upgrade-design.md#v030-release-status-and-limits).
+ancestry and the [v0.4.0 qualification limits](docs/install-upgrade-design.md#v040-release-status-and-limits).
 
 ## License
 
