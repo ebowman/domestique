@@ -499,7 +499,7 @@ class AllProviders(unittest.TestCase):
                 self.assertTrue(phrase in flat, (rel, phrase))
             self.assertLess(text.index("## Resolve the authorized target"),
                             text.index("read-only execution gate"))
-            self.assertIn("15", text)  # retained mechanics; no bead-16 qualification
+            self.assertIn("Every 15 successfully closed beads", text)  # progress, not native proof
         shared = (root / SHARED).read_text()
         self.assertNotIn("## Resolve the authorized target", shared)
         self.assertNotIn("bd --readonly", shared)  # router, not another workflow
@@ -526,6 +526,218 @@ class AllProviders(unittest.TestCase):
             self.assertEqual(subprocess.run(["git", "check-ignore", "-q", rel],
                                            cwd=root, env=self.env).returncode, 0)
 
+    def assert_goal_continuation(self, root, guest=False):
+        """Inspect actual installed protocols; does not simulate native dispatch."""
+        native = (
+            ".claude/commands/dom-goal.md",
+            ".agents/skills/domestique-goal/SKILL.md",
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md",
+        )
+        for rel in native:
+            flat = " ".join((root / rel).read_text().split())
+            with self.subTest(surface=rel, guest=guest):
+                for phrase in (
+                    "After every independent PASS and verified successful commit/close",
+                    "or reviewed no-code close",
+                    "refresh actual scope/status/readiness using the target protocol",
+                    "automatically dispatch the next runnable authorized bead",
+                    "one task in flight", "fresh independent reviewer for each review",
+                    "Do not end the parent goal with `task_complete`",
+                    "per-bead signals and progress reports are not terminal",
+                    "A completed exact non-epic never advances to another bead",
+                    "already-closed no-op",
+                    "Every 15 successfully closed beads",
+                    "continue to bead 16, 31 and onward under the original scope",
+                    "No pause, new approval, reload, session restart or synthetic budget",
+                    "including no-code decisions, not review attempts",
+                    "Explicit current user count/time/cost limits",
+                    "actual runtime/session budgets bind; never reset a cap",
+                    "cannot safely fit a real remaining budget",
+                    "concrete limit/evidence",
+                    "Cancellation/objective change ends the old authority",
+                    "Retain configured-pair verification and native readiness while ROOT",
+                    "pair, registration, tools and relevant overrides remain unchanged",
+                    "Recheck only affected evidence", "not per bead or progress checkpoint",
+                    "Do not repeat helper verify, catalogs or model questions",
+                    "Requery all unfinished transitive descendants",
+                    "nested epics and closed intermediate nodes",
+                    "after successful closure/state changes",
+                    "Newly discovered descendants are eligible only within the original",
+                    "material objective/criteria/type/parent changes",
+                    "Do not dispatch siblings or external prerequisites",
+                    "without redundant claiming",
+                    "child does not stop other runnable authorized branches: select those branches",
+                    "report BLOCKED with exact remaining IDs/statuses",
+                    "including known external dependencies",
+                    "Do not spin on unchanged blocked state",
+                    "all descendants closed is necessary but not sufficient",
+                    "root status/criteria and exhaustive descendant closure",
+                    "required integration validation and independent PASS before root closure or COMPLETE",
+                    "nested epic acceptance bottom-up",
+                    "only already authorized bounded root acceptance work",
+                    "report ROOT UNFINISHED with the exact missing criterion or evidence",
+                    "closed-root/unfinished-child inconsistency",
+                    "broader/final validation only when scope or root criteria require it",
+                    "actual commands/results, closed IDs, commit IDs",
+                    "explicit limit reached", "actual ERROR; these are not new bd statuses",
+                    "successful parseable `[]`", "empty only for that query",
+                    "Any failed bd command, nonzero exit, missing/malformed/truncated",
+                    "unknown query semantics means ERROR",
+                    "Actual native permission/selection/tool/infrastructure errors stop immediately",
+                ):
+                    self.assertIn(phrase, flat)
+        # Base/root/bootstrap and shared alias layers cannot reintroduce old stops.
+        outer = (
+            "CLAUDE.local.md" if guest else "CLAUDE.md",
+            ".agents/skills/domestique/SKILL.md",
+            ".github/skills/domestique-v2-copilot/SKILL.md", SHARED,
+            *(() if guest else ("AGENTS.md", ".github/copilot-instructions.md")),
+        )
+        for rel in (*outer, *native, ".claude/commands/goal.md"):
+            flat = " ".join((root / rel).read_text().split())
+            for obsolete in (
+                "Hard ceiling", "current numeric ceiling", "retained numeric",
+                "after 15 closed beads", "Stop and report after 15",
+                "at most 15 per session", "15-bead ceiling", "judge the budget exhausted",
+                "Default bound is ONE", "without queue draining",
+                "must run the full test suite", "run the full suite, summarize",
+                "Run the full test suite once more", "Two consecutive infrastructure",
+                "two consecutive infrastructure", "close the bead and commit",
+            ):
+                self.assertNotIn(obsolete, flat, rel)
+        for rel in (SHARED,):
+            self.assertNotIn("## Progress and continuation", (root / rel).read_text())
+        self.assertEqual((root / native[0]).read_bytes(),
+                         (root / ".claude/commands/goal.md").read_bytes())
+
+    def test_named_goal_continuation_and_terminal_protocol(self):
+        root = self.root("goal-continuation")
+        self.run_dom(root)
+        self.assert_goal_continuation(root)
+
+    def test_named_goal_guest_continuation_and_terminal_protocol(self):
+        root = self.root("goal-continuation-guest")
+        self.run_dom(root, "--guest")
+        self.assert_goal_continuation(root, guest=True)
+
+    def assert_parent_child_ownership(self, root, guest=False):
+        """Link installed parent dispatch and controlling role text, not fake bd."""
+        parents = (
+            ("CLAUDE.local.md" if guest else "CLAUDE.md",
+             ".claude/commands/dom-goal.md", ".claude/commands/goal.md"),
+            (".agents/skills/domestique/SKILL.md",
+             ".agents/skills/domestique-goal/SKILL.md"),
+            (".github/skills/domestique-v2-copilot/SKILL.md",
+             ".github/skills/domestique-v2-copilot-goal/SKILL.md",
+             *(() if guest else (".github/copilot-instructions.md",))),
+        )
+        states = ("already-owned in_progress", "initial claim delegated")
+        for role, entries in zip(ROLES, parents):
+            child = " ".join((root / role).read_text().split())
+            with self.subTest(child=role):
+                for phrase in (
+                    "## Child bead ownership handoff",
+                    "actual bead ID, exact physical project root, authorized scope and done criteria",
+                    "expected assignee, and explicit claim state",
+                    "trusted native parent's brief is sufficient assignment provenance",
+                    "no new attestation API, secret or store",
+                    "no independent child identity proof is required",
+                    "bd --readonly show ID --json",
+                    "compare actual ID, status, assignee and scope/criteria with the brief",
+                    "without any claim or status update",
+                    "includes corrective passes; the child need not be the assignee itself",
+                    "Do NOT re-claim already owned work",
+                    "only when the parent explicitly delegates the initial claim",
+                    "actual bead is unclaimed, open and runnable in scope",
+                    "bd --readonly ready --limit 0 --json",
+                    "then use `bd update ID --claim` once",
+                    "Then read-verify actual in_progress status and the expected assignee",
+                    "Never substitute a status-only update",
+                    "Missing/contradictory brief, another owner, changed scope/criteria, closed",
+                    "blocked/deferred or otherwise mismatched state",
+                    "concrete scope BLOCK reporting the ID/root and expected versus actual",
+                    "Do not steal, reopen, reset state or invent a need for a fresh claim",
+                    "missing/malformed/truncated/unusable output means ERROR",
+                    "stop and preserve state, no retry or automatic repair",
+                    "Never commit or close the bead",
+                ):
+                    self.assertIn(phrase, child)
+                for obsolete in (
+                    "If you were given a bead id, claim it",
+                    "If given a bead id, claim it", "Claim a supplied bead",
+                    "--status in_progress", "(or set it in_progress)",
+                ):
+                    self.assertNotIn(obsolete, child)
+                owned = child.split("- `already-owned in_progress`:", 1)[1].split(
+                    "- `initial claim delegated`:", 1)[0]
+                self.assertIn("without any claim or status update", owned)
+                self.assertIn("Do NOT re-claim", owned)
+            for entry in entries:
+                parent = " ".join((root / entry).read_text().split())
+                with self.subTest(parent=entry, child=role):
+                    for state in states:
+                        self.assertIn(f"`{state}`", parent)
+                        self.assertIn(f"`{state}`", child)
+                    for phrase in (
+                        "## Parent bead ownership handoff",
+                        "bd --readonly show ID --json",
+                        "parent claims the unclaimed runnable bead with `bd update ID --claim`",
+                        "read-verifies its actual in_progress status and assignee before dispatch",
+                        "without another claim, including a corrective pass",
+                        "Pass the actual bead ID, exact physical project root, authorized scope and done criteria",
+                        "expected assignee, and explicit claim state in every implementer brief",
+                        "parent must not also claim it",
+                        "Never send an unspecified claim state",
+                        "do not tell it to claim an already owned bead",
+                        "concrete scope BLOCK", "Failed commands or unusable output mean ERROR",
+                        "Keep commits and closure in the parent after independent PASS",
+                        "reviewers remain read-only",
+                    ):
+                        self.assertIn(phrase, parent)
+                    self.assertIn(Path(role).name.split(".")[0], parent)
+                    self.assertLess(parent.index("bd --readonly show ID --json"),
+                                    parent.index("parent claims the unclaimed"))
+                    self.assertLess(parent.index("parent claims the unclaimed"),
+                                    parent.index("Pass the actual bead ID"))
+                    self.assertIn("ownership handoff above", parent)
+            reviewer = " ".join((root / role.replace("implementer", "reviewer")).read_text().split())
+            self.assertNotIn("## Child bead ownership handoff", reviewer)
+            self.assertRegex(reviewer, r"Do not (?:close, reopen, or update beads|close or reopen beads|edit code/configuration)")
+        # Routers must still route, not invent another claiming protocol.
+        self.assertNotIn("## Parent bead ownership handoff", (root / SHARED).read_text())
+
+    def test_parent_child_ownership_handoff(self):
+        for guest in (False, True):
+            root = self.root(f"ownership-handoff-{guest}")
+            self.run_dom(root, *(("--guest",) if guest else ()))
+            self.assert_parent_child_ownership(root, guest)
+
+    def test_reviewed_transaction_across_entry_layers(self):
+        root = self.root("goal-transaction")
+        self.run_dom(root)
+        for rel in (
+            "CLAUDE.md", ".claude/commands/dom-goal.md",
+            ".agents/skills/domestique/SKILL.md",
+            ".agents/skills/domestique-goal/SKILL.md",
+            ".github/copilot-instructions.md",
+            ".github/skills/domestique-v2-copilot/SKILL.md",
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md",
+        ):
+            flat = " ".join((root / rel).read_text().split())
+            with self.subTest(surface=rel):
+                for phrase in ("paths/hunks", "literal", "staged diff",
+                               "no empty commit", "Commit failure", "never recommit",
+                               "corrective", "fresh review"):
+                    self.assertIn(phrase, flat)
+                self.assertRegex(flat, r"(?i)second non-PASS")
+                self.assertRegex(flat, r"(?i)then (?:`bd close <id>`\.?|close(?: the bead)?) and verify actual")
+                self.assertRegex(flat, r"(?i)reviewer-caused (?:tracked/staged|mutation|delta)")
+                self.assertRegex(flat, r"(?i)close failure.*(?:commit ID|preserves the commit)")
+                self.assertIn("unfinished", flat)
+        for provider, role in zip(STATES, ROLES):
+            reviewer = (root / role.replace("implementer", "reviewer")).read_text()
+            self.assertNotIn("full test/lint suite", reviewer, provider)
+
     def test_parent_git_guest_privacy_and_bootstrap(self):
         root = self.root("parent-git-guest")
         self.run_dom(root, "--guest")
@@ -541,6 +753,8 @@ class AllProviders(unittest.TestCase):
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show",
              "f3962526a9a72dc859e59e65729fed144caa46ed:domestique.sh"], text=True)
+        pristine = self.root("parent-git-current-roles")
+        self.run_dom(pristine)
         for mode in ("normal", "guest"):
             root = self.root("parent-git-upgrade-" + mode)
             flags = ("--guest",) if mode == "guest" else ()
@@ -559,11 +773,35 @@ class AllProviders(unittest.TestCase):
             self.run_dom(root, "--platform", "copilot")
             self.assert_parent_git_instructions(root, guest=mode == "guest")
             self.assertTrue(policy.read_text().endswith("\nHost-owned policy tail.\n"))
-            for rel, before in roles.items():
-                self.assertEqual((root / rel).read_bytes(), before)
+            for provider, impl in zip(STATES, ROLES):
+                module = self.model_library(provider)
+                for role in ("implementer", "reviewer"):
+                    rel = impl.replace("implementer", role)
+                    if provider == "codex":  # not selected yet
+                        self.assertEqual((root / rel).read_bytes(), roles[rel])
+                        continue
+                    _, fields, _ = module["parse"](roles[rel], role)
+                    expected = module["patch"]((pristine / rel).read_bytes(), role,
+                                               {"model": fields.get("model"),
+                                                "effort": fields.get("effort")})
+                    self.assertEqual(module["split_marker"](
+                        (root / rel).read_bytes(), role)[0].encode(), expected)
             before = snapshot(root)
             self.run_dom(root, "--dry-run")
             self.assertEqual(snapshot(root), before)
+            # Codex was not selected above: both its ownership handoff and
+            # reviewer validation instructions still need the owned upgrade.
+            self.run_dom(root, "--platform", "codex")
+            module = self.model_library("codex")
+            for role in ("implementer", "reviewer"):
+                rel = f".codex/agents/{role}.toml"
+                _, fields, _ = module["parse"](roles[rel], role)
+                expected = module["patch"]((pristine / rel).read_bytes(), role,
+                                           {"model": fields.get("model"),
+                                            "effort": fields.get("model_reasoning_effort")})
+                self.assertEqual(module["split_marker"](
+                    (root / rel).read_bytes(), role)[0].encode(), expected)
+            self.assert_parent_child_ownership(root, guest=mode == "guest")
             before = byte_snapshot(root)
             self.run_dom(root)
             self.assertEqual(byte_snapshot(root), before)

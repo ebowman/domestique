@@ -80,12 +80,13 @@ def check_execution_protocol(root, provider):
     assert "ALL tracked/index dirtiness" in goal
     assert "fresh independent reviewer context" in goal
     prefix = "$" if provider == "codex" else "/"
-    # Named intent/target routing; the numeric loop ceiling is still retained.
+    # Named intent/target routing; successful-closure counts are progress only.
     assert f"{prefix}dom-goal" in goal
     assert "clear user execution request or native named objective" in goal
     assert goal.index("## Resolve the authorized target") < goal.index(start)
     assert "Default bound is ONE reviewed bead" not in goal
-    assert "15" in goal
+    assert "Every 15 successfully closed beads" in goal
+    assert "continue to bead 16, 31 and onward" in goal
     if provider == "copilot":
         assert "native /goal or /autopilot is not" not in goal
         assert "Fresh defaults omit model in BOTH roles" in gate
@@ -891,13 +892,30 @@ class ModelSetup(unittest.TestCase):
             self.apply(root, provider, self.call(root, provider, "prepare", selected[provider]))
         before = {str(p): p.read_bytes() for provider in PROVIDERS
                   for p in self.roles(root, provider).values()}
+        preview = CURRENT.snapshot(root)
+        self.fixture.run_dom(root, "--dry-run")
+        self.assertEqual(preview, CURRENT.snapshot(root))
         self.fixture.run_dom(root)
         for provider in PROVIDERS:
+            module = self.namespace(self.seed, provider)
             state = self.call(root, provider, "verify")
             self.assertTrue(state["confirmed"])
             self.assertEqual(state["selected"], selected[provider])
-            for p in self.roles(root, provider).values():
-                self.assertEqual(before[str(p)], p.read_bytes())
+            # Owned upstream role instructions now intentionally change. Compare
+            # the entire new body plus pinned old choices and exact custom tools,
+            # not obsolete old bodies or merely selected model fields.
+            for role, p in self.roles(root, provider).items():
+                pristine = self.roles(self.seed, provider)[role].read_bytes()
+                expected = module["patch"](pristine, role, selected[provider][role])
+                if role == "reviewer":
+                    expected = expected.replace(b"Read, Bash, Glob, Grep", b"Read, Grep").replace(
+                        b'"search", "execute"', b'"search"')
+                self.assertEqual(module["split_marker"](p.read_bytes(), role)[0].encode(),
+                                 expected)
+            impl = self.roles(root, provider)["implementer"]
+            self.assertNotEqual(module["split_marker"](before[str(impl)], "implementer")[1],
+                                module["split_marker"](impl.read_bytes(), "implementer")[1])
+        self.fixture.assert_parent_child_ownership(root)
         stable = CURRENT.snapshot(root)
         for provider in PROVIDERS:
             self.assertTrue(self.call(root, provider, "verify")["confirmed"])
@@ -906,6 +924,92 @@ class ModelSetup(unittest.TestCase):
             path = self.roles(root, provider)["reviewer"]
             path.write_bytes(path.read_bytes() + b"\n# manual edit\n")
             self.assertFalse(self.call(root, provider, "verify")["confirmed"])
+
+    def test_parent_child_claim_confirmed_preserving_upgrade(self):
+        previous = subprocess.check_output(
+            ["git", "show", "8855702:domestique.sh"],
+            cwd=CURRENT.SOURCE.parent, text=True)
+        root = self.fixture.root("claim-handoff-upgrade")
+        self.fixture.run_dom(root, script=previous)
+        expected, markers, selected = {}, {}, {}
+        for provider in PROVIDERS:
+            module = self.namespace(self.seed, provider)
+            selected[provider] = self.choices(provider)
+            for role, path in self.roles(root, provider).items():
+                def customize(data):
+                    return (data.replace(b"Read, Write, Edit, Bash, Glob, Grep",
+                                         b"Read, Edit, Bash, Grep")
+                            .replace(b"Read, Bash, Glob, Grep", b"Read, Grep")
+                            .replace(b'"search", "execute"', b'"search"')
+                            + b"\n# retained custom role note\n")
+                path.write_bytes(customize(module["patch"](
+                    path.read_bytes(), role, selected[provider][role])))
+                pristine = self.roles(self.seed, provider)[role].read_bytes()
+                expected[path] = customize(module["patch"](
+                    pristine, role, selected[provider][role]))
+            self.assertTrue(self.apply(root, provider, self.call(
+                root, provider, "prepare", selected[provider]))["confirmed"])
+            impl = self.roles(root, provider)["implementer"]
+            markers[provider] = module["split_marker"](impl.read_bytes(), "implementer")[1]
+            self.assertNotIn("## Child bead ownership handoff", impl.read_text())
+
+        before = CURRENT.snapshot(root)
+        self.fixture.run_dom(root, "--dry-run")
+        self.assertEqual(before, CURRENT.snapshot(root))
+        self.fixture.run_dom(root)
+        self.fixture.assert_parent_child_ownership(root)
+        for provider in PROVIDERS:
+            module = self.namespace(self.seed, provider)
+            state = self.call(root, provider, "verify")
+            self.assertTrue(state["confirmed"])
+            self.assertEqual(state["selected"], selected[provider])
+            for role, path in self.roles(root, provider).items():
+                self.assertEqual(module["split_marker"](path.read_bytes(), role)[0].encode(),
+                                 expected[path])  # full body/settings/tools, not just phrases
+                base = root / PROVIDERS[provider] / ".domestique/base" / path.relative_to(root)
+                pristine = self.roles(self.seed, provider)[role].read_bytes()
+                self.assertEqual(base.read_bytes(),
+                                 module["split_marker"](pristine, role)[0].encode())
+            impl = self.roles(root, provider)["implementer"]
+            marker = module["split_marker"](impl.read_bytes(), "implementer")[1]
+            self.assertNotEqual(marker, markers[provider])
+            self.assertEqual(marker["project"], str(root.resolve()))
+            for role, digest in state["pair_hashes"].items():
+                self.assertEqual(marker[role + "_sha256"], digest)
+        stable = CURRENT.byte_snapshot(root)
+        self.fixture.run_dom(root)
+        self.assertEqual(stable, CURRENT.byte_snapshot(root))
+
+    def test_parent_child_claim_conflicting_owned_upgrade_refuses(self):
+        previous = subprocess.check_output(
+            ["git", "show", "8855702:domestique.sh"],
+            cwd=CURRENT.SOURCE.parent, text=True)
+        old_claims = {
+            "claude": b"- If you were given a bead id, claim it",
+            "codex": b"- If given a bead id, claim it",
+            "copilot": b"an autonomous workflow. Claim a supplied bead",
+        }
+        for provider, old in old_claims.items():
+            with self.subTest(provider=provider):
+                root = self.fixture.root("claim-conflict-" + provider)
+                self.fixture.run_dom(root, "--platform", provider, script=previous)
+                impl = self.roles(root, provider)["implementer"]
+                self.assertEqual(impl.read_bytes().count(old), 1)
+                # Confirm a genuine local fork of the exact changing instruction.
+                # Owned/confirmed does not authorize discarding competing edits.
+                impl.write_bytes(impl.read_bytes().replace(
+                    old, old + b" only after custom operator approval"))
+                choices = self.call(root, provider, "verify")["selected"]
+                self.assertTrue(self.apply(root, provider, self.call(
+                    root, provider, "prepare", choices))["confirmed"])
+                before = CURRENT.snapshot(root)
+                for flags in (("--dry-run",), ()):
+                    result = self.fixture.run_dom(
+                        root, "--platform", provider, *flags, ok=False)
+                    self.assertIn("conflict", result.stdout + result.stderr)
+                    self.assertEqual(before, CURRENT.snapshot(root))
+                self.assertTrue(self.call(root, provider, "verify")["confirmed"])
+                self.assertNotIn("## Child bead ownership handoff", impl.read_text())
 
     def test_actual_installer_defaults_override_inherit_and_exact_rerun(self):
         root = self.area / "fresh"
