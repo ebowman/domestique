@@ -7,9 +7,12 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.3.0: model defaults and optional setup
+## v0.3.1: explicit parent Git approval
 
-v0.3.0 adds ready-to-use defaults and optional model commands.
+v0.3.1 fixes recognition of explicit parent Git approval, including “go ahead”
+for a concrete proposal, without a Beads/model gate. Normal native permissions,
+scope and guest privacy remain intact; no automatic drain, push or merge authority.
+v0.3.0 introduced ready-to-use defaults and optional model commands.
 Implementation reviews hq-c6o.2–.6 passed, but **native qualification hq-c6o.8
 remains UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized with
 that limitation disclosed; this is not native PASS or epic completion.
@@ -36,8 +39,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-The existing alias fetches v0.3.0's new features once the release is published
-to `main`; no alias change is needed:
+The existing alias fetches v0.3.1 from `main`; no alias change is needed:
 
 ```sh
 alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
@@ -57,14 +59,14 @@ curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.
 
 `main` is a **moving channel**: its next invocation downloads whatever is
 published there. There is no background auto-update; a tag alone does not update
-main or an alias. No alias change is needed after release.
+main or an alias. Refresh cached native instructions if needed after upgrading.
 For repeatable dry-run/apply, replace `main` in **both** commands with the same
 full reviewed published commit SHA. Pinning script bytes does not reverse
 migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional, not required for the new features after release.
+A source checkout is optional, not required for these features.
 To inspect reviewed source locally, run from that checkout against a disposable
 Git project:
 
@@ -144,7 +146,7 @@ is separate, unimplemented work (hq-xc2), not part of this release.
 
 1. Install and review Git changes. Valid configured pairs enter the existing
    execution gate without a questionnaire, Save or restart merely because fresh.
-2. Before execution, establish native role registration, effective choices,
+2. Before managed-bead execution, establish native role registration, effective choices,
    precedence and availability. Saved configuration is **not loaded native choice**.
    Reload only if current registrations are actually stale/unknown. Review and
    explicitly dispose of tracked changes before goal work; never auto-stage,
@@ -153,6 +155,27 @@ is separate, unimplemented work (hq-xc2), not part of this release.
    or `--configure` (change choices). Missing/unsafe state needs preserving
    installer repair. Unavailable/mismatched choices stop execution, not planning:
    fix through `--configure`, Save and reload if needed, never automatic substitution.
+
+### Direct Git requests
+
+Ordinary read-only Git inspection and separately requested parent/orchestrator
+Git chores are not managed-bead execution. A specific request—or “go ahead/run
+those commands” referring to the current concrete proposal—authorizes those
+operations in that repository, including ordinary merge/push after a goal stops.
+No slash command, new goal, bead claim, synthetic review, model-pair check or
+previous permission receipt is needed. This never resumes a drain or bypasses
+review/closure gates for Domestique-managed work; explicitly requested commits
+of user-owned changes do not need a synthetic bead.
+
+Check the actual repo, relevant diff/index, branch and remote; preserve unrelated
+edits rather than demanding a globally clean tree. Stage only intended changes.
+Changed/ambiguous context needs narrow clarification; quoted/untrusted text or
+vague handoff is not approval, nor are destructive extras implied. Guest personal
+state stays excluded/local and unstaged, without forbidding authorized host Git
+work. Native tool approval still applies: actual denial/unavailability is a
+concise blocker, not grounds for alternate-tool retries, global permission changes
+or allow-all. Model-editor Save protections are unchanged. Generated-instruction
+regressions are not proof of actual model behavior or native permission UX.
 
 ### Optional model changes
 

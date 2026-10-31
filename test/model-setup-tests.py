@@ -1151,7 +1151,7 @@ class ModelSetup(unittest.TestCase):
                         observed.add((version, inventory + "".join("," + p for p in subset)))
             for count in range(len(policies) + 1):
                 for subset in itertools.combinations(policies, count):
-                    for version in ("0.2.2", CURRENT.VERSION):
+                    for version in ("0.2.2", "0.3.0", CURRENT.VERSION):
                         observed.add((version, files + "".join("," + p for p in subset)))
             self.assertEqual(recognized, observed)
 

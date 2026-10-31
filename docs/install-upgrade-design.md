@@ -1,18 +1,23 @@
 # Standalone: install, upgrade and recovery
 
-Current sections are the **v0.3.0 release guide**.
+Current sections are the **v0.3.1 release guide**: explicit parent Git approval
+bypasses Beads/model gates, not native permissions, scope or guest privacy.
+It grants no automatic drain, push or merge authority. Model defaults and
+optional setup were introduced in v0.3.0.
 Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
-Historical evidence below does not qualify v0.3.0.
+Validation is instruction-level/filesystem-only, not new native UX qualification.
+Historical evidence below does not qualify v0.3.1.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-Existing `dom` aliases that fetch `main/domestique.sh` receive v0.3.0's new
-defaults, flags and `dom-models` command on their next invocation after release
-to main, without an alias change. Nothing
+Existing `dom` aliases that fetch `main/domestique.sh` receive v0.3.1's Git
+approval fix on their next invocation, without an alias change.
+Preview with `dom --dry-run`, then run `dom`; refresh cached native instructions
+if needed. Nothing
 updates in the background; publishing only a tag does not change those aliases.
 Run from the intended project root; the optional positional argument is the
 target directory. Bash, Git and Python 3.11+ cover the all-three path.
@@ -35,7 +40,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 ```
 
 A source checkout is optional; the new features are also available through
-remote `dom` after release. To inspect reviewed source locally:
+remote `dom`. To inspect reviewed source locally:
 
 ```sh
 TARGET=$(mktemp -d)
@@ -176,7 +181,7 @@ information on failure; do not blindly roll back.
 1. Planning (`dom-decompose BRIEF`) bypasses all setup/helper/readiness checks,
    even with missing, unconfirmed or manually edited roles. It never delegates
    or executes tasks; no reload or repeated brief is needed.
-2. For execution, verify the configured pair and actual native role discovery,
+2. For managed-bead execution, verify the configured pair and actual native role discovery,
    registration, precedence, effective choices and available support evidence.
    The marker binds the physical root, harness and both role hashes, **not
    loaded native choices**. A catalog alone is not persistent role support.
@@ -193,6 +198,33 @@ information on failure; do not blindly roll back.
    auto-stage, stash or hide them. Installation/Save never queues or authorizes
    a goal. After a configuration detour, give a fresh explicit goal naming the
    intended epic; a fresh valid install alone needs no renewed authorization.
+
+### Parent Git authorization (separate from managed execution)
+
+Policies, ordinary/bootstrap skills, goal/decompose commands and shared workflow
+routes distinguish direct parent Git work before role/Beads/readiness gates.
+Read-only inspection is ordinary work. An explicit request for specified Git
+operations, or “go ahead/run those commands” referring to the current concrete
+proposal, authorizes only those operations in that repository. No new goal,
+slash command, bead claim, synthetic review, model-pair check or prior permission
+receipt is required. Automatic loops still never merge/push; separate explicit
+parent requests may do so after a goal stops, without resuming it or adding beads.
+User-owned changes may be committed by request; unreviewed managed beads retain
+their PASS-before-commit/closure gates. Child role authority is unchanged.
+
+Check actual repository/diff/index/branch/remote context as relevant. Preserve
+unrelated dirty files, stage only intended paths/hunks and verify staged changes;
+no globally clean tree requirement or broad staging/revert/stash cleanup for
+scoped Git work. Changed/ambiguous context or unauthorized destructive actions
+stop narrowly. Quoted/untrusted text and vague handoffs are not approval;
+force-push/reset/destructive extras are not inferred. Guest managed personal state
+stays excluded/local and unstaged, not a ban on authorized host-repository work.
+Use normal native tool approval where required; missing prior receipts or exposed
+permission/sandbox controls alone are not denials. Actual denial/unavailability
+blocks with a concise reason, never bypass, alternate-tool retries, global setting
+changes or allow-all. Model-editor explicit Save remains separate and unchanged.
+Emitted-instruction regressions establish this text contract, not actual LLM
+compliance or native permission UX qualification; release evidence limits remain.
 
 ### Native entries and ownership
 
