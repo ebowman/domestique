@@ -19,6 +19,11 @@ that limitation disclosed; this is not native PASS or epic completion.
 Earlier [native evidence and two unresolved investigations](docs/install-upgrade-design.md#qualification-and-known-issues)
 are history, not qualification of these changes.
 
+**Public latest remains v0.3.1.** The [upcoming named-goal candidate](#upcoming-named-goals-reviewed-candidate)
+below is reviewed implementation on `epic/hq-xc2`, not yet published.
+Native qualification hq-xc2.6 is pending; version selection and publication
+are separate release work.
+
 ### What's new
 
 - One standalone `domestique.sh`, through the existing `dom` command. No
@@ -66,7 +71,8 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional, not required for these features.
+A source checkout is optional for released features. The unpublished goal
+candidate requires its reviewed local source; remote `dom` does not contain it yet.
 To inspect reviewed source locally, run from that checkout against a disposable
 Git project:
 
@@ -128,21 +134,21 @@ until you review the current pair with `dom-models --confirm` (or
 
 ## First use and the workflow
 
-| Native client | Inspect saved choices | Explicit goal |
-| --- | --- | --- |
-| Claude Code | `/dom-models` | `/dom-goal EPIC_ID` |
-| Codex | `$dom-models` | `$dom-goal EPIC_ID` |
-| GitHub Copilot | `/dom-models` | `/dom-goal EPIC_ID` |
+| Native client | Inspect saved choices |
+| --- | --- |
+| Claude Code | `/dom-models` |
+| Codex | `$dom-models` |
+| GitHub Copilot | `/dom-models` |
 
 Use `/dom-decompose BRIEF` (Claude/Copilot) or `$dom-decompose BRIEF` (Codex)
 to plan an epic and bounded tasks. Codex also offers `/skills`. Loading a skill alone
-never authorizes goal work. A goal must explicitly name the intended epic;
-require fresh independent reviewer **PASS before task commit or closure**.
+never authorizes goal work. Managed work requires fresh independent reviewer
+**PASS before task commit or closure**.
 Planning never requires model setup, helper verification, loaded roles or a
 restart—even with missing/unconfirmed/manually edited roles—and never delegates
-or executes tasks. Copilot still defaults to **one reviewed bead**; native
-`/goal` or `/autopilot` is not Domestique authorization. Expanded authorization
-is separate, unimplemented work (hq-xc2), not part of this release.
+or executes tasks. Published v0.3.1 retains its explicit-epic goal routing and
+Copilot's **one reviewed bead** default. The candidate changes named-goal
+authorization and continuation as described below, not through the current remote alias.
 
 1. Install and review Git changes. Valid configured pairs enter the existing
    execution gate without a questionnaire, Save or restart merely because fresh.
@@ -155,6 +161,60 @@ is separate, unimplemented work (hq-xc2), not part of this release.
    or `--configure` (change choices). Missing/unsafe state needs preserving
    installer repair. Unavailable/mismatched choices stop execution, not planning:
    fix through `--configure`, Save and reload if needed, never automatic substitution.
+
+### Upcoming named goals (reviewed candidate)
+
+**Unpublished:** hq-xc2.2/.3/.4 implementation and regression work has passed
+review; hq-xc2.6 native qualification remains pending. These are emitted
+instructions, not proof of native unattended execution.
+
+Use these in the native client with a real project Beads ID:
+
+| Client | Goal command |
+| --- | --- |
+| Claude Code / GitHub Copilot | `/dom-goal ID` |
+| Codex | `$dom-goal ID` |
+
+The actual bead type determines scope: an **epic** runs all unfinished transitive
+parent-child descendants, including nested epics and descendants behind closed
+intermediate nodes. A **non-epic** runs exactly that bead, even if it has children;
+it never selects siblings or external prerequisites. Verified already-closed
+targets are no-ops only when their scope is complete.
+
+Clear current user execution requests or native named objectives also qualify:
+“Complete epic EPIC_ID”, or “do it” referring to the current concrete named plan.
+Native goal/autopilot with that named execution objective is accepted; a bare
+mode toggle, quoted examples, loading/matching a skill, planning or model Save
+is not execution authority. Ambiguous targets require a narrow question.
+For explicitly bounded work, say “Execute only this bead BEAD_ID”,
+“Execute one next bead in EPIC_ID”, or “Execute at most 3 beads in EPIC_ID”.
+These are natural-language limits, not new command flags. An ordinary next-ready
+request still means one bead. Compatibility commands remain Claude `/goal`,
+Codex `$domestique-goal`, and Copilot `/domestique-v2-copilot-goal`.
+
+**15 is a soft progress interval, not a stop, permission renewal or expiry.**
+After every 15 successful closures, report progress and continue to bead 16,
+31 and beyond while healthy. Explicit current user count/time/cost limits and
+actual runtime/session budgets still bind; this does not bypass provider limits
+or carry authority into another session. Cancellation/objective change, actual
+tool/permission/model/Beads errors, observed regressions, material ambiguity or
+failed review stop the run (review gaps allow one corrective pass, then fresh review).
+
+A blocked or other-owned branch does not prevent other authorized runnable work.
+No ready work with unfinished descendants means **BLOCKED**, not complete.
+Even all descendants closed is insufficient: the root needs its own acceptance
+evidence, required integration validation and independent PASS; otherwise report
+**ROOT UNFINISHED**. Stops preserve actual bead/commit state and concrete remaining
+work for an explicitly authorized continuation, not a silent restart.
+
+Execution stays sequential on a dedicated non-default branch, with independent
+review before scoped commit/closure. The parent hands off verified ownership;
+children do not reclaim already-owned in-progress work. Use focused relevant
+tests/lint, not a mandatory full suite every bead or checkpoint. Dirty/uncertain
+work needs human disposition; guest personal state stays local and unstaged.
+The loop does not automatically merge or push; [separate explicit Git approval](#direct-git-requests)
+still permits those operations. Model defaults and model-editor Save are unchanged.
+See [candidate scope and qualification limits](docs/install-upgrade-design.md#upcoming-named-goals-reviewed-candidate).
 
 ### Direct Git requests
 

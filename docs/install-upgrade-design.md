@@ -1,6 +1,7 @@
 # Standalone: install, upgrade and recovery
 
-Current sections are the **v0.3.1 release guide**: explicit parent Git approval
+Except for the explicitly labelled upcoming candidate, this is the
+**v0.3.1 release guide**: explicit parent Git approval
 bypasses Beads/model gates, not native permissions, scope or guest privacy.
 It grants no automatic drain, push or merge authority. Model defaults and
 optional setup were introduced in v0.3.0.
@@ -9,6 +10,9 @@ remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publ
 with this limitation disclosed, not with native PASS or epic completion.
 Validation is instruction-level/filesystem-only, not new native UX qualification.
 Historical evidence below does not qualify v0.3.1.
+Public latest remains v0.3.1; the reviewed `epic/hq-xc2` goal changes are
+unpublished, with hq-xc2.6 native qualification pending. Version selection and
+publication remain separate release work.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
@@ -39,8 +43,9 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; the new features are also available through
-remote `dom`. To inspect reviewed source locally:
+A source checkout is optional for released features, which are available through
+remote `dom`. The upcoming goal candidate is not there yet; use its reviewed local
+source to inspect it. From the selected checkout:
 
 ```sh
 TARGET=$(mktemp -d)
@@ -197,7 +202,58 @@ information on failure; do not blindly roll back.
 5. Explicitly review/dispose of tracked changes before goal work; do not
    auto-stage, stash or hide them. Installation/Save never queues or authorizes
    a goal. After a configuration detour, give a fresh explicit goal naming the
-   intended epic; a fresh valid install alone needs no renewed authorization.
+   intended target; a fresh valid install alone needs no renewed authorization.
+
+### Upcoming named goals (reviewed candidate)
+
+This section describes unpublished reviewed implementation (hq-xc2.2/.3/.4),
+not native qualification or a change already delivered by the remote alias.
+From the candidate source checkout, use the local preview/apply examples above;
+preserving reruns retain model/effort choices. Refresh stale native instructions
+as needed. Defaults, optional model setup and explicit model-editor Save are unchanged.
+
+In Claude/Copilot use `/dom-goal ID`; in Codex use `$dom-goal ID`.
+Resolve the real Beads type before execution: an epic includes **all unfinished
+transitive parent-child descendants**, including nested epics and traversal
+through closed intermediate nodes. A non-epic selects **only itself**, even
+when it has children. Siblings, external prerequisites and discovered-from links
+do not expand scope. Verified closed non-epics or fully closed epic scopes are
+no-ops; a closed epic with unfinished descendants is an inconsistency, not completion.
+
+Clear current user/native named execution objectives also authorize work,
+including “do it” referring to the current concrete named plan. A native
+goal/autopilot objective naming the target qualifies; a bare toggle, quoted text,
+skill loading/matching, planning or Save does not. Ambiguous scope needs clarification.
+For smaller runs say “Execute only this bead BEAD_ID”, “Execute one next bead in
+EPIC_ID”, or “Execute at most 3 beads in EPIC_ID”; these are user bounds, not CLI
+flags. Ordinary next-ready requests remain one bead.
+
+Every **15 successful closures is a soft progress checkpoint**: report and
+continue to 16, 31 and beyond without a pause, renewed permission or expiry.
+Current user count/time/cost limits and actual runtime/session budgets bind.
+Cancellation/objective change, material ambiguity, regressions, actual
+native/permission/model/tool/Beads errors or a second non-PASS after one corrective
+pass stop execution. No provider/session-limit bypass or automatic cross-session
+resumption is promised. Preserve concrete unfinished IDs, reasons and commit state.
+Blocked/deferred/other-owned branches do not stop other runnable authorized branches;
+no runnable work with unfinished scope is **BLOCKED**, not COMPLETE.
+Root and nested-epic acceptance require their own evidence, required integration
+validation and independent PASS, not just closed children; missing root evidence
+is **ROOT UNFINISHED**.
+
+Keep one task in flight on a dedicated non-default branch, fresh independent
+review before scoped commit/closure, and focused relevant validation rather than
+a full suite per bead/checkpoint. The parent hands off verified claim state;
+an already-owned in-progress assignment is not reclaimed. Dirty/uncertain work
+needs human disposition; guest state stays local and unstaged. No automatic
+merge/push occurs in the loop; separately explicit parent Git approval below
+remains valid.
+
+**Qualification pending:** hq-xc2.6 must record authorized native evidence for
+one-request completion of three dependent beads and exact non-epic targeting in
+each harness, or explicit blocked coverage. Offline 15-to-16 protocol cases are
+not live large-epic proof; native crossing of 15 needs separate authorization/budget.
+Historical qualification and the hq-c6o.8 gap are not superseded by these reviews.
 
 ### Parent Git authorization (separate from managed execution)
 
@@ -228,9 +284,9 @@ compliance or native permission UX qualification; release evidence limits remain
 
 ### Native entries and ownership
 
-Claude uses `/dom-models`, `/dom-decompose` and `/dom-goal EPIC_ID`, stored under
-`.claude/commands`. Codex uses `$dom-decompose` and `$dom-goal EPIC_ID`;
-Copilot uses `/dom-decompose` and `/dom-goal EPIC_ID`. Codex also supports
+Claude uses `/dom-models`, `/dom-decompose` and `/dom-goal ID`, stored under
+`.claude/commands`. Codex uses `$dom-decompose` and `$dom-goal ID`;
+Copilot uses `/dom-decompose` and `/dom-goal ID`. Codex also supports
 `/skills`. Codex/Copilot share the canonical
 `.agents/skills/dom-decompose/SKILL.md`, `.agents/skills/dom-goal/SKILL.md`
 and `.agents/skills/dom-models/SKILL.md`.
@@ -239,13 +295,12 @@ Routing follows actual native context, not which other clients' files exist.
 Compatibility entries remain: Claude `/decompose`, `/goal`; Codex
 `$domestique-decompose`, `$domestique-goal`; Copilot
 `/domestique-v2-copilot-decompose`, `/domestique-v2-copilot-goal`.
-They retain the same explicit config-vs-plan routing and execution gate.
-Loading an entry alone never authorizes work;
-a goal needs an explicit request naming the epic. Fresh independent reviewer
-PASS remains required before task commit/closure. Copilot's default bound remains
-**one reviewed bead**; native `/goal` or `/autopilot` is not Domestique
-authorization. Broader unattended authorization (hq-xc2) remains unimplemented,
-not shipped here. Existing epic-drain bounds are unchanged.
+They retain the same config-vs-plan routing and execution gate as their canonical
+entries. Loading alone never authorizes work; fresh independent reviewer PASS
+remains required before task commit/closure. Published v0.3.1 retains its
+explicit-epic routing and Copilot's one-reviewed-bead default.
+The [upcoming candidate](#upcoming-named-goals-reviewed-candidate) extends named
+intent and epic/non-epic scope, with no default one-bead cap for named epics.
 
 Provider snapshots live in `.claude/.domestique`, `.codex/.domestique` and
 `.github/.domestique`; shared routes are owned by `.agents/.domestique`.
@@ -468,8 +523,9 @@ frozen fixtures only. Do not confuse those passes with current/native acceptance
   actual native loading and model availability remain distinct.
 - Publication was authorized after explicit disclosure of that native-validation
   limitation. Independent release review still precedes publication.
-  hq-7sm.17 and hq-6pf remain unresolved; hq-xc2 is unimplemented and existing
-  epic-drain/one-reviewed-bead bounds are unchanged.
+  hq-7sm.17 and hq-6pf remain unresolved. At that release, hq-xc2 was
+  unimplemented and epic-drain/one-reviewed-bead bounds were unchanged;
+  the upcoming candidate above is separate, not retroactive qualification.
 - After publication to main, the existing remote alias fetches these features.
   Preview and pin the same bytes for apply; local source installation remains
   an option, not a requirement.
