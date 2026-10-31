@@ -15,6 +15,16 @@ implementer = roles / "implementer.md"
 reviewer = roles / "reviewer.md"
 before_i = implementer.read_bytes()
 before_r = reviewer.read_bytes()
+# Current fresh installs are already confirmed. Validate/remove only that
+# marker before constructing this synthetic customized pair; keep prompt bytes.
+prefix = b"# domestique-model-setup: "
+lines = before_i.splitlines(keepends=True)
+if len(lines) > 1 and lines[1].startswith(prefix):
+    installed = json.loads(lines[1][len(prefix):])
+    before_i = b"".join(lines[:1] + lines[2:])
+    assert installed["project"] == str(root) and installed["harness"] == "claude"
+    assert installed["implementer_sha256"] == hashlib.sha256(before_i).hexdigest()
+    assert installed["reviewer_sha256"] == hashlib.sha256(before_r).hexdigest()
 assert before_i.count(b"model: sonnet\n") == 1
 assert before_r.count(b"model: opus\n") == 1
 assert b"domestique-model-setup:" not in before_i + before_r

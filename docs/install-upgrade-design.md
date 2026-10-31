@@ -1,18 +1,23 @@
-# Standalone 0.2.0: install, upgrade and recovery
+# Standalone: install, upgrade and recovery
 
-This is the publication guide for the **v0.2.0 preparation tree**, not an
-announcement that main or the tag has been published. The current product is
-one standalone `domestique.sh`; no global runtime, source checkout, `dom2` or
-project enable step is required. See the [README](../README.md) for the workflow.
+Current sections are the **v0.3.0 release guide**.
+Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
+remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
+with this limitation disclosed, not with native PASS or epic completion.
+Historical evidence below does not qualify v0.3.0.
+The product is one standalone `domestique.sh`; no global runtime, `dom2` or
+project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-Existing `dom` aliases that fetch `main/domestique.sh` receive new bytes on their
-next invocation **after main is published**. Nothing updates in the background,
-and publishing only a tag does not change those aliases.
+Existing `dom` aliases that fetch `main/domestique.sh` receive v0.3.0's new
+defaults, flags and `dom-models` command on their next invocation after release
+to main, without an alias change. Nothing
+updates in the background; publishing only a tag does not change those aliases.
 Run from the intended project root; the optional positional argument is the
 target directory. Bash, Git and Python 3.11+ cover the all-three path.
-Native clients/model software are not installed.
+Native clients/model software are not installed or required for offline
+configuration installation; native availability matters before execution.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run
@@ -29,9 +34,29 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-The `v0.2.0` tag may replace `REV` only after publication. Until then, test the
-reviewed local file in a disposable project. Historical `v0.1.0` is neither this
-release's behavior nor a safe downgrade of migrated state.
+A source checkout is optional; the new features are also available through
+remote `dom` after release. To inspect reviewed source locally:
+
+```sh
+TARGET=$(mktemp -d)
+git -C "$TARGET" init -q
+bash ./domestique.sh "$TARGET" --dry-run
+# Choose one preview; remove --dry-run only after reviewing it:
+bash ./domestique.sh "$TARGET" --platform claude --model claude:implementer=opus --dry-run
+bash ./domestique.sh "$TARGET" --platform codex --model=codex:reviewer=inherit --dry-run
+bash ./domestique.sh "$TARGET" --platform copilot --model copilot:implementer=inherit --dry-run
+bash ./domestique.sh "$TARGET" --platform both --model claude:implementer=opus --model=codex:reviewer=inherit --dry-run
+```
+
+The same model options work with `dom` from the target project root:
+
+```sh
+dom --platform both --model claude:implementer=opus --model=codex:reviewer=inherit --dry-run
+dom --platform both --model claude:implementer=opus --model=codex:reviewer=inherit
+```
+
+Review the preview before applying. Pinning older script bytes does not reverse
+migrated project state.
 
 The version-labelled plan shows the physical target, selected providers and
 normal/guest modes before target writes. Dry-run performs no target writes;
@@ -46,19 +71,53 @@ stdin questionnaire, so `curl | bash` works.
 | `--platform claude`, `codex`, `copilot`, `both`, `all` | Explicit selection; **both = Claude+Codex**. Installs are additive: persisted Claude/Codex may also be selected; unselected Copilot remains. Read the actual plan. |
 | `--dry-run` | Preview without target changes. |
 | `--guest` / `--no-guest` | Explicit mode/conversion; mutually exclusive. |
-| `--force` | Replace differing provider files without `.bak`; managed policy files still receive backups. Can discard customizations; not an ownership or migration bypass. |
+| `--model harness:role=id-or-inherit` | Repeatable per-role model override; also `--model=harness:role=value`. Rules below. |
+| `--force` | Regenerate qualified role bodies while preserving model/effort choices; other differing provider files replaced without `.bak`. Managed policies still backed up. Can discard customizations, never bless unconfirmed state or bypass ownership/migration checks. |
 | `--with-beads` | If `bd` is available, initialize when needed using safe skip flags. Normal mode sets up selected providers; guest uses stealth and no provider setup. Does not install Beads. |
 | `--uninstall` | Remove owned configuration; optional `--platform` scopes removal, otherwise scans all three. |
 | `--purge-beads` | Only with uninstall; explicitly deletes the target's `.beads`. Omit to preserve task data. |
 | `--help`, `-h` | Show the selected script's full contract. |
 
 Uninstall combines only with target, platform, dry-run, force and purge-beads,
-not with guest/no-guest/with-beads.
+not with guest/no-guest/with-beads/model.
+
+### Model defaults and override precedence
+
+| Harness | Implementer model / effort | Reviewer model / effort |
+| --- | --- | --- |
+| Claude | `sonnet` / inherit | `opus` / inherit |
+| Codex | `gpt-5.6-sol` / `medium` | `gpt-5.6-terra` / `high` |
+| Copilot | native inheritance / no effort field | native inheritance / no effort field |
+
+These chosen IDs do not establish account entitlement or universal catalog
+availability. Same-model implementer/reviewer pairs are allowed; review always
+uses a fresh independent context. No installer catalog/auth lookup is required.
+
+- Fresh providers get these defaults, configured after successful verification
+  at a physical Git worktree root. No model questionnaire or Save is needed.
+- Reruns preserve existing model/effort choices, **including old pristine
+  defaults**. Newly added providers get fresh defaults.
+- An explicit override changes only the named model, preserving existing
+  effort and the partner. There is no installer effort flag. On a **fresh** role,
+  selecting its shipped model retains shipped effort; any other model,
+  including `inherit`, omits effort. Later `dom-models` model changes preserve effort.
+- Harness is exactly `claude|codex|copilot`; role is `implementer|reviewer`.
+  No aliases, wildcards or comma lists. IDs are literal, nonempty bounded strings
+  (up to 512 characters), without edge whitespace/control characters; quote as
+  one shell argument. Identical repeated assignments are idempotent; conflicting
+  repeats and malformed/unknown assignments refuse before writes.
+- Overrides must target the **requested** platform selection, not merely a
+  provider retained by additive installation. No selector permits all three;
+  `both` permits only Claude+Codex. `--model` is incompatible with `--force`,
+  `--uninstall` and `--purge-beads`.
 
 ## First-use role setup
 
-Setup is independent **per physical project and per harness**. There is no
-global model override registry.
+Valid installer-configured defaults and saved custom/inherited pairs need
+**no questionnaire, Save or restart merely because fresh**. Configuration is
+per physical Git worktree root and per harness; there is no global model registry.
+Non-Git/subdirectory installs retain compatibility behavior but cannot claim
+helper-configured status outside that root.
 
 | Harness | Implementer / reviewer paths | Deterministic helper |
 | --- | --- | --- |
@@ -66,65 +125,83 @@ global model override registry.
 | Codex | `.codex/agents/implementer.toml` / `.codex/agents/reviewer.toml` | `.codex/domestique-model-setup.py` |
 | Copilot | `.github/agents/domestique-v2-copilot-implementer.agent.md` / `.github/agents/domestique-v2-copilot-reviewer.agent.md` | `.github/domestique-model-setup.py` |
 
-Use `/dom-decompose configure role models` in Claude/Copilot or
-`$dom-decompose configure role models` in Codex. First interactive goal also
-requires setup if the pair is not confirmed. Ordinary planning skips setup and
-all helper/role readiness checks, even with missing/unconfirmed/manually edited
-pairs. Only the entire explicit `configure role models` argument selects setup;
-planning text mentioning models does not. Reuse saved native selections.
-Ask missing/unconfirmed choices together, including supported effort, explaining
-local persistence and when they apply; check native availability and persistent role support.
-Explicit inheritance is a choice: Claude uses `model: inherit`; Codex/Copilot
-omit model. Copilot does not support persisted effort through this helper.
-Generated defaults and missing fields are not user consent.
+### Inspect or change later
 
-The installed protocol verifies helper ownership and pristine-byte equality,
-then executes the verified bytes. Prepare/verify are **read-only**, with no
-scratch or staged plan. Summarize project/harness, current → chosen model/effort,
-exact role files, scalar/marker-only change scope, preserved tools/prompts and
-tracked consequences. Offer detailed diff on request; do not require raw diff,
-marker JSON, hashes or verbose evidence output. Retain the digest independently.
-Ask **Save these choices?** after preparation, then obtain any ordinary scoped
-native write approval and apply only that exact plan. Initial choices are not
-save consent; changes require reprepare, new summary and renewed consent.
-Cancel means zero writes. The digest binds integrity, not consent.
-The helper edits model/effort scalars and the pair marker while preserving
-unrelated metadata, comments, body, line endings and modes.
-Changed snapshots/roles/parents cause refusal rather than a stale apply.
+Use `/dom-models` in Claude/Copilot, `$dom-models` in Codex, in the native client
+(the `opus` example is for Claude):
 
-Wait for terminal completion, including any background result, check the helper
-result and verify the saved pair before claiming success. Nonzero/partial or
-unverifiable results are failures, not pending success.
-After save, no queued goal or task work. Respond with terse saved choices and
-only the necessary next step. Explicit planning may proceed without reload or
-repeating an already supplied brief; it never delegates, claims or executes tasks.
-Before execution, supported reload/fresh native invocation is required when
-registrations are stale/unknown. Verify registrations, precedence, inheritance, effective
-choices and availability. Explicitly review/dispose of tracked setup changes
-before a fresh goal; do not auto-stage, stash or hide them.
-Codex's current immutable conversation roles need not match a proposed persistent
-edit, but fresh registrations must match before dispatch. A model catalog alone
-does not prove persistent role support. No in-session override or fallback to
-old defaults substitutes for a supported saved pair and reload.
+```text
+/dom-models
+/dom-models --help
+/dom-models --configure
+/dom-models --confirm
+/dom-models --implementer opus --reviewer=opus
+$dom-models
+$dom-models --reviewer=inherit
+$dom-models --implementer gpt-5.6-sol --implementer-effort=medium --reviewer-effort high
+```
 
-The implementer file's `# domestique-model-setup: JSON` marker binds the physical
-project, harness and both role hashes. Manual body/model edits invalidate it.
-Unchanged confirmed pairs survive reruns without prompts; changed bytes need a
-new prepared summary/consent. Helper schema, serialization and pair hashes are unchanged.
-Modified or unowned helpers refuse rather than being adopted or merged.
-Filesystem verification is **not native attestation**: the assistant still
-checks actual discovery, role support, availability and available telemetry.
-Existing native hooks are not controlled. Unavailable/mismatched models mean
-STOP, not fallback. Partial apply returns recovery information; preserve and
-reconcile it rather than inferring approval or blindly rolling back.
+No arguments inspects saved choices read-only, not a catalog or authentication
+check. `--help` works without an installed pair. `--configure` prefills current
+choices; `--confirm` prepares the current unconfirmed/stale pair for review
+without questions (already configured: nothing to save). Explicit settings accept
+any subset of `--implementer MODEL`, `--reviewer MODEL`,
+`--implementer-effort LEVEL`, `--reviewer-effort LEVEL`, separated or `=value`.
+Copilot rejects effort flags. Unmentioned model/effort/partner stays unchanged.
+Modes cannot mix with each other or settings. Duplicate flags (even identical),
+empty values, unknown flags and harness/path selectors refuse without writes.
+Literal model IDs are accepted without assuming catalog availability.
+Only the actual native caller's harness and physical Git root are targeted.
+
+`inherit` means Claude `model: inherit`, omitted Codex/Copilot model, or omitted
+Claude/Codex effort. Native resolution need not equal the direct parent's model.
+Use effort levels supported by the chosen native model; unsupported combinations
+stop at execution, not by silently clearing effort. The exact old
+`dom-decompose configure role models` argument aliases `dom-models --configure`;
+ordinary planning text mentioning models does not select configuration.
+
+The pristine installed helper prepares read-only. Review one compact summary of
+project/harness, current → chosen settings, paths, scalar/pair-marker scope,
+tracked consequences and relevant stale/body/copied-root warnings, then
+**Save these choices? Save / Cancel**. Detailed diff is available on request;
+raw hashes/diffs are not mandatory. Selection or `--confirm` is not Save consent.
+Cancel writes nothing. Save needs ordinary scoped native write approval;
+changed plans need renewed consent. Bodies, tools and unrelated metadata are
+preserved. Wait for terminal completion and pair verification before reporting
+saved; pending, partial or nonzero results are not success. Preserve recovery
+information on failure; do not blindly roll back.
+
+### First execution checklist
+
+1. Planning (`dom-decompose BRIEF`) bypasses all setup/helper/readiness checks,
+   even with missing, unconfirmed or manually edited roles. It never delegates
+   or executes tasks; no reload or repeated brief is needed.
+2. For execution, verify the configured pair and actual native role discovery,
+   registration, precedence, effective choices and available support evidence.
+   The marker binds the physical root, harness and both role hashes, **not
+   loaded native choices**. A catalog alone is not persistent role support.
+   Missing optional loaded-byte/child telemetry alone is not a blocker absent
+   counterevidence and with documented native resolution.
+3. Reload/start a fresh native invocation only if required registrations are
+   stale/unknown, not merely because files are fresh. Codex conversation roles
+   may be immutable; saved edits do not change them in place.
+4. Stale/unconfirmed pairs stop with `dom-models --confirm` or `--configure`;
+   missing/unsafe authority needs explicit preserving installer repair.
+   Unavailable models, unsupported effort or known mismatches stop with the
+   affected role/reason and `--configure` route, never automatic substitution.
+5. Explicitly review/dispose of tracked changes before goal work; do not
+   auto-stage, stash or hide them. Installation/Save never queues or authorizes
+   a goal. After a configuration detour, give a fresh explicit goal naming the
+   intended epic; a fresh valid install alone needs no renewed authorization.
 
 ### Native entries and ownership
 
-Claude uses `/dom-decompose` and `/dom-goal EPIC_ID`, stored under
+Claude uses `/dom-models`, `/dom-decompose` and `/dom-goal EPIC_ID`, stored under
 `.claude/commands`. Codex uses `$dom-decompose` and `$dom-goal EPIC_ID`;
 Copilot uses `/dom-decompose` and `/dom-goal EPIC_ID`. Codex also supports
 `/skills`. Codex/Copilot share the canonical
-`.agents/skills/dom-decompose/SKILL.md` and `.agents/skills/dom-goal/SKILL.md`.
+`.agents/skills/dom-decompose/SKILL.md`, `.agents/skills/dom-goal/SKILL.md`
+and `.agents/skills/dom-models/SKILL.md`.
 Routing follows actual native context, not which other clients' files exist.
 
 Compatibility entries remain: Claude `/decompose`, `/goal`; Codex
@@ -132,7 +209,11 @@ Compatibility entries remain: Claude `/decompose`, `/goal`; Codex
 `/domestique-v2-copilot-decompose`, `/domestique-v2-copilot-goal`.
 They retain the same explicit config-vs-plan routing and execution gate.
 Loading an entry alone never authorizes work;
-a goal needs a fresh explicit request naming the epic.
+a goal needs an explicit request naming the epic. Fresh independent reviewer
+PASS remains required before task commit/closure. Copilot's default bound remains
+**one reviewed bead**; native `/goal` or `/autopilot` is not Domestique
+authorization. Broader unattended authorization (hq-xc2) remains unimplemented,
+not shipped here. Existing epic-drain bounds are unchanged.
 
 Provider snapshots live in `.claude/.domestique`, `.codex/.domestique` and
 `.github/.domestique`; shared routes are owned by `.agents/.domestique`.
@@ -143,13 +224,39 @@ live in `CLAUDE.md`, `AGENTS.md` (or existing `AGENTS.override.md`) and
 
 ## Preserving upgrades and mode conversion
 
-Compatible snapshot upgrades retain model choices and customizations using
-three-way merges. A plain-file conflict leaves the live file unchanged, writes
+Compatible snapshot upgrades preserve model/effort scalars even when they equal
+older shipped defaults; other compatible customizations use three-way merges.
+
+| Existing role state | Preserving rerun |
+| --- | --- |
+| Valid configured pair | Preserve choices; safely merge qualified bodies and refresh verification. No questionnaire. |
+| Recognized owned legacy, no marker, bodies/metadata pristine apart from model/effort scalars | Preserve choices, upgrade and configure automatically. |
+| Legacy custom body/tools/metadata, stale/body-edited marker, copied/moved root | Preserve roles unconfirmed; review current bytes with `dom-models --confirm` or change via `--configure`. Model overrides wait for review/Save. |
+| Recognized pre-helper inventory with required safe role bases | Install helper through preserving migration, then apply the legacy rules above. |
+| Missing partner, manifest/base, helper claimed by a current inventory, modified/unowned helper, unknown authority or unsafe path | Refuse for preserving repair; neither rerun nor `--force` blesses it. |
+
+For recognized pre-helper custom roles, a conflict-free preserving migration
+upgrades old guards and helper authority but leaves the pair unconfirmed and
+retains its old pristine role bases. The installer reports completed migration
+and exits `3` for review/Save; repeated runs do not approve the custom bytes.
+Use `dom-models --confirm` to review the migrated current pair, then Save.
+Dry-run reports the same confirmation requirement without project writes.
+
+`--force` may regenerate **qualified** role bodies but never resets saved
+model/effort or confirms unreviewed state. Default-looking values alone are not
+confirmation. Keep diagnostics, live files, pristine bases and backups; reconcile
+the stated ownership/conflict problem, preview the same candidate and flags,
+then review/Save if required. Do not delete evidence to force eligibility.
+Publication is sequential across providers, not one all-provider transaction:
+after interruption a completed provider may remain configured while another
+failed. Nonzero/partial output is not overall success; retain recovery details.
+
+A generic plain-file conflict leaves the live file unchanged, writes
 the proposed merge to `.new`, preserves a `.bak.<timestamp>` and exits `3`.
 Inspect and resolve explicitly; do not replace the live file blindly.
 Legacy differing provider files without snapshots may be adopted unchanged,
-with pristine emitted bases seeded for a subsequent merge. Adoption is not a
-general exception to ownership checks: unknown ownership, missing policy bases,
+with pristine emitted bases seeded for a subsequent merge; this is **not a role
+pair ownership exception**. Unknown ownership, missing policy bases,
 unsafe paths or incompatible retained policy blocks can refuse before writes.
 
 Normal mode shares configuration when committed. Modes are sticky **per
@@ -197,7 +304,7 @@ The unchanged public-base `update.sh` fetches one source, previews it, then
 applies that same downloaded script through the merge path. It supports
 `--source <path|url>` and `DOMESTIQUE_UPDATE_SOURCE`; default source is main.
 Consult `./update.sh --help` for wrapper options. The downloaded installer's
-selection rules apply: **selector-less 0.2.0 updates add all three**, even to
+selection rules apply: **selector-less updates add all three**, even to
 an existing subset. Use explicit selectors and inspect the plan; this is not a
 recommendation for unattended mode conversion.
 
@@ -250,7 +357,9 @@ cannot reverse migrated ownership/workflows. See the concise
 
 ## Qualification and known issues
 
-Independent final native review passed for the standalone logic at
+### Historical native evidence (not hq-c6o qualification)
+
+Independent final native review passed for the earlier standalone logic at
 `75b0de30b7da5153b7f2fe68f52619bbd724380d`, unchanged in the documentation/test
 handoff `8cac49bbe94ea0604f47ce40cc107e98fadca240`. All three actual clients
 used the same all-installed disposable project with independent setup, changed
@@ -284,7 +393,7 @@ explicitly accepted for 0.2.0 preparation, **not fixed**:
 Retain diagnostics on a new occurrence; no blind repeat loops. Configuration
 installation, helper checks and offline tests do not attest native readiness.
 
-### Release selection and fixture portability
+### Historical 0.2.0 release selection and fixture portability
 
 The 0.2.0 preparation changes **only the version line** in the qualified
 installer and selects three publication documents plus thirteen source/test
@@ -315,3 +424,20 @@ on retained preview sources and is **not a standalone publication-tree runner**.
 That prior coverage is reused, not silently replaced by the selected
 `test/copilot-current.py`. Historical shell runners without `--current` exercise
 frozen fixtures only. Do not confuse those passes with current/native acceptance.
+
+### v0.3.0 release status and limits
+
+- v0.3.0 is a feature minor release: configured defaults, repeatable per-role
+  installer overrides, preserving reruns and optional native `dom-models`.
+  Existing choices, including released v0.2.2 defaults, remain pinned.
+- hq-c6o.8 remains **UNQUALIFIED pending user authorization for fixture/model usage** for native first use
+  and preserving upgrades. Offline checks and the historical `75b0de3` PASS
+  do **not** establish native v0.3.0 PASS or epic completion. Configuration,
+  actual native loading and model availability remain distinct.
+- Publication was authorized after explicit disclosure of that native-validation
+  limitation. Independent release review still precedes publication.
+  hq-7sm.17 and hq-6pf remain unresolved; hq-xc2 is unimplemented and existing
+  epic-drain/one-reviewed-bead bounds are unchanged.
+- After publication to main, the existing remote alias fetches these features.
+  Preview and pin the same bytes for apply; local source installation remains
+  an option, not a requirement.

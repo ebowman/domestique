@@ -23,7 +23,7 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
-if [ "${1:-}" = "--current" ]; then
+if [ "${1:-}" = "--current" ] || [ "${1:-}" = "--setup-current" ]; then
   CURRENT_TEST=1
   export HOME="$WORKROOT/current-home"
   mkdir -p "$HOME"
@@ -493,8 +493,9 @@ scenario_claude_setup_protocol() {
   local t="$WORKROOT/setup-protocol"; mkdir -p "$t"
   git_init "$t"
   check "guest installer succeeds" claude_install "$DOM" "$t" --guest
-  check "installed protocol/aliases (static, not native qualification)" python3 - "$t" <<'PY'
+  check "installed protocol/aliases (static, not native qualification)" python3 -B - "$t" "$REPO_DIR" <<'PY'
 from pathlib import Path
+import runpy
 import sys
 
 root = Path(sys.argv[1])
@@ -503,149 +504,25 @@ decompose = (commands / "dom-decompose.md").read_text()
 goal = (commands / "dom-goal.md").read_text()
 assert decompose == (commands / "decompose.md").read_text()
 assert goal == (commands / "goal.md").read_text()
-start = "## Claude first-use role setup — mandatory gate"
-end = "## End role setup gate — continue only for an unchanged confirmed, ready pair"
-def body(text):
-    assert text.count(start) == text.count(end) == 1
-    return text.split(start)[1].split(end)[0]
-setup = body(decompose)
-assert setup == body(goal), "one shared setup body"
-for text, action in ((decompose, "Decompose the following"),
-                     (goal, "Drive epic $ARGUMENTS")):
-    assert text.index(end) < text.index(action), "gate before workflow"
-
-# State/consent paths, including repeat, inheritance, owned customization.
-for phrase in (
-    "BEFORE any Beads command (including readiness/create/claim)",
-    "harness as `claude`", "exact physical Git worktree",
-    "ROOT/.claude/.domestique/manifest",
-    "base/.claude/agents/{implementer,reviewer}.md",
-    "snapshot_format=1", "NOT historical inode proof",
-    "Missing or\nunmanaged evidence",
-    "Current owned customized bytes may be confirmed",
-    "original pristine bases", "no symlinks in any path component",
-    "link count must be one", "at most 1 MiB each",
-    "unique top-level\nscalar model/effort", "duplicate/misplaced setup markers",
-    "immediately after the opening\nimplementer frontmatter delimiter",
-    "`# domestique-model-setup: JSON`", "Reviewer must contain no setup marker",
-    "`v` (integer 1)", "`project`", "`harness`",
-    "`implementer_sha256`, `reviewer_sha256`", "removing only that entire marker line",
-    "BOTH digests", "JSON types/unique keys",
-    "pristine generated defaults", "copied/moved",
-    "Any manual edit", "NO questionnaire and NO writes",
-    "including confirmed inheritance", "request `configure role models`",
-    "Show ROOT / claude", "current model and effort values",
-    "Both roles may use the same\nmodel", "fresh reviewer context",
-    "existing settings, inherited semantics and tracked-file",
-    "explicitly confirm it", 'Write `model: "inherit"`',
-    "omit effort for inherited", "new explicit\nchoices require exact IDs",
-    "displayed native resolution and explicit confirmation",
-    "ACTUAL complete proposed diff", "Save setup only / Cancel",
-    "Cancel, incomplete/missing values, or noninteractive",
-    "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
-    "Noninteractive callers may only use an already confirmed pair",
-    "Use the installed helper for ALL mechanical preflight",
-    "exec(compile(code", "assert code == read(base)",
-    "Prepare is READ-ONLY", "independently retained",
-    "all evidence immediately before EVERY publication",
-    "unknown leftovers", "No blind rollback",
-    "no planning\nbeads, claim, code, dispatch, branch/commit or goal cycle",
-    "fresh client\nsession", "NOT queued for automatic continuation",
-    "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
-):
-    assert phrase in setup, phrase
-# Actual byte preservation/publication/race coverage lives in the installed
-# all-format helper suite, not an assistant-written writer inferred from prose.
-helper = root / ".claude/domestique-model-setup.py"
-assert helper.read_bytes() == (root / ".claude/.domestique/base/.claude/domestique-model-setup.py").read_bytes()
-compile(helper.read_bytes(), str(helper), "exec")
-
-# Setup forbids helper delegation at entry AND during native evidence gathering.
-entry, preflight = setup.split("### Read-only preflight", 1)
-evidence = preflight.split("### Native evidence", 1)[1].split("Before saving", 1)[0]
-for section in (entry, evidence):
-    assert "do NOT use ANY Agent/Task/agent delegation" in section
-    assert "documentation/research helpers or `claude-code-guide`" in section
-    assert "missing evidence means STOP, not a helper call" in section
-assert "the workflow still requires implementer and independent reviewer delegation" in entry
-assert "questionnaire INLINE here; do not redirect to decompose" in entry
-assert "Ordinary unconfigured delegation instead redirects" in entry
-assert "without a confirmed pair STOP without persistence" in " ".join(entry.split())
-assert "Setup consumes this request: no task, Beads or implementation" in entry
-
-# Supported readiness is not exact-byte attestation or future execution proof.
-for phrase in (
-    "Before saving, use supported evidence", "supported and available",
-    "Force-model settings, spawn hooks", "Effort order is environment override",
-    "Unknown support/availability", "STOP before writes",
-    "After saving, require a fresh client session",
-    "Send no conflicting spawn", "a conflict stops",
-    "STOP without workflow or writes", "not dispatch proof",
-    "Do not invent a verification API", "no paid probe",
-    "Actual observed role dispatch/reload qualification is separate",
-    "static emitted-protocol/lifecycle tests do not qualify runtime",
-):
-    assert phrase in setup, phrase
-for phrase in (
-    "supported pre-dispatch minimum, read-only",
-    "active native client and its registered intended `implementer` and `reviewer` role IDs",
-    "registration must be present and unambiguous",
-    "stored pair, ownership, physical ROOT, BOTH marker hashes",
-    "required fresh-session reload",
-    "Match declared model AND effort and required tools",
-    "Explicit non-overridable registered selections plus documented native resolution are sufficient",
-    "documented project-local discovery and precedence",
-    "competing project/ancestor/global definitions",
-    "current provider/model compatibility with available non-secret native evidence",
-    "not a future entitlement/runtime guarantee",
-    "A doctor subprocess describes its own provider/session, not automatically the active thread",
-    "establish applicability before using it as active-session evidence",
-    "Use native source provenance when exposed",
-    "do not invent exact-origin or loaded-byte attestation",
-    "Missing optional exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not block ordinary explicitly authorized work when this minimum is established",
-    "Missing/ambiguous registration, actual mismatch, unresolved inheritance or a known defeating override/unavailability means STOP",
-    "During/after each authorized assignment, check actual available child telemetry",
-    "before accepting work",
-    "selection failure/mismatch means STOP; never silently fall back",
-    "declared selections are not execution proof",
-    "require an unavailable telemetry API or demand a separate paid probe",
-):
-    assert phrase in " ".join(setup.split()), phrase
+checks = runpy.run_path(str(Path(sys.argv[2]) / "test/model-setup-tests.py"))
+assert checks["check_execution_protocol"](root, "claude")["confirmed"]
 policy = (root / "CLAUDE.local.md").read_text()
-# Ordinary/bootstrap policy must route to the same positive minimum, not revive
-# the impossible gate that used to contradict "no invented API".
 for phrase in (
-    "supported pre-dispatch minimum in that protocol",
-    "registered intended role IDs", "pair/ownership/root/hashes and required reload",
-    "matching declared/resolved model/effort and tools",
-    "documented project discovery/precedence", "competing definitions and known overrides checked",
-    "available non-secret provider/model compatibility evidence",
-    "Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes",
-    "Missing/ambiguous registration, actual mismatch, unresolved inheritance",
-    "known defeating override or unavailability means STOP, never fallback",
-    "during/after each authorized assignment before accepting work",
-    "selection failure/mismatch stops",
+    "installer-configured defaults", "saved custom/inherited pairs",
+    "NO questionnaire and NO writes", "/dom-models --confirm",
+    "/dom-models --configure", "Native readiness is separate from the marker",
+    "documented discovery/resolution", "independent inherited-model",
+    "Genuinely unknown registration", "never fallback or conflicting spawn",
+    "not merely fresh files", "verified terminal completion",
 ):
     assert phrase in " ".join(policy.split()), phrase
-for obsolete in (
-    "verify that these exact files loaded", "verify exact local role loading",
-    "If exact loading/effective selection",
-    "prevention of silent substitution cannot be verified",
-):
-    assert obsolete not in " ".join((policy + decompose + goal).split()), obsolete
-assert "Ordinary bounded delegation" in policy
-assert "read-only" in policy
-assert "STOP and direct the human to `/dom-decompose configure role models`" in policy
-assert policy.index("questionnaire INLINE") < policy.index("Ordinary bounded delegation")
-assert "not a redirect to decompose" in policy
-assert "noninteractive/autopilot callers without a confirmed pair STOP without persistence" in policy
-assert goal.index("Interactive first-use goal setup") < goal.index("Drive epic $ARGUMENTS")
-assert "not the ordinary-delegation redirect" in goal
+assert "questionnaire INLINE" not in policy + decompose + goal
 assert "selected role model" in policy
 assert "Sonnet" not in policy + decompose and "Opus" not in policy
 assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create or switch")
 for role in ("implementer", "reviewer"):
-    assert b"domestique-model-setup:" not in (root / f".claude/agents/{role}.md").read_bytes()
+    assert (b"domestique-model-setup:" in
+            (root / f".claude/agents/{role}.md").read_bytes()) == (role == "implementer")
 assert not (root / ".beads").exists(), "installer must not initialize Beads"
 PY
 }
@@ -672,6 +549,14 @@ scenario_guest_configured_roles() {
 echo "domestique guest-mode test harness"
 echo "repo: $REPO_DIR"
 echo
+
+if [ "${1:-}" = "--setup-current" ]; then
+  run_scenario "Claude execution emitted protocol (static assertions)" scenario_claude_setup_protocol
+  run_scenario "configured roles guest lifecycle (real installer)" scenario_guest_configured_roles
+  echo "$PASS_COUNT/$((PASS_COUNT + FAIL_COUNT)) passed"
+  [ "$FAIL_COUNT" -eq 0 ]
+  exit $?
+fi
 
 run_scenario "fresh guest install"                              scenario_fresh_guest_install
 run_scenario "guest idempotency"                                scenario_guest_idempotent

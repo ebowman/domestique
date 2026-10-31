@@ -74,7 +74,7 @@ class Copilot(unittest.TestCase):
             self.assertIn(f"name: domestique-v2-copilot-{role}\n", body)
             self.assertIn("description: Copilot only;", body)
             self.assertNotIn("\nmodel:", body)
-            self.assertNotIn(MARKER, body)
+            self.assertEqual(MARKER in body, role == "implementer")
             tools = '["read", "edit", "search", "execute"]' if role == "implementer" else '["read", "search", "execute"]'
             self.assertIn(f"tools: {tools}", body)
         for kind in ("decompose", "goal"):
@@ -97,21 +97,22 @@ class Copilot(unittest.TestCase):
         for kind in ("decompose", "goal"):
             text = (self.root / f".github/skills/domestique-v2-copilot-{kind}/SKILL.md").read_text()
             for required in (
-                "No setup delegation of ANY kind", "two-role questionnaire INLINE",
-                "exact physical Git worktree root", "snapshot_format=1",
-                "platform=copilot", "implementer_sha256", "reviewer_sha256",
-                "excluding only the entire", "ANY edit", "stale hash",
-                "Reviewer: exact native model ID or native inheritance",
-                "Inheritance removes the model field", "complete detailed diff on request",
-                "Save these choices?", "ZERO target writes", "marker LAST",
+                "copilot read-only execution gate", "NO questionnaire and NO writes",
+                "exact physical Git worktree root", "BOTH marker hashes",
+                "Visible default values without a valid marker are NOT confirmation",
+                "Fresh defaults omit model in BOTH roles", "native resolution",
+                "not necessarily the direct parent's model",
+                "/dom-models --confirm", "/dom-models --configure",
                 "exec(compile(code", "assert code == read(base)",
-                "Prepare is READ-ONLY", "independently retained",
-                "fresh Copilot invocation/reload", "human disposition",
-                "Optional exact-origin/loaded-file attestation", "NOT prerequisites",
-                "competing project/ancestor/", "Actual observed mismatch/unavailability",
-                "Send no conflicting spawn model override", "No fallback",
+                "not a freshly installed role already registered",
+                "independent inherited-model attestation", "MUST NOT block",
+                "Genuinely unknown required registration/discovery",
+                "known unavailable/unsupported selection",
+                "Never substitute another model", "conflicting spawn",
             ):
                 self.assertIn(required, text)
+            self.assertNotIn("Save these choices?", text)
+            self.assertNotIn("questionnaire INLINE", text)
         ordinary = (self.root / ".github/skills/domestique-v2-copilot/SKILL.md").read_text()
         self.assertIn("no ordinary/bootstrap questionnaire", ordinary)
         self.assertIn("one explicitly assigned bounded bead", ordinary)
@@ -128,7 +129,8 @@ class Copilot(unittest.TestCase):
                     self.root.mkdir()
                     self.git("init", "-q")
                     self.install(*(["--guest"] if mode == "guest" else []))
-                    current = {r: (self.root / rel).read_text() for r, rel in ROLES.items()}
+                    current = {r: (self.root / STATE / "base" / rel).read_text()
+                               for r, rel in ROLES.items()}
                     pair = {}
                     for role, rel in ROLES.items():
                         old = (OLD_ROLES / f"{role}.agent.md").read_text()
@@ -171,7 +173,15 @@ class Copilot(unittest.TestCase):
                                             marker[role + "_sha256"])
                         self.assertEqual((self.root / STATE / "base" / rel).read_text(),
                                          current[role])
-                    self.assertIn(marker_line, (self.root / ROLES["implementer"]).read_text())
+                    renewed = next(line for line in
+                                   (self.root / ROLES["implementer"]).read_text().splitlines()
+                                   if line.startswith(MARKER))
+                    saved = json.loads(renewed[len(MARKER):])
+                    for role, rel in ROLES.items():
+                        clean = "".join(line for line in (self.root / rel).read_text().splitlines(True)
+                                        if not line.startswith(MARKER))
+                        self.assertEqual(saved[role + "_sha256"],
+                                         hashlib.sha256(clean.encode()).hexdigest())
                     upgraded = snapshot(self.root)
                     self.install()
                     self.assertEqual(snapshot(self.root), upgraded)
@@ -229,7 +239,9 @@ class Copilot(unittest.TestCase):
         pair = {}
         for role, rel in ROLES.items():
             path = self.root / rel
-            text = path.read_text().replace("\n---\n", '\nmodel: "custom-native-id"\ncustom: "retained"\n---\n', 1)
+            text = "".join(line for line in path.read_text().splitlines(True)
+                           if not line.startswith(MARKER))
+            text = text.replace("\n---\n", '\nmodel: "custom-native-id"\ncustom: "retained"\n---\n', 1)
             line = next(s for s in text.splitlines() if s.startswith("description:"))
             text = text.replace(line, "description: " + json.dumps(
                 DESCRIPTION_GUARDS["copilot"] + f" Custom {role} discovery text."))
@@ -246,7 +258,7 @@ class Copilot(unittest.TestCase):
         self.install()
         for role, rel in ROLES.items():
             self.assertEqual((self.root / rel).read_bytes(), before[role])
-        # A real three-way upgrade retains metadata and marker, never reapproves.
+        # A qualified pair's preserving upgrade renews its final-byte marker.
         revised = WORK / "revised-dom.sh"
         revised.write_text(DOM.read_text().replace(
             "Return a terse summary: files changed, actual validation/results, discovered",
@@ -257,10 +269,14 @@ class Copilot(unittest.TestCase):
         self.assertIn('custom: "retained"', changed)
         self.assertIn("Custom implementer discovery text.", changed)
         self.assertIn('tools: ["read", "edit", "search"]', changed)
-        self.assertIn(MARKER + json.dumps(marker), changed)
+        saved = json.loads(next(line[len(MARKER):] for line in changed.splitlines()
+                                if line.startswith(MARKER)))
         clean = "".join(line for line in changed.splitlines(keepends=True)
                         if not line.startswith(MARKER)).encode()
         self.assertNotEqual(hashlib.sha256(clean).hexdigest(), marker["implementer_sha256"])
+        self.assertEqual(hashlib.sha256(clean).hexdigest(), saved["implementer_sha256"])
+        self.assertEqual(hashlib.sha256((self.root / ROLES["reviewer"]).read_bytes()).hexdigest(),
+                         saved["reviewer_sha256"])
         tree = snapshot(self.root)
         self.install("--uninstall", "--dry-run", dom=revised)
         self.assertEqual(snapshot(self.root), tree)

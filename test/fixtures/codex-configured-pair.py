@@ -18,6 +18,13 @@ implementer = roles / "implementer.toml"
 reviewer = roles / "reviewer.toml"
 before_i = implementer.read_bytes()
 before_r = reviewer.read_bytes()
+prefix = b"# domestique-model-setup: "
+if before_i.startswith(prefix):
+    line, before_i = before_i.split(b"\n", 1)
+    installed = json.loads(line[len(prefix):])
+    assert installed["project"] == str(root) and installed["harness"] == "codex"
+    assert installed["implementer_sha256"] == hashlib.sha256(before_i).hexdigest()
+    assert installed["reviewer_sha256"] == hashlib.sha256(before_r).hexdigest()
 assert b"domestique-model-setup:" not in before_i + before_r
 
 # Deliberately NOT an available model claim: exercise TOML basic-string escaping
@@ -27,8 +34,8 @@ encoded = json.dumps(example, ensure_ascii=False).encode()
 assert tomllib.loads((b"model = " + encoded).decode())["model"] == example
 outputs = []
 for before, model, effort, role in (
-    (before_i, b"gpt-5.6-terra", b"medium", "implementer"),
-    (before_r, b"gpt-5.6", b"high", "reviewer"),
+    (before_i, b"gpt-5.6-sol", b"medium", "implementer"),
+    (before_r, b"gpt-5.6-terra", b"high", "reviewer"),
 ):
     old_model = b'model = "' + model + b'"\n'
     old_effort = b'model_reasoning_effort = "' + effort + b'"\n'

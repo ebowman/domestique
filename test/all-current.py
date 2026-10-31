@@ -86,6 +86,197 @@ class AllProviders(unittest.TestCase):
     def installed(self, root):
         return {p for p, state in STATES.items() if (root / state).exists()}
 
+    def model_library(self, provider):
+        # Trusted shared emitter, not a second parser or target helper execution.
+        source = SCRIPT.split("emit_model_setup_helper() {", 1)[1]
+        source = source.split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
+        namespace = {"HARNESS": provider, "__name__": "installer_request_test"}
+        exec(compile(source, str(SOURCE), "exec"), namespace)
+        return namespace
+
+    def test_model_request_plans_defaults_explicit_and_inheritance(self):
+        defaults = {
+            "claude": (("sonnet", None), ("opus", None)),
+            "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
+            "copilot": ((None, None), (None, None)),
+        }
+        for provider in STATES:
+            lib = self.model_library(provider)
+            request = lib["installer_request"]("all", [
+                f"{provider}:reviewer=inherit", f"{provider}:reviewer=inherit"])
+            self.assertEqual(request["selected"], list(STATES))
+            self.assertEqual(request["overrides"][provider], {"reviewer": None})
+            for other in set(STATES) - {provider}:
+                self.assertEqual(request["overrides"][other], {})
+            plan = lib["installer_model_plan"]({})
+            for role, expected in zip(("implementer", "reviewer"), defaults[provider]):
+                self.assertEqual(plan["roles"][role], {
+                    "current": None,
+                    "requested": dict(zip(("model", "effort"), expected)),
+                    "provenance": "fresh-default",
+                })
+            for override in (None, "literal/model", defaults[provider][1][0]):
+                plan = lib["installer_model_plan"]({"reviewer": override})
+                reviewer = plan["roles"]["reviewer"]
+                self.assertEqual(reviewer["provenance"], "explicit-override")
+                self.assertEqual(reviewer["requested"], {
+                    "model": "inherit" if provider == "claude" and override is None else override,
+                    "effort": defaults[provider][1][1]
+                    if override == defaults[provider][1][0] else None,
+                })
+            current = {role: {"model": "old/model", "effort": None if provider == "copilot" else "high"}
+                       for role in ("implementer", "reviewer")}
+            plan = lib["installer_model_plan"]({"implementer": None}, current)
+            self.assertEqual(plan["roles"]["reviewer"]["requested"], current["reviewer"])
+            self.assertEqual(plan["roles"]["reviewer"]["provenance"], "preserved-existing")
+            self.assertEqual(plan["roles"]["implementer"]["requested"]["effort"],
+                             current["implementer"]["effort"])
+            self.assertNotIn("configured", plan)
+            self.assertNotIn("digest", plan)
+
+    def test_model_request_invalid_literals_and_scope(self):
+        parse = self.model_library("claude")["installer_request"]
+        invalid = [
+            "", "claude", "claude:implementer", ":implementer=x",
+            "claude:=x", "unknown:implementer=x", "Claude:implementer=x",
+            "claude:both=x", "claude:Implementer=x", "both:reviewer=x",
+            "claude:implementer=", "claude:implementer= leading",
+            "claude:implementer=trailing ", "claude:implementer=" + "x" * 513,
+            *("claude:implementer=x" + c + "y" for c in
+              ("\n", "\t", "\r", "\x00", "\x7f", "\u200b", "\u2028", "\u2029", "\udcff")),
+        ]
+        for value in invalid:
+            with self.subTest(value=repr(value)), self.assertRaises(ValueError):
+                parse("all", [value])
+        with self.assertRaisesRegex(ValueError, "unselected"):
+            parse("both", ["copilot:reviewer=x"])
+        with self.assertRaisesRegex(ValueError, "conflicting duplicate"):
+            parse("all", ["claude:reviewer=inherit", "claude:reviewer=opus"])
+        literals = ['model/α-"quoted"\\exact=a:b', "x" * 512, "internal space",
+                    "INHERIT", "$(touch MODEL_EXECUTED)", "`touch MODEL_EXECUTED`",
+                    "'; touch MODEL_EXECUTED; #"]
+        for value in literals:
+            self.assertEqual(parse("claude", ["claude:reviewer=" + value])["overrides"],
+                             {"claude": {"reviewer": value}})
+
+    def test_model_cli_stdin_preview_and_apply(self):
+        root = self.root("models-fresh")
+        before = snapshot(root)
+        result = self.run_dom(root, "--dry-run")
+        for text in ('codex:implementer: (absent) -> "gpt-5.6-sol"; effort "medium"',
+                     'codex:reviewer: (absent) -> "gpt-5.6-terra"; effort "high"',
+                     'claude:implementer: (absent) -> "sonnet"',
+                     'claude:reviewer: (absent) -> "opus"',
+                     "copilot:reviewer: (absent) -> native inheritance",
+                     "fresh-default", "fresh -> configured locally"):
+            self.assertIn(text, result.stdout)
+        self.assertEqual(snapshot(root), before)
+        literal = 'model/α-"quoted"\\exact=a:b $(touch MODEL_EXECUTED)'
+        args = ("--platform=both", "--model", "claude:implementer=" + literal,
+                "--model=codex:reviewer=inherit", "--model=codex:reviewer=inherit")
+        for mode in ((), ("--guest",), ("--no-guest",), ("--with-beads",)):
+            result = self.run_dom(root, "--dry-run", *args, *mode)
+            lines = "\n".join(line for line in result.stdout.splitlines()
+                              if "[model selection]" in line)
+            self.assertIn(json.dumps(literal, ensure_ascii=False), lines)
+            self.assertIn("codex:reviewer: (absent) -> native inheritance", lines)
+            self.assertIn("explicit-override", lines)
+            self.assertNotIn("copilot:", lines)
+            self.assertEqual(snapshot(root), before)
+        self.run_dom(root, *args)
+        for provider, rel in zip(STATES, ROLES):
+            if provider == "copilot":
+                self.assertFalse((root / rel).exists())
+                continue
+            fields = self.model_library(provider)["parse"]((root / rel).read_bytes(), "implementer")[1]
+            self.assertEqual(fields["model"], literal if provider == "claude" else "gpt-5.6-sol")
+            if provider == "codex":
+                self.assertEqual(fields["model_reasoning_effort"], "medium")
+                reviewer = self.model_library(provider)["parse"](
+                    (root / rel.replace("implementer", "reviewer")).read_bytes(), "reviewer")[1]
+                self.assertNotIn("model", reviewer)
+                self.assertNotIn("model_reasoning_effort", reviewer)
+        self.assertFalse((root / "MODEL_EXECUTED").exists())
+        before = snapshot(root)
+        help_result = self.run_dom(root, "--model", "not-an-assignment", "--help")
+        self.assertIn("Fresh defaults:", help_result.stdout)
+        self.assertEqual(snapshot(root), before)
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show",
+             "337ccf0dce0c466d53ffce695dfd84f817f82719:domestique.sh"], text=True)
+        result = self.run_dom(root, "--dry-run", *args, script=released, ok=False)
+        self.assertIn("Unknown option: --model", result.stderr)
+        self.assertEqual(snapshot(root), before)  # released lacks this positive path
+
+    def test_model_cli_invalid_zero_writes_and_retained_scope(self):
+        root = self.root("models-invalid")
+        self.seed(root, ["claude"])
+        before = snapshot(root)
+        cases = [
+            ("--model",), ("--model=",), ("--model", "--dry-run"),
+            ("--model=claude:implementer=",), ("--model=bad:reviewer=x",),
+            ("--model=claude:bad=x",), ("--model=claude:reviewer=x\nbad",),
+            ("--model=claude:reviewer=x\udcff",),
+            ("--model=claude:reviewer= leading",),
+            ("--model=claude:reviewer=trailing ",),
+            ("--platform=", "--model=claude:reviewer=x"),
+            ("--model=claude:reviewer=x", "--model=claude:reviewer=y"),
+            ("--platform=codex", "--model=claude:reviewer=x"),
+            ("--platform=both", "--model=copilot:reviewer=x"),
+            ("--model=claude:reviewer=x", "--effort=high"),
+            *(("--model=claude:reviewer=x", flag)
+              for flag in ("--force", "--uninstall", "--purge-beads")),
+            ("--model=claude:reviewer=x", "--uninstall", "--purge-beads"),
+            ("--model=claude:reviewer=x", "--guest", "--no-guest"),
+        ]
+        for args in cases:
+            for dry in ((), ("--dry-run",)):
+                with self.subTest(args=args, dry=dry):
+                    result = self.run_dom(root, *dry, *args, ok=False)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertEqual(snapshot(root), before)
+        # Additive lifecycle still retains Claude, but model intent is Codex only.
+        result = self.run_dom(root, "--platform=codex", "--dry-run",
+                              "--model=codex:implementer=inherit")
+        lines = [line for line in result.stdout.splitlines() if "[model selection]" in line]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all("codex:" in line for line in lines))
+        self.assertEqual(snapshot(root), before)
+
+    def test_model_existing_preview_preserves_effort_and_literal_native_encoding(self):
+        root = self.root("models-existing")
+        self.run_dom(root)
+        for provider, rel in zip(STATES, ROLES):
+            lib = self.model_library(provider)
+            path = root / rel
+            current = lib["parse"](path.read_bytes(), "implementer")[1]
+            literal = 'model/α-"quoted"\\exact=a:b $(touch MODEL_EXECUTED)'
+            # Shared patch/parser roundtrip proves that literal IDs are not code
+            # and that the preview's native inherit representation is correct.
+            for value in (literal, None):
+                plan = lib["installer_model_plan"]({"implementer": value})
+                requested = plan["roles"]["implementer"]["requested"]
+                patched = lib["patch"](path.read_bytes(), "implementer", requested)
+                parsed = lib["parse"](patched, "implementer")[1]
+                self.assertEqual(parsed.get("model"), requested["model"])
+            before = snapshot(root)
+            result = self.run_dom(root, "--platform", provider, "--dry-run",
+                                  "--model", f"{provider}:implementer={literal}")
+            lines = "\n".join(line for line in result.stdout.splitlines()
+                              if "[model selection]" in line)
+            self.assertIn(json.dumps(literal, ensure_ascii=False), lines)
+            self.assertIn("preserved-existing", lines)
+            if current.get("effort") is not None:
+                self.assertIn('effort "medium" [explicit-override]', lines)
+            self.assertEqual(snapshot(root), before)
+        # Ownership is checked before reading role selections; no target code runs.
+        (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").unlink()
+        before = snapshot(root)
+        result = self.run_dom(root, "--platform=codex", "--dry-run",
+                              "--model=codex:reviewer=inherit", ok=False)
+        self.assertIn("modified/unowned helper", result.stderr)
+        self.assertEqual(snapshot(root), before)
+
     def seed(self, root, providers, *flags):
         for provider in providers:
             self.run_dom(root, "--platform", provider, *flags)
@@ -108,10 +299,10 @@ class AllProviders(unittest.TestCase):
         self.assertIn("both remains Claude+Codex", output)
         self.assertIn("Project config only", output)
         self.assertIn("not native clients/model software", output)
-        self.assertIn("retain model choices", output)
-        self.assertIn("--force can replace", output)
-        self.assertIn("independently in each harness", output)
-        self.assertIn("reload/start a fresh invocation", output)
+        self.assertIn("Upgrades and --force retain model/effort choices", output)
+        self.assertIn("verify configured roles and native readiness", output)
+        self.assertIn("reload only if current registrations are stale/unknown", output)
+        self.assertIn("Fresh configured defaults need no questionnaire", output)
         self.assertIn("not native readiness", output)
         self.assertIn("| bash -s -- --dry-run", output)
         self.assertIn("| bash -s -- --platform claude", output)
@@ -128,6 +319,7 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(before, snapshot(root))
         self.assert_notice(self.run_dom(root), root, modes)
         self.assertEqual(self.installed(root), set(STATES))
+        self.assert_static_inventory(root)
         for role in ROLES:
             self.assertTrue((root / role).is_file())
         for path in root.rglob("*.md"):
@@ -154,13 +346,23 @@ class AllProviders(unittest.TestCase):
             "dom-goal", "dom-decompose", "domestique", "domestique-goal",
             "domestique-decompose", "domestique-v2-copilot",
             "domestique-v2-copilot-goal", "domestique-v2-copilot-decompose",
+            "dom-models", "domestique-models", "domestique-v2-copilot-models",
         }
         self.assertEqual(set(inventory), expected)
         for name, paths in inventory.items():
             self.assertEqual(len(paths), 1, name)
             self.assertFalse(paths[0].is_symlink())
             body = paths[0].read_text()
-            if name in ("dom-goal", "dom-decompose"):
+            if name == "dom-models":
+                self.assertIn("description: Codex or Copilot only.", body)
+                for text in ("ACTUAL native caller", "Missing/unreadable/foreign body",
+                             "ORIGINAL explicit request", "No arguments means read-only inspection"):
+                    self.assertIn(text, body)
+                for rel in (".agents/skills/domestique-models/SKILL.md",
+                            ".github/skills/domestique-v2-copilot-models/SKILL.md"):
+                    self.assertIn(rel, body)
+                    self.assertTrue((root / rel).is_file())
+            elif name in ("dom-goal", "dom-decompose"):
                 self.assertEqual(paths[0], root / f".agents/skills/{name}/SKILL.md")
                 for text in ("description: Codex or Copilot only.",
                              "Unknown, ambiguous, or unsupported callers STOP",
@@ -179,9 +381,10 @@ class AllProviders(unittest.TestCase):
                 self.assertIn("An explicit foreign-harness invocation must STOP without setup", body)
                 self.assertIn("skill matching/loading and this text are NOT caller identity.", body)
                 # Boundary precedes the real ordinary/bootstrap or setup gate.
-                gate = ({"domestique": "## Role model gate",
+                gate = ("# Role models" if name.endswith("-models") else
+                        {"domestique": "## Role model gate",
                          "domestique-v2-copilot": "## Read-only role gate"}.get(
-                             name, f"## {harness.capitalize()} first-use role setup"))
+                             name, f"## {harness} read-only execution gate"))
                 after_guard = body.index("and /dom-goal commands, but do not invoke them automatically.")
                 self.assertIn(gate, body[after_guard:])
                 if name == "domestique":
@@ -246,7 +449,7 @@ class AllProviders(unittest.TestCase):
                 self.assertIn(phrase, body)
         commands = list((root / ".claude/commands").glob("*.md"))
         self.assertEqual({p.stem for p in commands},
-                         {"dom-goal", "dom-decompose", "goal", "decompose"})
+                         {"dom-goal", "dom-decompose", "dom-models", "goal", "decompose"})
         for path in commands:
             body = path.read_text()
             self.assertIn("description: Claude Code only;", body)
@@ -323,7 +526,7 @@ class AllProviders(unittest.TestCase):
                     pair = {}
                     for role in ("implementer", "reviewer"):
                         path = root / impl.replace("implementer", role)
-                        text = path.read_text()
+                        text = self.model_library(provider)["split_marker"](path.read_bytes(), role)[0]
                         model = f"fixture-{provider}-{role}"
                         if provider == "codex":
                             text = re.sub(r'(?m)^model = .+$', f'model = "{model}"', text)
@@ -361,14 +564,17 @@ class AllProviders(unittest.TestCase):
                     pairs[changed]["implementer"] = pairs[changed]["implementer"].replace(
                         old.encode(), new.encode())
                     for provider, impl in zip(STATES, ROLES):
-                        marker = json.loads(markers[provider].decode()[len(marker_prefix):])
+                        module = self.model_library(provider)
+                        live_marker = module["split_marker"]((root / impl).read_bytes(), "implementer")[1]
                         for role, expected in pairs[provider].items():
                             data = (root / impl.replace("implementer", role)).read_bytes()
-                            self.assertEqual(data, expected)  # tools, metadata, marker, body
-                            clean = data.replace(markers[provider], b"")
-                            valid = hashlib.sha256(clean).hexdigest() == marker[role + "_sha256"]
-                            updated = list(changes).index(provider) <= list(changes).index(changed)
-                            self.assertEqual(valid, role == "reviewer" or not updated)
+                            clean = module["split_marker"](data, role)[0].encode()
+                            expected_clean = module["split_marker"](expected, role)[0].encode()
+                            self.assertEqual(clean, expected_clean)  # exact settings/tools/body
+                            self.assertEqual(hashlib.sha256(clean).hexdigest(),
+                                             live_marker[role + "_sha256"])
+                            pairs[provider][role] = data
+                        self.assertEqual(live_marker["project"], str(root))
                     before = byte_snapshot(root)
                     self.run_dom(root, script=upstream)
                     self.assertEqual(before, byte_snapshot(root))
@@ -569,6 +775,7 @@ class AllProviders(unittest.TestCase):
     def test_native_metadata_independent_legacy_upgrade(self):
         root = self.native_metadata_fixture("metadata")
         expected = {}
+        bases = {}
         for role in ("implementer", "reviewer"):
             rel = f".claude/agents/{role}.md"
             path = root / rel
@@ -578,6 +785,7 @@ class AllProviders(unittest.TestCase):
             text = text.replace("\n---\n", "\neffort: high  # keep exactly\n---\n", 1)
             path.write_bytes(text.encode() + b"\nFixture body bytes: \xc3\xa9\t \n")
             expected[rel] = path.read_bytes()
+            bases[rel] = (root / STATES["claude"] / "base" / rel).read_bytes()
         before = snapshot(root)
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show",
@@ -585,9 +793,16 @@ class AllProviders(unittest.TestCase):
         result = self.run_dom(root, "--dry-run", script=released, ok=False)
         self.assertIn("retained projection conflict .claude/agents/implementer.md", result.stderr)
         self.assertEqual(snapshot(root), before)  # regression negative control
-        self.run_dom(root, "--dry-run")
+        planned = self.run_dom(root, "--dry-run", ok=False)
+        self.assertEqual(planned.returncode, 3)
+        self.assertIn("reconfirmation-required", planned.stdout)
+        self.assertIn("dom-models --confirm", planned.stderr)
+        self.assertNotIn("missing native", planned.stderr)
         self.assertEqual(snapshot(root), before)
-        self.run_dom(root)
+        migrated = self.run_dom(root, ok=False)
+        self.assertEqual(migrated.returncode, 3)
+        self.assertIn("[historical migration completed] claude:", migrated.stdout)
+        self.assertIn("dom-models --confirm", migrated.stderr)
         for rel, data in expected.items():
             path = root / rel
             header, body = data.split(b"\n---\n", 1)
@@ -599,9 +814,69 @@ class AllProviders(unittest.TestCase):
             self.assertTrue(actual_body.endswith(body))
             self.assertIn(b"## Active harness boundary (claude only)", actual_body)
             base = (root / STATES["claude"] / "base" / rel).read_bytes()
+            self.assertEqual(base, bases[rel])
             self.assertNotIn(b"mcp__example__search", base)
             self.assertNotIn(b"example-native", base)
             self.assertNotIn(b"Fixture body bytes", base)
+        before = byte_snapshot(root)
+        self.run_dom(root, ok=False)
+        self.assertEqual(byte_snapshot(root), before)
+        # Retaining an old pristine base must not authorize later removal of
+        # either modern guard, even with --force and an unconfirmed pair.
+        path = root / ".claude/agents/implementer.md"
+        guarded = path.read_bytes()
+        for guard in (b"Claude Code only; never match in another harness. ",
+                      b"## Active harness boundary (claude only)"):
+            self.assertIn(guard, guarded)
+            path.write_bytes(guarded.replace(guard, b"", 1))
+            before = snapshot(root)
+            for flags in (("--dry-run",), ("--force",)):
+                refused = self.run_dom(root, "--platform", "claude", *flags, ok=False)
+                self.assertEqual(refused.returncode, 3)
+                # Description removal may conflict with the upstream metadata
+                # before guard validation; either refusal must precede writes.
+                self.assertIn("Publication not started; no project writes.", refused.stderr)
+                self.assertNotIn("[model publication]", refused.stdout)
+                self.assertEqual(snapshot(root), before)
+            path.write_bytes(guarded)
+        # Exercise the installed authority bootstrap and helper, not a synthetic
+        # marker. Current-pair review is read-only; only explicit Save confirms.
+        bootstrap = (root / ".claude/commands/dom-models.md").read_text()
+        bootstrap = bootstrap.split("```python\n", 1)[1].split("\n```", 1)[0]
+
+        def helper(*args, plan=None):
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                input=json.dumps(plan) if plan is not None else None,
+                cwd=root, env=self.env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        before = snapshot(root)
+        review = helper("request", "--confirm")
+        self.assertFalse(review["configured"])
+        self.assertEqual(review["chosen"], review["current"])
+        self.assertEqual(review["current"], {
+            r: {"model": "example-native", "effort": "high"}
+            for r in ("implementer", "reviewer")})
+        self.assertEqual(snapshot(root), before)
+        roles = {rel: (root / rel).read_bytes() for rel in expected}
+        self.assertTrue(helper("apply", review["digest"], plan=review["plan"])["confirmed"])
+        lib = self.model_library("claude")
+        for role in ("implementer", "reviewer"):
+            rel = f".claude/agents/{role}.md"
+            self.assertEqual(lib["split_marker"]((root / rel).read_bytes(), role)[0].encode(),
+                             roles[rel])
+        before = byte_snapshot(root)
+        self.run_dom(root)
+        self.assertTrue(helper("verify")["confirmed"])
+        # Explicit Save permits advancing to actual upstream bases, never custom
+        # bytes; the saved role pair itself must remain byte-identical.
+        for rel in roles:
+            data = (root / STATES["claude"] / "base" / rel).read_bytes()
+            self.assertNotIn(b"mcp__example__search", data)
+            self.assertNotIn(b"Fixture body bytes", data)
+            self.assertEqual((root / rel).read_bytes(), before[rel][1])
         before = byte_snapshot(root)
         self.run_dom(root)
         self.assertEqual(byte_snapshot(root), before)
@@ -631,6 +906,16 @@ class AllProviders(unittest.TestCase):
                 for flags in (("--dry-run",), ()):
                     result = self.run_dom(root, *flags, script=script, ok=False)
                     self.assertEqual(result.returncode, 3)
+                    self.assertNotIn("unknown inventory generation", result.stderr)
+                    self.assertIn("Native role fallback refused:", result.stderr)
+                    self.assertIn({
+                        "field": "competing metadata field",
+                        "body": "layout or body conflict",
+                        "duplicate": "malformed/duplicate/multiline field",
+                        "multiline": "unsupported scalar",
+                        "ambiguous": "ambiguous scalar",
+                        "malformed": "malformed or unreadable frontmatter",
+                    }[kind], result.stderr)
                     self.assertIn(f"local: ./{rel}", result.stderr)
                     self.assertIn(f"pristine base: ./{STATES['claude']}/base/{rel}", result.stderr)
                     self.assertIn("upstream: Domestique", result.stderr)
@@ -862,7 +1147,7 @@ class AllProviders(unittest.TestCase):
         cp = self.bin / "cp"
         cp.write_text(
             '#!/bin/sh\ncase "$2" in\n'
-            '  */.github/agents/*) exit 17 ;;\n'
+            '  */.github/skills/*) exit 17 ;;\n'
             'esac\nexec /bin/cp "$@"\n'
         )
         cp.chmod(0o755)
@@ -873,7 +1158,8 @@ class AllProviders(unittest.TestCase):
         self.assertIn("install plan", result.stdout)
         self.assertNotIn("\nDone.", result.stdout)
         self.assertTrue((root / ROLES[0]).is_file())
-        self.assertFalse((root / ROLES[2]).exists())
+        self.assertTrue((root / ROLES[2]).exists())
+        self.assertFalse((root / ".github/skills/domestique-v2-copilot/SKILL.md").exists())
 
     def test_notice_precedes_first_target_mutation_and_dry_run_plan(self):
         # Combined xtrace/output observes real execution order, including mode
@@ -1367,6 +1653,86 @@ class AllProviders(unittest.TestCase):
             for flags in ((), ("--force",), ("--dry-run",)):
                 self.run_dom(root, *flags, script=upstream, ok=False)
                 self.assertEqual(before, snapshot(self.work))
+
+    def test_dom_models_install_upgrade_guest_and_scoped_lifecycle(self):
+        native = {
+            "claude": ".claude/commands/dom-models.md",
+            "codex": ".agents/skills/domestique-models/SKILL.md",
+            "copilot": ".github/skills/domestique-v2-copilot-models/SKILL.md",
+        }
+        shared = ".agents/skills/dom-models/SKILL.md"
+        # Explicit providers, then default upgrade from the reviewed .4 HEAD.
+        previous = subprocess.check_output(
+            ["git", "show", "3d1a3d3ca014f7042ea9208a09a6f7a212d53082:domestique.sh"],
+            cwd=SOURCE.parent, text=True)
+        root = self.root("models-upgrade")
+        self.run_dom(root, "--guest", script=previous)
+        before_roles = {str(p.relative_to(root)): p.read_bytes()
+                        for provider in ROLES for p in
+                        (root / provider, root / provider.replace("implementer", "reviewer"))}
+        self.run_dom(root)
+        for rel, data in before_roles.items():
+            self.assertEqual((root / rel).read_bytes(), data)
+        for provider, rel in native.items():
+            self.assertIn(rel, (root / STATES[provider] / "manifest").read_text())
+            self.assertEqual((root / rel).read_bytes(),
+                             (root / STATES[provider] / "base" / rel).read_bytes())
+        self.assertIn(shared, (root / ".agents/.domestique/manifest").read_text())
+        for rel in (*native.values(), shared):
+            self.assertEqual(subprocess.run(["git", "check-ignore", "-q", rel],
+                                            cwd=root, env=self.env).returncode, 0)
+        # Exact excludes must not hide neighbors (Claude keeps historical broad scope).
+        for rel in (".agents/skills/dom-models/host.txt",
+                    ".agents/skills/domestique-models/host.txt",
+                    ".github/skills/domestique-v2-copilot-models/host.txt"):
+            self.assertEqual(subprocess.run(["git", "check-ignore", "-q", rel],
+                                            cwd=root, env=self.env).returncode, 1)
+        stable = snapshot(root)
+        self.run_dom(root, "--platform=all")
+        self.assertEqual(stable, snapshot(root))
+        # Modified commands retain the same scoped uninstall backup semantics.
+        custom = (root / native["copilot"]).read_bytes() + b"\nHost model-command note\n"
+        (root / native["copilot"]).write_bytes(custom)
+        for provider in native:
+            self.run_dom(root, "--platform", provider, "--uninstall")
+            self.assertFalse((root / native[provider]).exists())
+            self.assertEqual((root / shared).exists(), provider != "copilot")
+        preserved = list((root / native["copilot"]).parent.glob("SKILL.md.uninstalled.*"))
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].read_bytes(), custom)
+        for provider, rel in native.items():
+            root = self.root("models-only-" + provider)
+            self.run_dom(root, "--platform", provider)
+            self.assertTrue((root / rel).is_file())
+            self.assertEqual((root / shared).exists(), provider != "claude")
+            for other, other_rel in native.items():
+                self.assertEqual((root / other_rel).exists(), other == provider)
+
+    def test_dom_models_new_paths_unowned_or_symlink_refuse(self):
+        paths = (".claude/commands/dom-models.md",
+                 ".agents/skills/domestique-models/SKILL.md",
+                 ".github/skills/domestique-v2-copilot-models/SKILL.md",
+                 ".agents/skills/dom-models/SKILL.md")
+        for index, rel in enumerate(paths):
+            for kind in ("file", "symlink", "base"):
+                root = self.root(f"models-conflict-{index}-{kind}")
+                path = root / rel
+                if kind == "base":
+                    state = (".claude/.domestique" if rel.startswith(".claude") else
+                             ".github/.domestique" if rel.startswith(".github") else
+                             ".codex/.domestique" if "domestique-models" in rel else
+                             ".agents/.domestique")
+                    path = root / state / "base" / rel
+                path.parent.mkdir(parents=True)
+                if kind == "symlink":
+                    path.symlink_to(root / "absent")
+                else:
+                    path.write_bytes(b"unowned\n")
+                before = snapshot(root)
+                self.run_dom(root, "--dry-run", ok=False)
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, ok=False)
+                self.assertEqual(before, snapshot(root))
 
     def test_unowned_policy_base_not_overwritten(self):
         root = self.root("unowned-policy-base")

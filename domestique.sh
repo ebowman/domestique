@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.2.2"
+DOMESTIQUE_VERSION="0.3.0"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -33,11 +33,11 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 
 ## Role model gate (execution only, never planning)
 - Planning-only decompose bypasses this entire role gate: no setup, helper verify, model questions, loaded-role checks or reload, even for missing/unconfirmed/manually edited pairs. Apply only the harness boundary and explicit planning request; no delegation or task execution.
-- Claude native entries `/dom-decompose` and `/dom-goal` (aliases `/decompose`, `/goal`) share the setup protocol in their installed command bodies and the same two role files/marker. Generated defaults are suggestions, never confirmation.
-- An interactive first-use `/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) runs the same two-role questionnaire INLINE in this request, not a redirect to decompose. Setup consumes the request: no task, Beads or implementation, and no automatic continuation. The goal's later unattended loop does not make this interactive entry noninteractive. Truly noninteractive/autopilot callers without a confirmed pair STOP without persistence.
-- Ordinary bounded delegation must first validate the confirmed pair and native readiness using that protocol, read-only. If unconfigured or stale, STOP and direct the human to `/dom-decompose configure role models`; do not start another questionnaire or call Beads. Instruction/bootstrap loading alone neither starts setup nor authorizes goal work; do not infer the active harness from directories.
-- Explicit `/dom-decompose configure role models` (or `/decompose configure role models`) is reserved for setup-only reconfiguration, not a planning brief. Saving grants no execution authority; reload only if registrations are stale/unknown before fresh explicit execution authorization. Planning needs no reload.
-- Before dispatch, apply the supported pre-dispatch minimum in that protocol: active native client and registered intended role IDs; verified stored pair/ownership/root/hashes and required reload; matching declared/resolved model/effort and tools; documented project discovery/precedence with competing definitions and known overrides checked; available non-secret provider/model compatibility evidence. Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes. Missing/ambiguous registration, actual mismatch, unresolved inheritance, known defeating override or unavailability means STOP, never fallback. Send no conflicting spawn model/effort overrides. Check available child telemetry during/after each authorized assignment before accepting work; selection failure/mismatch stops. Native dispatch qualification remains separate.
+- Claude native entries `/dom-decompose` and `/dom-goal` (aliases `/decompose`, `/goal`) share the read-only execution gate in their installed command bodies and the same two role files/marker.
+- Before ordinary bounded delegation or explicit `/dom-goal EPIC_ID`, read that gate as a protocol, not a new invocation. Use its pristine helper `verify`: valid installer-configured defaults and previously saved custom/inherited pairs need NO questionnaire and NO writes. Fresh installation alone requires neither Save nor restart nor renewed goal authorization.
+- If unconfirmed/stale, STOP concisely with `/dom-models --confirm` for current-pair review, or `/dom-models --configure` for changes; do not start another questionnaire or call Beads. Missing/unsafe ownership or files require explicit preserving installer repair, never automatic repair/blessing.
+- Changes belong only to explicit `/dom-models` (including the exact decompose `configure role models` alias). Save requires its exact-plan summary, consent and verified terminal completion; grants no execution authority and never queues a goal. Instruction/bootstrap loading alone neither starts setup nor authorizes goal work.
+- Native readiness is separate from the marker: establish actual client, unambiguous registered intended roles and documented discovery/resolution, required tools, known overrides/mismatches and available model/effort support evidence. No repeated catalog/config dumps or probes. Missing optional loaded-byte, independent inherited-model or child telemetry alone does not block authorized work with documented native resolution and no counterevidence. Genuinely unknown registration, known unavailability/unsupported effort or defeating override stops with role/reason and `/dom-models --configure`, never fallback or conflicting spawn overrides. Reload only for actually stale/unknown current registrations before execution, not merely fresh files. Check available child telemetry/selection errors before accepting work; static instructions are not native dispatch qualification.
 
 ## Work tracking: beads
 - The plan of record lives in beads (`bd`), not in markdown TODO lists.
@@ -203,12 +203,14 @@ emit_model_setup_helper() {
   printf 'HARNESS = "%s"\n' "$CURRENT_PROVIDER"
   cat <<'PY'
 """Bounded filesystem-only model-pair editor. Native consent is external."""
+import ast
 import difflib
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -268,21 +270,85 @@ def choices(value):
     return value
 
 
+def installer_defaults():
+    """Normalized model/effort defaults shared by selection and publication."""
+    return dict(zip(ROLES, (
+        {"claude": (("sonnet", None), ("opus", None)),
+         "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
+         "copilot": ((None, None), (None, None))}[HARNESS])))
+
+
+def installer_request(platform, assignments):
+    """Read-only CLI boundary. Missing role = default/preserve; null = explicit inherit.
+
+    The installer passes request["overrides"][harness] to InstallerPair.prepare(), after
+    preflighting its whole lifecycle. This request is NOT publication authority.
+    """
+    platforms = {"claude": ["claude"], "codex": ["codex"],
+                 "both": ["claude", "codex"], "copilot": ["copilot"],
+                 "all": ["claude", "codex", "copilot"]}
+    need(platform in platforms, "invalid model platform selection")
+    overrides = {h: {} for h in platforms[platform]}
+    for assignment in assignments:
+        scope, equals, value = assignment.partition("=")
+        harness, colon, role = scope.partition(":")
+        need(equals and colon and harness in platforms["all"] and role in ROLES,
+             "--model requires harness:role=id-or-inherit "
+             "(claude/codex/copilot; implementer/reviewer)")
+        need(harness in overrides, "--model names an unselected harness")
+        selection(value)
+        value = None if value == "inherit" else value
+        need(role not in overrides[harness] or overrides[harness][role] == value,
+             "conflicting duplicate --model")
+        overrides[harness][role] = value
+    return {"v": 1, "purpose": "installer-model-request",
+            "selected": platforms[platform], "overrides": overrides}
+
+
+def installer_model_plan(overrides, current=None):
+    """Selection-only plan; no eligibility, merge, confirmation or native claims.
+
+    current is parsed owned metadata, or None for a genuinely absent pair.
+    Native representations match patch(): Claude inherit is a string; elsewhere
+    null means omission. Existing model-only changes never alter effort.
+    """
+    need(type(overrides) is dict and set(overrides) <= set(ROLES),
+         "installer overrides name individual roles")
+    for value in overrides.values():
+        selection(value)
+        need(value != "inherit", "installer inheritance requires normalized null")
+    if current is not None:
+        choices(current)
+    roles = {}
+    for role, (model, effort) in installer_defaults().items():
+        old = None if current is None else dict(current[role])
+        selected = overrides.get(role, model if old is None else old["model"])
+        if old is not None:
+            effort = old["effort"]
+        elif selected != model:
+            effort = None
+        if HARNESS == "claude" and selected is None:
+            selected = "inherit"
+        roles[role] = {
+            "current": old, "requested": {"model": selected, "effort": effort},
+            "provenance": ("explicit-override" if role in overrides else
+                           "fresh-default" if old is None else "preserved-existing"),
+        }
+    return {"harness": HARNESS, "roles": roles}
+
+
 def metadata(info):
     return [info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid]
 
 
 class Pair:
-    def __init__(self):
+    def __init__(self, *, installed=True):
         self.root = Path.cwd()
         need(all(unicodedata.category(c)[0] != "C" and c not in "\u2028\u2029" for c in str(self.root)),
              "unsafe root characters")
-        gitroot = subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")
-        need(str(self.root) == gitroot and self.root.resolve() == self.root,
-             "invoke at physical Git worktree root")
+        self.check_root()
         self.helper = f"{DIRECTORY}/domestique-model-setup.py"
-        need(Path(__file__) == self.root / self.helper, "helper location/root mismatch")
+        need(not installed or Path(__file__) == self.root / self.helper, "helper location/root mismatch")
         self.paths = {
             role: (f"{DIRECTORY}/agents/{role}.toml" if HARNESS == "codex" else
                    f"{DIRECTORY}/agents/domestique-v2-copilot-{role}.agent.md"
@@ -295,11 +361,20 @@ class Pair:
                       *(f"{self.state}/base/{p}" for p in self.paths.values()),
                       self.helper, f"{self.state}/base/{self.helper}"]
 
-    def snapshot(self):
+    def check_root(self):
+        gitroot = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")
+        need(Path.cwd() == self.root and str(self.root) == gitroot and
+             self.root.resolve() == self.root, "invoke at physical Git worktree root")
+
+    def read_snapshot(self, *, absent=False):
         records, contents, parents = {}, {}, {}
         for rel in self.files:
             path = self.root / rel
             for parent in reversed(path.parents):
+                if absent and not parent.exists() and not parent.is_symlink():
+                    parents[str(parent)] = None
+                    continue
                 info = parent.lstat()
                 need(stat.S_ISDIR(info.st_mode), f"unsafe directory: {parent}")
                 if parent == self.root or self.root in parent.parents:
@@ -309,6 +384,9 @@ class Pair:
                 # operation-owned temporary changes it. Bind identity/mode/
                 # ownership, not a filesystem-dependent child count.
                 parents[str(parent)] = [info.st_dev, info.st_ino, info.st_mode, info.st_uid]
+            if absent and not path.exists() and not path.is_symlink():
+                records[rel], contents[rel] = None, None
+                continue
             info = path.lstat()
             need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
                  info.st_size <= LIMIT and info.st_mode & 0o444 and
@@ -325,10 +403,48 @@ class Pair:
                 os.close(fd)
             records[rel] = metadata(info) + [sha(data)]
             contents[rel] = data
+        return {"files": records, "parents": parents}, contents
+
+    def snapshot(self):
+        snapshot, contents = self.read_snapshot()
+        self.validate_contents(contents)
+        return snapshot, contents
+
+    def validate_contents(self, contents, *, legacy=False, partial=False):
+        manifest = self.inventory(contents[self.manifest])
+        inventory = manifest["files"].split(",")
+        need(all(p in inventory for p in self.paths.values()) and
+             (legacy or self.helper in inventory),
+             "incomplete/unsafe inventory; preserving installer upgrade required")
+        if legacy:
+            need(self.helper not in inventory and contents[self.helper] is None and
+                 contents[f"{self.state}/base/{self.helper}"] is None,
+                 "unowned legacy helper")
+        else:
+            need(contents[self.helper] is not None, "missing claimed helper")
+            need(contents[f"{self.state}/base/{self.helper}"] is not None,
+                 "missing claimed helper base")
+            self.validate_helper(contents)
+        for role in ROLES:
+            if contents[self.paths[role]] is not None or not partial:
+                parse(contents[self.paths[role]], role)
+            base = contents[f"{self.state}/base/{self.paths[role]}"]
+            need(base is not None, "missing required role base")
+            _, _, marker = parse(base, role)
+            need(marker is None, "pristine base must not confirm a pair")
+
+    def validate_helper(self, contents):
         need(contents[self.helper] == contents[f"{self.state}/base/{self.helper}"],
              "modified helper; explicit installer repair required")
+        try:
+            ast.parse(contents[self.helper], filename=self.helper)
+        except SyntaxError as exc:
+            raise ValueError("malformed helper") from exc
+
+    def inventory(self, data):
+        need(type(data) is bytes, "missing manifest")
         manifest = {}
-        for line in contents[self.manifest].decode("utf-8").splitlines():
+        for line in data.decode("utf-8").splitlines():
             key, sep, value = line.partition("=")
             need(sep and key not in manifest and re.fullmatch("[a-z_][a-z_0-9]*", key),
                  "ambiguous manifest")
@@ -339,14 +455,8 @@ class Pair:
         need(len(inventory) == len(set(inventory)) and
              all(p and not p.startswith("/") and ".." not in p.split("/")
                  and not any(unicodedata.category(c)[0] == "C" for c in p)
-                 for p in inventory) and
-             all(p in inventory for p in (*self.paths.values(), self.helper)),
-             "incomplete/unsafe inventory; preserving installer upgrade required")
-        for role in ROLES:
-            parse(contents[self.paths[role]], role)
-            _, _, marker = parse(contents[f"{self.state}/base/{self.paths[role]}"], role)
-            need(marker is None, "pristine base must not confirm a pair")
-        return {"files": records, "parents": parents}, contents
+                 for p in inventory), "incomplete/unsafe inventory; preserving installer upgrade required")
+        return manifest
 
     def publication_writable(self):
         # Only apply, in the consented/protected-write-approved context, checks
@@ -479,13 +589,15 @@ def parse(data, role):
     return (lines, newline, insertion, spans), fields, marker
 
 
-def patch(data, role, choice):
+def patch(data, role, choice, *, model_only=False, preserve_model=False):
     (lines, newline, insertion, spans), fields, _ = parse(data, role)
     effort = "model_reasoning_effort" if HARNESS == "codex" else "effort"
     selected = {"model": choice["model"]}
     if HARNESS == "claude" and selected["model"] is None:
         selected["model"] = "inherit"
-    if HARNESS != "copilot":
+    if preserve_model:
+        selected.pop("model")
+    if HARNESS != "copilot" and not model_only:
         selected[effort] = choice["effort"]
     additions = []
     for key, value in selected.items():
@@ -515,25 +627,36 @@ def patch(data, role, choice):
 
 
 def build(pair, selected, snapshot, contents):
-    outputs = {r: patch(contents[pair.paths[r]], r, selected[r]) for r in ROLES}
+    outputs = {r: patch(contents[pair.paths[r]], r, selected[r],
+                        preserve_model=selected[r]["model"] ==
+                        parse(contents[pair.paths[r]], r)[1].get("model")) for r in ROLES}
+    mark_outputs(pair, outputs)
+    diff = pair_diff(pair, contents, outputs)
+    plan = {"v": 1, "root": str(pair.root), "harness": HARNESS,
+            "choices": selected, "snapshot": snapshot, "diff": diff}
+    return plan, outputs
+
+
+def mark_outputs(pair, outputs):
     marker = {"v": 1, "project": str(pair.root), "harness": HARNESS,
               **{r + "_sha256": sha(outputs[r]) for r in ROLES}}
     lines = outputs["implementer"].splitlines(keepends=True)
     newline = b"\r\n" if b"\r\n" in outputs["implementer"] else b"\n"
     lines.insert(0 if HARNESS == "codex" else 1, MARKER.encode() + b" " + canonical(marker) + newline)
     outputs["implementer"] = b"".join(lines)
-    diff = ""
-    for role in ROLES:
-        rel = pair.paths[role]
-        # Explicit no-final-newline annotation, never hide that byte distinction.
-        chunks = difflib.unified_diff(contents[rel].decode().splitlines(keepends=True),
-                                     outputs[role].decode().splitlines(keepends=True),
-                                     fromfile="a/" + rel, tofile="b/" + rel)
-        for line in chunks:
-            diff += line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
-    plan = {"v": 1, "root": str(pair.root), "harness": HARNESS,
-            "choices": selected, "snapshot": snapshot, "diff": diff}
-    return plan, outputs
+
+
+def pair_diff(pair, contents, outputs):
+    return "".join(file_diff(pair.paths[r], contents[pair.paths[r]], outputs[r]) for r in ROLES)
+
+
+def file_diff(rel, before, after):
+    chunks = difflib.unified_diff((before or b"").decode().splitlines(keepends=True),
+                                 after.decode().splitlines(keepends=True),
+                                 fromfile="a/" + rel, tofile="b/" + rel)
+    # Explicit no-final-newline annotation, never hide that byte distinction.
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                   for line in chunks)
 
 
 def verify(pair, contents):
@@ -567,23 +690,43 @@ def publish(pair, plan, digest):
     pair.publication_writable()
     # A plan cannot be replayed after successful publication: even reconfirmation
     # replaces the implementer inode. No registry/receipt is needed.
-    owned, changed = {}, []
+    return publish_outputs(pair, expected, contents, outputs)
+
+
+def publish_outputs(pair, expected, contents, outputs, *, dependencies=None, configured=True):
+    """One publication engine; installer dependencies precede the final marker."""
+    owned, changed, made = {}, [], []
     try:
-        bare, _ = split_marker(contents[pair.paths["implementer"]], "implementer")
+        original = contents[pair.paths["implementer"]]
+        bare = split_marker(original, "implementer")[0].encode() if original else None
         stages = []
-        if bare.encode() != contents[pair.paths["implementer"]]:
-            stages.append(("implementer", bare.encode()))
-        stages += [(r, outputs[r]) for r in ("reviewer", "implementer")]
-        for role, data in stages:
+        pair_changed = any(contents[pair.paths[r]] != outputs[r] for r in ROLES)
+        if bare != original and (dependencies is None or pair_changed):
+            stages.append((pair.paths["implementer"], bare))
+        stages += list((dependencies or {}).items())
+        stages += [(pair.paths[r], outputs[r]) for r in ("reviewer", "implementer")]
+        for rel, data in stages:
+            if dependencies is not None and contents[rel] == data:
+                continue
             current, _ = pair.snapshot()
             need(current == expected, "prepublication state changed")
             pair.publication_writable()
-            path = pair.root / pair.paths[role]
+            path = pair.root / rel
+            for parent in reversed(path.parents):
+                if str(parent) in expected["parents"] and expected["parents"][str(parent)] is None:
+                    current, _ = pair.snapshot()
+                    need(current == expected, "prepublication directory state changed")
+                    parent.mkdir(mode=0o755)
+                    made.append(str(parent))
+                    info = parent.lstat()
+                    expected["parents"][str(parent)] = [
+                        info.st_dev, info.st_ino, info.st_mode, info.st_uid]
             fd, name = tempfile.mkstemp(prefix=".domestique-model-setup-", dir=path.parent)
             temp = Path(name)
             try:
                 owned[temp] = (metadata(os.fstat(fd)), b"")
-                os.fchmod(fd, stat.S_IMODE(expected["files"][pair.paths[role]][2]))
+                record = expected["files"][rel]
+                os.fchmod(fd, stat.S_IMODE(record[2]) if record else 0o644)
                 owned[temp] = (metadata(os.fstat(fd)), b"")
                 with os.fdopen(fd, "wb", closefd=False) as stream:
                     stream.write(data)
@@ -599,18 +742,25 @@ def publish(pair, plan, digest):
             pair.publication_writable()
             os.replace(temp, path)
             del owned[temp]
-            changed.append(pair.paths[role])
-            expected["files"][pair.paths[role]] = info + [sha(data)]
+            changed.append(rel)
+            contents[rel] = data
+            expected["files"][rel] = info + [sha(data)]
         current, contents = pair.snapshot()
         need(current == expected and all(contents[pair.paths[r]] == outputs[r] for r in ROLES),
              "postpublication state changed")
         result = verify(pair, contents)
-        need(result["confirmed"], "postpublication marker invalid")
+        pair.validate_contents(contents)
+        need(result["confirmed"] == configured, "postpublication marker invalid")
+        if dependencies is not None:
+            result.update(configured=configured, native_ready=False,
+                          outcome="configured" if configured else "reconfirmation-required",
+                          published=changed, publication_snapshot=expected)
         return result
     except (OSError, ValueError) as exc:
         raise ValueError(json.dumps({
-            "scope": "filesystem-only", "error": str(exc), "partial": bool(changed),
+            "scope": "filesystem-only", "error": str(exc), "partial": bool(changed or made),
             "published": changed, "workflow_authorized": False,
+            "created_directories": made,
             "recovery": "No rollback. Inspect current pair; prepare/summarize and obtain new consent.",
             "operation_temporaries": [str(p) for p in owned],
         })) from exc
@@ -628,10 +778,313 @@ def publish(pair, plan, digest):
                 print(f"Retained temporary {path}: {exc}", file=sys.stderr)
 
 
-def main():
+def project_settings(data, role):
+    """Nonselection merge view; scalar lines (including comments) remain local."""
+    (lines, _, _, spans), _, _ = parse(data, role)
+    indices = {span[0] for span in spans.values()}
+    return "".join(line for i, line in enumerate(lines) if i not in indices).encode()
+
+
+def restore_settings(local, merged, role):
+    """Reinsert exact local scalar lines at unambiguous unchanged boundaries."""
+    (lines, _, _, spans), _, _ = parse(local, role)
+    indices = {span[0] for span in spans.values()}
+    old = [line for i, line in enumerate(lines) if i not in indices]
+    new = merged.decode("utf-8").splitlines(keepends=True)
+    boundaries = {}
+    for tag, a, b, c, d in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            for offset in range(b - a + 1):
+                boundaries.setdefault(a + offset, set()).add(c + offset)
+    additions, offset = {}, 0
+    for i, line in enumerate(lines):
+        if i in indices:
+            targets = {0} if offset == 0 else boundaries.get(offset, set())
+            need(len(targets) == 1, "selection boundary changed; preserving merge requires review")
+            additions.setdefault(next(iter(targets)), []).append(line)
+        else:
+            offset += 1
+    for index in sorted(additions, reverse=True):
+        new[index:index] = additions[index]
+    result = "".join(new).encode()
+    need(project_settings(result, role) == merged, "selection restoration changed body")
+    return result
+
+
+class InstallerPair(Pair):
+    """Trusted installer library interface ONLY; deliberately absent from main().
+
+    Load the installer's own emitted helper (not an unvalidated live helper),
+    authorize the requested provider/overrides and preflight the WHOLE lifecycle.
+    Supply seven pristine emitter outputs, recognized (version, files) inventory
+    signatures, the existing preserving merge(local, base, upstream) callback,
+    and native guard validation(role, base, live, candidate). Callbacks must raise
+    on conflicts/unsafe guards; no runtime plan supplies code or replacement bodies.
+
+    prepare(overrides) is read-only, including absent files/directories. Keep this
+    object and its returned digest in the trusted installer; apply(plan, digest)
+    accepts ONLY that prepared plan. It publishes only these seven helper-owned
+    paths, not the entire inventory. The installer owns other lifecycle publication
+    and global success. Reconfirmation-required is explicitly NOT global success.
+    The internal result's publication_snapshot binds the verified outputs and
+    identities. Carry it through final lifecycle verification without rereading a
+    new baseline. No remaining installer step may mutate these seven paths.
+    Native CLI publication results deliberately do not expose this internal field.
+    Partial owned pairs refuse without repair: the installer must coordinate repair with
+    explicit reconfirmation. Restoring an absent-marker pair here would erase its
+    partial-state evidence and let a subsequent rerun mistake it for legacy.
+    No provider readiness, CLI authorization, historical attestation or force
+    policy is inferred here. Pristine inputs must NEVER be seeded from custom live
+    bytes. Recognized inventory signatures come from reviewed installer versions,
+    not from the target's own manifest. No persistent second registry is created.
+    """
+
+    def __init__(self, pristine, recognized, merge, validate):
+        super().__init__(installed=False)
+        need(type(pristine) is dict and set(pristine) == set(self.files) and
+             all(type(v) is bytes and len(v) <= LIMIT for v in pristine.values()),
+             "complete bounded pristine install output required")
+        need(callable(merge) and callable(validate), "installer merge/guard validation required")
+        self.pristine = dict(pristine)
+        self.recognized = frozenset(recognized)
+        self.merge, self.guard = merge, validate
+        self.validate_contents(self.pristine)
+        for role, rel in self.paths.items():
+            need(pristine[rel] == pristine[f"{self.state}/base/{rel}"],
+                 "install role must be actual pristine emitter output")
+            self.guard(role, pristine[rel], pristine[rel], pristine[rel])
+        self.prepared = None
+
+    def snapshot(self):
+        return self.read_snapshot(absent=True)
+
+    def publication_writable(self):
+        for rel in self.files:
+            path = self.root / rel
+            while not path.exists():
+                path = path.parent
+            need(path.stat().st_mode & 0o222 and os.access(path, os.W_OK),
+                 f"not writable: {path}")
+            if path.is_file():
+                need(path.parent.stat().st_mode & 0o222 and os.access(path.parent, os.W_OK),
+                     f"not writable: {path.parent}")
+
+    def classify(self, contents, snapshot):
+        if all(v is None for v in contents.values()):
+            need(snapshot["parents"].get(str(self.root / self.state)) is None,
+                 "unknown existing provider authority")
+            return "fresh"
+        manifest = self.inventory(contents[self.manifest])
+        need((manifest.get("domestique_version"), manifest["files"]) in self.recognized,
+             "unknown inventory generation")
+        legacy = self.helper not in manifest["files"].split(",")
+        self.validate_contents(contents, legacy=legacy, partial=True)
+        if any(contents[p] is None for p in self.paths.values()):
+            return "partial"
+        result = verify(self, contents)
+        if result["confirmed"]:
+            need(not legacy, "legacy inventory cannot claim current confirmation")
+            return "confirmed"
+        if parse(contents[self.paths["implementer"]], "implementer")[2] is not None:
+            return "stale"
+        if all(project_settings(contents[p], r) ==
+               project_settings(contents[f"{self.state}/base/{p}"], r)
+               for r, p in self.paths.items()):
+            return "legacy"
+        return "custom-unconfirmed"
+
+    def prepare(self, overrides, *, force=False):
+        self.check_root()
+        need(type(overrides) is dict and set(overrides) <= set(ROLES),
+             "installer overrides name individual roles")
+        overrides = dict(overrides)
+        for value in overrides.values():
+            selection(value)
+            need(value != "inherit", "installer inheritance requires normalized null")
+        snapshot, contents = self.snapshot()
+        eligibility = self.classify(contents, snapshot)
+        need(eligibility != "partial", json.dumps({
+            "scope": "filesystem-only", "configured": False, "outcome": "repair-required",
+            "error": "partial owned pair; safe installer repair and review/Save required",
+            "partial": False, "published": [], "workflow_authorized": False,
+        }))
+        qualified = eligibility in ("fresh", "confirmed", "legacy")
+        historical = (eligibility == "custom-unconfirmed" and
+                      self.helper not in self.inventory(contents[self.manifest])["files"].split(","))
+        need(qualified or not overrides,
+             "unconfirmed pair; review/Save before model override")
+        outputs = {}
+        for role, (model, effort) in installer_defaults().items():
+            rel = self.paths[role]
+            local, upstream = contents[rel], self.pristine[rel]
+            base = contents[f"{self.state}/base/{rel}"]
+            if local is None:
+                selected = overrides.get(role, model)
+                outputs[role] = patch(upstream, role, {
+                    "model": selected, "effort": effort if selected == model else None})
+            elif qualified or historical:
+                # No generic merge may decide that local==base unpins a scalar.
+                projected = [project_settings(data, role) for data in (local, base, upstream)]
+                merged = projected[0] if projected[1] == projected[2] else self.merge(*projected)
+                need(type(merged) is bytes and len(merged) <= LIMIT, "invalid preserving merge output")
+                if force and qualified:
+                    self.guard(role, base, local, restore_settings(local, merged, role))
+                    merged = projected[2]
+                outputs[role] = restore_settings(local, merged, role)
+                if role in overrides:
+                    current_model = parse(outputs[role], role)[1].get("model")
+                    if HARNESS == "claude" and current_model == "inherit":
+                        current_model = None
+                    if current_model != overrides[role]:
+                        outputs[role] = patch(outputs[role], role,
+                                              {"model": overrides[role]}, model_only=True)
+            else:
+                outputs[role] = local
+            self.guard(role, base or upstream, local or upstream, outputs[role])
+            parse(outputs[role], role)
+        if qualified:
+            mark_outputs(self, outputs)
+            # Preserve even noncanonical-but-valid v1 marker formatting and inode.
+            if eligibility == "confirmed" and all(
+                    split_marker(contents[self.paths[r]], r)[0] ==
+                    split_marker(outputs[r], r)[0] for r in ROLES):
+                outputs["implementer"] = contents[self.paths["implementer"]]
+        dependencies = {p: self.pristine[p] for p in self.files if p not in self.paths.values()}
+        if not qualified:
+            # Retain the real old base even after historical guard migration.
+            # Advancing it could make an unreviewed custom body that coincides
+            # with upstream silently qualify as legacy on the next rerun.
+            for rel in self.paths.values():
+                base = f"{self.state}/base/{rel}"
+                dependencies[base] = contents[base]
+        final = {**dependencies, **{self.paths[r]: outputs[r] for r in ROLES}}
+        self.validate_contents(final)
+        result = verify(self, final)
+        need(result["confirmed"] == qualified, "invalid final installation pair")
+        plan = {
+            "v": 1, "purpose": "installer-selected-pair", "root": str(self.root),
+            "harness": HARNESS, "overrides": overrides, "eligibility": eligibility,
+            "force": force, "historical_migration": historical,
+            "configured": qualified, "snapshot": snapshot,
+            "selected": result["selected"],
+            "outputs": {p: sha(data) for p, data in final.items()},
+            "diff": pair_diff(self, contents, outputs),
+            "dependency_diff": "".join(file_diff(p, contents[p], data)
+                                       for p, data in dependencies.items()),
+        }
+        # Retain independent canonical evidence; never trust a mutable returned plan.
+        digest = sha(canonical(plan))
+        self.prepared = (canonical(plan), digest, contents, outputs, dependencies)
+        return {"plan": plan, "digest": digest}
+
+    def apply(self, plan, digest):
+        self.check_root()
+        need(self.prepared is not None, "installer must prepare before publication")
+        evidence, approved, contents, outputs, dependencies = self.prepared
+        need(digest == approved and sha(canonical(plan)) == digest and
+             canonical(plan) == evidence, "installer plan digest/binding mismatch")
+        expected = load(evidence)["snapshot"]
+        current, _ = self.snapshot()
+        need(current == expected, "stale installer snapshot; no automatic reprepare")
+        self.publication_writable()
+        self.prepared = None  # A failed/partial attempt also consumes this operation.
+        return publish_outputs(self, expected, dict(contents), outputs,
+                               dependencies=dependencies, configured=plan["configured"])
+
+
+def native_request(arguments):
+    """Parse native argv before reading a pair; no installer publication API."""
+    modes = {"--help": "help", "--configure": "configure", "--confirm": "confirm"}
+    if not arguments:
+        return "inspect", {}
+    if arguments[0] in modes:
+        need(len(arguments) == 1, "exclusive mode takes no settings")
+        return modes[arguments[0]], {}
+    selected = {}
+    index = 0
+    flags = {"--" + role + suffix: (role, field)
+             for role in ROLES for suffix, field in (("", "model"), ("-effort", "effort"))}
+    while index < len(arguments):
+        flag, equals, value = arguments[index].partition("=")
+        need(flag in flags, "unknown dom-models flag")
+        need(flag not in selected, "duplicate dom-models flag")
+        role, field = flags[flag]
+        need(HARNESS != "copilot" or field != "effort", "Copilot effort unsupported")
+        if not equals:
+            index += 1
+            need(index < len(arguments) and not arguments[index].startswith("--"),
+                 "missing dom-models value")
+            value = arguments[index]
+        selection(value)
+        selected[flag] = (role, field, None if value == "inherit" else value)
+        index += 1
+    return "settings", selected
+
+
+def native_result(arguments):
+    mode, overrides = native_request(arguments)
+    usage = ("dom-models [--help | --configure | --confirm | SETTINGS]\n"
+             "No arguments: inspect saved choices (read-only).\n"
+             "SETTINGS: --implementer MODEL, --reviewer MODEL" +
+             ("" if HARNESS == "copilot" else
+              ", --implementer-effort LEVEL, --reviewer-effort LEVEL") +
+             ". Separated or = values; inherit uses native inheritance.\n"
+             "Modes are exclusive; duplicate/empty/unknown flags refuse. Changes require Save.")
+    if mode == "help":
+        return {"mode": mode, "usage": usage, "scope": "filesystem-only"}
     pair = Pair()
+    try:
+        snapshot, contents = pair.snapshot()
+    except FileNotFoundError:
+        if mode != "inspect":
+            raise ValueError("pair not installed/unconfigured; preserving installer repair required")
+        return {"mode": mode, "harness": HARNESS, "configured": False,
+                "status": "not installed/unconfigured; missing pair or authority",
+                "native_readiness": "not established"}
+    current = verify(pair, contents)
+    warnings = []
+    _, marker = split_marker(contents[pair.paths["implementer"]], "implementer")
+    if not current["confirmed"]:
+        warnings.append("Unconfirmed/stale pair; Save acknowledges current bytes, not native readiness.")
+    if marker and marker["project"] != str(pair.root):
+        warnings.append("Copied/moved root: previous confirmation belongs to another project.")
+    if any(project_settings(contents[pair.paths[r]], r) !=
+           project_settings(contents[f"{pair.state}/base/{pair.paths[r]}"], r) for r in ROLES):
+        warnings.append("Current body differs from pristine; preserved, not reset or made pristine.")
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "--", *pair.paths.values()], text=True).splitlines()
+    result = {"mode": mode, "scope": "filesystem-only", "harness": HARNESS,
+              "root": str(pair.root), "configured": current["confirmed"],
+              "current": current["selected"], "paths": pair.paths, "tracked": tracked,
+              "warnings": warnings, "native_readiness": "not established",
+              "reload": "Inspection/planning need no reload. Before execution reload only "
+                        "if loaded roles do not demonstrably match saved choices."}
+    if mode in ("inspect", "configure"):
+        return result
+    if mode == "confirm" and current["confirmed"]:
+        result["status"] = "Already configured; nothing to save."
+        return result
+    chosen = {r: dict(current["selected"][r]) for r in ROLES}
+    for role, field, value in overrides.values():
+        chosen[role][field] = ("inherit" if HARNESS == "claude" and
+                              field == "model" and value is None else value)
+    plan, _ = build(pair, choices(chosen), snapshot, contents)
+    result.update(chosen=chosen, plan=plan, digest=sha(canonical(plan)))
+    return result
+
+
+def main():
     need(len(sys.argv) >= 2, "expected prepare, apply or verify")
     action = sys.argv[1]
+    if action in ("request", "request-text"):
+        arguments = sys.argv[2:]
+        if action == "request-text":
+            need(len(arguments) == 1, "request-text requires original argument text")
+            arguments = shlex.split(arguments[0], posix=True)
+        result = native_result(arguments)
+        print(canonical(result).decode())
+        return
+    pair = Pair()
     if action == "verify":
         need(len(sys.argv) == 2, "verify takes no overrides")
         _, contents = pair.snapshot()
@@ -737,16 +1190,27 @@ sys.argv = [str(helper), *sys.argv[1:]]
 exec(compile(code, str(helper), "exec"),
      {"__name__": "__main__", "__file__": str(helper)})
 ```
-
+DOM_EOF
+  if [ "${2:-}" != models ]; then
+    cat <<'DOM_EOF'
 Pass `verify` to that bootstrap on every fresh goal/delegation entry. Its JSON
 `scope: filesystem-only`, `confirmed`, selected values and pair hashes are NOT
 native availability/readiness. Still check actual native registration,
 discovery/precedence, overrides, inheritance resolution and available telemetry
-as specified above. Existing native hooks are not controlled by this helper;
+as specified above. Do not manually duplicate the helper's ownership/hash checks
+or print its hashes as a normal-run ceremony. Existing native hooks are not controlled by this helper;
 do not claim zero external hook reads.
-
-After confirming BOTH role choices inline and establishing supported persistent
-native model/effort availability, pass `prepare` and one JSON argument:
+DOM_EOF
+    return
+  else
+    cat <<'DOM_EOF'
+For interactive `--configure` only, pass `prepare` after current-prefilled
+selection, with both choices in one JSON argument. Other modes use `request`
+or `request-text` as described above; inspection/help never prepare or apply.
+Example selection JSON:
+DOM_EOF
+  fi
+  cat <<'DOM_EOF'
 `{"implementer":{"model":"EXACT-ID","effort":null},"reviewer":{"model":"EXACT-ID","effort":null}}`.
 Both fields are mandatory for both roles; JSON null means native inheritance.
 Copilot requires effort null and refuses effort settings. Claude model null
@@ -818,9 +1282,15 @@ emit_decompose_routing() { cat <<'DOM_EOF'
 ## Explicit config-vs-plan routing
 After the harness boundary, bind ROOT to this invocation's physical Git worktree
 root; ambiguous root means ask and stop, never search another checkout.
-Only the entire explicit argument `configure role models` selects the setup-only
-section below. An explicit request to configure/reconfigure roles outside that
-form should be directed to this entry with `configure role models`; do not
+Only the entire explicit argument `configure role models` is an alias for
+the current native `dom-models --configure` body. Read that project-local body
+instead of the execution gate below, preserving the original request and
+this explicit alias mapping. Claude: `.claude/commands/dom-models.md`;
+Codex: `.agents/skills/domestique-models/SKILL.md`;
+Copilot: `.github/skills/domestique-v2-copilot-models/SKILL.md`.
+Missing/foreign bodies stop; never initialize or embed a replacement setup.
+An explicit request to configure/reconfigure roles outside that
+form should be directed to `dom-models --configure`; do not
 silently reinterpret a planning brief. Task text mentioning models, providers,
 effort or role configuration is NOT configuration intent.
 For an explicit planning request, SKIP the entire role setup section and go
@@ -829,198 +1299,142 @@ verify, loaded-role check or reload: missing, unconfirmed or manually edited
 role pairs do not gate planning. Do not read role files to decide whether to plan.
 Missing/ambiguous request: ask for a planning brief or the exact configuration
 invocation; loading instructions alone starts neither.
-Configuration uses the existing setup protocol below and never falls through
+Configuration uses the routed dom-models protocol and never falls through
 into planning or execution. Planning never delegates (including research helpers),
 executes tasks, claims/closes beads, changes branches, stages or commits.
 DOM_EOF
 }
 
-emit_claude_model_setup() { cat <<'DOM_EOF'
-## Claude first-use role setup — mandatory gate
-
-This section applies ONLY to explicit role configuration or execution entry,
-never to ordinary planning-only decompose; its routing skips this entire section.
-Throughout setup, do NOT use ANY Agent/Task/agent delegation, including
-documentation/research helpers or `claude-code-guide`. The caller must inspect
-tools/docs itself; missing evidence means STOP, not a helper call. This rule is
-scoped to setup, not a global agent prohibition: after setup/reload and readiness,
-the workflow still requires implementer and independent reviewer delegation.
-
-For execution, run this gate BEFORE any Beads command (including readiness/create/claim),
-code, branch changes or dispatch. Establish the actual native
-harness as `claude` using available client context/tools, not this command's name.
-Bind ROOT to the exact physical Git worktree
-root of this invocation; if cwd is not that root, or identity is ambiguous,
-STOP and ask for an explicit invocation there. Never search ancestors for
-another installation, infer another harness, or configure a sibling worktree.
-Standalone instruction loading is read-only, not permission to run setup.
-
-An interactive first-use Domestique goal (`/dom-goal EPIC_ID` or `/goal EPIC_ID`)
-runs the same two-role questionnaire INLINE here; do not redirect to decompose.
-Setup consumes this request: no task, Beads or implementation, even if an epic
-was supplied. The later unattended loop does not make this entry noninteractive.
-Ordinary unconfigured delegation instead redirects to decompose configuration.
-Truly noninteractive/autopilot callers without a confirmed pair STOP without
-persistence; do not ask questions or enter setup on their behalf.
-
-### Read-only preflight and confirmation state
-Use only ROOT/.claude/agents/implementer.md and
-ROOT/.claude/agents/reviewer.md, with existing scoped management evidence:
-ROOT/.claude/.domestique/manifest and the corresponding pristine files at
-ROOT/.claude/.domestique/base/.claude/agents/{implementer,reviewer}.md.
-Require a readable, bounded, unambiguous snapshot_format=1 manifest whose
-comma-separated files inventory contains each exact role path once; if a
-platform field is present it must be `claude`. Older Claude manifests may omit
-platform. Both pristine bases must exist. This is snapshot/three-way ownership,
-NOT historical inode proof. Current owned customized bytes may be confirmed
-while preserving unrelated bytes and original pristine bases. Missing or
-unmanaged evidence, ambiguous ownership or unsafe paths mean STOP; use the
-existing explicit install lifecycle/human repair, never adopt through setup.
-
-Validate both roles and management evidence before proposing changes: bounded
-UTF-8 regular files (at most 1 MiB each), no symlinks in any path component,
-no hardlinked files (link count must be one), fixed paths confined to ROOT,
-readable metadata. After consent/approval, apply requires writable roles and
-role parents. Record current device/inode,
-modes and complete bytes of both roles and evidence for operation-local rechecks.
-Require exact native names `implementer` / `reviewer`, a nonempty string
-description and nonempty prompt body. Require one well-formed YAML frontmatter
-block per role, with unique top-level
-scalar model/effort fields if present. Reject duplicate keys, nested/aliased/
-multiline or otherwise ambiguous field syntax, malformed metadata, and
-duplicate/misplaced setup markers for human repair. Never whole-file format.
-
-The only completion marker is a single comment immediately after the opening
-implementer frontmatter delimiter: `# domestique-model-setup: JSON`.
-Reviewer must contain no setup marker. JSON has exactly these keys:
-`v` (integer 1), `project` (absolute physical ROOT), `harness` (`claude`),
-`implementer_sha256`, `reviewer_sha256` (lowercase 64-character SHA-256 hex).
-Hash complete role byte sequences, removing only that entire marker line from
-implementer; hash reviewer unchanged. Validate JSON types/unique keys, root,
-harness and BOTH digests, plus ownership, at every entry.
-
-No marker (including pristine generated defaults), a stale hash, a copied/moved
-project or an interrupted setup is unconfirmed. Show both current choices for
-explicit reconfirmation; never complete a partial pair silently. Any manual edit
-to model, effort or instructions invalidates confirmation. An unchanged confirmed
-pair means NO questionnaire and NO writes, including confirmed inheritance:
-proceed only through the native readiness checks below. Explicit decompose
-request `configure role models` always uses the same two-role question instead.
-Aliases share exactly this pair and marker, never separate consent.
-
-### Native evidence — no invented API or paid probe
-During setup evidence/preflight, do NOT use ANY Agent/Task/agent delegation,
-including documentation/research helpers or `claude-code-guide`. Inspect
-tools/docs yourself; missing evidence means STOP, not a helper call.
-Before saving, use supported evidence from the installed client's documented
-capabilities/current selectable models and efforts to establish that BOTH
-proposed selections are supported and available with the required role tools.
-Keep evidence internal except concise relevant limits/blockers. Check applicable native precedence and
-overrides using supported, non-secret evidence; do not edit client settings.
-Include available non-secret provider/model compatibility evidence (supported
-current session/provider status, restrictions and selectable model/effort data).
-Check what each source establishes and what remains unobserved: a catalog is
-selection/support evidence, not execution proof or guaranteed future entitlement.
-A doctor subprocess describes its own provider/session, not automatically the
-active thread; establish applicability before using it as active-session evidence.
-For Claude, invocation model precedes role frontmatter, then subagent environment
-default, then parent; `inherit` selects parent. Force-model settings, spawn hooks
-and allowlists may override/substitute. Effort order is environment override,
-invocation effort, role effort, then session. Verify the installed version's
-behavior rather than assuming this order is universal.
-Unknown support/availability, incompatible effort, unresolved inheritance/alias,
-or an override that defeats the selection means STOP before writes, with the
-role and reason. No fallback or silent default substitution; no paid probe.
-
-After saving, require supported reload/fresh invocation if registration is
-stale/unknown, then fresh explicit execution authorization. Planning needs none.
-Before execution on a confirmed pair, establish this supported pre-dispatch
-minimum, read-only:
-- Identify the active native client and its registered intended `implementer`
-  and `reviewer` role IDs; registration must be present and unambiguous.
-- Verify the stored pair, ownership, physical ROOT, BOTH marker hashes and
-  required fresh-session reload using the checks above.
-- Match declared model AND effort and required tools to supported native
-  registration/session evidence of their resolution. Explicit non-overridable
-  registered selections plus documented native resolution are sufficient;
-  resolve inherited values/aliases anew, not by guessing.
-- Verify installed-version documented project-local discovery and precedence;
-  check competing project/ancestor/global definitions and known invocation,
-  environment, hook or client overrides that could defeat these roles.
-- Establish current provider/model compatibility with available non-secret
-  native evidence, including restrictions and known availability failures;
-  report the evidence and its limits, not a future entitlement/runtime guarantee.
-
-Use native source provenance when exposed. Otherwise use documented discovery,
-precedence and the checked on-disk pair with matching registered selections;
-do not invent exact-origin or loaded-byte attestation. Missing optional
-exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not
-block ordinary explicitly authorized work when this minimum is established.
-Missing/ambiguous registration, actual mismatch, unresolved inheritance or a
-known defeating override/unavailability means STOP without workflow or writes.
-A catalog, file syntax, user assertion or marker alone is not dispatch proof.
-Send no conflicting spawn
-model/effort override; ephemeral model requests are assertions, not persistence:
-a conflict stops and offers explicit reconfiguration. Inheritance is consent to
-native resolution, not a pinned model; resolve/check it anew every session.
-During/after each authorized assignment, check actual available child telemetry
-for role/model/effort and selection errors before accepting work. Observed
-selection failure/mismatch means STOP; never silently fall back. Report what
-was observed and any telemetry limits; declared selections are not execution
-proof. Do not invent a verification API, require an unavailable telemetry API
-or demand a separate paid probe to establish readiness.
-Actual observed role dispatch/reload qualification is separate, budget-gated
-work (hq-7sm.6); static emitted-protocol/lifecycle tests do not qualify runtime.
-That later observation is not a prerequisite to writing this protocol or saving
-choices with supported pre-save evidence, and does not authorize a paid call here.
-
-### One question for BOTH roles; then exact-plan consent
-Show ROOT / claude, both exact paths, current model and effort values (including
-absent fields and native inheritance semantics), and any tracked-file effects.
-Reuse saved native selections; do not ask users to reselect an unchanged confirmed
-pair. For missing/unconfirmed choices or explicit changes, prefill current values
-and ask both in one concise form:
-> These choices will be saved locally for subsequent role execution after any
-> required reload; planning works now. Implementer: exact model ID or native inheritance,
-> plus confirmed effort or inherited effort. Reviewer: exact model ID or native
-> inheritance, plus confirmed effort or inherited effort.
-
-Use current client choices, not a shipped model menu. Both roles may use the same
-model; always use a fresh reviewer context. Existing Claude aliases may be kept
-only with displayed native resolution and explicit confirmation; new explicit
-choices require exact IDs. Existing effort is NOT silently approved when changing
-models: explicitly confirm it or choose supported effort/inheritance independently.
-Write `model: "inherit"` for native model inheritance; omit effort for inherited
-effort (native resolution, not necessarily the selected model's default).
-Missing model fields/generated defaults are not consent.
-
-Prepare both outputs read-only and present the concise exact-plan summary
-defined below before explicit save consent; detailed diff is opt-in.
-If selections change, reprepare, summarize and renew consent. Consent to a goal is
-not consent to save settings. Cancel, incomplete/missing values, or noninteractive
-setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
-Noninteractive callers may only use an already confirmed pair after readiness
-checks; otherwise report the interactive setup/reinvoke action and STOP.
-
-DOM_EOF
-  emit_model_setup_protocol claude
+emit_execution_gate() {
+  local provider="$1" models="/dom-models"
+  [ "$provider" != codex ] || models='$dom-models'
+  printf '\n## %s read-only execution gate\n' "${provider}"
   cat <<'DOM_EOF'
 
-Every successful first confirmation/reconfiguration is SETUP ONLY: no task
-claim, code, dispatch, branch/commit or goal cycle. Planning can proceed without
-reload on an explicit planning request. Execution requires readiness and fresh
-explicit `/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) authorization. The initiating
-goal request is consumed, NOT queued for automatic continuation.
-Before later goal execution, ALL tracked/index dirtiness, including setup
-changes, requires human disposition: never auto-stage, commit, stash, discard
-or hide it. Guest mode retains existing local-only exclusions and uninstall
-preservation. Updates use existing three-way snapshots, never reset pristine
-bases to configured bytes; changed bytes invalidate confirmation. Uninstall
-preserves modified roles under existing semantics; reinstall implies no consent.
+Ordinary planning-only decompose skips this entire gate: no role reads, helper
+verify, model questions, loaded-role checks or reload, even for missing/stale
+pairs. Loading instructions alone authorizes neither configuration nor work.
+For explicitly authorized execution, run this gate BEFORE any Beads command,
+code, branch changes or dispatch. Establish the actual native client from
+session context/tools, not directories or model names. Bind ROOT to this
+invocation's exact physical Git worktree root; ambiguous identity/root or cwd
+outside ROOT means STOP, never search another checkout or configure a sibling.
 
-## End role setup gate — continue only for an unchanged confirmed, ready pair
+### Configured pair — read-only
+Use the pristine helper bootstrap below with `verify`, not a second parser or
+writer. It validates both native role files, installer-owned manifest/pristine
+bases, safe paths, physical ROOT/harness and BOTH marker hashes. Preserved
+ownership/root markers are filesystem evidence, NOT native attestation.
+A valid installer-configured pair (including fresh defaults) or previously
+saved custom/inherited pair needs NO questionnaire and NO writes.
+Fresh installation alone requires no Save, setup-only detour, restart or new
+goal invocation. Continue this explicit request through native readiness.
+Visible default values without a valid marker are NOT confirmation.
+Missing/stale markers, manually edited bodies/settings, copied/moved roots or
+partial pairs remain unconfirmed; never silently repair files or bless bodies.
+DOM_EOF
+  printf 'Unconfirmed/stale pair: STOP with one concise reason and `%s --confirm`\n' "$models"
+  printf 'for current-pair review, or `%s --configure` to change choices.\n' "$models"
+  cat <<'DOM_EOF'
+Missing/unsafe files or ownership: STOP for explicit preserving installer repair
+then current-pair review; never run installation/repair automatically.
+This applies equally to interactive goal entry and noninteractive/autopilot
+callers: no embedded wizard, persistence or automatic continuation on failure.
+Model questions/changes belong only to explicit dom-models (or the exact
+decompose `configure role models` alias). Its exact-plan summary, explicit Save,
+native scoped approval and verified terminal completion remain mandatory.
+Saving never authorizes or queues goal execution. Inspection never asks models.
+
+### Minimal native readiness — read-only, not a probe
+Do not delegate readiness checks (including documentation/research helpers).
+The caller uses available evidence; this gate does not authorize any task.
+Establish the actual native harness and present, unambiguous registered intended
+role IDs with their required tools, using available session/registration
+evidence and installed-version documented project discovery/precedence.
+Check known competing definitions and invocation/environment/hook/client
+overrides that could defeat selection, plus available non-secret model/effort
+support evidence and restrictions. Use applicable evidence already available;
+do not repeatedly list catalogs/config, run doctor subprocesses or perform
+dispatch/network/paid probes on a normal run. Do not edit client settings.
+A catalog is support evidence, not future entitlement or execution proof.
+
+Use exposed source/selection evidence when available. Otherwise documented
+native discovery and inheritance resolution with the verified pair and
+unambiguous registered roles, absent counterevidence, suffice. Missing optional
+loaded-byte/exact-origin APIs, independent inherited-model attestation or future
+child telemetry alone MUST NOT block explicitly authorized work.
+Inheritance follows documented native resolution, not a pinned model or
+necessarily the direct parent. Check that resolution against known overrides
+and support evidence; do not require an unavailable independent resolved-model
+API. Genuinely unknown required registration/discovery or ambiguous resolution,
+actual model/effort/tools mismatch, known unavailable/unsupported selection or
+a defeating override means STOP before workflow writes or dispatch.
+DOM_EOF
+  printf 'Report only the affected role, precise reason and `%s --configure` route;\n' "$models"
+  cat <<'DOM_EOF'
+for stale/unknown current registration also name the supported reload/reinvoke
+action needed. Never substitute another model or send a conflicting spawn
+model/effort override. Ephemeral requests do not persist settings or override
+fixed registrations. Helper `confirmed` alone never means native Ready.
+Reload/fresh invocation is needed only for actually stale/unknown current
+registrations before execution, not a freshly installed role already registered
+through documented discovery. No invented hot-reload API or permission bypass.
+After an actual reload/reinvoke require fresh explicit execution authorization;
+do not queue/resume a stopped goal. Planning needs no reload.
+During/after each authorized assignment, check available child role/model/effort
+telemetry and selection errors before accepting work. Known failure/mismatch
+stops without fallback; unavailable optional telemetry is not itself failure.
+Keep checks internal; report concise actionable blockers and material limits,
+not catalogs, hashes or an attestation transcript.
+Static instruction/helper tests are not native UX/dispatch qualification.
+DOM_EOF
+  case "$provider" in
+    claude)
+      cat <<'DOM_EOF'
+Claude roles: `implementer` / `reviewer`, in
+`.claude/agents/{implementer,reviewer}.md`.
+Claude model precedence: invocation, role frontmatter, subagent environment
+default, then parent; `inherit` selects parent. Effort precedence: environment,
+invocation, role, then session. Apply installed-version documented semantics
+and known force-model/hooks/allowlists, not an assumed universal order.
+DOM_EOF
+      ;;
+    codex)
+      cat <<'DOM_EOF'
+Codex roles: `implementer` / `reviewer`, in
+`.codex/agents/{implementer,reviewer}.toml`.
+Role-file model/model_reasoning_effort override previously resolved explicit
+spawn, [agents] defaults, then parent values. A spawn/default model without
+effort uses that model's default effort; a role-file model alone preserves
+previously resolved effort. Omitted model/effort follows native resolution,
+not necessarily parent identity or the selected model's default effort.
+Use installed-version semantics; never change effort silently.
+DOM_EOF
+      ;;
+    copilot)
+      cat <<'DOM_EOF'
+Copilot roles: `domestique-v2-copilot-implementer` /
+`domestique-v2-copilot-reviewer`, in
+`.github/agents/domestique-v2-copilot-{implementer,reviewer}.agent.md`.
+Fresh defaults omit model in BOTH roles: inherit documented native resolution,
+not necessarily the direct parent's model. No effort field is supported.
+No independent inherited-model telemetry is required without counterevidence;
+actual registered native role selection is still required.
+DOM_EOF
+      ;;
+  esac
+  emit_model_setup_protocol "$provider"
+  cat <<'DOM_EOF'
+
+## End execution gate — continue only for a confirmed, natively ready pair
+Retain the original explicit goal scope and loop bounds. Before goal work,
+ALL tracked/index dirtiness (including configuration edits) requires human
+disposition; never auto-stage, commit, stash, discard or hide it. Always use a
+fresh independent reviewer context, even when both roles use the same model.
 DOM_EOF
 }
+
+emit_claude_model_setup() { emit_execution_gate claude; }
 
 emit_decompose() { cat <<'DOM_EOF'
 ---
@@ -1061,22 +1475,17 @@ DOM_EOF
   emit_claude_model_setup
   cat <<'DOM_EOF'
 
-Interactive first-use goal setup runs the two-role questionnaire INLINE above,
-not the ordinary-delegation redirect. Setup consumes this request with no task,
-Beads or implementation; stop execution until fresh explicit goal authorization.
-Planning remains available immediately, including an already supplied explicit
-planning request. Execution requires native readiness for the saved pair, with
-supported reload/fresh invocation only if registration is stale/unknown.
-Do not assume saving updates loaded roles. Truly
-noninteractive/autopilot callers without a confirmed pair STOP without persistence.
-Only an unchanged confirmed, ready pair can enter the unattended loop below.
+Use the read-only execution gate above. Fresh installer-configured defaults and
+saved custom/inherited pairs can enter this explicit goal without model questions,
+Save or restart merely because fresh; native readiness remains separate.
+Unconfirmed/stale pairs stop with dom-models guidance, never an embedded wizard.
 
 Drive epic $ARGUMENTS to completion, unattended, within the bounds below. This invocation is your explicit authorization to skip the normal "stop and report before dispatching the next task" rule from CLAUDE.md — but that authorization is scoped and time-limited: it covers only beads under epic $ARGUMENTS, and it expires the instant the epic completes or any stop condition below fires. It never carries to another epic or a later session.
 
 Require an explicit `/dom-goal <epic-id>` or compatibility `/goal <epic-id>` request naming the epic in `$ARGUMENTS`. Merely loading these instructions is not unattended authority; if the epic or explicit request is missing, ask and stop.
 
 ## Branch isolation (load-bearing)
-Only after the role setup gate passes without setup writes, check ALL tracked/index dirtiness (including configured role files). If dirty, stop for human disposition; never auto-stage, commit, stash, discard or hide it. Then create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
+Only after the read-only execution gate passes, check ALL tracked/index dirtiness (including configured role files). If dirty, stop for human disposition; never auto-stage, commit, stash, discard or hide it. Then create or switch to a dedicated branch for this epic (e.g. derived from `$ARGUMENTS`, such as `epic/$ARGUMENTS`). Never commit to the default branch for the rest of this run. The human reviews and merges this branch by hand — you never merge or push it. In guest installs (domestique installed with `--guest` into a repo you don't own), this is doubly true: unattended `/goal` commits stay on local branches that are never pushed.
 
 ## Per-cycle loop
 For each cycle:
@@ -1111,13 +1520,13 @@ DOM_EOF
 }
 
 # Codex project-scoped custom agents. Unlike Claude agent frontmatter, Codex
-# uses TOML config layers. Generated model/effort values are suggestions, not
-# consent. Review independence requires a fresh context, not a stronger model.
+# uses TOML config layers. The installer confirms qualified pairs, not native
+# readiness. Review independence requires a fresh context, not a stronger model.
 # The normal snapshot/3-way merge path preserves local choices on upgrade.
 emit_codex_implementer() { cat <<'DOM_EOF'
 name = "implementer"
 description = "Codex only; never match in another harness. Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
-model = "gpt-5.6-terra"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
@@ -1144,7 +1553,7 @@ DOM_EOF
 emit_codex_reviewer() { cat <<'DOM_EOF'
 name = "reviewer"
 description = "Codex only; never match in another harness. Independently verifies one completed bead against its done criteria, real diff, and tests; never fixes or changes bead state."
-model = "gpt-5.6"
+model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
@@ -1171,245 +1580,7 @@ DOM_EOF
 
 # One native instruction-driven protocol shared by both skill families/aliases.
 # Not an installer-time engine, model registry or native qualification.
-emit_codex_model_setup() { cat <<'DOM_EOF'
-## Codex first-use role setup — mandatory gate
-
-This section applies ONLY to explicit role configuration or execution entry,
-never to ordinary planning-only decompose; its routing skips this entire section.
-Throughout setup, do NOT use ANY Agent/Task/agent delegation, including
-documentation/research helpers or built-in documentation agents. The caller must inspect
-tools/docs itself; missing evidence means STOP, not a helper call. This rule is
-scoped to setup, not a global agent prohibition: after setup/reload and readiness,
-the workflow still requires implementer and independent reviewer delegation.
-
-For execution, run this gate BEFORE any Beads command (including readiness/create/claim),
-code, branch changes or dispatch. Establish the active harness as `codex`
-from actual client context/tools, not this entry's name. Bind ROOT to the exact physical Git
-worktree root of this invocation; if cwd is not that root or identity is
-ambiguous, STOP and ask for an explicit invocation there. Never search ancestors
-for another installation, infer a harness from directories, or configure a
-sibling worktree. Standalone instruction loading is read-only, not setup consent.
-
-An interactive first-use Domestique goal (`$dom-goal EPIC_ID` or
-`$domestique-goal EPIC_ID`) runs the same two-role questionnaire INLINE here;
-do not redirect to decompose. Setup consumes this request: no task, Beads or
-implementation, even if an epic was supplied. The later unattended loop does
-not make this entry noninteractive. Ordinary unconfigured delegation instead
-redirects to decompose configuration. Truly noninteractive/autopilot callers
-without a confirmed pair STOP without persistence; do not ask questions or enter
-setup on their behalf.
-
-### Read-only preflight and confirmation state
-Use only ROOT/.codex/agents/implementer.toml and
-ROOT/.codex/agents/reviewer.toml, with existing scoped management evidence:
-ROOT/.codex/.domestique/manifest and the corresponding pristine files at
-ROOT/.codex/.domestique/base/.codex/agents/{implementer,reviewer}.toml.
-Require a readable, bounded, unambiguous snapshot_format=1 manifest with
-platform=codex whose comma-separated files inventory contains each exact role
-path once. Both pristine bases must exist. This is snapshot/three-way ownership,
-NOT historical inode proof. Current owned customized bytes may be confirmed
-while preserving unrelated bytes and original pristine bases. Missing/unmanaged
-evidence, unsafe paths or ambiguous ownership mean STOP for the existing explicit
-install lifecycle/human repair; never adopt through setup. Do not impose Copilot
-creation/setup identity receipts on Codex or add a sidecar.
-
-Validate both roles and evidence: bounded UTF-8 regular files (at most 1 MiB
-each), no symlinks in any path component, no hardlinked files (link count must
-be one), fixed paths confined to ROOT and readable metadata.
-Record current device/inode, modes and complete bytes of both roles
-and evidence for operation-local rechecks, not historical provenance.
-Parse each complete role with a TOML parser; require exact name = "implementer"
-or name = "reviewer", respectively, and nonempty string description and
-developer_instructions. Require
-unique top-level scalar string model/model_reasoning_effort fields if present.
-Reject duplicate keys, malformed TOML, non-string or multiline selection fields,
-duplicate/misplaced setup markers, and any syntax whose selected value spans
-cannot be patched losslessly. Do not confuse keys/comments inside multiline
-developer_instructions or nested tables with top-level settings. Never reformat
-the file or rewrite developer_instructions or unrelated keys.
-
-These initial checks are read-only ownership/path/field/identity checks, not a
-writability gate before pair selection and diff consent. Native sandbox
-protection of `.codex` paths is NOT unknown ownership or permanent filesystem
-read-only status. Do not write probes; final writable preflight belongs after
-save consent and any required native scoped approval, in that approved context.
-
-The only completion marker is a single comment at the beginning of implementer
-TOML: `# domestique-model-setup: JSON`. Reviewer must contain no setup marker.
-JSON has exactly these keys: `v` (integer 1), `project` (absolute physical ROOT),
-`harness` (`codex`), `implementer_sha256`, `reviewer_sha256` (lowercase
-64-character SHA-256 hex). Hash complete role byte sequences, removing only
-that entire marker line from implementer; hash reviewer unchanged. Validate
-JSON types/unique keys, root, harness and BOTH digests, plus ownership, at every
-entry. No second copy of model choices belongs in the marker.
-
-No marker (including pristine generated defaults), a stale hash, a copied/moved
-project or interrupted setup is unconfirmed. Show both current choices for
-explicit reconfirmation; never complete a partial pair silently. Any manual
-model, effort or instructions edit invalidates confirmation. An unchanged
-confirmed pair means NO questionnaire and NO writes, including confirmed
-inheritance: proceed only through native readiness below. Explicit decompose
-request `configure role models` always uses the same two-role question instead,
-reserved for setup only, not a planning brief. Aliases share this pair/marker.
-
-### Native evidence — no invented API or paid probe
-During setup evidence/preflight, do NOT use ANY Agent/Task/agent delegation,
-including documentation/research helpers or built-in documentation agents. Inspect
-tools/docs yourself; missing evidence means STOP, not a helper call.
-Before saving, use supported evidence from the installed client's documented
-capabilities/current selectable models and efforts to establish that BOTH
-proposed selections are supported and available with the required role tools.
-This PRE-SAVE check concerns supported persistent native role-file/config
-semantics, not readiness to dispatch through this conversation's loaded roles.
-Verify that this installed client supports the proposed persistent model/effort
-fields for these roles and their required tools. Catalog presence alone does
-not guarantee role compatibility or provider permission. If the installed client
-actually disallows the requested persistent model/effort, STOP before writes,
-preserving all bytes; unknown capability or ambiguous inheritance also stops.
-Current immutable/non-overridable role registrations are not expected to change
-in this conversation. Their mismatch with a proposed pair during SETUP alone
-is NOT grounds to reject supported persistent reconfiguration or refuse its
-actual diff/consent flow. This does not bypass fixed tool registration or
-provider permissions. No Task/spawn override attempt, dispatch test, or fallback
-to old generated defaults is allowed during setup.
-With supported persistent selections, present the concise exact-plan summary,
-obtain save consent and any required ordinary native scoped protected-write
-approval as below, then wait for verified save completion. Execution still
-requires readiness and fresh authorization; planning needs no reload.
-Keep evidence internal except concise relevant limits/blockers. Check applicable native precedence and
-overrides with non-secret evidence; do not edit client/provider settings.
-Include available non-secret provider/model compatibility evidence (supported
-current session/provider status, restrictions and selectable model/effort data).
-Check what each source establishes and what remains unobserved: a catalog is
-selection/support evidence, not execution proof or guaranteed future entitlement.
-A doctor subprocess describes its own provider/session, not automatically the
-active thread; establish applicability before using it as active-session evidence.
-Codex role-file model/model_reasoning_effort values override the values
-previously resolved from explicit spawn, then [agents] defaults, then parent.
-If spawn/defaults select a model without supplying effort, native resolution
-uses that model's default effort. A role file setting only model preserves the
-previously resolved effort; it does NOT reset effort to that model's default.
-Verify installed-version behavior rather than assuming this order is universal.
-Unknown support/availability, incompatible effort, unresolved inheritance/alias,
-or an override that defeats selection means STOP before writes with role/reason.
-No fallback, silent default substitution, invented verification API or paid probe.
-
-After saving, require supported reload/fresh invocation if registration is
-stale/unknown, then fresh explicit execution authorization. Planning needs none.
-Before execution on a confirmed pair, establish this supported pre-dispatch
-minimum, read-only:
-This POST-SAVE readiness check is distinct from PRE-SAVE persistence support.
-The freshly loaded registered pair must match the chosen values and their
-native-effective model/effort resolution before dispatch; saving files does not
-change current-session registrations or authorize an in-session override.
-- Identify the active native client and its registered intended `implementer`
-  and `reviewer` role IDs; registration must be present and unambiguous.
-- Verify the stored pair, ownership, physical ROOT, BOTH marker hashes and
-  required fresh-session reload using the checks above.
-- Match declared model AND effort and required tools to supported native
-  registration/session evidence of their resolution. Explicit non-overridable
-  registered selections plus documented native resolution are sufficient;
-  resolve inherited values/aliases anew, not by guessing.
-- Verify installed-version documented project-local discovery and precedence;
-  check competing project/ancestor/global definitions and known invocation,
-  environment, hook or client overrides that could defeat these roles.
-- Establish current provider/model compatibility with available non-secret
-  native evidence, including restrictions and known availability failures;
-  report the evidence and its limits, not a future entitlement/runtime guarantee.
-
-Use native source provenance when exposed. Otherwise use documented discovery,
-precedence and the checked on-disk pair with matching registered selections;
-do not invent exact-origin or loaded-byte attestation. Missing optional
-exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not
-block ordinary explicitly authorized work when this minimum is established.
-Missing/ambiguous registration, actual mismatch, unresolved inheritance or a
-known defeating override/unavailability means STOP without workflow or writes.
-A catalog, file syntax, user assertion or marker alone is not dispatch proof.
-Send no conflicting spawn
-model/effort override. Ephemeral model requests are assertions, not persistence;
-a conflict stops and offers explicit reconfiguration. Inheritance is consent
-to native resolution, not a pinned model or necessarily the direct parent:
-resolve/check it anew each session.
-During/after each authorized assignment, check actual available child telemetry
-for role/model/effort and selection errors before accepting work. Observed
-selection failure/mismatch means STOP; never silently fall back. Report what
-was observed and any telemetry limits; declared selections are not execution
-proof. Do not invent a verification API, require an unavailable telemetry API
-or demand a separate paid probe to establish readiness.
-Actual observed role dispatch/reload qualification is separate, budget-gated
-work (hq-7sm.6); static emitted-protocol/lifecycle tests do not qualify runtime.
-That later observation is not a prerequisite to emitting this
-protocol or saving choices with supported pre-save evidence, and does not
-authorize a paid call here.
-
-### One question for BOTH roles; then exact-plan consent
-Show ROOT / codex, both exact paths, current model and model_reasoning_effort
-values (including absent fields and native resolution), and tracked-file effects.
-Reuse saved native selections; do not ask users to reselect an unchanged confirmed
-pair. For missing/unconfirmed choices or explicit changes, prefill current values
-and ask both in one concise form:
-> These choices will be saved locally for subsequent role execution after any
-> required reload; planning works now. Implementer: exact model ID or native inheritance,
-> plus confirmed effort or inherited effort. Reviewer: exact model ID or native
-> inheritance, plus confirmed effort or inherited effort.
-
-Use current client choices, not a shipped model menu. Both roles may use the
-same model; always use a fresh reviewer context. New explicit choices require
-exact IDs; resolve any existing alias with supported native evidence before
-confirmation. Generated defaults and absent fields are not consent.
-Model and effort are independent: display/explicitly confirm compatible existing
-effort or explicitly resolve incompatible effort with a supported choice or
-native inheritance. Never silently retain unsupported old effort when a model
-changes, silently change effort, or assume omission resets it. Validate the
-resulting model AND resolved effort. For model inheritance OMIT model; NEVER
-write a literal model named `inherit`. For inherited effort OMIT
-model_reasoning_effort; this means native resolution, not necessarily the
-selected model's default.
-
-Prepare both outputs read-only and present the concise exact-plan summary
-defined below before explicit save consent; detailed diff is opt-in.
-If selections change, reprepare, summarize and renew consent. Goal authorization
-is not settings consent. Cancel, incomplete/missing values, or noninteractive
-setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
-Noninteractive callers may only use an already confirmed pair after readiness
-checks; otherwise report the interactive setup/reinvoke action and STOP.
-
-### After save consent — native scoped approval, then publication
-Only AFTER explicit save consent to the exact prepared plan, if
-native sandbox protection requires permission to write these config paths,
-request native one-command scoped approval for the EXACT prepared publication
-operation below, including its final preflight. When the native tool supports
-it (for example exec_command with approval_policy=on-request), request
-`sandbox_permissions=require_escalated` with a specific justification naming
-both exact role paths and the consented setup-only plan. Do not try ordinary
-writes as probes before requesting approval. No persistent prefix rule,
-sandbox-mode change, broad permission grant or bypass is permitted.
-Save consent is not native permission; use the supported native approval flow.
-If approval is denied or unavailable, STOP with ZERO mutation and NO success;
-preserve the prior pair. Never bypass a client that cannot approve this operation.
-
-DOM_EOF
-  emit_model_setup_protocol codex
-  cat <<'DOM_EOF'
-
-Every successful first confirmation/reconfiguration is SETUP ONLY: no task
-claim, code, dispatch, branch/commit or goal cycle. Planning can proceed without
-reload on an explicit planning request. Execution requires readiness and fresh
-explicit `$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`) authorization.
-The initiating goal request is consumed, NOT queued for automatic continuation.
-Missing setup during truly noninteractive/autopilot goal execution means STOP,
-not permission to write settings; interactive first-use goal entry asks INLINE
-as above. Confirmed setup alone grants no goal authority.
-Before later goal execution, ALL tracked/index dirtiness, including setup
-changes, requires human disposition: never auto-stage, commit, stash, discard
-or hide it. Guest mode retains existing local-only exclusions and uninstall
-preservation. Updates use existing three-way snapshots, never reset pristine
-bases to configured bytes; changed bytes invalidate confirmation. Uninstall
-preserves modified roles under existing semantics; reinstall implies no consent.
-
-## End role setup gate — continue only for an unchanged confirmed, ready pair
-DOM_EOF
-}
+emit_codex_model_setup() { emit_execution_gate codex; }
 
 emit_codex_role_gate() { cat <<'DOM_EOF'
 ## Role model gate (execution only, never planning)
@@ -1417,47 +1588,32 @@ Planning-only decompose bypasses this entire role gate: no setup, helper verify,
 model questions, loaded-role checks or reload, even for missing/unconfirmed/
 manually edited pairs. Apply only the harness boundary and explicit planning
 request; no delegation or task execution.
-An interactive first-use `$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`)
-runs the same two-role questionnaire INLINE in its installed goal body, not a
-redirect to decompose. Setup consumes the request: no task, Beads or
-implementation, and no automatic continuation. The later unattended loop does
-not make this entry noninteractive. Truly noninteractive/autopilot callers
-without a confirmed pair STOP without persistence.
 Ordinary bounded delegation must first validate the confirmed pair and native
-readiness, read-only, using the shared Codex setup protocol in the installed
-`$dom-decompose` / `$domestique-decompose` skill body. If unconfigured or stale,
-STOP and direct the human to `$dom-decompose configure role models` (alias
-`$domestique-decompose configure role models`); do not start another questionnaire
-or call Beads. Do not infer the active harness from directories.
+readiness, read-only, using the execution gate in the installed
+`.agents/skills/domestique-decompose/SKILL.md` body. Read that gate as a protocol,
+not a new invocation. Explicit `$dom-goal EPIC_ID` uses the same gate.
+Valid installer-configured defaults and saved custom/inherited pairs need
+NO questionnaire and NO writes; fresh installation alone requires no Save,
+restart or renewed goal authorization. If unconfirmed/stale, STOP concisely
+with `$dom-models --confirm` for current-pair review or `$dom-models --configure`
+for changes; do not start another questionnaire or call Beads.
+Missing/unsafe files or ownership require explicit preserving installer repair,
+never automatic repair/blessing. Do not infer the active harness from directories.
 Instruction/bootstrap loading alone neither starts setup nor grants goal
-authority. Generated defaults are suggestions, never confirmation.
-For explicit setup, distinguish PRE-SAVE persistent role-file support from
-POST-SAVE fresh-session registered-role readiness in that protocol. Current
-immutable registrations need not match a proposed pair during setup alone;
-that mismatch does not forbid a supported persistent edit. Verify installed
-role-file semantics and provider/tool compatibility, not just catalog presence.
-Present the concise exact-plan summary (detailed diff on request), obtain save
-consent and required native scoped protected-write approval, then wait for
-verified save completion. Planning needs no reload. Execution requires supported
-reload/fresh invocation if registration is stale/unknown and fresh authorization.
-Do not attempt an in-session Task/spawn override or use old defaults as fallback.
-Before dispatch, apply the supported pre-dispatch minimum in that protocol:
-active native client and registered intended role IDs; verified stored
-pair/ownership/root/hashes and required reload; matching declared/resolved
-model/effort and tools; documented project discovery/precedence with competing
-definitions and known overrides checked; available non-secret provider/model
-compatibility evidence. Missing optional exact-origin/loaded-byte APIs or future
-child telemetry alone do not block explicitly authorized work once this minimum
-passes. Missing/ambiguous registration, actual mismatch, unresolved inheritance,
-known defeating override or unavailability means STOP, never fallback.
-The freshly loaded registered pair must match the chosen/native-effective
-model and effort before dispatch; persistence never bypasses fixed tool
-registration, provider permissions or genuine capability restrictions.
-Send no conflicting spawn model/effort overrides. Check available child telemetry
-during/after each authorized assignment before accepting work; selection
-failure/mismatch stops. Native dispatch qualification remains separate. Explicit
-reconfiguration uses that same two-role gate and ends setup-only, with no
-automatic goal continuation.
+authority. Changes belong only to explicit `$dom-models` (including the exact
+decompose `configure role models` alias), with exact-plan summary, Save consent,
+native scoped approval and verified terminal completion. Save never queues work.
+Native readiness is not helper-only: establish actual harness, unambiguous
+registered roles/tools and documented discovery/resolution, known overrides/
+mismatches and available model/effort support evidence. No repeated catalog/
+config dumps or probes. Missing optional loaded-byte, independent inherited-model
+or child telemetry alone does not block with documented resolution and no
+counterevidence. Genuinely unknown registration, actual mismatch, defeating
+override or known unsupported/unavailable selection stops with role/reason and
+`$dom-models --configure`, never fallback or conflicting spawn overrides.
+Reload only for actually stale/unknown current registrations before execution,
+not merely fresh files. Check available child telemetry/selection errors before
+accepting work. Static instructions are not native dispatch qualification.
 DOM_EOF
 }
 
@@ -1542,22 +1698,17 @@ DOM_EOF
 
 # Unattended epic execution
 
-Interactive first-use goal setup runs the two-role questionnaire INLINE above,
-not the ordinary-delegation redirect. Setup consumes this request with no task,
-Beads or implementation; stop execution until fresh explicit goal authorization.
-Planning remains available immediately, including an already supplied explicit
-planning request. Execution requires native readiness for the saved pair, with
-supported reload/fresh invocation only if registration is stale/unknown.
-Do not assume saving updates loaded roles. Truly
-noninteractive/autopilot callers without a confirmed pair STOP without persistence.
-Only an unchanged confirmed, ready pair can enter the unattended loop below.
+Use the read-only execution gate above. Fresh installer-configured defaults and
+saved custom/inherited pairs can enter this explicit goal without model questions,
+Save or restart merely because fresh; native readiness remains separate.
+Unconfirmed/stale pairs stop with dom-models guidance, never an embedded wizard.
 
 An explicit `$dom-goal <epic-id>` or `$domestique-goal <epic-id>` invocation is the sole authorization
 to continue between beads. It applies only to that epic and expires on
 completion, a stop condition, or after 15 closed beads.
 Merely loading or implicitly matching this skill is not unattended authority.
 
-Only after the role setup gate passes without setup writes, require an explicit
+Only after the read-only execution gate passes, require an explicit
 epic request and check ALL tracked/index dirtiness (including configured role
 files). If dirty, stop for human disposition; never auto-stage, commit, stash,
 discard or hide it. Then create/switch to a dedicated epic branch.
@@ -1630,133 +1781,7 @@ and material risks. No file dumps.
 DOM_EOF
 }
 
-emit_copilot_model_setup() { cat <<'DOM_EOF'
-## Copilot first-use role setup — mandatory gate
-
-This section applies ONLY to explicit role configuration or execution entry,
-never to ordinary planning-only decompose; its routing skips this entire section.
-No setup delegation of ANY kind, including documentation/research helpers.
-Inspect supported native tools/docs yourself; missing evidence means STOP.
-Before execution Beads, code, branch changes or dispatch, establish the actual
-native caller as copilot from session context/tools, never installed directories.
-Bind ROOT to this invocation's exact physical Git worktree root. Ambiguous
-identity or cwd outside that root means STOP; never search ancestors or another
-checkout. Loading instructions alone is read-only, not setup consent.
-
-Interactive first-use /dom-goal EPIC_ID (or /domestique-v2-copilot-goal EPIC_ID)
-runs this two-role questionnaire INLINE. Setup consumes the request, even with
-an epic: no automatic continuation. The later unattended loop does not make
-this entry noninteractive. Truly noninteractive/autopilot callers without a
-confirmed pair STOP without persistence. Ordinary unconfigured delegation
-redirects to /dom-decompose configure role models, without a questionnaire.
-The exact decompose request `configure role models` is reserved for setup-only
-reconfiguration, not planning, even for an already confirmed pair.
-
-### Read-only ownership and confirmation
-Use only ROOT/.github/agents/domestique-v2-copilot-implementer.agent.md and
-ROOT/.github/agents/domestique-v2-copilot-reviewer.agent.md. Require the existing
-ROOT/.github/.domestique/manifest with snapshot_format=1, platform=copilot and
-each exact role path once in its comma-separated files inventory, plus both
-pristine bases at ROOT/.github/.domestique/base/.github/agents/.
-This is snapshot/three-way ownership, not historical inode proof. No preview
-receipt, second writer/authority, global settings or machine runtime is needed.
-Missing/unmanaged evidence, unsafe paths or ambiguous ownership means STOP for
-explicit lifecycle/human repair; never adopt through setup.
-
-Validate bounded UTF-8 regular roles/evidence (at most 1 MiB each), no symlink
-in any component, no hardlinks, paths confined to ROOT. Record current complete
-bytes, modes and device/inode identities for operation-local rechecks.
-Require one well-formed YAML frontmatter block and exact names
-`domestique-v2-copilot-implementer` / `domestique-v2-copilot-reviewer`.
-Require a nonempty string description and nonempty prompt body.
-Reject duplicate keys, malformed metadata, nested/aliased/multiline selection
-syntax, non-string models and duplicate/misplaced markers for human repair.
-Retain native tools arrays and all other metadata/body bytes. No Copilot effort
-field is invented; effort/model_reasoning_effort fields require human repair.
-Never whole-file format or silently repair ambiguous native YAML.
-
-The only completion marker is one comment immediately after the opening
-implementer delimiter: `# domestique-model-setup: JSON`. Reviewer has none.
-JSON has exactly keys `v` (integer 1), `project` (absolute physical ROOT),
-`harness` (`copilot`), `implementer_sha256`, `reviewer_sha256` (lowercase
-64-character SHA-256 hex). Validate unique keys/types/root/harness and BOTH
-digests at every entry. Hash full file bytes, excluding only the entire
-implementer marker line; hash reviewer unchanged. No model copies in the marker.
-No marker, stale hash, moved/copied project or partial setup is unconfirmed.
-ANY edit to model, tools, metadata or body invalidates confirmation. Show both
-current selections for explicit reconfirmation; never silently reapprove.
-An unchanged confirmed pair, including inheritance, has NO questionnaire and
-NO writes, but still requires native readiness. Aliases share this same pair.
-
-### Supported native evidence, not a paid probe
-Before saving establish BOTH selections' support/availability and required
-role/tools compatibility using the installed client's documented capabilities,
-current selectable models and applicable non-secret session/provider evidence.
-Keep evidence internal except concise relevant limits/blockers: a catalog is selection evidence, not execution proof
-or future entitlement. A subprocess's provider/session is not automatically
-the active thread. Verify applicability. Respect explicit provider constraints
-using actual native evidence; do not infer provider from spelling or hardcode a
-provider switch. Examples such as Sol/Luna/Opus/Sonnet are not selected values.
-Unknown/unavailable/unsupported selection, unresolved inheritance or defeating
-override means STOP without writes. No fallback, fake paid probe, invented API
-or caller-assertion CLI flag substitutes for evidence.
-
-After a save require a supported fresh Copilot invocation/reload if registration
-is stale/unknown, then fresh explicit execution authorization. Planning needs none.
-Before any dispatch on a confirmed pair, establish read-only:
-- Actual native client and present, unambiguous registered intended role IDs.
-- Stored pair/ownership/physical ROOT/BOTH hashes and required fresh reload.
-- Matching declared/resolved model and required tools, using supported native
-  registration/session evidence. Explicit non-overridable registered selections
-  plus documented resolution suffice; resolve aliases/inheritance each session.
-- Installed-version project discovery/precedence, competing project/ancestor/
-  global definitions and known invocation/environment/hook/client overrides.
-- Available non-secret provider/model compatibility and restrictions.
-Use native source provenance when exposed; otherwise documented discovery,
-precedence and the checked pair with matching registered selections suffice.
-Optional exact-origin/loaded-file attestation and unavailable future child
-telemetry are NOT prerequisites. Actual observed mismatch/unavailability,
-ambiguous registration, unresolved inheritance or defeating overrides STOP.
-Marker, syntax, catalog and user assertion alone are not dispatch proof.
-Send no conflicting spawn model override. Ephemeral requests are assertions,
-not persistence or precedence overrides; conflicts require reconfiguration.
-Check available child role/model telemetry and selection errors during/after
-each authorized assignment before accepting work. Observed mismatch/failure
-stops without fallback. Report telemetry limits honestly. No paid probe needed.
-Native dispatch/reload qualification remains separate budget-gated work.
-
-### BOTH roles, concise summary and exact-plan consent
-Show ROOT / copilot, exact role paths, current selections (including absent
-model/native inheritance) and tracked-file consequences.
-Reuse saved native selections; do not ask users to reselect an unchanged confirmed
-pair. For missing/unconfirmed choices or explicit changes, prefill current values
-and ask both in one concise form:
-> These choices will be saved locally for subsequent role execution after any
-> required reload; planning works now. Implementer: exact native model ID or native inheritance?
-> Reviewer: exact native model ID or native inheritance?
-Both may use the same model; independent review means a fresh context.
-Use current native choices, not a shipped menu. Resolve existing aliases with
-native evidence before confirmation. Generated defaults/unset fields are not
-consent. Inheritance removes the model field and follows native resolution,
-not necessarily the direct parent; resolve it anew each session.
-
-DOM_EOF
-  emit_model_setup_protocol copilot
-  cat <<'DOM_EOF'
-
-Every successful confirmation/reconfiguration is SETUP ONLY: no task claims,
-code, branch/commit or dispatch. Planning can proceed without reload on an
-explicit planning request. Execution requires readiness and fresh explicit
-/dom-goal EPIC_ID authorization (legacy names also work).
-The initiating goal is consumed, not queued. Before later goal work, ALL
-tracked/index dirtiness, including setup edits, requires human disposition:
-never auto-stage, commit, stash, discard or hide it. Existing snapshot upgrades
-preserve customizations; changed bytes invalidate consent, never silently renew
-it. Uninstall preserves modified roles; reinstall implies no confirmation.
-
-## End setup gate — continue only for an unchanged confirmed, ready pair
-DOM_EOF
-}
+emit_copilot_model_setup() { emit_execution_gate copilot; }
 
 emit_copilot_role_gate() { cat <<'DOM_EOF'
 ## Read-only role gate
@@ -1767,12 +1792,27 @@ boundary and explicit planning request; no delegation or task execution.
 Before execution Beads/delegation validate the confirmed pair and supported pre-dispatch
 readiness using `.github/skills/domestique-v2-copilot-decompose/SKILL.md`.
 Read that gate as a protocol, not a new invocation or setup authorization.
-If unconfigured/stale, STOP and direct the human to
-`/dom-decompose configure role models`; no ordinary/bootstrap questionnaire.
-Loading/matching alone authorizes neither setup nor an epic. Actual mismatches,
-unavailable/ambiguous roles, unresolved inheritance or defeating overrides STOP;
-optional loaded-file attestation/future telemetry is not a prerequisite.
-Goal first-use runs the same questionnaire inline in its own body, setup only.
+Valid installer-configured defaults and saved custom/inherited pairs need
+NO questionnaire and NO writes; fresh installation alone requires no Save,
+restart or renewed goal authorization. Explicit /dom-goal uses this same gate,
+not a first-use wizard. If unconfirmed/stale, STOP concisely with
+`/dom-models --confirm` for current-pair review or `/dom-models --configure`
+for changes; no ordinary/bootstrap questionnaire. Missing/unsafe files or
+ownership require explicit preserving installer repair, never automatic blessing.
+Loading/matching alone authorizes neither setup nor an epic. Changes belong only
+to explicit dom-models (or exact decompose `configure role models` alias), with
+exact-plan summary, Save consent, scoped approval and verified terminal completion.
+Native readiness is not helper-only: actual harness, registered roles/tools,
+documented discovery/native inheritance, known overrides/mismatches and available
+support evidence are required. BOTH default roles omit model; native inheritance
+is not necessarily direct-parent identity. Missing optional loaded-byte,
+independent inherited-model or child telemetry alone does not block documented
+resolution with no counterevidence. No repeated catalog/config dumps or probes.
+Genuinely unknown registration, ambiguous roles, actual mismatch/unavailability
+or defeating overrides STOP with role/reason and `/dom-models --configure`;
+no fallback or conflicting spawn model override. Reload only for actually
+stale/unknown current registrations before execution, not merely fresh files.
+Check available child telemetry/selection errors before accepting work.
 DOM_EOF
 }
 
@@ -1870,7 +1910,10 @@ DOM_EOF
 Preserve the original explicit /dom-goal EPIC_ID or
 /domestique-v2-copilot-goal EPIC_ID request and its literal epic argument.
 Missing explicit request/epic means STOP; native /goal or /autopilot is not
-Domestique authorization. Setup consumes goal-first requests without work.
+Domestique authorization. Fresh installer-configured defaults and saved custom/
+inherited pairs use the read-only gate above without model questions, Save or
+restart merely because fresh. Unconfirmed/stale pairs stop with dom-models
+guidance, never an embedded wizard.
 Only after unchanged confirmation/readiness, require human disposition of ALL
 tracked/index dirtiness (including setup changes), then use a dedicated epic
 branch. Never auto-stage/commit/stash/discard/hide setup changes.
@@ -1923,8 +1966,21 @@ user invocation. Merely loading or implicitly matching this skill is not
 unattended authority and must not start setup. Goal requires an original explicit
 dom-goal invocation naming the epic (Codex $dom-goal; Copilot /dom-goal);
 loading the routed body cannot grant it. Native compatibility invocations retain
-their own explicit authority, never an inferred request. Setup consumes goal
-authority, never queues work; execution needs fresh explicit authorization.
+their own explicit authority, never an inferred request.
+Fresh installer-configured defaults and saved custom/inherited pairs use the
+native read-only verification/readiness gate without model questions, Save or
+restart merely because fresh. Preserve this explicit goal authorization.
+Unconfirmed/stale pairs stop concisely toward native `dom-models --confirm` or
+`dom-models --configure`, never an embedded wizard. Native readiness is separate
+from helper confirmation: registered roles/discovery, documented inheritance,
+known overrides/mismatches and available model/effort support evidence.
+Missing optional loaded-byte, independent inherited-model or child telemetry
+alone does not block documented resolution with no counterevidence. Known
+unavailability/unsupported selection or genuinely unknown registration stops
+with role/reason and native dom-models guidance, never fallback/spawn overrides.
+Reload only for actually stale/unknown current registrations before execution.
+Only explicit dom-models changes (or its exact configuration alias) use Save;
+Save never queues/authorizes a goal and needs fresh execution authorization.
 Planning-only decompose bypasses ALL role setup/readiness gates in shared,
 native and root/bootstrap policies: no model questions, helper verify,
 loaded-role checks or reload, even for missing/unconfirmed/manually edited pairs.
@@ -1947,6 +2003,124 @@ emit_codex_dom_goal_metadata() {
   emit_codex_goal_metadata | sed \
     -e 's/[$]domestique-goal/$dom-goal/' \
     -e 's/Codex only: drain one explicit epic with gated review/Route one explicit epic to the actual native caller/'
+}
+
+emit_native_models() {
+  local provider="$1"
+  printf '%s\n' '---'
+  case "$provider" in
+    claude)
+      printf '%s\n' 'description: Claude Code only; never match in another harness. Inspect or explicitly change saved project role models.' 'argument-hint: "[--help | --configure | --confirm | settings]"' ;;
+    codex)
+      printf '%s\n' 'name: domestique-models' 'description: Codex only; never match in another harness. Inspect or explicitly change saved project role models.' ;;
+    copilot)
+      printf '%s\n' 'name: domestique-v2-copilot-models' 'description: Copilot only; never match in Claude, Codex or an unknown harness. Inspect or explicitly change saved project role models.' ;;
+  esac
+  printf '%s\n' '---'
+  emit_harness_guard "$provider"
+  cat <<'DOM_EOF'
+
+# Role models — inspection or one deliberate Save, never task execution
+
+Use only this actual harness at the invocation's physical Git worktree ROOT.
+Require an explicit native dom-models invocation (or the exact decompose
+`configure role models` alias, mapped to `--configure`); implicit skill loading
+does nothing. Preserve the ORIGINAL arguments; never infer setting flags from
+prose or task text. No goal invocation/authorization, Beads, delegation (including
+research helpers), task work, install/auto-init, credentials or provider changes.
+
+Usage: `dom-models` inspects saved choices, read-only. `--help` shows this usage,
+without requiring any installed pair/helper. `--configure` selects interactively,
+prefilled with current saved models/efforts. `--confirm` prepares the current
+unchanged pair for review when unconfirmed/stale; already configured needs no Save.
+These modes are exclusive and cannot mix with settings. Explicit settings accept
+any nonempty subset of `--implementer MODEL`, `--reviewer MODEL`,
+`--implementer-effort LEVEL`, `--reviewer-effort LEVEL`, separated or `=value`.
+Copilot rejects effort flags. `inherit` uses native encoding. Duplicate flags
+(even equal), empty values, unknown flags, harness/path selectors or mixed modes
+refuse with zero writes. Unmentioned models, efforts and partner remain exact.
+
+Run the pristine bootstrap below with `request` followed by the actual argv.
+When the native client exposes argument text rather than argv, pass `request-text`
+and ONE literal argument containing that ORIGINAL text (Claude `$ARGUMENTS`;
+Codex/Copilot original invocation arguments). The helper tokenizes deterministically
+with shell-style quoting, but performs NO expansion or evaluation. Use the tool's
+literal argument/JSON encoding, never interpolate model IDs or request text into
+shell code; no eval, invented flags or a replacement parser. If original arguments
+cannot be recovered losslessly, ask and stop rather than guess.
+
+For exact `--help`, print usage directly even without a helper. Otherwise use the
+validated installed helper only. If missing, inspection reports not installed/
+unconfigured; changes stop for preserving installer repair. Never run an installer
+or its InstallerPair API from this command, even as a consent bypass.
+Inspection uses `request` with no arguments, NOT prepare/verify/catalog setup.
+Show saved models/efforts, configured versus unconfirmed, warnings and readiness
+limits. Missing pair: not installed/unconfigured, no auto-initialization.
+No catalog questionnaire, network/auth check, mutation or mandatory reload for
+inspection or planning. Saved configuration is not proof of loaded native roles.
+
+`request --configure` returns current values and warnings without a plan.
+Ask inline for changes with those values prefilled; retain all unmentioned
+values and do not reset effort on a model change. Use `prepare` with both exact
+choices only after selection. `request --confirm` or explicit setting argv returns
+an exact read-only plan and digest directly; do not ask a model questionnaire.
+No speculative catalog checks block reading or saving literal IDs; known native
+support limitations can be reported, never silently substitute another model.
+
+Present one compact summary: current -> chosen models/efforts, project/harness,
+role paths, tracked-file consequences, scalar/pair-marker-only scope and relevant
+stale/copied-root/current-body warnings. Confirm acknowledges current bodies,
+preserves edits and pristine bases, and does not attest provider readiness.
+Keep plan/digest internal and independently retain the prepared digest; detailed
+diff is available on request, not printed by default. Ask once:
+`Save these choices? Save / Cancel`. Selection/--confirm is NOT Save consent.
+On Cancel/missing input/denied approval: `Cancelled; nothing saved`, no apply.
+Changes to the plan require a new summary and new explicit Save.
+
+Use the bootstrap's normal `apply DIGEST` with exact plan JSON on stdin ONLY
+after explicit Save and native protected-write approval. No installer API,
+broad permission or sandbox bypass. Await terminal completion (poll a running
+tool session); pending/partial/nonzero is not success. Read-only `verify` after
+apply must match its confirmed choices and hashes before reporting saved.
+State saved versus loaded separately: inspection/planning need no restart;
+before execution, reload/fresh invocation only when matching loaded registration
+is not established. Saving never invokes/resumes a goal or grants execution.
+
+The mechanical bootstrap/publication protocol below is reused, not an execution
+gate. Never invoke a goal, ask a fresh questionnaire on inspection/confirm,
+or use verify as a prerequisite for ordinary planning.
+DOM_EOF
+  emit_model_setup_protocol "$provider" models
+}
+emit_claude_models() { emit_native_models claude; }
+emit_codex_models() { emit_native_models codex; }
+emit_copilot_models() { emit_native_models copilot; }
+emit_shared_models() {
+  cat <<'DOM_EOF'
+---
+name: dom-models
+description: Codex or Copilot only. Inspect saved role models or explicitly change the actual native caller’s project-local pair; no task authorization.
+---
+
+## Shared native routing — read-only boundary
+Identify the ACTUAL native caller from session context/native tools, never
+installed directories, file names or skill matching. Unknown, ambiguous or
+unsupported callers STOP without writes. Claude uses `/dom-models` in Claude
+Code, never this skill. Do not auto-invoke another entry or cross harnesses.
+Bind ROOT to this invocation's physical Git worktree root; no path/harness
+selector, ancestor/global search or fallback. Read only its native body:
+- Codex: `.agents/skills/domestique-models/SKILL.md` (`$dom-models`).
+- Copilot: `.github/skills/domestique-v2-copilot-models/SKILL.md` (`/dom-models`).
+Missing/unreadable/foreign body: STOP, required native projection not installed.
+Preserve the ORIGINAL explicit request and all original arguments verbatim.
+No synthesized invocation: merely loading this skill starts nothing.
+No arguments means read-only inspection, not interactive setup. `--help` is
+read-only usage; `--configure`, `--confirm` and setting flags follow the native
+body's deterministic parser and one explicit Save/Cancel protocol.
+Never invoke/authorize a goal, Beads, delegation, installation or task execution.
+Saved configuration and loaded/native readiness are distinct. Inspection and
+ordinary planning need no setup/reload, including missing or stale pairs.
+DOM_EOF
 }
 
 # Normal Codex sessions receive this as a managed root AGENTS policy block.
@@ -1989,23 +2163,45 @@ directory). Without a selector, installs all three native projections:
   .claude/agents/reviewer.md       reviewer subagent
   .claude/commands/dom-decompose.md /dom-decompose (also /decompose)
   .claude/commands/dom-goal.md      /dom-goal EPIC_ID (also /goal EPIC_ID)
+  .claude/commands/dom-models.md    /dom-models saved role choices
   AGENTS.md or AGENTS.override.md  Codex policy (normal mode, managed block)
   .codex/agents/*.toml             Codex implementer and reviewer
-  .agents/skills/dom-*/            Codex $dom-decompose / $dom-goal EPIC_ID
+  .agents/skills/dom-*/            Shared Codex/Copilot dom-decompose, dom-goal, dom-models
   .agents/skills/domestique*/      Codex bootstrap and compatibility skills
   .github/agents/domestique-v2-copilot-*.agent.md  Copilot native roles
   .github/skills/domestique-v2-copilot*/           Copilot local workflows
   .github/copilot-instructions.md Copilot policy (normal only)
+
+Native model command: /dom-models (Claude/Copilot), $dom-models (Codex).
+No arguments inspects saved choices read-only; --help shows usage.
+--configure selects with current values prefilled; --confirm reviews a stale/
+unconfirmed current pair. Explicit changes: --implementer MODEL, --reviewer MODEL,
+--implementer-effort LEVEL, --reviewer-effort LEVEL (effort unsupported in Copilot).
+Separated or = values; inherit uses native inheritance. Modes are exclusive;
+duplicate/empty/unknown flags refuse. Current harness only, one explicit Save.
+Saved is not loaded/native-ready; inspection and planning need no reload.
+Legacy decompose `configure role models` aliases dom-models --configure.
 
 Options:
   --platform <p> Select claude, codex, both, copilot, or all. Both means only
                  Claude+Codex. No selector (fresh or rerun) selects all three.
                  Explicit installs add to the persisted provider set.
   --dry-run      Print planned changes; touch nothing.
+  --model <harness:role=id-or-inherit>
+                 Repeat per claude/codex/copilot implementer/reviewer; also
+                 --model=harness:role=value. Identical repeats are idempotent;
+                 conflicting repeats or unselected harnesses are errors.
+                 IDs are literal (quote as one shell argument); inherit uses
+                 native resolution. No effort flag; existing effort is preserved.
+                 Incompatible with --force, --uninstall and --purge-beads.
+                 Fresh defaults: Claude sonnet/opus (no effort), Codex
+                 gpt-5.6-sol/medium and gpt-5.6-terra/high, Copilot inheritance.
   --with-beads   If `bd` is on PATH, initialize with safe skip flags when
                  needed. Normal mode runs setup only for selected providers;
                  guest mode uses --stealth and never runs provider setup.
-  --force        Overwrite differing provider files without a .bak backup.
+  --force        Regenerate qualified role bodies, preserving model/effort.
+                 Never bypass ownership/guards or confirm an unconfirmed pair.
+                 Other differing provider files are replaced without a .bak.
                  Managed policy files are always backed up before change.
   --guest        Use personal/guest mode. Claude routes policy to
                  CLAUDE.local.md; Codex leaves both root AGENTS files
@@ -2089,7 +2285,7 @@ Before applying:
   and GitHub Copilot. Use --platform claude/codex/copilot/both/all to choose;
   both remains Claude+Codex. Explicit installs are additive, not removal.
   This installs project config, not native clients or model software.
-  Preserving upgrades retain model choices (--force can replace provider files).
+  Upgrades and --force retain existing role model/effort choices.
   Planning needs no model setup or reload. Execution needs confirmed roles
   and reload/fresh invocation if registrations are stale/unknown.
   Installing config does not establish native readiness.
@@ -2138,8 +2334,8 @@ print_install_notice() (
     separator=", "
   done
   printf '\n'
-  echo "Project config only, not native clients/model software. Preserving upgrades retain model choices; --force can replace provider files."
-  echo "Planning needs no setup/reload. Before execution, confirm roles independently in each harness; reload/start a fresh invocation if registrations are stale/unknown. Config is not native readiness."
+  echo "Project config only, not native clients/model software. Upgrades and --force retain model/effort choices."
+  echo "Planning needs no setup/reload. Before execution, verify configured roles and native readiness; reload only if current registrations are stale/unknown. Fresh configured defaults need no questionnaire. Config is not native readiness."
   echo "Choose with --platform claude/codex/copilot/both/all; both remains Claude+Codex."
   echo "Preview: curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run"
   echo "Explicit: curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform claude"
@@ -2157,6 +2353,7 @@ GUEST_EXPLICIT=0
 NO_GUEST=0
 UNINSTALL=0
 PURGE_BEADS=0
+MODEL_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -2165,6 +2362,10 @@ while [ $# -gt 0 ]; do
       PLATFORM_ARG="$2"; PLATFORM_EXPLICIT=1; shift ;;
     --platform=*)
       PLATFORM_ARG="${1#--platform=}"; PLATFORM_EXPLICIT=1 ;;
+    --model)
+      [ "$#" -ge 2 ] || { echo "Missing argument for --model" >&2; exit 2; }
+      MODEL_ARGS+=("$2"); shift ;;
+    --model=*)     MODEL_ARGS+=("${1#--model=}") ;;
     --dry-run)      DRY_RUN=1 ;;
     --with-beads)   WITH_BEADS=1 ;;
     --force)        FORCE=1 ;;
@@ -2183,6 +2384,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 TARGET_DIR="${TARGET_DIR:-.}"
+
+if [ "$PLATFORM_EXPLICIT" -eq 1 ] && [ -z "$PLATFORM_ARG" ]; then
+  echo "Error: --platform requires a nonempty selection." >&2
+  exit 2
+fi
 
 case "${PLATFORM_ARG:-all}" in
   claude|codex|both|copilot|all) ;;
@@ -2205,6 +2411,34 @@ if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   exit 2
 fi
 
+if [ "${#MODEL_ARGS[@]}" -gt 0 ] &&
+   { [ "$FORCE" -eq 1 ] || [ "$UNINSTALL" -eq 1 ] || [ "$PURGE_BEADS" -eq 1 ]; }; then
+  echo "Error: --model is incompatible with --force, --uninstall and --purge-beads. No project writes." >&2
+  exit 2
+fi
+
+# Use only our emitted helper, never execute target helper code. argv remains
+# literal data even through curl | bash; no stdin consumption or project scratch.
+emit_installer_model_library() {
+  printf "__name__ = 'installer_model_library'\n"
+  emit_model_setup_helper
+}
+
+MODEL_REQUEST=""
+if [ "$UNINSTALL" -eq 0 ]; then
+  MODEL_REQUEST="$(python3 -I -B -c "$(CURRENT_PROVIDER=claude emit_installer_model_library)
+try:
+    print(canonical(installer_request(sys.argv[1], sys.argv[2:])).decode())
+except ValueError as error:
+    print('Error: ' + str(error) + '. No project writes.', file=sys.stderr)
+    sys.exit(2)
+" "${PLATFORM_ARG:-all}" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"})" || {
+    model_rc=$?
+    echo "Error: Python model-request validation failed (Codex requires Python 3.11+/tomllib). No project writes." >&2
+    exit "$model_rc"
+  }
+fi
+
 # Check even the tools used to construct inventories and temporary staging
 # before using them. These are local prerequisites, never installed for users.
 for dependency in git python3 awk sed grep find wc cut paste head tail cmp cp mkdir rm mv rmdir touch date mktemp cat dirname tr sort; do
@@ -2221,8 +2455,10 @@ COPILOT_ENTRIES='.github/agents/domestique-v2-copilot-implementer.agent.md|emit_
 .github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill'
 COPILOT_OLD_FILES="$(printf '%s\n' "$COPILOT_ENTRIES" | cut -d'|' -f1 | paste -sd, -)"
 COPILOT_ENTRIES="$COPILOT_ENTRIES
-.github/domestique-model-setup.py|emit_copilot_model_helper"
-COPILOT_FILES="$COPILOT_OLD_FILES,.github/domestique-model-setup.py"
+.github/domestique-model-setup.py|emit_copilot_model_helper
+.github/skills/domestique-v2-copilot-models/SKILL.md|emit_copilot_models"
+COPILOT_HELPER_FILES="$COPILOT_OLD_FILES,.github/domestique-model-setup.py"
+COPILOT_FILES="$COPILOT_HELPER_FILES,.github/skills/domestique-v2-copilot-models/SKILL.md"
 
 # configure_provider <claude|codex|copilot|shared> — select inventory and
 # snapshot namespace. Policy destination is finalized after sticky guest mode
@@ -2237,14 +2473,14 @@ configure_provider() {
       POLICY_EMITTER="emit_policy"
       POLICY_LABEL="CLAUDE.md"
       POLICY_CANDIDATES="CLAUDE.md CLAUDE.local.md"
-      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/dom-decompose.md,.claude/commands/dom-goal.md,.claude/domestique-model-setup.py"
+      MANAGED_PLAIN_FILES=".claude/agents/implementer.md,.claude/agents/reviewer.md,.claude/commands/decompose.md,.claude/commands/goal.md,.claude/commands/dom-decompose.md,.claude/commands/dom-goal.md,.claude/domestique-model-setup.py,.claude/commands/dom-models.md"
       ;;
     codex)
       SNAPSHOT_DIR="$TARGET_DIR/.codex/.domestique"
       POLICY_EMITTER="emit_codex_policy"
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
-      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml,.codex/domestique-model-setup.py"
+      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml,.codex/domestique-model-setup.py,.agents/skills/domestique-models/SKILL.md"
       ;;
     copilot)
       SNAPSHOT_DIR="$TARGET_DIR/.github/.domestique"
@@ -2380,6 +2616,8 @@ write_codex_guest_ownership() {
     [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
     printf '.codex/.domestique/\n'
     printf '.codex/domestique-model-setup.py\n'
+    printf '.agents/skills/domestique-models/SKILL.md\n'
+    printf '.agents/skills/dom-models/SKILL.md\n'
     [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
     [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
     [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
@@ -2397,6 +2635,7 @@ write_codex_guest_ownership() {
 }
 
 write_provider_manifest() {
+  if model_pair_managed && [ -f "$TMPDIR_WORK/model-selected-$CURRENT_PROVIDER" ]; then return 0; fi
   [ "$SNAPSHOT_TOUCHED" -eq 1 ] || return 0
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
@@ -2423,6 +2662,7 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.claude/commands/dom-decompose.md" emit_decompose
       install_plain "$TARGET_DIR/.claude/commands/dom-goal.md" emit_goal
       install_plain "$TARGET_DIR/.claude/domestique-model-setup.py" emit_claude_model_helper
+      install_plain "$TARGET_DIR/.claude/commands/dom-models.md" emit_claude_models
       ;;
     codex)
       install_plain "$TARGET_DIR/.codex/agents/implementer.toml" emit_codex_implementer
@@ -2432,6 +2672,7 @@ install_current_provider() {
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" emit_codex_goal_skill
       install_plain "$TARGET_DIR/.agents/skills/domestique-goal/agents/openai.yaml" emit_codex_goal_metadata
       install_plain "$TARGET_DIR/.codex/domestique-model-setup.py" emit_codex_model_helper
+      install_plain "$TARGET_DIR/.agents/skills/domestique-models/SKILL.md" emit_codex_models
       write_codex_guest_ownership
       ;;
     copilot)
@@ -2647,8 +2888,10 @@ SNAPSHOT_TOUCHED=0
 # .github/.domestique manifest inventorying BOTH namespaced roles with bases.
 SHARED_ENTRIES='.agents/skills/dom-decompose/SKILL.md|emit_codex_dom_decompose_skill
 .agents/skills/dom-goal/SKILL.md|emit_codex_dom_goal_skill
-.agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata'
-SHARED_FILES=".agents/skills/dom-decompose/SKILL.md,.agents/skills/dom-goal/SKILL.md,.agents/skills/dom-goal/agents/openai.yaml"
+.agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata
+.agents/skills/dom-models/SKILL.md|emit_shared_models'
+SHARED_OLD_FILES=".agents/skills/dom-decompose/SKILL.md,.agents/skills/dom-goal/SKILL.md,.agents/skills/dom-goal/agents/openai.yaml"
+SHARED_FILES="$SHARED_OLD_FILES,.agents/skills/dom-models/SKILL.md"
 SHARED_MIGRATE=0
 SHARED_PRESENT=0
 SHARED_CODEX=0
@@ -2875,7 +3118,8 @@ try:
         need(not os.path.lexists(root / base / ".domestique") or base == ".github",
              "unknown experimental authority")
     for rel in (".github/skills/domestique", ".github/skills/domestique-decompose",
-                ".github/skills/domestique-goal", ".github/agents/domestique-implementer.agent.md",
+                ".github/skills/domestique-goal", ".github/skills/domestique-models",
+                ".github/skills/dom-models", ".github/agents/domestique-implementer.agent.md",
                 ".github/agents/domestique-reviewer.agent.md"):
         need(not os.path.lexists(root / rel), f"unknown legacy authority: {rel}")
     if (root / archive / "complete").exists():
@@ -3007,8 +3251,9 @@ try:
     output["exclude"] += ("/" + archive + "/\n").encode()
     for rel in files_arg.split(","):
         output[f"{state}/base/{rel}"] = read(work / "preview-upstream" / rel)
-        if rel == ".github/domestique-model-setup.py":
-            need(pending or not os.path.lexists(root / rel), "unowned helper collision")
+        if rel in (".github/domestique-model-setup.py",
+                   ".github/skills/domestique-v2-copilot-models/SKILL.md"):
+            need(pending or not os.path.lexists(root / rel), "unowned helper/model command collision")
             output[rel] = read(work / "preview-upstream" / rel)
     output[f"{state}/guest-excludes"] = (state + "/\n" + "\n".join(files_arg.split(",")) + "\n").encode()
     if normal == "0":
@@ -3277,10 +3522,10 @@ snapshot_has_file() {
 }
 
 shared_consumer_valid() {
-  local provider="$1" state role
+  local provider="$1" state role models
   case "$provider" in
-    codex) state=".codex/.domestique" ;;
-    copilot) state=".github/.domestique" ;;
+    codex) state=".codex/.domestique"; models=".agents/skills/domestique-models/SKILL.md" ;;
+    copilot) state=".github/.domestique"; models=".github/skills/domestique-v2-copilot-models/SKILL.md" ;;
   esac
   for role in implementer reviewer; do
     case "$provider" in
@@ -3288,6 +3533,12 @@ shared_consumer_valid() {
       copilot) snapshot_has_file "$state" "$provider" ".github/agents/domestique-v2-copilot-$role.agent.md" || return 1 ;;
     esac
   done
+  # Earlier finite inventories lack dom-models. A claimed new projection must
+  # have its owned base and live body; omission is not a readiness claim.
+  if grep '^files=' "$TARGET_DIR/$state/manifest" | tr ',' '\n' | grep -qxF "$models"; then
+    snapshot_has_file "$state" "$provider" "$models" &&
+      shared_safe_path "$models" && [ -f "$TARGET_DIR/$models" ] || return 1
+  fi
   shared_safe_path "$state/mode" || return 1
   [ ! -e "$TARGET_DIR/$state/mode" ] || [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]
 }
@@ -3405,6 +3656,12 @@ lifecycle_preflight() {
         shared_safe_path "$rel.uninstalled.$TS" ||
         shared_refuse "unsafe selected $provider path $rel"
       case "$rel" in
+        .claude/commands/dom-models.md|.agents/skills/domestique-models/SKILL.md|.github/skills/domestique-v2-copilot-models/SKILL.md)
+          if [ -e "$TARGET_DIR/$rel" ] || [ -e "$TARGET_DIR/$state/base/$rel" ]; then
+            snapshot_has_file "$state" "$provider" "$rel" ||
+              shared_refuse "unowned model command $rel; no adoption"
+          fi
+          ;;
         */domestique-model-setup.py)
           if [ -e "$TARGET_DIR/$rel" ]; then
             snapshot_has_file "$state" "$provider" "$rel" &&
@@ -3511,7 +3768,7 @@ copilot_preflight() {
   if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
     native_root="$TMPDIR_WORK/preview-root"
   else
-    for path in .domestique-private/copilot-preview.json .github/skills/dom-decompose .github/skills/dom-goal; do
+    for path in .domestique-private/copilot-preview.json .github/skills/dom-decompose .github/skills/dom-goal .github/skills/dom-models; do
       if [ -e "$TARGET_DIR/$path" ] || [ -L "$TARGET_DIR/$path" ]; then
         shared_refuse "competing preview ownership/path $path; supported receipt required"
       fi
@@ -3525,12 +3782,15 @@ copilot_preflight() {
   elif [ -d "$TARGET_DIR/$state" ]; then
     shared_consumer_valid copilot || shared_refuse "unknown Copilot authority"
     while IFS='|' read -r rel emitter; do
-      [ "$rel" != ".github/domestique-model-setup.py" ] || continue
+      case "$rel" in
+        .github/domestique-model-setup.py|.github/skills/domestique-v2-copilot-models/SKILL.md) continue ;;
+      esac
       snapshot_has_file "$state" copilot "$rel" || shared_refuse "incomplete Copilot inventory: $rel"
     done <<< "$COPILOT_ENTRIES"
     local files
     files="$(sed -n 's/^files=//p' "$TARGET_DIR/$state/manifest")"
     [ "$files" = "$COPILOT_FILES" ] || [ "$files" = "$COPILOT_FILES,.github/copilot-instructions.md" ] ||
+      [ "$files" = "$COPILOT_HELPER_FILES" ] || [ "$files" = "$COPILOT_HELPER_FILES,.github/copilot-instructions.md" ] ||
       [ "$files" = "$COPILOT_OLD_FILES" ] || [ "$files" = "$COPILOT_OLD_FILES,.github/copilot-instructions.md" ] ||
       shared_refuse "unknown Copilot inventory"
     while IFS= read -r path; do
@@ -3570,6 +3830,9 @@ copilot_preflight() {
     if [ ! -e "$native_root/$rel" ]; then
       printf '%s\n' "$rel" >> "$TMPDIR_WORK/copilot-excludes"
     elif [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+      if [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] && [ "$PREVIEW_MIGRATE" -eq 0 ]; then
+        case "$rel" in .github/agents/*.agent.md) continue ;; esac
+      fi
       "$emitter" > "$TMPDIR_WORK/copilot-upstream"
       if [ "$rel" = ".github/domestique-model-setup.py" ]; then
         cmp -s "$native_root/$rel" "$base" || shared_refuse "modified Copilot helper"
@@ -3760,6 +4023,9 @@ PY
     fi
     [ "$provider" != claude ] || [ "$SELECT_CLAUDE" -eq 1 ] || continue
     [ "$provider" != codex ] || [ "$SELECT_CODEX" -eq 1 ] || continue
+    if [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+      case "$rel" in .claude/agents/*.md|.codex/agents/*.toml) continue ;; esac
+    fi
     base=".$provider/.domestique/base/$rel"
     shared_safe_path "$rel" && shared_safe_path "$base" &&
       shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" ||
@@ -3806,17 +4072,19 @@ claude|.claude/commands/decompose.md|emit_decompose
 claude|.claude/commands/goal.md|emit_goal
 claude|.claude/commands/dom-decompose.md|emit_decompose
 claude|.claude/commands/dom-goal.md|emit_goal
+claude|.claude/commands/dom-models.md|emit_claude_models
 codex|.codex/agents/implementer.toml|emit_codex_implementer
 codex|.codex/agents/reviewer.toml|emit_codex_reviewer
 codex|.agents/skills/domestique/SKILL.md|emit_codex_skill
 codex|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
 codex|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
 codex|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
+codex|.agents/skills/domestique-models/SKILL.md|emit_codex_models
 ENTRIES
 }
 
 shared_preflight() {
-  local rel emitter base staged rc path
+  local rel emitter base staged rc path inventory
   local state=".agents/.domestique" legacy=".codex/.domestique"
   # Validate prospective paths as well as existing evidence, before *either*
   # lifecycle can touch providers, modes or exclusions. A directory is not a
@@ -3830,6 +4098,12 @@ shared_preflight() {
     shared_safe_path "$rel" || shared_refuse "unsafe canonical path $rel"
     shared_safe_path "$state/base/$rel" || shared_refuse "unsafe shared base for $rel"
     shared_safe_path "$legacy/base/$rel" || shared_refuse "unsafe legacy base for $rel"
+    if [ "$rel" = ".agents/skills/dom-models/SKILL.md" ] &&
+       { [ -e "$TARGET_DIR/$rel" ] || [ -e "$TARGET_DIR/$state/base/$rel" ] ||
+         [ -e "$TARGET_DIR/$legacy/base/$rel" ]; }; then
+      snapshot_has_file "$state" shared "$rel" ||
+        shared_refuse "unowned shared model command $rel; no adoption"
+    fi
   done <<< "$SHARED_ENTRIES"
   shared_consumer_valid codex && SHARED_CODEX=1
   shared_consumer_valid copilot && SHARED_COPILOT=1
@@ -3842,19 +4116,28 @@ shared_preflight() {
     if [ -e "$TARGET_DIR/$legacy" ] || [ -L "$TARGET_DIR/$legacy" ]; then
       [ "$SHARED_CODEX" -eq 1 ] || shared_refuse "uncertain Codex consumer ownership"
     fi
-    # This namespace is new: even identical unknown files cannot be adopted.
+    inventory="$(sed -n 's/^files=//p' "$TARGET_DIR/$state/manifest")"
+    [ "$inventory" = "$SHARED_FILES" ] || [ "$inventory" = "$SHARED_OLD_FILES" ] ||
+      shared_refuse "unexpected shared inventory"
+    if [ "$inventory" = "$SHARED_OLD_FILES" ]; then
+      case "$(sed -n 's/^domestique_version=//p' "$TARGET_DIR/$state/manifest")" in
+        0.1.0|0.2.0|0.2.1|0.2.2) ;;
+        *) shared_refuse "unknown shared inventory generation" ;;
+      esac
+    fi
+    # Finite older inventories may omit only the new route, never adopt it.
     while IFS='|' read -r rel emitter; do
+      [ "$inventory" != "$SHARED_OLD_FILES" ] ||
+        [ "$rel" != ".agents/skills/dom-models/SKILL.md" ] || continue
       snapshot_has_file "$state" shared "$rel" || shared_refuse "unknown/incomplete $state; expected authoritative shared manifest and bases"
     done <<< "$SHARED_ENTRIES"
-    [ "$(sed -n 's/^files=//p' "$TARGET_DIR/$state/manifest")" = "$SHARED_FILES" ] ||
-      shared_refuse "unexpected shared inventory"
     while IFS= read -r path; do
       case "$path" in
-        "$TARGET_DIR/$state"|"$TARGET_DIR/$state/base"|"$TARGET_DIR/$state/base/.agents"|"$TARGET_DIR/$state/base/.agents/skills"|"$TARGET_DIR/$state/base/.agents/skills/dom-decompose"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/agents")
+        "$TARGET_DIR/$state"|"$TARGET_DIR/$state/base"|"$TARGET_DIR/$state/base/.agents"|"$TARGET_DIR/$state/base/.agents/skills"|"$TARGET_DIR/$state/base/.agents/skills/dom-models"|"$TARGET_DIR/$state/base/.agents/skills/dom-decompose"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/agents")
           shared_safe_path "${path#"$TARGET_DIR"/}" directory || shared_refuse "unsafe state directory $path"
           continue ;;
         "$TARGET_DIR/$state/manifest"|"$TARGET_DIR/$state/mode"|"$TARGET_DIR/$state/guest-excludes") ;;
-        "$TARGET_DIR/$state/base/.agents/skills/dom-decompose/SKILL.md"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/SKILL.md"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/agents/openai.yaml") ;;
+        "$TARGET_DIR/$state/base/.agents/skills/dom-models/SKILL.md"|"$TARGET_DIR/$state/base/.agents/skills/dom-decompose/SKILL.md"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/SKILL.md"|"$TARGET_DIR/$state/base/.agents/skills/dom-goal/agents/openai.yaml") ;;
         *) shared_refuse "unknown state path $path" ;;
       esac
       shared_safe_path "${path#"$TARGET_DIR"/}" || shared_refuse "unsafe state path $path"
@@ -3926,6 +4209,8 @@ write_shared_mode() {
 install_shared() {
   local rel emitter
   configure_provider shared
+  local new_models=0
+  [ -e "$TARGET_DIR/.agents/skills/dom-models/SKILL.md" ] || new_models=1
   # Visibility follows all consumers, not the last installed provider.
   while IFS='|' read -r rel emitter; do
     install_plain "$TARGET_DIR/$rel" "$emitter"
@@ -3941,6 +4226,10 @@ install_shared() {
           printf '%s\n' "$rel" >> "$SNAPSHOT_DIR/guest-excludes"
         fi
       done <<< "$SHARED_ENTRIES"
+    fi
+    if [ "$new_models" -eq 1 ] &&
+       ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$SNAPSHOT_DIR/guest-excludes"; then
+      printf '.agents/skills/dom-models/SKILL.md\n' >> "$SNAPSHOT_DIR/guest-excludes"
     fi
     write_shared_mode
   fi
@@ -4321,6 +4610,309 @@ native_merge_refuse() {
   exit 3
 }
 
+model_pair_managed() {
+  [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] &&
+    [ "$CURRENT_PROVIDER" != shared ] &&
+    { [ "$CURRENT_PROVIDER" != copilot ] || [ "$PREVIEW_MIGRATE" -eq 0 ]; }
+}
+
+installer_model_pairs() {
+  local provider requested selected policy rel emitter input
+  mkdir -p "$TMPDIR_WORK/model-input"
+  {
+    declare -f merge_native_plain
+    printf '\nTMPDIR_WORK="$6"\nmerge_native_plain "$1" "$2" "$3" "$4" "$5"\n'
+  } > "$TMPDIR_WORK/model-merge.sh"
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    selected=0
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE" ;;
+      codex) selected="$SELECT_CODEX" ;;
+      copilot) selected="$SELECT_COPILOT" ;;
+    esac
+    [ "$selected" -eq 1 ] || continue
+    if [ "$provider" = copilot ] && [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+      echo "Copilot preview migration remains unconfirmed; review/Save required."
+      touch "$TMPDIR_WORK/model-unconfirmed"
+      touch "$TMPDIR_WORK/model-preview-unconfirmed"
+      continue
+    fi
+    input="$TMPDIR_WORK/model-input/$provider"
+    mkdir -p "$input"
+    emit_installer_model_library > "$input/helper"
+    emit_harness_guard "$provider" > "$input/entry-guard"
+    emit_harness_guard "$provider" delegated > "$input/delegated-guard"
+    printf '%s\n' "$MANAGED_PLAIN_FILES" > "$input/files"
+    printf '%s\n' "$POLICY_CANDIDATES" > "$input/policies"
+    requested="$REQUESTED_GUEST"
+    if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
+       [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ]; then requested=1; fi
+    POLICY_DEST=""
+    case "$provider:$requested" in
+      claude:0) POLICY_DEST=CLAUDE.md ;;
+      claude:1) POLICY_DEST=CLAUDE.local.md ;;
+      codex:0)
+        POLICY_DEST=AGENTS.md
+        [ ! -e "$TARGET_DIR/AGENTS.override.md" ] || POLICY_DEST=AGENTS.override.md ;;
+      copilot:0) POLICY_DEST=.github/copilot-instructions.md ;;
+    esac
+    ( SNAPSHOT_DIR="$input"; write_manifest )
+    while IFS='|' read -r policy rel emitter; do
+      [ "$policy" = "$provider" ] || continue
+      mkdir -p "$input/$(dirname "$rel")"
+      "$emitter" > "$input/$rel"
+    done <<'ENTRIES'
+claude|.claude/agents/implementer.md|emit_implementer
+claude|.claude/agents/reviewer.md|emit_reviewer
+claude|.claude/commands/decompose.md|emit_decompose
+claude|.claude/commands/goal.md|emit_goal
+claude|.claude/commands/dom-decompose.md|emit_decompose
+claude|.claude/commands/dom-goal.md|emit_goal
+claude|.claude/domestique-model-setup.py|emit_claude_model_helper
+claude|.claude/commands/dom-models.md|emit_claude_models
+codex|.codex/agents/implementer.toml|emit_codex_implementer
+codex|.codex/agents/reviewer.toml|emit_codex_reviewer
+codex|.agents/skills/domestique/SKILL.md|emit_codex_skill
+codex|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
+codex|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
+codex|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
+codex|.codex/domestique-model-setup.py|emit_codex_model_helper
+codex|.agents/skills/domestique-models/SKILL.md|emit_codex_models
+copilot|.github/agents/domestique-v2-copilot-implementer.agent.md|emit_copilot_implementer
+copilot|.github/agents/domestique-v2-copilot-reviewer.agent.md|emit_copilot_reviewer
+copilot|.github/skills/domestique-v2-copilot/SKILL.md|emit_copilot_skill
+copilot|.github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
+copilot|.github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill
+copilot|.github/domestique-model-setup.py|emit_copilot_model_helper
+copilot|.github/skills/domestique-v2-copilot-models/SKILL.md|emit_copilot_models
+ENTRIES
+  done
+  python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$MODEL_REQUEST" "$DRY_RUN" "$FORCE" <<'PY'
+import itertools
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+root, scratch, request, dry, force = sys.argv[1:]
+root, scratch = Path(root).resolve(), Path(scratch)
+request = json.loads(request)
+os.chdir(root)
+prepared, completed = [], []
+publishing = False
+
+def display(choice):
+    if choice is None:
+        return "(absent)"
+    model = choice["model"]
+    text = ("native inheritance" if model is None or model == "inherit"
+            else json.dumps(model, ensure_ascii=False))
+    return text + ('; effort ' + json.dumps(choice["effort"])
+                   if choice["effort"] is not None else '; effort inherited/omitted')
+
+def prepare(provider):
+    directory = scratch / "model-input" / provider
+    lib = {"__name__": "trusted_installer"}
+    exec(compile((directory / "helper").read_bytes(), "<installer emitter>", "exec"), lib)
+    need, parse = lib["need"], lib["parse"]
+    layout = lib["Pair"](installed=False)
+    files = (directory / "files").read_text().strip()
+    policies = (directory / "policies").read_text().split()
+    pristine = {layout.manifest: (directory / "manifest").read_bytes()}
+    for rel in (*layout.paths.values(), layout.helper):
+        pristine[rel] = (directory / rel).read_bytes()
+        pristine[f"{layout.state}/base/{rel}"] = pristine[rel]
+    # Finite source-backed inventories, NOT today's inventory minus a helper.
+    # v0.1.0 / 76d217f: four Claude files; 6158d35: Claude aliases and
+    # Codex-owned shared aliases; 8cb30cb: shared aliases leave Codex;
+    # 4dc26fd: five Copilot files; 9f33930: helpers for all three.
+    # v0.2.0, v0.2.1 and v0.2.2 retain the 9f33930 inventories.
+    historical = {
+        "claude": (
+            ".claude/agents/implementer.md,.claude/agents/reviewer.md,"
+            ".claude/commands/decompose.md,.claude/commands/goal.md,"
+            ".claude/commands/dom-decompose.md,.claude/commands/dom-goal.md"),
+        "codex": (
+            ".codex/agents/implementer.toml,.codex/agents/reviewer.toml,"
+            ".agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,"
+            ".agents/skills/domestique-goal/SKILL.md,"
+            ".agents/skills/domestique-goal/agents/openai.yaml"),
+        "copilot": (
+            ".github/agents/domestique-v2-copilot-implementer.agent.md,"
+            ".github/agents/domestique-v2-copilot-reviewer.agent.md,"
+            ".github/skills/domestique-v2-copilot/SKILL.md,"
+            ".github/skills/domestique-v2-copilot-decompose/SKILL.md,"
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md"),
+    }
+    old_files = historical[provider]
+    recognized = set()
+    # Policy destinations are the historical disk-state union, in emitter order.
+    for count in range(len(policies) + 1):
+        for subset in itertools.combinations(policies, count):
+            suffix = "".join("," + p for p in subset)
+            recognized.add(("0.1.0", old_files + suffix))
+            if provider == "claude":
+                recognized.add(("0.1.0", ",".join(old_files.split(",")[:4]) + suffix))
+            if provider == "codex":
+                recognized.add(("0.1.0", old_files +
+                                ",.agents/skills/dom-decompose/SKILL.md"
+                                ",.agents/skills/dom-goal/SKILL.md"
+                                ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
+            for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
+                recognized.add((version, old_files + "," + layout.helper + suffix))
+            for version in ("0.2.2", "0.3.0"):
+                recognized.add((version, files + suffix))
+
+    def merge_for(rel, local, base, upstream):
+        with tempfile.TemporaryDirectory(dir=scratch) as temporary:
+            paths = [Path(temporary) / name for name in ("local", "base", "upstream", "merged")]
+            for path, data in zip(paths, (local, base, upstream)):
+                path.write_bytes(data)
+            result = subprocess.run(["bash", str(scratch / "model-merge.sh"), rel,
+                                     *map(str, paths), str(scratch)], capture_output=True)
+            need(result.returncode == 0, "preserving merge conflict: " + rel +
+                 "; no force conflict recovery. " + result.stderr.decode("utf-8", "replace") +
+                 "\n  local: ./" + rel + "\n  pristine base: ./" + layout.state + "/base/" + rel +
+                 "\n  upstream: Domestique emitted candidate\n"
+                 "No project writes. Keep local and base copies; install this same script into an "
+                 "empty disposable directory with the same --platform selection to inspect upstream. "
+                 "Reconcile competing edits, keep the pristine base unchanged, then retry --dry-run.")
+            return paths[-1].read_bytes()
+
+    def merge(local, base, upstream):
+        # Both roles use the same native merge strategy, not the role identity.
+        return merge_for(layout.paths["implementer"], local, base, upstream)
+
+    entry = (directory / "entry-guard").read_text()
+    guard = (directory / ("delegated-guard" if provider == "copilot" else "entry-guard")).read_text()
+    prefix = {"claude": "Claude Code only; never match in another harness.",
+              "codex": "Codex only; never match in another harness.",
+              "copilot": "Copilot only; never match in Claude, Codex or an unknown harness."}[provider]
+
+    def validate(role, base, live, candidate):
+        bodies, descriptions = [], []
+        for data in (base, live, candidate):
+            parsed, fields, _ = parse(data, role)
+            descriptions.append(fields["description"])
+            if provider == "codex":
+                bodies.append(fields["developer_instructions"])
+            else:
+                lines, _, end, _ = parsed
+                bodies.append("".join(lines[end + 1:]).replace("\r\n", "\n"))
+        scoped = [d == prefix or d.startswith(prefix + " ") for d in descriptions]
+        unchanged_legacy = lib["project_settings"](base, role) == lib["project_settings"](live, role)
+        # A recognized historical pair may migrate without becoming eligible
+        # for confirmation. Authorize only the actual conflict-free preserving
+        # merge, not arbitrary insertion of guards into custom text. Retained
+        # historical bases also occur after migration and explicit helper Save.
+        preserving_legacy = False
+        if not scoped[0] and not scoped[1] and not unchanged_legacy:
+            projected = [lib["project_settings"](data, role) for data in (live, base, pristine[layout.paths[role]])]
+            preserving_legacy = (lib["project_settings"](candidate, role) ==
+                                 merge_for(layout.paths[role], *projected))
+        need(scoped[2] and (scoped[1] or not scoped[0] and
+                           (unchanged_legacy or preserving_legacy)),
+             "missing native discovery guard: " + layout.paths[role])
+        if provider == "codex":
+            required = ("These instructions apply only in the actual native Codex client; foreign or\n"
+                        "ambiguous callers stop without work. Installed directories do not identify it.")
+            need(required in bodies[2] and
+                 (required in bodies[1] or required not in bodies[0] and
+                  (unchanged_legacy or preserving_legacy)), "missing native Codex body guard")
+        else:
+            expected = entry if provider == "copilot" and bodies[0].startswith(entry) else guard
+            source_safe = (bodies[1].startswith(expected) or bodies[1].startswith(guard) or
+                           provider == "claude" and not bodies[0].startswith(expected) and
+                           (unchanged_legacy or preserving_legacy))
+            need(source_safe and (bodies[2].startswith(guard) or
+                                  candidate == live and bodies[2].startswith(expected)),
+                 "missing native body guard: " + layout.paths[role])
+
+    pair = lib["InstallerPair"](pristine, recognized, merge, validate)
+    before, contents = pair.snapshot()
+    if contents[layout.manifest] is not None:
+        old = pair.inventory(contents[layout.manifest])
+        need((old.get("domestique_version"), old["files"]) in recognized,
+             "unknown inventory generation")
+        if layout.helper not in old["files"].split(","):
+            # Even an unconfirmed historical pair must reach the existing native
+            # metadata conflict guards. prepare then reuses this preserving merge
+            # for migration, without confirming custom bodies or making them pristine.
+            for rel in layout.paths.values():
+                base = contents[f"{layout.state}/base/{rel}"]
+                need(base is not None, "missing required role base")
+                if contents[rel] is not None:
+                    merge_for(rel, contents[rel], base, pristine[rel])
+        new = pair.inventory(pristine[layout.manifest])
+        if all(old.get(k) == new[k] for k in
+               ("snapshot_format", "platform", "domestique_version", "files")):
+            pristine[layout.manifest] = contents[layout.manifest]
+            pair.pristine[layout.manifest] = contents[layout.manifest]
+    # Preflight every other selected provider file, even when Copilot is absent.
+    for rel in files.split(","):
+        if rel in layout.files:
+            continue
+        live, base = root / rel, root / layout.state / "base" / rel
+        if live.exists():
+            need(base.is_file(), "unknown provider ownership: " + rel)
+            merge_for(rel, live.read_bytes(), base.read_bytes(), (directory / rel).read_bytes())
+    overrides = request["overrides"].get(provider, {})
+    result = pair.prepare(overrides, force=force == "1" and provider in request["selected"])
+    if provider not in request["selected"]:
+        return
+    current = (None if result["plan"]["eligibility"] == "fresh" else
+               lib["verify"](pair, contents)["selected"])
+    selection = lib["installer_model_plan"](overrides, current)
+    for role, value in selection["roles"].items():
+        print("  [model selection] " + provider + ":" + role + ": " +
+              display(value["current"]) + " -> " + display(value["requested"]) +
+              " [" + value["provenance"] + "]", flush=True)
+    print("  [model pair] " + provider + ": " + result["plan"]["eligibility"] +
+          " -> " + ("configured locally" if result["plan"]["configured"] else
+                    "reconfirmation-required"), flush=True)
+    if result["plan"]["historical_migration"]:
+        print("  [historical migration planned] " + provider +
+              ": preserving role/guard and helper authority upgrade; custom pair remains unconfirmed",
+              flush=True)
+    (scratch / ("model-selected-" + provider)).touch()
+    prepared.append((provider, pair, result))
+
+try:
+    for provider in ("claude", "codex", "copilot"):
+        if (scratch / "model-input" / provider).exists():
+            prepare(provider)
+        elif provider == "copilot" and (scratch / "model-preview-unconfirmed").exists():
+            if request["overrides"].get(provider):
+                raise ValueError("unconfirmed Copilot preview; migrate and review/Save before model override")
+    # No selected pair is published until every provider has been planned.
+    for provider, pair, result in prepared:
+        if dry == "0":
+            publishing = True
+            (scratch / "model-publication-started").touch()
+            outcome = pair.apply(**result)
+            (scratch / ("model-final-" + provider)).write_text(
+                json.dumps(outcome["publication_snapshot"]))
+            completed.append(provider + ":" + outcome["outcome"])
+            print("  [model publication] " + completed[-1] +
+                  "; native readiness NOT established", flush=True)
+            if result["plan"]["historical_migration"]:
+                print("  [historical migration completed] " + provider +
+                      ": roles/guards and helper authority published; old pristine role bases retained; "
+                      "custom pair remains unconfirmed", flush=True)
+    if any(not result["plan"]["configured"] for _, _, result in prepared):
+        (scratch / "model-unconfirmed").write_text("review/Save required\n")
+except (OSError, ValueError, subprocess.SubprocessError) as error:
+    print("Model lifecycle refused (" + provider + "): " + str(error) + "\nCompleted pairs: " +
+          (", ".join(completed) or "none") +
+          (". No rollback; inspect reported partial publication before retrying." if publishing
+           else ". Publication not started; no project writes."), file=sys.stderr)
+    sys.exit(3)
+PY
+}
+
 # install_plain <dest> <emitter-fn>
 # Missing -> write. Identical -> skip. --force -> overwrite verbatim, no merge.
 # Differs (no --force):
@@ -4337,6 +4929,17 @@ native_merge_refuse() {
 #     further edit is made, causing the next merge to silently drop it.)
 # See docs/install-upgrade-design.md §2.
 install_plain() {
+  if model_pair_managed; then
+    case "${1#"$TARGET_DIR"/}" in
+      .claude/agents/implementer.md|.claude/agents/reviewer.md|\
+      .codex/agents/implementer.toml|.codex/agents/reviewer.toml|\
+      .github/agents/domestique-v2-copilot-implementer.agent.md|\
+      .github/agents/domestique-v2-copilot-reviewer.agent.md)
+        return 0 ;;
+      */domestique-model-setup.py)
+        [ ! -f "$TMPDIR_WORK/model-selected-$CURRENT_PROVIDER" ] || return 0 ;;
+    esac
+  fi
   local dest="$1" emitter="$2" staged
   # Cutover has already preserved native metadata against pristine snapshots.
   # Force cannot discard that transfer on this same invocation.
@@ -4752,7 +5355,7 @@ install_git_exclude() {
   if command -v git >/dev/null 2>&1; then
     local trackme tracked_paths=".beads"
     [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths="CLAUDE.local.md .claude $tracked_paths"
-    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/domestique-model-setup.py .codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal .agents/skills/dom-decompose .agents/skills/dom-goal $tracked_paths"
+    [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths=".codex/domestique-model-setup.py .codex/agents/implementer.toml .codex/agents/reviewer.toml .codex/.domestique .agents/skills/domestique .agents/skills/domestique-decompose .agents/skills/domestique-goal .agents/skills/domestique-models .agents/skills/dom-models .agents/skills/dom-decompose .agents/skills/dom-goal $tracked_paths"
     for trackme in $tracked_paths; do
       if git -C "$target" ls-files --error-unmatch "$trackme" >/dev/null 2>&1; then
         echo "Warning: $trackme is already tracked in $target — a git exclude entry cannot hide a tracked path. Run 'git rm --cached -r $trackme' if you want it hidden." >&2
@@ -4770,7 +5373,7 @@ install_git_exclude() {
       local codex_ownership="$target/.codex/.domestique/guest-excludes"
       if [ -e "$codex_ownership" ]; then
         # Canonical visibility belongs to the shared state, not this guest.
-        grep -vE '^\.agents/skills/dom-(decompose|goal)/' "$codex_ownership" || true
+        grep -vE '^\.agents/skills/dom-(decompose|goal|models)/' "$codex_ownership" || true
       else
         # Dry-run and legacy-state fallback.  Fresh real installs persist the
         # exact list before this block is reconciled.
@@ -4778,6 +5381,7 @@ install_git_exclude() {
         [ "${CODEX_PREEXIST_REVIEWER:-0}" -eq 1 ] || printf '.codex/agents/reviewer.toml\n'
         printf '.codex/.domestique/\n'
         printf '.codex/domestique-model-setup.py\n'
+        printf '.agents/skills/domestique-models/SKILL.md\n'
         [ "${CODEX_PREEXIST_BASE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique/SKILL.md\n'
         [ "${CODEX_PREEXIST_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-decompose/SKILL.md\n'
         [ "${CODEX_PREEXIST_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/domestique-goal/SKILL.md\n'
@@ -4799,11 +5403,12 @@ install_git_exclude() {
         # Dry-run or a legacy uninstall still uses the original owner.
         printf '.agents/.domestique/\n'
         if [ -f "$target/.codex/.domestique/guest-excludes" ]; then
-          grep -E '^\.agents/skills/dom-(decompose|goal)/' "$target/.codex/.domestique/guest-excludes" || true
+          grep -E '^\.agents/skills/dom-(decompose|goal|models)/' "$target/.codex/.domestique/guest-excludes" || true
         else
           [ "${CODEX_PREEXIST_DOM_DECOMPOSE_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-decompose/SKILL.md\n'
           [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
           [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
+          printf '.agents/skills/dom-models/SKILL.md\n'
         fi
       fi
     fi
@@ -4972,7 +5577,7 @@ do_uninstall() {
     [ -z "$rel" ] && continue
     local ownership="$target/$state_rel/guest-excludes"
     case "$rel" in
-      .agents/skills/dom-decompose/*|.agents/skills/dom-goal/*)
+      .agents/skills/dom-decompose/*|.agents/skills/dom-goal/*|.agents/skills/dom-models/*)
         if [ "$SHARED_PRESENT" -eq 1 ]; then
           [ "$SHARED_REMOVE" -eq 1 ] || continue
           provider=shared
@@ -5044,6 +5649,7 @@ claude|.claude/.domestique|.claude/commands/goal.md|emit_goal
 claude|.claude/.domestique|.claude/commands/dom-decompose.md|emit_decompose
 claude|.claude/.domestique|.claude/commands/dom-goal.md|emit_goal
 claude|.claude/.domestique|.claude/domestique-model-setup.py|emit_claude_model_helper
+claude|.claude/.domestique|.claude/commands/dom-models.md|emit_claude_models
 codex|.codex/.domestique|.codex/agents/implementer.toml|emit_codex_implementer
 codex|.codex/.domestique|.codex/agents/reviewer.toml|emit_codex_reviewer
 codex|.codex/.domestique|.agents/skills/domestique/SKILL.md|emit_codex_skill
@@ -5051,15 +5657,18 @@ codex|.codex/.domestique|.agents/skills/domestique-decompose/SKILL.md|emit_codex
 codex|.codex/.domestique|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
 codex|.codex/.domestique|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
 codex|.codex/.domestique|.codex/domestique-model-setup.py|emit_codex_model_helper
+codex|.codex/.domestique|.agents/skills/domestique-models/SKILL.md|emit_codex_models
 codex|.codex/.domestique|.agents/skills/dom-decompose/SKILL.md|emit_codex_dom_decompose_skill
 codex|.codex/.domestique|.agents/skills/dom-goal/SKILL.md|emit_codex_dom_goal_skill
 codex|.codex/.domestique|.agents/skills/dom-goal/agents/openai.yaml|emit_codex_dom_goal_metadata
+codex|.codex/.domestique|.agents/skills/dom-models/SKILL.md|emit_shared_models
 copilot|.github/.domestique|.github/agents/domestique-v2-copilot-implementer.agent.md|emit_copilot_implementer
 copilot|.github/.domestique|.github/agents/domestique-v2-copilot-reviewer.agent.md|emit_copilot_reviewer
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot/SKILL.md|emit_copilot_skill
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
 copilot|.github/.domestique|.github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill
 copilot|.github/.domestique|.github/domestique-model-setup.py|emit_copilot_model_helper
+copilot|.github/.domestique|.github/skills/domestique-v2-copilot-models/SKILL.md|emit_copilot_models
 UNINSTALL_FILES
   done
 
@@ -5284,6 +5893,7 @@ UNINSTALL_POLICIES
       rmdir "$target/.codex" 2>/dev/null || true
       rmdir "$target/.agents/skills/domestique-goal/agents" 2>/dev/null || true
       rmdir "$target/.agents/skills/domestique-goal" 2>/dev/null || true
+      rmdir "$target/.agents/skills/domestique-models" 2>/dev/null || true
       rmdir "$target/.agents/skills/domestique-decompose" 2>/dev/null || true
       rmdir "$target/.agents/skills/dom-goal/agents" 2>/dev/null || true
       rmdir "$target/.agents/skills/dom-goal" 2>/dev/null || true
@@ -5294,13 +5904,13 @@ UNINSTALL_POLICIES
     fi
     if [ "$UNINSTALL_COPILOT" -eq 1 ]; then
       local dir
-      for dir in .github/agents .github/skills/domestique-v2-copilot .github/skills/domestique-v2-copilot-decompose .github/skills/domestique-v2-copilot-goal .github/skills .github; do
+      for dir in .github/agents .github/skills/domestique-v2-copilot .github/skills/domestique-v2-copilot-decompose .github/skills/domestique-v2-copilot-goal .github/skills/domestique-v2-copilot-models .github/skills .github; do
         rmdir "$target/$dir" 2>/dev/null || true
       done
     fi
     if [ "$SHARED_REMOVE" -eq 1 ]; then
       local shared_dir
-      for shared_dir in .agents/skills/dom-goal/agents .agents/skills/dom-goal .agents/skills/dom-decompose .agents/skills .agents; do
+      for shared_dir in .agents/skills/dom-goal/agents .agents/skills/dom-goal .agents/skills/dom-decompose .agents/skills/dom-models .agents/skills .agents; do
         rmdir "$target/$shared_dir" 2>/dev/null || true
       done
     fi
@@ -5343,6 +5953,21 @@ UNINSTALL_POLICIES
   echo "Done."
 }
 
+MODEL_PAIRS_ACTIVE=0
+MODEL_CODEX_IMPL_ABSENT=0
+MODEL_CODEX_REVIEWER_ABSENT=0
+if [ "$UNINSTALL" -eq 0 ]; then
+  model_gitroot="$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null)" || model_gitroot=""
+  if [ "$model_gitroot" = "$(cd "$TARGET_DIR" && pwd -P)" ]; then
+    MODEL_PAIRS_ACTIVE=1
+  elif [ "${#MODEL_ARGS[@]}" -gt 0 ]; then
+    echo "Error: --model requires the physical Git worktree root. No project writes." >&2
+    exit 3
+  else
+    echo "Model configuration requires the physical Git worktree root; this installation will remain unconfirmed." >&2
+    touch "$TMPDIR_WORK/model-unconfirmed"
+  fi
+fi
 lifecycle_preflight
 preview_preflight
 copilot_preflight
@@ -5373,6 +5998,16 @@ fi
 
 # ---------------------------------------------------------------------------
 print_install_notice
+[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+  MUTATION_STARTED=0
+  [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] || MODEL_CODEX_IMPL_ABSENT=1
+  [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] || MODEL_CODEX_REVIEWER_ABSENT=1
+  model_rc=0
+  installer_model_pairs || model_rc=$?
+  [ ! -f "$TMPDIR_WORK/model-publication-started" ] || MUTATION_STARTED=1
+  [ "$model_rc" -eq 0 ] || exit "$model_rc"
+fi
 [ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
 
 if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
@@ -5417,6 +6052,8 @@ CODEX_PREEXIST_DOM_GOAL_SKILL=0
 CODEX_PREEXIST_DOM_GOAL_META=0
 [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] && ! codex_exclude_was_owned '.codex/agents/implementer.toml' && CODEX_PREEXIST_IMPL=1
 [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] && ! codex_exclude_was_owned '.codex/agents/reviewer.toml' && CODEX_PREEXIST_REVIEWER=1
+[ "$MODEL_CODEX_IMPL_ABSENT" -eq 0 ] || CODEX_PREEXIST_IMPL=0
+[ "$MODEL_CODEX_REVIEWER_ABSENT" -eq 0 ] || CODEX_PREEXIST_REVIEWER=0
 [ -e "$TARGET_DIR/.agents/skills/domestique/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique/SKILL.md' && CODEX_PREEXIST_BASE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-decompose/SKILL.md' && CODEX_PREEXIST_DECOMPOSE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-goal/SKILL.md' && CODEX_PREEXIST_GOAL_SKILL=1
@@ -5540,6 +6177,32 @@ else
 fi
 
 # --- summary ---------------------------------------------------------------
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+  for model_provider in claude codex copilot; do
+    [ -d "$TMPDIR_WORK/model-input/$model_provider" ] || continue
+    python3 -I -B -c "$(CURRENT_PROVIDER="$model_provider" emit_installer_model_library)
+request = load(sys.argv[1])
+if HARNESS not in request['selected']:
+    sys.exit(0)
+try:
+    os.chdir(sys.argv[2])
+    pair = Pair(installed=False)
+    actual, contents = pair.snapshot()
+    expected = load(Path(sys.argv[3], 'model-final-' + HARNESS).read_bytes())
+    need(actual == expected, HARNESS + ': state changed after pair publication')
+    result = verify(pair, contents)
+    need(result['confirmed'], HARNESS + ': reconfirmation-required')
+except (OSError, ValueError, subprocess.SubprocessError) as error:
+    print('Final model verification: ' + str(error), file=sys.stderr)
+    sys.exit(3)
+" "$MODEL_REQUEST" "$TARGET_DIR" "$TMPDIR_WORK" || CONFLICT_OCCURRED=1
+  done
+fi
+if [ -f "$TMPDIR_WORK/model-unconfirmed" ]; then
+  echo "Configuration incomplete: review/Save required; no native readiness or workflow authorization." >&2
+  echo "Use dom-models --confirm in the selected native client to review the current pair, then Save." >&2
+  CONFLICT_OCCURRED=1
+fi
 echo
 if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned):"; else echo "Summary:"; fi
 [ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"    "${SUM_CREATED[@]}"
