@@ -269,6 +269,73 @@ def choices(value):
     return value
 
 
+def installer_defaults():
+    """Normalized model/effort defaults shared by selection and publication."""
+    return dict(zip(ROLES, (
+        {"claude": (("sonnet", None), ("opus", None)),
+         "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
+         "copilot": ((None, None), (None, None))}[HARNESS])))
+
+
+def installer_request(platform, assignments):
+    """Read-only CLI boundary. Missing role = default/preserve; null = explicit inherit.
+
+    .4 passes request["overrides"][harness] to InstallerPair.prepare(), after
+    preflighting its whole lifecycle. This request is NOT publication authority.
+    """
+    platforms = {"claude": ["claude"], "codex": ["codex"],
+                 "both": ["claude", "codex"], "copilot": ["copilot"],
+                 "all": ["claude", "codex", "copilot"]}
+    need(platform in platforms, "invalid model platform selection")
+    overrides = {h: {} for h in platforms[platform]}
+    for assignment in assignments:
+        scope, equals, value = assignment.partition("=")
+        harness, colon, role = scope.partition(":")
+        need(equals and colon and harness in platforms["all"] and role in ROLES,
+             "--model requires harness:role=id-or-inherit "
+             "(claude/codex/copilot; implementer/reviewer)")
+        need(harness in overrides, "--model names an unselected harness")
+        selection(value)
+        value = None if value == "inherit" else value
+        need(role not in overrides[harness] or overrides[harness][role] == value,
+             "conflicting duplicate --model")
+        overrides[harness][role] = value
+    return {"v": 1, "purpose": "installer-model-request",
+            "selected": platforms[platform], "overrides": overrides}
+
+
+def installer_model_plan(overrides, current=None):
+    """Selection-only plan; no eligibility, merge, confirmation or native claims.
+
+    current is parsed owned metadata, or None for a genuinely absent pair.
+    Native representations match patch(): Claude inherit is a string; elsewhere
+    null means omission. Existing model-only changes never alter effort.
+    """
+    need(type(overrides) is dict and set(overrides) <= set(ROLES),
+         "installer overrides name individual roles")
+    for value in overrides.values():
+        selection(value)
+        need(value != "inherit", "installer inheritance requires normalized null")
+    if current is not None:
+        choices(current)
+    roles = {}
+    for role, (model, effort) in installer_defaults().items():
+        old = None if current is None else dict(current[role])
+        selected = overrides.get(role, model if old is None else old["model"])
+        if old is not None:
+            effort = old["effort"]
+        elif selected != model:
+            effort = None
+        if HARNESS == "claude" and selected is None:
+            selected = "inherit"
+        roles[role] = {
+            "current": old, "requested": {"model": selected, "effort": effort},
+            "provenance": ("explicit-override" if role in overrides else
+                           "fresh-default" if old is None else "preserved-existing"),
+        }
+    return {"harness": HARNESS, "roles": roles}
+
+
 def metadata(info):
     return [info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_uid]
 
@@ -835,13 +902,8 @@ class InstallerPair(Pair):
         qualified = eligibility in ("fresh", "confirmed", "legacy")
         need(qualified or not overrides,
              "unconfirmed pair; review/Save before model override")
-        defaults = {
-            "claude": (("sonnet", None), ("opus", None)),
-            "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
-            "copilot": ((None, None), (None, None)),
-        }[HARNESS]
         outputs = {}
-        for role, (model, effort) in zip(ROLES, defaults):
+        for role, (model, effort) in installer_defaults().items():
             rel = self.paths[role]
             local, upstream = contents[rel], self.pristine[rel]
             base = contents[f"{self.state}/base/{rel}"]
@@ -2289,6 +2351,17 @@ Options:
                  Claude+Codex. No selector (fresh or rerun) selects all three.
                  Explicit installs add to the persisted provider set.
   --dry-run      Print planned changes; touch nothing.
+  --model <harness:role=id-or-inherit>
+                 Repeat per claude/codex/copilot implementer/reviewer; also
+                 --model=harness:role=value. Identical repeats are idempotent;
+                 conflicting repeats or unselected harnesses are errors.
+                 IDs are literal (quote as one shell argument); inherit uses
+                 native resolution. No effort flag; existing effort is preserved.
+                 Incompatible with --force, --uninstall and --purge-beads.
+                 TEMPORARY: selection preview only with --dry-run; applying
+                 --model refuses before writes pending lifecycle integration.
+                 Preview defaults: Claude sonnet/opus (no effort), Codex
+                 gpt-5.6-sol/medium and gpt-5.6-terra/high, Copilot inheritance.
   --with-beads   If `bd` is on PATH, initialize with safe skip flags when
                  needed. Normal mode runs setup only for selected providers;
                  guest mode uses --stealth and never runs provider setup.
@@ -2444,6 +2517,7 @@ GUEST_EXPLICIT=0
 NO_GUEST=0
 UNINSTALL=0
 PURGE_BEADS=0
+MODEL_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -2452,6 +2526,10 @@ while [ $# -gt 0 ]; do
       PLATFORM_ARG="$2"; PLATFORM_EXPLICIT=1; shift ;;
     --platform=*)
       PLATFORM_ARG="${1#--platform=}"; PLATFORM_EXPLICIT=1 ;;
+    --model)
+      [ "$#" -ge 2 ] || { echo "Missing argument for --model" >&2; exit 2; }
+      MODEL_ARGS+=("$2"); shift ;;
+    --model=*)     MODEL_ARGS+=("${1#--model=}") ;;
     --dry-run)      DRY_RUN=1 ;;
     --with-beads)   WITH_BEADS=1 ;;
     --force)        FORCE=1 ;;
@@ -2470,6 +2548,11 @@ while [ $# -gt 0 ]; do
   shift
 done
 TARGET_DIR="${TARGET_DIR:-.}"
+
+if [ "$PLATFORM_EXPLICIT" -eq 1 ] && [ -z "$PLATFORM_ARG" ]; then
+  echo "Error: --platform requires a nonempty selection." >&2
+  exit 2
+fi
 
 case "${PLATFORM_ARG:-all}" in
   claude|codex|both|copilot|all) ;;
@@ -2490,6 +2573,37 @@ if [ "$PURGE_BEADS" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
   echo "Error: --purge-beads is only valid together with --uninstall." >&2
   usage >&2
   exit 2
+fi
+
+if [ "${#MODEL_ARGS[@]}" -gt 0 ] &&
+   { [ "$FORCE" -eq 1 ] || [ "$UNINSTALL" -eq 1 ] || [ "$PURGE_BEADS" -eq 1 ]; }; then
+  echo "Error: --model is incompatible with --force, --uninstall and --purge-beads. No project writes." >&2
+  exit 2
+fi
+
+# Use only our emitted helper, never execute target helper code. argv remains
+# literal data even through curl | bash; no stdin consumption or project scratch.
+emit_installer_model_library() {
+  printf "__name__ = 'installer_model_library'\n"
+  emit_model_setup_helper
+}
+
+MODEL_REQUEST=""
+if [ "${#MODEL_ARGS[@]}" -gt 0 ] || { [ "$DRY_RUN" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; }; then
+  MODEL_REQUEST="$(python3 -I -B -c "$(CURRENT_PROVIDER=claude emit_installer_model_library)
+try:
+    print(canonical(installer_request(sys.argv[1], sys.argv[2:])).decode())
+except ValueError as error:
+    print('Error: ' + str(error) + '. No project writes.', file=sys.stderr)
+    sys.exit(2)
+" "${PLATFORM_ARG:-all}" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"})" || exit $?
+fi
+
+# hq-c6o.4 removes this guard ONLY when the validated request is consumed by
+# whole-lifecycle preflight/publication. Never silently ignore an explicit model.
+if [ "${#MODEL_ARGS[@]}" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+  echo "Error: --model application is not yet integrated; use --dry-run for selection preview. No project writes." >&2
+  exit 3
 fi
 
 # Check even the tools used to construct inventories and temporary staging
@@ -2778,6 +2892,54 @@ fi
 if [ ! -d "$TARGET_DIR" ]; then
   echo "Target directory does not exist: $TARGET_DIR" >&2
   exit 1
+fi
+
+# Selection preview, deliberately NOT InstallerPair.prepare(): .4 supplies the
+# pristine inventory, recognized migrations, merge and guard callbacks, and
+# classifies eligibility across the complete lifecycle before publishing.
+if [ -n "$MODEL_REQUEST" ]; then
+  for model_provider in claude codex copilot; do
+    python3 -I -B -c "$(CURRENT_PROVIDER="$model_provider" emit_installer_model_library)
+request = load(sys.argv[1])
+if HARNESS not in request['selected']:
+    sys.exit(0)
+try:
+    os.chdir(sys.argv[2])
+    pair = Pair(installed=False)
+    snapshot, contents = pair.read_snapshot(absent=True)
+    if all(data is None for data in contents.values()):
+        need(snapshot['parents'].get(str(pair.root / pair.state)) is None,
+             'unknown existing provider authority')
+        current = None
+    else:
+        # Full owned current inventory only. Historical migration/repair belongs
+        # to .4; don't guess choices or execute an unvalidated installed helper.
+        pair.validate_contents(contents)
+        current = {role: {key: parse(contents[rel], role)[1].get(key)
+                          for key in ('model', 'effort')}
+                   for role, rel in pair.paths.items()}
+    plan = installer_model_plan(request['overrides'][HARNESS], current)
+    def display(choice):
+        if choice is None:
+            return '(absent)'
+        model = choice['model']
+        text = ('native inheritance' if model is None or
+                (HARNESS == 'claude' and model == 'inherit')
+                else json.dumps(model, ensure_ascii=False))
+        return text + ('; effort ' + json.dumps(choice['effort'])
+                       if choice['effort'] is not None else '; effort inherited/omitted')
+    for role, value in plan['roles'].items():
+        print('  [model selection] ' + HARNESS + ':' + role + ': ' +
+              display(value['current']) + ' -> ' + display(value['requested']) +
+              ' [' + value['provenance'] + ']')
+except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    print('Model selection preview unavailable for ' + HARNESS + ': ' +
+          str(error) + '. Lifecycle eligibility not evaluated. No project writes.',
+          file=sys.stderr)
+    sys.exit(3 if int(sys.argv[3]) else 0)
+" "$MODEL_REQUEST" "$TARGET_DIR" "${#MODEL_ARGS[@]}" || exit $?
+  done
+  echo "Model selection preview only: lifecycle eligibility/configured status not evaluated; no model publication is integrated yet."
 fi
 
 # ---------------------------------------------------------------------------

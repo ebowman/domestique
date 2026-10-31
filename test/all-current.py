@@ -86,6 +86,185 @@ class AllProviders(unittest.TestCase):
     def installed(self, root):
         return {p for p, state in STATES.items() if (root / state).exists()}
 
+    def model_library(self, provider):
+        # Trusted shared emitter, not a second parser or target helper execution.
+        source = SCRIPT.split("emit_model_setup_helper() {", 1)[1]
+        source = source.split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
+        namespace = {"HARNESS": provider, "__name__": "installer_request_test"}
+        exec(compile(source, str(SOURCE), "exec"), namespace)
+        return namespace
+
+    def test_model_request_plans_defaults_explicit_and_inheritance(self):
+        defaults = {
+            "claude": (("sonnet", None), ("opus", None)),
+            "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
+            "copilot": ((None, None), (None, None)),
+        }
+        for provider in STATES:
+            lib = self.model_library(provider)
+            request = lib["installer_request"]("all", [
+                f"{provider}:reviewer=inherit", f"{provider}:reviewer=inherit"])
+            self.assertEqual(request["selected"], list(STATES))
+            self.assertEqual(request["overrides"][provider], {"reviewer": None})
+            for other in set(STATES) - {provider}:
+                self.assertEqual(request["overrides"][other], {})
+            plan = lib["installer_model_plan"]({})
+            for role, expected in zip(("implementer", "reviewer"), defaults[provider]):
+                self.assertEqual(plan["roles"][role], {
+                    "current": None,
+                    "requested": dict(zip(("model", "effort"), expected)),
+                    "provenance": "fresh-default",
+                })
+            for override in (None, "literal/model", defaults[provider][1][0]):
+                plan = lib["installer_model_plan"]({"reviewer": override})
+                reviewer = plan["roles"]["reviewer"]
+                self.assertEqual(reviewer["provenance"], "explicit-override")
+                self.assertEqual(reviewer["requested"], {
+                    "model": "inherit" if provider == "claude" and override is None else override,
+                    "effort": defaults[provider][1][1]
+                    if override == defaults[provider][1][0] else None,
+                })
+            current = {role: {"model": "old/model", "effort": None if provider == "copilot" else "high"}
+                       for role in ("implementer", "reviewer")}
+            plan = lib["installer_model_plan"]({"implementer": None}, current)
+            self.assertEqual(plan["roles"]["reviewer"]["requested"], current["reviewer"])
+            self.assertEqual(plan["roles"]["reviewer"]["provenance"], "preserved-existing")
+            self.assertEqual(plan["roles"]["implementer"]["requested"]["effort"],
+                             current["implementer"]["effort"])
+            self.assertNotIn("configured", plan)
+            self.assertNotIn("digest", plan)
+
+    def test_model_request_invalid_literals_and_scope(self):
+        parse = self.model_library("claude")["installer_request"]
+        invalid = [
+            "", "claude", "claude:implementer", ":implementer=x",
+            "claude:=x", "unknown:implementer=x", "Claude:implementer=x",
+            "claude:both=x", "claude:Implementer=x", "both:reviewer=x",
+            "claude:implementer=", "claude:implementer= leading",
+            "claude:implementer=trailing ", "claude:implementer=" + "x" * 513,
+            *("claude:implementer=x" + c + "y" for c in
+              ("\n", "\t", "\r", "\x00", "\x7f", "\u200b", "\u2028", "\u2029", "\udcff")),
+        ]
+        for value in invalid:
+            with self.subTest(value=repr(value)), self.assertRaises(ValueError):
+                parse("all", [value])
+        with self.assertRaisesRegex(ValueError, "unselected"):
+            parse("both", ["copilot:reviewer=x"])
+        with self.assertRaisesRegex(ValueError, "conflicting duplicate"):
+            parse("all", ["claude:reviewer=inherit", "claude:reviewer=opus"])
+        literals = ['model/α-"quoted"\\exact=a:b', "x" * 512, "internal space",
+                    "INHERIT", "$(touch MODEL_EXECUTED)", "`touch MODEL_EXECUTED`",
+                    "'; touch MODEL_EXECUTED; #"]
+        for value in literals:
+            self.assertEqual(parse("claude", ["claude:reviewer=" + value])["overrides"],
+                             {"claude": {"reviewer": value}})
+
+    def test_model_cli_stdin_preview_and_prewrite_guard(self):
+        root = self.root("models-fresh")
+        before = snapshot(root)
+        result = self.run_dom(root, "--dry-run")
+        for text in ('codex:implementer: (absent) -> "gpt-5.6-sol"; effort "medium"',
+                     'codex:reviewer: (absent) -> "gpt-5.6-terra"; effort "high"',
+                     'claude:implementer: (absent) -> "sonnet"',
+                     'claude:reviewer: (absent) -> "opus"',
+                     "copilot:reviewer: (absent) -> native inheritance",
+                     "fresh-default", "configured status not evaluated"):
+            self.assertIn(text, result.stdout)
+        self.assertEqual(snapshot(root), before)
+        literal = 'model/α-"quoted"\\exact=a:b $(touch MODEL_EXECUTED)'
+        args = ("--platform=both", "--model", "claude:implementer=" + literal,
+                "--model=codex:reviewer=inherit", "--model=codex:reviewer=inherit")
+        for mode in ((), ("--guest",), ("--no-guest",), ("--with-beads",)):
+            result = self.run_dom(root, "--dry-run", *args, *mode)
+            lines = "\n".join(line for line in result.stdout.splitlines()
+                              if "[model selection]" in line)
+            self.assertIn(json.dumps(literal, ensure_ascii=False), lines)
+            self.assertIn("codex:reviewer: (absent) -> native inheritance", lines)
+            self.assertIn("explicit-override", lines)
+            self.assertNotIn("copilot:", lines)
+            self.assertEqual(snapshot(root), before)
+        result = self.run_dom(root, *args, ok=False)
+        self.assertIn("--model application is not yet integrated", result.stderr)
+        self.assertEqual(snapshot(root), before)
+        help_result = self.run_dom(root, "--model", "not-an-assignment", "--help")
+        self.assertIn("TEMPORARY: selection preview only", help_result.stdout)
+        self.assertEqual(snapshot(root), before)
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show",
+             "337ccf0dce0c466d53ffce695dfd84f817f82719:domestique.sh"], text=True)
+        result = self.run_dom(root, "--dry-run", *args, script=released, ok=False)
+        self.assertIn("Unknown option: --model", result.stderr)
+        self.assertEqual(snapshot(root), before)  # released lacks this positive path
+
+    def test_model_cli_invalid_zero_writes_and_retained_scope(self):
+        root = self.root("models-invalid")
+        self.seed(root, ["claude"])
+        before = snapshot(root)
+        cases = [
+            ("--model",), ("--model=",), ("--model", "--dry-run"),
+            ("--model=claude:implementer=",), ("--model=bad:reviewer=x",),
+            ("--model=claude:bad=x",), ("--model=claude:reviewer=x\nbad",),
+            ("--model=claude:reviewer=x\udcff",),
+            ("--model=claude:reviewer= leading",),
+            ("--model=claude:reviewer=trailing ",),
+            ("--platform=", "--model=claude:reviewer=x"),
+            ("--model=claude:reviewer=x", "--model=claude:reviewer=y"),
+            ("--platform=codex", "--model=claude:reviewer=x"),
+            ("--platform=both", "--model=copilot:reviewer=x"),
+            ("--model=claude:reviewer=x", "--effort=high"),
+            *(("--model=claude:reviewer=x", flag)
+              for flag in ("--force", "--uninstall", "--purge-beads")),
+            ("--model=claude:reviewer=x", "--uninstall", "--purge-beads"),
+            ("--model=claude:reviewer=x", "--guest", "--no-guest"),
+        ]
+        for args in cases:
+            for dry in ((), ("--dry-run",)):
+                with self.subTest(args=args, dry=dry):
+                    result = self.run_dom(root, *dry, *args, ok=False)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertEqual(snapshot(root), before)
+        # Additive lifecycle still retains Claude, but model intent is Codex only.
+        result = self.run_dom(root, "--platform=codex", "--dry-run",
+                              "--model=codex:implementer=inherit")
+        lines = [line for line in result.stdout.splitlines() if "[model selection]" in line]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all("codex:" in line for line in lines))
+        self.assertEqual(snapshot(root), before)
+
+    def test_model_existing_preview_preserves_effort_and_literal_native_encoding(self):
+        root = self.root("models-existing")
+        self.run_dom(root)
+        for provider, rel in zip(STATES, ROLES):
+            lib = self.model_library(provider)
+            path = root / rel
+            current = lib["parse"](path.read_bytes(), "implementer")[1]
+            literal = 'model/α-"quoted"\\exact=a:b $(touch MODEL_EXECUTED)'
+            # Shared patch/parser roundtrip proves that literal IDs are not code
+            # and that the preview's native inherit representation is correct.
+            for value in (literal, None):
+                plan = lib["installer_model_plan"]({"implementer": value})
+                requested = plan["roles"]["implementer"]["requested"]
+                patched = lib["patch"](path.read_bytes(), "implementer", requested)
+                parsed = lib["parse"](patched, "implementer")[1]
+                self.assertEqual(parsed.get("model"), requested["model"])
+            before = snapshot(root)
+            result = self.run_dom(root, "--platform", provider, "--dry-run",
+                                  "--model", f"{provider}:implementer={literal}")
+            lines = "\n".join(line for line in result.stdout.splitlines()
+                              if "[model selection]" in line)
+            self.assertIn(json.dumps(literal, ensure_ascii=False), lines)
+            self.assertIn("preserved-existing", lines)
+            if current.get("effort") is not None:
+                self.assertIn('effort "medium" [explicit-override]', lines)
+            self.assertEqual(snapshot(root), before)
+        # Ownership is checked before reading role selections; no target code runs.
+        (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").unlink()
+        before = snapshot(root)
+        result = self.run_dom(root, "--platform=codex", "--dry-run",
+                              "--model=codex:reviewer=inherit", ok=False)
+        self.assertIn("missing claimed helper base", result.stderr)
+        self.assertEqual(snapshot(root), before)
+
     def seed(self, root, providers, *flags):
         for provider in providers:
             self.run_dom(root, "--platform", provider, *flags)
