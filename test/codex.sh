@@ -1018,7 +1018,8 @@ assert goal.index("Interactive first-use goal setup") < goal.index("An explicit 
 assert "not the ordinary-delegation redirect" in goal
 assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create/switch")
 for role in ("implementer", "reviewer"):
-    assert b"domestique-model-setup:" not in (root / f".codex/agents/{role}.toml").read_bytes()
+    assert (b"domestique-model-setup:" in
+            (root / f".codex/agents/{role}.toml").read_bytes()) == (role == "implementer")
 assert not (root / ".beads").exists()
 PY
 }
@@ -1149,7 +1150,7 @@ native += list((root / ".claude/agents").glob("*.md"))
 native += list((root / ".agents/skills").glob("domestique*/SKILL.md"))
 native += list((root / ".github/skills").glob("*/SKILL.md"))
 native += list((root / ".github/agents").glob("*.agent.md"))
-assert len(native) == 14
+assert len(native) == 17  # Three native dom-models bodies, one shared public route.
 for path in native:
     text = path.read_text()
     harness = "claude" if ".claude" in path.parts else "copilot" if ".github" in path.parts else "codex"
@@ -1171,6 +1172,18 @@ for path in native:
         assert phrase in text, (path, phrase)
     if "first-use role setup" in text:
         assert text.index("Active harness boundary") < text.index("first-use role setup")
+models = (root / ".agents/skills/dom-models/SKILL.md").read_text()
+for phrase in ("ACTUAL native caller", "Unknown, ambiguous",
+               "Missing/unreadable/foreign body", "ORIGINAL explicit request",
+               "No arguments means read-only inspection"):
+    assert phrase in models, phrase
+for rel in (".claude/commands/dom-models.md",
+            ".agents/skills/domestique-models/SKILL.md",
+            ".github/skills/domestique-v2-copilot-models/SKILL.md"):
+    body = (root / rel).read_text()
+    for phrase in ("request-text", "Save / Cancel", "Cancelled; nothing saved",
+                   "Await terminal completion", "No installer API"):
+        assert phrase in body, (rel, phrase)
 for kind in ("decompose", "goal"):
     text = (root / f".agents/skills/dom-{kind}/SKILL.md").read_text()
     for phrase in ("ACTUAL native caller", "Unknown, ambiguous, or unsupported",
@@ -1212,7 +1225,7 @@ for state in (".claude", ".codex", ".agents", ".github"):
     manifest = (root / state / ".domestique/manifest").read_text()
     inventories += next(x[6:] for x in manifest.splitlines() if x.startswith("files=")).split(",")
 assert len(inventories) == len(set(inventories))
-for kind in ("decompose", "goal"):
+for kind in ("decompose", "goal", "models"):
     rel = f".agents/skills/dom-{kind}/SKILL.md"
     assert (root / ".agents/.domestique/base" / rel).exists()
     assert not (root / ".codex/.domestique/base" / rel).exists()

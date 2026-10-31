@@ -23,6 +23,11 @@ DECOMPOSE = {
     "codex": ".agents/skills/domestique-decompose/SKILL.md",
     "copilot": ".github/skills/domestique-v2-copilot-decompose/SKILL.md",
 }
+MODELS = {
+    "claude": ".claude/commands/dom-models.md",
+    "codex": ".agents/skills/domestique-models/SKILL.md",
+    "copilot": ".github/skills/domestique-v2-copilot-models/SKILL.md",
+}
 
 
 class ModelSetup(unittest.TestCase):
@@ -85,6 +90,150 @@ class ModelSetup(unittest.TestCase):
         return {r: {"model": None if inherit else 'model/α-"quoted"\\exact',
                     "effort": None if inherit or provider == "copilot" else "high"}
                 for r in ("implementer", "reviewer")}
+
+    def native(self, root, provider, *args, text=False, ok=True):
+        body = (root / MODELS[provider]).read_text()
+        bootstrap = body.split("```python\n", 1)[1].split("\n```", 1)[0]
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap,
+             "request-text" if text else "request", *args],
+            cwd=root, env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode == 0, ok, result.stdout + result.stderr)
+        return json.loads(result.stdout) if ok else result
+
+    def test_dom_models_native_grammar_inspection_and_cancel(self):
+        for provider in PROVIDERS:
+            root = self.project()
+            # A byte-identical copied install is not confirmed for its new root.
+            self.roles(root, provider)["implementer"].write_bytes(
+                self.roles(self.seed, provider)["implementer"].read_bytes())
+            before = CURRENT.snapshot(root)
+            inspected = self.native(root, provider)
+            self.assertEqual(inspected["mode"], "inspect")
+            self.assertFalse(inspected["configured"])
+            self.assertTrue(any("Copied/moved root" in w for w in inspected["warnings"]))
+            self.assertEqual(inspected["native_readiness"], "not established")
+            self.assertNotIn("plan", inspected)
+            self.assertEqual(self.native(root, provider, "--configure")["current"],
+                             inspected["current"])
+            self.assertIn("usage", self.native(root, provider, "--help"))
+            invalid = [
+                ("--implementer=x", "--implementer=x"),
+                ("--reviewer", "x", "--reviewer=y"),
+                ("--implementer=",), ("--reviewer", ""),
+                ("--implementer",), ("--reviewer", "--confirm"),
+                ("--configure", "--implementer=x"), ("--confirm", "--reviewer=x"),
+                ("--help", "--configure"), ("--configure", "--confirm"),
+                ("--harness=codex",), ("--path=.",), ("--unknown",),
+                ("--implementer-effort=high", "--implementer-effort=high"),
+                ("--reviewer=x\nbad",), ("--reviewer= trailing",),
+            ]
+            if provider == "copilot":
+                invalid += [("--reviewer-effort=inherit",), ("--implementer-effort", "high")]
+            for argv in invalid:
+                with self.subTest(provider=provider, argv=argv):
+                    self.native(root, provider, *argv, ok=False)
+            self.native(root, provider, "'unterminated", text=True, ok=False)
+            # Preparing is not consent. Simulated cancellation calls no writer.
+            prepared = self.native(root, provider, "--confirm")
+            self.assertIn("digest", prepared)
+            self.assertEqual(prepared["chosen"], inspected["current"])
+            self.assertEqual(before, CURRENT.snapshot(root))
+            self.apply(root, provider, prepared)
+            confirmed = self.native(root, provider)
+            self.assertTrue(confirmed["configured"])
+            before = CURRENT.snapshot(root)
+            self.assertNotIn("plan", self.native(root, provider, "--confirm"))
+            self.assertEqual(before, CURRENT.snapshot(root))
+            self.roles(root, provider)["reviewer"].unlink()
+            before = CURRENT.snapshot(root)
+            self.assertIn("not installed/unconfigured", self.native(root, provider)["status"])
+            self.assertIn("usage", self.native(root, provider, "--help"))
+            self.native(root, provider, "--confirm", ok=False)
+            self.assertEqual(before, CURRENT.snapshot(root))
+
+    def test_dom_models_literal_override_preserves_partner_effort_and_bodies(self):
+        import shlex
+        for provider in PROVIDERS:
+            root = self.project()
+            # Explicit non-null efforts must survive model-only changes.
+            self.apply(root, provider, self.prepare(root, provider))
+            roles = self.roles(root, provider)
+            roles["reviewer"].write_bytes(roles["reviewer"].read_bytes() + b"\n# current custom body\n")
+            before = {r: p.read_bytes() for r, p in roles.items()}
+            current = self.native(root, provider)["current"]
+            literal = 'model/alpha-"quoted"\\exact=a:b $(never-execute)'
+            argv = ["--implementer", literal]
+            a = self.native(root, provider, *argv)
+            b = self.native(root, provider, shlex.join(argv), text=True)
+            self.assertEqual(a, b)
+            self.assertEqual(a["chosen"]["implementer"]["effort"], current["implementer"]["effort"])
+            self.assertTrue(any("body differs" in w for w in a["warnings"]))
+            self.apply(root, provider, a)
+            self.assertEqual(roles["reviewer"].read_bytes(), before["reviewer"])
+            self.assertEqual(self.native(root, provider)["current"]["implementer"]["model"], literal)
+            bare_before = self.namespace(root, provider)["split_marker"](
+                roles["implementer"].read_bytes(), "implementer")[0]
+            a = self.native(root, provider, "--reviewer=inherit")
+            self.apply(root, provider, a)
+            state = self.native(root, provider)["current"]
+            self.assertEqual(state["reviewer"]["model"], "inherit" if provider == "claude" else None)
+            self.assertEqual(state["reviewer"]["effort"], current["reviewer"]["effort"])
+            self.assertEqual(self.namespace(root, provider)["split_marker"](
+                roles["implementer"].read_bytes(), "implementer")[0], bare_before)
+            if provider != "copilot":
+                a = self.native(root, provider, "--implementer-effort=inherit")
+                self.apply(root, provider, a)
+                state = self.native(root, provider)["current"]
+                self.assertIsNone(state["implementer"]["effort"])
+                self.assertEqual(state["implementer"]["model"], literal)
+            # Current-body edits are acknowledged without rewriting body or base.
+            before = {r: self.namespace(root, provider)["split_marker"](p.read_bytes(), r)[0]
+                      for r, p in roles.items()}
+            roles["reviewer"].write_bytes(roles["reviewer"].read_bytes() + b"# stale\n")
+            before["reviewer"] += "# stale\n"
+            a = self.native(root, provider, "--confirm")
+            self.apply(root, provider, a)
+            for r, p in roles.items():
+                self.assertEqual(self.namespace(root, provider)["split_marker"](p.read_bytes(), r)[0],
+                                 before[r])
+
+    def test_dom_models_emitted_routes_and_native_api_boundary(self):
+        shared = (self.seed / ".agents/skills/dom-models/SKILL.md").read_text()
+        for text in ("ACTUAL native caller", "Unknown, ambiguous", "Missing/unreadable/foreign",
+                     "ORIGINAL explicit request", "No arguments means read-only inspection"):
+            self.assertIn(text, shared)
+        for provider, rel in MODELS.items():
+            body = (self.seed / rel).read_text()
+            for text in ("Active harness boundary", "request-text", "Save / Cancel",
+                         "Cancelled; nothing saved", "Await terminal completion",
+                         "No installer API", "current -> chosen", "detailed",
+                         "Saved configuration is not proof"):
+                self.assertIn(text, body)
+            self.assertIn(rel, (self.seed / DECOMPOSE[provider]).read_text())
+            if provider != "claude":
+                self.assertIn(rel, shared)
+            root = self.project()
+            before = CURRENT.snapshot(root)
+            for action in ("installer", "installer-apply", "installer_request"):
+                self.call(root, provider, action, ok=False)
+            self.native(root, provider, "--installer", ok=False)
+            self.assertEqual(before, CURRENT.snapshot(root))
+
+    def test_dom_models_effort_only_preserves_omitted_claude_model(self):
+        root = self.project()
+        roles = self.roles(root, "claude")
+        impl = roles["implementer"]
+        impl.write_bytes(re.sub(rb"(?m)^model:.*\n", b"", impl.read_bytes()))
+        reviewer = roles["reviewer"].read_bytes()
+        prepared = self.native(root, "claude", "--implementer-effort", "high")
+        self.apply(root, "claude", prepared)
+        self.assertNotIn(b"\nmodel:", impl.read_bytes())
+        self.assertEqual(roles["reviewer"].read_bytes(), reviewer)
+        prepared = self.native(root, "claude", "--implementer=inherit")
+        self.apply(root, "claude", prepared)
+        self.assertIn(b'\nmodel: "inherit"\n', impl.read_bytes())
+        self.assertEqual(self.native(root, "claude")["current"]["implementer"]["effort"], "high")
 
     def prepare(self, root, provider, inherit=False):
         return self.call(root, provider, "prepare", self.choices(provider, inherit))
@@ -781,7 +930,11 @@ class ModelSetup(unittest.TestCase):
             policies = {"claude": ["CLAUDE.md", "CLAUDE.local.md"],
                         "codex": ["AGENTS.md", "AGENTS.override.md"],
                         "copilot": [".github/copilot-instructions.md"]}[provider]
-            namespace = dict(provider=provider, policies=policies, itertools=itertools,
+            manifest = self.seed / PROVIDERS[provider] / ".domestique/manifest"
+            files = next(line[6:] for line in manifest.read_text().splitlines()
+                         if line.startswith("files="))
+            files = ",".join(p for p in files.split(",") if p not in policies)
+            namespace = dict(provider=provider, policies=policies, itertools=itertools, files=files,
                              layout=SimpleNamespace(helper=helper))
             exec(compile(block, "<installer inventory builder>", "exec"), namespace)
             recognized = namespace["recognized"]
@@ -813,6 +966,9 @@ class ModelSetup(unittest.TestCase):
                 for count in range(len(policies) + 1):
                     for subset in itertools.combinations(policies, count):
                         observed.add((version, inventory + "".join("," + p for p in subset)))
+            for count in range(len(policies) + 1):
+                for subset in itertools.combinations(policies, count):
+                    observed.add(("0.2.2", files + "".join("," + p for p in subset)))
             self.assertEqual(recognized, observed)
 
     def test_actual_installer_helper_return_race_refuses_final_success(self):
@@ -1194,11 +1350,17 @@ class ModelSetup(unittest.TestCase):
             (root / directory / ".domestique/base" / relative).unlink()
             manifest = root / directory / ".domestique/manifest"
             manifest.write_text(manifest.read_text().replace("," + relative, ""))
+            # The recognized pre-helper generation also predates dom-models.
+            model_path = MODELS[provider]
+            (root / model_path).unlink()
+            (root / directory / ".domestique/base" / model_path).unlink()
+            manifest.write_text(manifest.read_text().replace("," + model_path, ""))
             manifest.write_text(manifest.read_text().replace("domestique_version=0.2.2",
                                                             "domestique_version=0.1.0"))
             ownership = root / directory / ".domestique/guest-excludes"
             if ownership.exists():
-                ownership.write_text(ownership.read_text().replace(relative + "\n", ""))
+                ownership.write_text(ownership.read_text().replace(relative + "\n", "")
+                                     .replace(model_path + "\n", ""))
             role = self.roles(root, provider)["reviewer"]
             role.write_bytes(role.read_bytes() + b"\n# customized body\n")
         self.fixture.run_dom(root, "--guest", ok=False)

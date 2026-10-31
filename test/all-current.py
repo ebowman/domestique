@@ -344,13 +344,23 @@ class AllProviders(unittest.TestCase):
             "dom-goal", "dom-decompose", "domestique", "domestique-goal",
             "domestique-decompose", "domestique-v2-copilot",
             "domestique-v2-copilot-goal", "domestique-v2-copilot-decompose",
+            "dom-models", "domestique-models", "domestique-v2-copilot-models",
         }
         self.assertEqual(set(inventory), expected)
         for name, paths in inventory.items():
             self.assertEqual(len(paths), 1, name)
             self.assertFalse(paths[0].is_symlink())
             body = paths[0].read_text()
-            if name in ("dom-goal", "dom-decompose"):
+            if name == "dom-models":
+                self.assertIn("description: Codex or Copilot only.", body)
+                for text in ("ACTUAL native caller", "Missing/unreadable/foreign body",
+                             "ORIGINAL explicit request", "No arguments means read-only inspection"):
+                    self.assertIn(text, body)
+                for rel in (".agents/skills/domestique-models/SKILL.md",
+                            ".github/skills/domestique-v2-copilot-models/SKILL.md"):
+                    self.assertIn(rel, body)
+                    self.assertTrue((root / rel).is_file())
+            elif name in ("dom-goal", "dom-decompose"):
                 self.assertEqual(paths[0], root / f".agents/skills/{name}/SKILL.md")
                 for text in ("description: Codex or Copilot only.",
                              "Unknown, ambiguous, or unsupported callers STOP",
@@ -369,7 +379,8 @@ class AllProviders(unittest.TestCase):
                 self.assertIn("An explicit foreign-harness invocation must STOP without setup", body)
                 self.assertIn("skill matching/loading and this text are NOT caller identity.", body)
                 # Boundary precedes the real ordinary/bootstrap or setup gate.
-                gate = ({"domestique": "## Role model gate",
+                gate = ("# Role models" if name.endswith("-models") else
+                        {"domestique": "## Role model gate",
                          "domestique-v2-copilot": "## Read-only role gate"}.get(
                              name, f"## {harness.capitalize()} first-use role setup"))
                 after_guard = body.index("and /dom-goal commands, but do not invoke them automatically.")
@@ -436,7 +447,7 @@ class AllProviders(unittest.TestCase):
                 self.assertIn(phrase, body)
         commands = list((root / ".claude/commands").glob("*.md"))
         self.assertEqual({p.stem for p in commands},
-                         {"dom-goal", "dom-decompose", "goal", "decompose"})
+                         {"dom-goal", "dom-decompose", "dom-models", "goal", "decompose"})
         for path in commands:
             body = path.read_text()
             self.assertIn("description: Claude Code only;", body)
@@ -1571,6 +1582,86 @@ class AllProviders(unittest.TestCase):
             for flags in ((), ("--force",), ("--dry-run",)):
                 self.run_dom(root, *flags, script=upstream, ok=False)
                 self.assertEqual(before, snapshot(self.work))
+
+    def test_dom_models_install_upgrade_guest_and_scoped_lifecycle(self):
+        native = {
+            "claude": ".claude/commands/dom-models.md",
+            "codex": ".agents/skills/domestique-models/SKILL.md",
+            "copilot": ".github/skills/domestique-v2-copilot-models/SKILL.md",
+        }
+        shared = ".agents/skills/dom-models/SKILL.md"
+        # Explicit providers, then default upgrade from the reviewed .4 HEAD.
+        previous = subprocess.check_output(
+            ["git", "show", "3d1a3d3ca014f7042ea9208a09a6f7a212d53082:domestique.sh"],
+            cwd=SOURCE.parent, text=True)
+        root = self.root("models-upgrade")
+        self.run_dom(root, "--guest", script=previous)
+        before_roles = {str(p.relative_to(root)): p.read_bytes()
+                        for provider in ROLES for p in
+                        (root / provider, root / provider.replace("implementer", "reviewer"))}
+        self.run_dom(root)
+        for rel, data in before_roles.items():
+            self.assertEqual((root / rel).read_bytes(), data)
+        for provider, rel in native.items():
+            self.assertIn(rel, (root / STATES[provider] / "manifest").read_text())
+            self.assertEqual((root / rel).read_bytes(),
+                             (root / STATES[provider] / "base" / rel).read_bytes())
+        self.assertIn(shared, (root / ".agents/.domestique/manifest").read_text())
+        for rel in (*native.values(), shared):
+            self.assertEqual(subprocess.run(["git", "check-ignore", "-q", rel],
+                                            cwd=root, env=self.env).returncode, 0)
+        # Exact excludes must not hide neighbors (Claude keeps historical broad scope).
+        for rel in (".agents/skills/dom-models/host.txt",
+                    ".agents/skills/domestique-models/host.txt",
+                    ".github/skills/domestique-v2-copilot-models/host.txt"):
+            self.assertEqual(subprocess.run(["git", "check-ignore", "-q", rel],
+                                            cwd=root, env=self.env).returncode, 1)
+        stable = snapshot(root)
+        self.run_dom(root, "--platform=all")
+        self.assertEqual(stable, snapshot(root))
+        # Modified commands retain the same scoped uninstall backup semantics.
+        custom = (root / native["copilot"]).read_bytes() + b"\nHost model-command note\n"
+        (root / native["copilot"]).write_bytes(custom)
+        for provider in native:
+            self.run_dom(root, "--platform", provider, "--uninstall")
+            self.assertFalse((root / native[provider]).exists())
+            self.assertEqual((root / shared).exists(), provider != "copilot")
+        preserved = list((root / native["copilot"]).parent.glob("SKILL.md.uninstalled.*"))
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].read_bytes(), custom)
+        for provider, rel in native.items():
+            root = self.root("models-only-" + provider)
+            self.run_dom(root, "--platform", provider)
+            self.assertTrue((root / rel).is_file())
+            self.assertEqual((root / shared).exists(), provider != "claude")
+            for other, other_rel in native.items():
+                self.assertEqual((root / other_rel).exists(), other == provider)
+
+    def test_dom_models_new_paths_unowned_or_symlink_refuse(self):
+        paths = (".claude/commands/dom-models.md",
+                 ".agents/skills/domestique-models/SKILL.md",
+                 ".github/skills/domestique-v2-copilot-models/SKILL.md",
+                 ".agents/skills/dom-models/SKILL.md")
+        for index, rel in enumerate(paths):
+            for kind in ("file", "symlink", "base"):
+                root = self.root(f"models-conflict-{index}-{kind}")
+                path = root / rel
+                if kind == "base":
+                    state = (".claude/.domestique" if rel.startswith(".claude") else
+                             ".github/.domestique" if rel.startswith(".github") else
+                             ".codex/.domestique" if "domestique-models" in rel else
+                             ".agents/.domestique")
+                    path = root / state / "base" / rel
+                path.parent.mkdir(parents=True)
+                if kind == "symlink":
+                    path.symlink_to(root / "absent")
+                else:
+                    path.write_bytes(b"unowned\n")
+                before = snapshot(root)
+                self.run_dom(root, "--dry-run", ok=False)
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, ok=False)
+                self.assertEqual(before, snapshot(root))
 
     def test_unowned_policy_base_not_overwritten(self):
         root = self.root("unowned-policy-base")
