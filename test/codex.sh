@@ -5,6 +5,7 @@
 # No external test framework and no network access are required.
 #
 # Run: bash test/codex.sh --current (released v1); omit for frozen history.
+# Focused setup/routing: bash test/codex.sh --setup-current
 #
 # Intentionally does NOT use `set -e`: scenarios exercise failure-sensitive
 # installer paths and should collect every failed assertion before exiting.
@@ -23,7 +24,7 @@ fi
 WORKROOT="$(mktemp -d)"
 cleanup() { rm -rf "$WORKROOT"; }
 trap cleanup EXIT
-if [ "${1:-}" = "--current" ]; then
+if [ "${1:-}" = "--current" ] || [ "${1:-}" = "--setup-current" ]; then
   CURRENT_TEST=1
   export HOME="$WORKROOT/current-home"
   mkdir -p "$HOME"
@@ -800,7 +801,7 @@ goal = (skills / "domestique-goal/SKILL.md").read_text()
 setup = body(decompose)
 assert setup == body(goal)
 for kind, text, action in (
-    ("decompose", decompose, "# Decompose into beads"),
+    ("decompose", decompose, "\n# Decompose into beads\n"),
     ("goal", goal, "# Unattended epic execution"),
 ):
     shared = (skills / f"dom-{kind}/SKILL.md").read_text()
@@ -837,8 +838,8 @@ for phrase in (
     "explicitly resolve incompatible effort", "Never silently retain unsupported",
     "OMIT model", "write a literal model named `inherit`",
     "For inherited effort OMIT\nmodel_reasoning_effort",
-    "ACTUAL complete proposed diff", "Save setup only / Cancel",
-    "redisplay the diff", "Goal authorization\nis not settings consent",
+    "concise exact-plan summary", "Save these choices? Save / Cancel",
+    "reprepare, summarize and renew consent", "Goal authorization\nis not settings consent",
     "Cancel, incomplete/missing values, or noninteractive",
     "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
     "Noninteractive callers may only use an already confirmed pair",
@@ -846,9 +847,9 @@ for phrase in (
     "exec(compile(code", "assert code == read(base)",
     "Prepare is READ-ONLY", "independently retained",
     "all evidence immediately before EVERY publication",
-    "unknown leftovers", "No blind rollback", "SETUP ONLY: no planning",
-    "beads, claim, code, dispatch, branch/commit or goal cycle",
-    "fresh client\nsession", "NOT queued for automatic continuation",
+    "unknown leftovers", "No blind rollback", "SETUP ONLY: no task",
+    "claim, code, dispatch, branch/commit or goal cycle",
+    "supported reload/fresh invocation", "NOT queued for automatic continuation",
     "Missing setup during truly noninteractive/autopilot goal execution means STOP",
     "Confirmed setup alone grants no goal authority",
     "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
@@ -874,7 +875,7 @@ assert "Setup consumes this request: no task, Beads or implementation" in " ".jo
 
 # Persistence support is checked before save; loaded registration matching is
 # required after fresh reload, not used to veto a supported setup-only edit.
-pre_save, post_save = setup.split("After saving, require a fresh client session", 1)
+pre_save, post_save = setup.split("After saving, require supported reload/fresh invocation", 1)
 for phrase in (
     "PRE-SAVE check concerns supported persistent native role-file/config semantics",
     "not readiness to dispatch through this conversation's loaded roles",
@@ -886,9 +887,9 @@ for phrase in (
     "Their mismatch with a proposed pair during SETUP alone is NOT grounds to reject supported persistent reconfiguration or refuse its actual diff/consent flow",
     "does not bypass fixed tool registration or provider permissions",
     "No Task/spawn override attempt, dispatch test, or fallback to old generated defaults",
-    "show the actual complete diff, obtain Save setup only consent",
+    "present the concise exact-plan summary, obtain save consent",
     "required ordinary native scoped protected-write approval",
-    "save only, then STOP for a fresh session and reinvocation",
+    "wait for verified save completion",
 ):
     assert phrase in " ".join(pre_save.split()), phrase
 for phrase in (
@@ -905,14 +906,16 @@ for phrase in (
 # inside the publication command, with denial/change/unwritable paths fail-closed.
 ordered = (
     "### Read-only preflight", "### One question for BOTH roles",
-    "ACTUAL complete proposed diff", "before explicit Save setup only consent",
-    "Only AFTER explicit Save setup only consent",
+    "concise exact-plan summary", "before explicit save consent",
+    "Only AFTER explicit save consent",
     "request native one-command scoped approval", "sandbox_permissions=require_escalated",
     "### Deterministic helper", "Only after explicit consent AND",
     "The helper recomputes the scalar-only patch",
     "all evidence immediately before EVERY publication",
 )
-positions = [setup.index(phrase) for phrase in ordered]
+positions = [setup.index(phrase, setup.index("### One question"))
+             if phrase == "concise exact-plan summary" else setup.index(phrase)
+             for phrase in ordered]
 assert positions == sorted(positions)
 assert "writable role\nparents" not in preflight.split("### Native evidence")[0]
 for phrase in (
@@ -926,7 +929,7 @@ for phrase in (
     "including file path/mode/device/inode/nlink/hash and parent identities/modes",
     "Prepare/verify require only safe readable evidence",
     "Only apply checks writable roles/parents in the approved execution context",
-    "changed filesystem modes still require prepare/show diff/new consent",
+    "changed filesystem modes still require prepare/new summary/new consent",
 ):
     assert phrase in " ".join(setup.split()), phrase
 
@@ -937,7 +940,7 @@ for phrase in (
     "previously resolved effort; it does NOT reset",
     "Verify installed-version behavior", "Unknown support/availability",
     "STOP before writes", "No fallback", "invented verification API or paid probe",
-    "After saving, require a fresh client session",
+    "After saving, require supported reload/fresh invocation",
     "Send no conflicting spawn", "Ephemeral model requests are assertions",
     "a conflict stops", "resolve/check it anew each session",
     "STOP without workflow or writes", "not dispatch proof",
@@ -989,8 +992,8 @@ for path in (root / "AGENTS.md", skills / "domestique/SKILL.md"):
         "immutable registrations need not match a proposed pair during setup alone",
         "that mismatch does not forbid a supported persistent edit",
         "Verify installed role-file semantics and provider/tool compatibility, not just catalog presence",
-        "Show the actual diff, obtain Save setup only consent and required native scoped protected-write approval",
-        "save only, then STOP for fresh reload/reinvocation",
+        "Present the concise exact-plan summary (detailed diff on request), obtain save consent and required native scoped protected-write approval",
+        "wait for verified save completion",
         "Do not attempt an in-session Task/spawn override or use old defaults as fallback",
         "freshly loaded registered pair must match the chosen/native-effective model and effort before dispatch",
         "persistence never bypasses fixed tool registration, provider permissions or genuine capability restrictions",
@@ -1175,7 +1178,7 @@ for kind in ("decompose", "goal"):
                    "ORIGINAL user request verbatim", "explicit epic arguments",
                    "authorization provenance", "Never synthesize a new",
                    "Merely loading or implicitly matching", "must not start setup",
-                   "Setup consumes that", "does not establish native readiness",
+                   "Setup consumes goal", "does not establish native readiness",
                    f".agents/skills/domestique-{kind}/SKILL.md",
                    f".github/skills/domestique-v2-copilot-{kind}/SKILL.md",
                    "domestique-v2-copilot-implementer", "domestique-v2-copilot-reviewer"):
@@ -1189,7 +1192,7 @@ for kind in ("decompose", "goal"):
     assert body.index("Active harness boundary") < body.index("first-use role setup")
     assert body.index("first-use role setup") < body.index("## End setup gate")
     assert "No setup delegation of ANY kind" in body
-    assert "Save setup only" in body
+    assert "Save these choices?" in body
     assert "Setup consumes the request" in body
     if kind == "goal":
         assert "Missing explicit request/epic means STOP" in body
@@ -1632,6 +1635,14 @@ PY
 
 echo "domestique Codex test harness"
 echo
+
+if [ "${1:-}" = "--setup-current" ]; then
+  run_scenario "Codex setup emitted protocol (static assertions)" scenario_codex_setup_protocol
+  run_scenario "installed shared routes and all foreign boundaries (normal/guest, static)" scenario_shared_routing_normal_and_guest
+  echo "$PASS_COUNT/$((PASS_COUNT + FAIL_COUNT)) passed"
+  [ "$FAIL_COUNT" -eq 0 ]
+  exit $?
+fi
 
 run_scenario "fresh normal Codex install"                 scenario_fresh_normal_codex
 run_scenario "Codex custom-agent TOML"                    scenario_agent_toml

@@ -25,7 +25,7 @@ for this release preparation; no fixes are claimed.
   Explicit `--platform claude`, `codex`, `copilot`, `both` or `all` remain;
   **`both` means Claude+Codex**, not Copilot.
 - Independent, consent-bound first-use setup for each project's native role
-  pair, followed by reload. Compatible customizations and model choices survive
+  pair, with reload only when needed before execution. Compatible customizations and model choices survive
   preserving upgrades.
 - Shared Codex/Copilot planning and goal skills, sticky normal/guest modes,
   scoped removal, and bounded migration of supported Copilot preview projects.
@@ -70,7 +70,7 @@ Use scoped uninstall, not an install selector, to remove a provider.
 
 ## First use and the workflow
 
-| Native client | Plan / configure both role models | Fresh explicit goal |
+| Native client | Explicitly configure both role models | Fresh explicit goal |
 | --- | --- | --- |
 | Claude Code | `/dom-decompose configure role models` | `/dom-goal EPIC_ID` |
 | Codex | `$dom-decompose configure role models` | `$dom-goal EPIC_ID` |
@@ -80,23 +80,35 @@ Use the same planning entry with a task brief to decompose work into an epic and
 bounded tasks. Codex also offers `/skills` selection. Loading a skill alone
 never authorizes goal work. A goal must explicitly name the intended epic;
 require fresh independent reviewer **PASS before task commit or closure**.
+Planning never requires model setup, helper verification, loaded roles or a
+restart—even with missing/unconfirmed/manually edited roles—and never delegates
+or executes tasks. Only the exact `configure role models` argument selects setup;
+a planning brief mentioning models does not.
 
-1. On first decompose **or interactive goal**, each harness independently asks
-   for **both implementer and reviewer models**, including supported effort.
+1. On explicit configuration or first **interactive goal**, reuse saved selections.
+   Missing/unconfirmed choices are requested together in one concise form for
+   **both implementer and reviewer models**, including supported effort.
    Explicit native inheritance is allowed; defaults or absent fields are not
    consent. No global model registry is used.
 2. Verify actual native availability and persistent role support. The installed
    deterministic helper prepares the minimal diff **read-only**, with no
-   scratch/staged plan. Inspect it, explicitly consent to **Save setup only**,
-   and approve ordinary scoped native writes. Save, then **STOP**: no task or
-   Beads work in that setup invocation.
-3. Reload/start a fresh native session. Verify registrations, effective choices,
+   scratch/staged plan. Review a compact summary of project/harness, current →
+   chosen settings, exact role files/change scope and tracked consequences.
+   Detailed diff is available on request; raw hashes/marker JSON are not required.
+   Confirm **Save these choices?**, then approve any ordinary scoped native writes.
+   Selection alone is not consent to the prepared plan; changes renew consent.
+   Wait for terminal save completion and pair verification; pending/partial/error
+   results are not success. Cancel writes nothing.
+3. Planning can proceed without reload or repeating an already supplied brief.
+   Setup never queues goal work. Before execution, reload/start a fresh native
+   invocation if registrations are stale/unknown. Verify registrations, effective choices,
    precedence and availability. Review and explicitly dispose of tracked setup
    changes before work, for example through a separately reviewed setup commit;
    never automatically stage, stash or hide them. Issue a **fresh** goal.
 4. Unchanged confirmed pairs do not reprompt on rerun. Changed role bytes,
    including custom body edits, invalidate confirmation. Unavailable/mismatched
-   models mean **STOP, no fallback**: reconfigure both roles, consent and reload.
+   models stop execution, not planning: reconfigure, consent and reload as needed;
+   never fall back silently.
 
 The helper proves filesystem consistency, **not** which bytes/models a native
 client loaded. See [pair paths and native limitations](docs/install-upgrade-design.md#first-use-role-setup).

@@ -17,6 +17,11 @@ SPEC = importlib.util.spec_from_file_location("current_fixture", Path(__file__).
 CURRENT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CURRENT)
 PROVIDERS = {"claude": ".claude", "codex": ".codex", "copilot": ".github"}
+DECOMPOSE = {
+    "claude": ".claude/commands/dom-decompose.md",
+    "codex": ".agents/skills/domestique-decompose/SKILL.md",
+    "copilot": ".github/skills/domestique-v2-copilot-decompose/SKILL.md",
+}
 
 
 class ModelSetup(unittest.TestCase):
@@ -49,9 +54,7 @@ class ModelSetup(unittest.TestCase):
         return {r: root / impl.replace("implementer", r) for r in ("implementer", "reviewer")}
 
     def bootstrap(self, root, provider):
-        rel = {"claude": ".claude/commands/dom-decompose.md",
-               "codex": ".agents/skills/domestique-decompose/SKILL.md",
-               "copilot": ".github/skills/domestique-v2-copilot-decompose/SKILL.md"}[provider]
+        rel = DECOMPOSE[provider]
         text = (root / rel).read_text()
         return text.split("```python\n", 1)[1].split("\n```", 1)[0]
 
@@ -88,6 +91,148 @@ class ModelSetup(unittest.TestCase):
         namespace = {"__file__": str(helper), "__name__": "tested_helper"}
         exec(compile(helper.read_bytes(), str(helper), "exec"), namespace)
         return namespace
+
+    def test_planning_routes_bypass_setup_at_every_entry_layer(self):
+        # Emitted protocol checks, not a simulation of native assistant behavior.
+        for guest in (False, True):
+            root = self.project() if not guest else self.fixture.root("planning-guest")
+            if guest:
+                self.fixture.run_dom(root, "--guest")
+            for provider, rel in DECOMPOSE.items():
+                with self.subTest(provider=provider, guest=guest):
+                    text = (root / rel).read_text()
+                    boundary, routed = text.split("## Explicit config-vs-plan routing", 1)
+                    route, rest = routed.split(f"## {provider.title()} first-use role setup", 1)
+                    setup, plan = rest.split("\n# Decompose into beads\n", 1)
+                    self.assertIn("Active harness boundary", boundary)
+                    for required in (
+                        "Only the entire explicit argument `configure role models`",
+                        "Task text mentioning models", "NOT configuration intent",
+                        "SKIP the entire role setup section", "No model configuration/questions",
+                        "helper\nverify, loaded-role check or reload",
+                        "missing, unconfirmed or manually edited",
+                        "Do not read role files", "explicit planning request",
+                        "never falls through", "Planning never delegates",
+                        "claims/closes beads", "stages or commits",
+                    ):
+                        self.assertIn(required, route)
+                    self.assertIn("never to ordinary planning-only decompose", setup)
+                    self.assertIn("exec(compile(code", setup)  # config route remains functional
+                    for forbidden in ("emit_", "After the gate", "helper", "reload",
+                                      "confirmed pair", "questionnaire"):
+                        self.assertNotIn(forbidden, plan)
+                    self.assertIn("epic", plan)
+                    self.assertIn("bounded", plan)
+                    self.assertIn("dependencies", plan)
+                    self.assertRegex(plan, r"(?i)(do not.*delegate|no implementation,\ndelegation)")
+            self.assertEqual((root / DECOMPOSE["claude"]).read_bytes(),
+                             (root / ".claude/commands/decompose.md").read_bytes())
+            layers = [
+                ".agents/skills/dom-decompose/SKILL.md",
+                ".agents/skills/dom-goal/SKILL.md",
+                ".agents/skills/domestique/SKILL.md",
+                ".github/skills/domestique-v2-copilot/SKILL.md",
+                "CLAUDE.local.md" if guest else "CLAUDE.md",
+            ]
+            if not guest:
+                layers += ["AGENTS.md", ".github/copilot-instructions.md"]
+            for rel in layers:
+                text = (root / rel).read_text()
+                flat = " ".join(text.split())
+                self.assertIn("Planning-only decompose bypasses", text, rel)
+                self.assertIn("helper verify", flat, rel)
+                self.assertIn("loaded-role checks or reload", flat, rel)
+                self.assertIn("configure role models", text, rel)
+                self.assertNotIn("gate (before Beads or delegation)", text, rel)
+                self.assertNotIn("Before Beads/delegation", text, rel)
+            for rel in (".github/skills/domestique-v2-copilot/SKILL.md",
+                        *([] if guest else [".github/copilot-instructions.md"])):
+                self.assertIn("Its Beads/readiness/branch gates do not apply to planning",
+                              (root / rel).read_text())
+
+    def test_concise_exact_plan_consent_and_terminal_save_protocol(self):
+        for provider, rel in DECOMPOSE.items():
+            text = (self.seed / rel).read_text()
+            goal = (self.seed / rel.replace("decompose", "goal")).read_text()
+            for entry in (text, goal):
+                flat = " ".join(entry.split())
+                for required in (
+                    "Reuse saved native selections", "prefill current values",
+                    "These choices will be saved locally", "planning works now",
+                    "project/harness, each current -> chosen model/effort",
+                    "both exact role paths", "preserved tools/prompts",
+                    "tracked-file consequences", "complete detailed diff on request",
+                    "do not print raw diffs, marker JSON",
+                    "Retain its digest independently",
+                    "Save these choices? Save / Cancel",
+                    "Initial model selection before prepare is NOT save consent",
+                    "prepare/new summary/new explicit human save consent",
+                    "ZERO target writes", "ONLY the exact plan JSON",
+                    "Setup cancelled; nothing saved",
+                    "Do not report success or resume the initiating goal",
+                    "normal native one-command protected-write approval",
+                    "Run apply synchronously", "background notification",
+                    "until terminal completion; pending is NOT saved",
+                    "Check exit status and helper JSON", "read-only `verify`",
+                    "check both hashes/choices against apply",
+                    "is explicit FAILURE, never success-shaped",
+                    "Only after verified completion",
+                    "including one already supplied",
+                    "stale/unknown registrations require a supported reload",
+                    "Do not invent in-session refresh",
+                    "fresh explicit execution authorization",
+                    "the initiating goal is consumed, not queued",
+                ):
+                    self.assertIn(required, flat, provider)
+                for forbidden in ("Display the plan's ACTUAL complete diff",
+                                  "show the ACTUAL complete proposed diff",
+                                  "displayed digest", "Save setup only / Cancel",
+                                  "Before Beads, planning", "any workflow action",
+                                  "stop for fresh-session reinvocation"):
+                    self.assertNotIn(forbidden, entry, provider)
+                self.assertLess(entry.index("It returns `plan` and `digest`"),
+                                entry.index("Ask once: `Save these choices?"))
+                self.assertLess(entry.index("Ask once: `Save these choices?"),
+                                entry.index("Only after explicit consent AND"))
+            if provider in ("claude", "codex"):
+                goal_body = " ".join(goal.split(
+                    "Interactive first-use goal setup runs", 1)[1].split())
+                for required in (
+                    "stop execution until fresh explicit goal authorization",
+                    "Planning remains available immediately",
+                    "including an already supplied explicit planning request",
+                    "Execution requires native readiness for the saved pair",
+                    "reload/fresh invocation only if registration is stale/unknown",
+                    "Do not assume saving updates loaded roles",
+                ):
+                    self.assertIn(required, goal_body, provider)
+
+    def test_published_confirmed_pair_compatibility(self):
+        # Real v0.2.1 installer + its emitted prepare/apply/bootstrap, then upgrade.
+        published = subprocess.check_output(
+            ["git", "show", "92fd8505933f78ad7e3a35f7d7260ad70b0c648b:domestique.sh"],
+            cwd=CURRENT.SOURCE.parent, text=True)
+        root = self.fixture.root("published-confirmed")
+        self.fixture.run_dom(root, script=published)
+        for provider in PROVIDERS:
+            self.apply(root, provider, self.prepare(root, provider))
+        before = {str(p): p.read_bytes() for provider in PROVIDERS
+                  for p in self.roles(root, provider).values()}
+        self.fixture.run_dom(root)
+        for provider in PROVIDERS:
+            state = self.call(root, provider, "verify")
+            self.assertTrue(state["confirmed"])
+            self.assertEqual(state["selected"], self.choices(provider))
+            for p in self.roles(root, provider).values():
+                self.assertEqual(before[str(p)], p.read_bytes())
+        stable = CURRENT.snapshot(root)
+        for provider in PROVIDERS:
+            self.assertTrue(self.call(root, provider, "verify")["confirmed"])
+        self.assertEqual(stable, CURRENT.snapshot(root))
+        for provider in PROVIDERS:
+            path = self.roles(root, provider)["reviewer"]
+            path.write_bytes(path.read_bytes() + b"\n# manual edit\n")
+            self.assertFalse(self.call(root, provider, "verify")["confirmed"])
 
     def test_prepare_verify_cancel_denied_zero_writes_all_formats(self):
         for provider in PROVIDERS:
