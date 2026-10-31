@@ -116,6 +116,17 @@ class Copilot(unittest.TestCase):
         ordinary = (self.root / ".github/skills/domestique-v2-copilot/SKILL.md").read_text()
         self.assertIn("no ordinary/bootstrap questionnaire", ordinary)
         self.assertIn("one explicitly assigned bounded bead", ordinary)
+        self.assertIn("explicitly read the native goal body", ordinary)
+        self.assertLess(ordinary.index("## Goal intent routing"),
+                        ordinary.index("## Read-only role gate"))
+        goal = (self.root / ".github/skills/domestique-v2-copilot-goal/SKILL.md").read_text()
+        self.assertIn("clear user execution request or native named objective", goal)
+        self.assertNotIn("Default bound is ONE", goal)
+        self.assertNotIn("native /goal or /autopilot is not", goal)
+        for role, rel in ROLES.items():
+            body = (self.root / rel).read_text()
+            self.assertNotIn("## Goal intent routing", body)
+            self.assertIn(DELEGATED, body)
 
     def test_old_role_guard_upgrade_preserves_custom_pair(self):
         # Bounded pristine role bytes from 9f339305a4f900176b647248f68907499dcc0620.

@@ -7,9 +7,17 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.3.1: explicit parent Git approval
+## v0.4.0: complete named goals
 
-v0.3.1 fixes recognition of explicit parent Git approval, including “go ahead”
+v0.4.0 makes [named goals](#complete-named-goals) complete the full nested epic
+or exactly the named task, with continuing progress reports every 15 closures.
+Reviewed implementation and bounded offline qualification passed; **native
+coverage remains BLOCKED by missing user authorization, not authentication**.
+Publication does not fully qualify hq-xc2. See [evidence and limits](docs/install-upgrade-design.md#v040-release-status-and-limits).
+
+<a id="v031-explicit-parent-git-approval"></a>
+
+v0.3.1 introduced recognition of explicit parent Git approval, including “go ahead”
 for a concrete proposal, without a Beads/model gate. Normal native permissions,
 scope and guest privacy remain intact; no automatic drain, push or merge authority.
 v0.3.0 introduced ready-to-use defaults and optional model commands.
@@ -39,7 +47,8 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-The existing alias fetches v0.3.1 from `main`; no alias change is needed:
+After v0.4.0 is published to `main`, the existing alias fetches it on its next
+invocation; no alias change is needed:
 
 ```sh
 alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
@@ -66,9 +75,9 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional, not required for these features.
-To inspect reviewed source locally, run from that checkout against a disposable
-Git project:
+A source checkout is optional; v0.4.0's goal features are included in remote
+`dom` after publication to `main`. To inspect reviewed source locally, run from
+that checkout against a disposable Git project:
 
 ```sh
 TARGET=$(mktemp -d)
@@ -128,21 +137,20 @@ until you review the current pair with `dom-models --confirm` (or
 
 ## First use and the workflow
 
-| Native client | Inspect saved choices | Explicit goal |
-| --- | --- | --- |
-| Claude Code | `/dom-models` | `/dom-goal EPIC_ID` |
-| Codex | `$dom-models` | `$dom-goal EPIC_ID` |
-| GitHub Copilot | `/dom-models` | `/dom-goal EPIC_ID` |
+| Native client | Inspect saved choices |
+| --- | --- |
+| Claude Code | `/dom-models` |
+| Codex | `$dom-models` |
+| GitHub Copilot | `/dom-models` |
 
 Use `/dom-decompose BRIEF` (Claude/Copilot) or `$dom-decompose BRIEF` (Codex)
 to plan an epic and bounded tasks. Codex also offers `/skills`. Loading a skill alone
-never authorizes goal work. A goal must explicitly name the intended epic;
-require fresh independent reviewer **PASS before task commit or closure**.
+never authorizes goal work. Managed work requires fresh independent reviewer
+**PASS before task commit or closure**.
 Planning never requires model setup, helper verification, loaded roles or a
 restart—even with missing/unconfirmed/manually edited roles—and never delegates
-or executes tasks. Copilot still defaults to **one reviewed bead**; native
-`/goal` or `/autopilot` is not Domestique authorization. Expanded authorization
-is separate, unimplemented work (hq-xc2), not part of this release.
+or executes tasks. Named goals now use the target scope and continuation below;
+ordinary next-ready work still defaults to **one reviewed bead**.
 
 1. Install and review Git changes. Valid configured pairs enter the existing
    execution gate without a questionnaire, Save or restart merely because fresh.
@@ -155,6 +163,62 @@ is separate, unimplemented work (hq-xc2), not part of this release.
    or `--configure` (change choices). Missing/unsafe state needs preserving
    installer repair. Unavailable/mismatched choices stop execution, not planning:
    fix through `--configure`, Save and reload if needed, never automatic substitution.
+
+<a id="upcoming-named-goals-reviewed-candidate"></a>
+
+### Complete named goals
+
+These v0.4.0 instructions passed implementation/regression review and bounded
+offline checks, not native unattended-execution qualification.
+
+Use these in the native client with a real project Beads ID:
+
+| Client | Goal command |
+| --- | --- |
+| Claude Code / GitHub Copilot | `/dom-goal ID` |
+| Codex | `$dom-goal ID` |
+
+The actual bead type determines scope: an **epic** runs all unfinished transitive
+parent-child descendants, including nested epics and descendants behind closed
+intermediate nodes. A **non-epic** runs exactly that bead, even if it has children;
+it never selects siblings or external prerequisites. Verified already-closed
+targets are no-ops only when their scope is complete.
+
+Clear current user execution requests or native named objectives also qualify:
+“Complete epic EPIC_ID”, or “do it” referring to the current concrete named plan.
+Native goal/autopilot with that named execution objective is accepted; a bare
+mode toggle, quoted examples, loading/matching a skill, planning or model Save
+is not execution authority. Ambiguous targets require a narrow question.
+For explicitly bounded work, say “Execute only this bead BEAD_ID”,
+“Execute one next bead in EPIC_ID”, or “Execute at most 3 beads in EPIC_ID”.
+These are natural-language limits, not new command flags. An ordinary next-ready
+request still means one bead. Compatibility commands remain Claude `/goal`,
+Codex `$domestique-goal`, and Copilot `/domestique-v2-copilot-goal`.
+
+**15 is a soft progress interval, not a stop, permission renewal or expiry.**
+After every 15 successful closures, report progress and continue to bead 16,
+31 and beyond while healthy. Explicit current user count/time/cost limits and
+actual runtime/session budgets still bind; this does not bypass provider limits
+or carry authority into another session. Cancellation/objective change, actual
+tool/permission/model/Beads errors, observed regressions, material ambiguity or
+failed review stop the run (review gaps allow one corrective pass, then fresh review).
+
+A blocked or other-owned branch does not prevent other authorized runnable work.
+No ready work with unfinished descendants means **BLOCKED**, not complete.
+Even all descendants closed is insufficient: the root needs its own acceptance
+evidence, required integration validation and independent PASS; otherwise report
+**ROOT UNFINISHED**. Stops preserve actual bead/commit state and concrete remaining
+work for an explicitly authorized continuation, not a silent restart.
+
+Execution stays sequential on a dedicated non-default branch, with independent
+review before scoped commit/closure. The parent hands off verified ownership;
+children do not reclaim already-owned in-progress work. Use focused relevant
+tests/lint, not a mandatory full suite every bead or checkpoint. Dirty/uncertain
+work needs human disposition; guest personal state stays local and unstaged.
+The loop does not automatically merge or push; [separate explicit Git approval](#direct-git-requests)
+still permits those operations. Model defaults and model-editor Save are unchanged.
+See [scope](docs/install-upgrade-design.md#complete-named-goals) and
+[qualification limits](docs/install-upgrade-design.md#v040-release-status-and-limits).
 
 ### Direct Git requests
 
@@ -265,7 +329,7 @@ bash test/upgrade.sh --current
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.3.0 qualification limits](docs/install-upgrade-design.md#v030-release-status-and-limits).
+ancestry and the [v0.4.0 qualification limits](docs/install-upgrade-design.md#v040-release-status-and-limits).
 
 ## License
 
