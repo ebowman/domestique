@@ -989,7 +989,7 @@ class ModelSetup(unittest.TestCase):
                     roles["reviewer"].unlink()
                 elif kind == "unknown":
                     manifest = root / ".codex/.domestique/manifest"
-                    manifest.write_text(manifest.read_text().replace("domestique_version=0.2.2",
+                    manifest.write_text(manifest.read_text().replace(f"domestique_version={CURRENT.VERSION}",
                                                                     "domestique_version=unknown"))
                 elif kind in ("custom-inventory", "current-without-helper-inventory"):
                     manifest = root / ".codex/.domestique/manifest"
@@ -1151,7 +1151,8 @@ class ModelSetup(unittest.TestCase):
                         observed.add((version, inventory + "".join("," + p for p in subset)))
             for count in range(len(policies) + 1):
                 for subset in itertools.combinations(policies, count):
-                    observed.add(("0.2.2", files + "".join("," + p for p in subset)))
+                    for version in ("0.2.2", CURRENT.VERSION):
+                        observed.add((version, files + "".join("," + p for p in subset)))
             self.assertEqual(recognized, observed)
 
     def test_actual_installer_helper_return_race_refuses_final_success(self):
@@ -1538,7 +1539,7 @@ class ModelSetup(unittest.TestCase):
             (root / model_path).unlink()
             (root / directory / ".domestique/base" / model_path).unlink()
             manifest.write_text(manifest.read_text().replace("," + model_path, ""))
-            manifest.write_text(manifest.read_text().replace("domestique_version=0.2.2",
+            manifest.write_text(manifest.read_text().replace(f"domestique_version={CURRENT.VERSION}",
                                                             "domestique_version=0.1.0"))
             ownership = root / directory / ".domestique/guest-excludes"
             if ownership.exists():

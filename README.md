@@ -7,12 +7,12 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## Unpublished model-defaults candidate
+## v0.3.0: model defaults and optional setup
 
-This checkout adds ready-to-use defaults and optional model commands. Public
-`main` remains **v0.2.2 at `337ccf0`**; the candidate is unpublished and still
-reports version 0.2.2. Implementation reviews hq-c6o.2–.6 passed;
-**native candidate qualification hq-c6o.8 is not done**.
+v0.3.0 adds ready-to-use defaults and optional model commands.
+Implementation reviews hq-c6o.2–.6 passed, but **native qualification hq-c6o.8
+remains UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized with
+that limitation disclosed; this is not native PASS or epic completion.
 Earlier [native evidence and two unresolved investigations](docs/install-upgrade-design.md#qualification-and-known-issues)
 are history, not qualification of these changes.
 
@@ -36,7 +36,8 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-The existing alias continues to fetch the **published version**, not this candidate:
+The existing alias fetches v0.3.0's new features once the release is published
+to `main`; no alias change is needed:
 
 ```sh
 alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
@@ -61,10 +62,11 @@ For repeatable dry-run/apply, replace `main` in **both** commands with the same
 full reviewed published commit SHA. Pinning script bytes does not reverse
 migrated project state.
 
-### Try the candidate locally
+### Optional source installation
 
-After checking out the reviewed candidate, run from that checkout against a
-disposable Git project. These new flags/defaults are **not yet in remote `dom`**:
+A source checkout is optional, not required for the new features after release.
+To inspect reviewed source locally, run from that checkout against a disposable
+Git project:
 
 ```sh
 TARGET=$(mktemp -d)
@@ -97,7 +99,14 @@ availability**. Using the same model for both roles is allowed; review still
 needs a fresh independent context.
 
 Repeat `--model harness:role=id-or-inherit` (or `--model=harness:role=value`)
-for individual roles. Only `claude|codex|copilot` and `implementer|reviewer`
+for individual roles. For example, preview then apply from your project root:
+
+```sh
+dom --platform both --model claude:implementer=opus --model=codex:reviewer=inherit --dry-run
+dom --platform both --model claude:implementer=opus --model=codex:reviewer=inherit
+```
+
+Only `claude|codex|copilot` and `implementer|reviewer`
 are accepted; no aliases, wildcards or comma lists. Quote literal IDs as one shell
 argument. Identical repeated assignments are allowed; conflicting repeats,
 empty/malformed assignments and overrides outside the requested platform selection
@@ -111,6 +120,9 @@ partner. Newly added providers get fresh defaults. On a **fresh** role, an
 override equal to its shipped model keeps shipped effort; a different model
 (including `inherit`) omits effort. The installer has no effort flag; change
 effort later with `dom-models`. See [legacy/recovery rules](docs/install-upgrade-design.md#preserving-upgrades-and-mode-conversion).
+Unconfirmed legacy custom-role migration preserves choices and returns `3`
+until you review the current pair with `dom-models --confirm` (or
+`--configure`) and Save; reruns never approve custom bytes.
 
 ## First use and the workflow
 
@@ -128,7 +140,7 @@ Planning never requires model setup, helper verification, loaded roles or a
 restart—even with missing/unconfirmed/manually edited roles—and never delegates
 or executes tasks. Copilot still defaults to **one reviewed bead**; native
 `/goal` or `/autopilot` is not Domestique authorization. Expanded authorization
-is separate work (hq-xc2), not part of this candidate.
+is separate, unimplemented work (hq-xc2), not part of this release.
 
 1. Install and review Git changes. Valid configured pairs enter the existing
    execution gate without a questionnaire, Save or restart merely because fresh.
@@ -230,7 +242,7 @@ bash test/upgrade.sh --current
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the still-pending candidate qualification/release handoff.
+ancestry and the [v0.3.0 qualification limits](docs/install-upgrade-design.md#v030-release-status-and-limits).
 
 ## License
 

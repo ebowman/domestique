@@ -1,17 +1,18 @@
 # Standalone: install, upgrade and recovery
 
-Current sections describe the **unpublished hq-c6o model-defaults candidate**.
-Public main remains v0.2.2 at `337ccf0`; the candidate still reports 0.2.2.
-Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8 is
-**not done**. Historical evidence below is not candidate acceptance.
+Current sections are the **v0.3.0 release guide**.
+Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
+remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
+with this limitation disclosed, not with native PASS or epic completion.
+Historical evidence below does not qualify v0.3.0.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-Existing `dom` aliases that fetch `main/domestique.sh` still receive the
-**published version**, not the new defaults, flags or `dom-models` command.
-They receive changes on their next invocation after release to main. Nothing
+Existing `dom` aliases that fetch `main/domestique.sh` receive v0.3.0's new
+defaults, flags and `dom-models` command on their next invocation after release
+to main, without an alias change. Nothing
 updates in the background; publishing only a tag does not change those aliases.
 Run from the intended project root; the optional positional argument is the
 target directory. Bash, Git and Python 3.11+ cover the all-three path.
@@ -33,7 +34,8 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-To try this candidate, check out its reviewed source and run **locally**:
+A source checkout is optional; the new features are also available through
+remote `dom` after release. To inspect reviewed source locally:
 
 ```sh
 TARGET=$(mktemp -d)
@@ -46,8 +48,15 @@ bash ./domestique.sh "$TARGET" --platform copilot --model copilot:implementer=in
 bash ./domestique.sh "$TARGET" --platform both --model claude:implementer=opus --model=codex:reviewer=inherit --dry-run
 ```
 
-Do not test candidate features through remote main. Pinning older script bytes
-does not reverse migrated project state.
+The same model options work with `dom` from the target project root:
+
+```sh
+dom --platform both --model claude:implementer=opus --model=codex:reviewer=inherit --dry-run
+dom --platform both --model claude:implementer=opus --model=codex:reviewer=inherit
+```
+
+Review the preview before applying. Pinning older script bytes does not reverse
+migrated project state.
 
 The version-labelled plan shows the physical target, selected providers and
 normal/guest modes before target writes. Dry-run performs no target writes;
@@ -203,7 +212,8 @@ Loading an entry alone never authorizes work;
 a goal needs an explicit request naming the epic. Fresh independent reviewer
 PASS remains required before task commit/closure. Copilot's default bound remains
 **one reviewed bead**; native `/goal` or `/autopilot` is not Domestique
-authorization. Broader authorization (hq-xc2) is separate, not shipped here.
+authorization. Broader unattended authorization (hq-xc2) remains unimplemented,
+not shipped here. Existing epic-drain bounds are unchanged.
 
 Provider snapshots live in `.claude/.domestique`, `.codex/.domestique` and
 `.github/.domestique`; shared routes are owned by `.agents/.domestique`.
@@ -415,16 +425,19 @@ That prior coverage is reused, not silently replaced by the selected
 `test/copilot-current.py`. Historical shell runners without `--current` exercise
 frozen fixtures only. Do not confuse those passes with current/native acceptance.
 
-### Candidate release handoff (unpublished)
+### v0.3.0 release status and limits
 
-- hq-c6o.2–.6 implementation reviews passed; hq-c6o.7 updates these two guides.
-  Installer help/notice already describes defaults and optional setup.
-- hq-c6o.8 must still qualify low-friction native first use and preserving
-  upgrades. Offline parser/helper checks and the historical `75b0de3` PASS do
-  **not** establish native candidate PASS. Retain both unresolved investigations.
-- Independent review and release authorization still precede any version change,
-  commit/tag/push/publication. No release version is selected here; public
-  main/remote `dom` remains v0.2.2 at `337ccf0` until release.
-- Try candidate behavior with local `bash ./domestique.sh` after checking out
-  the reviewed candidate, not remote main. After publication, the same remote
-  alias fetches the new installer; preview and pin the same bytes for apply.
+- v0.3.0 is a feature minor release: configured defaults, repeatable per-role
+  installer overrides, preserving reruns and optional native `dom-models`.
+  Existing choices, including released v0.2.2 defaults, remain pinned.
+- hq-c6o.8 remains **UNQUALIFIED pending user authorization for fixture/model usage** for native first use
+  and preserving upgrades. Offline checks and the historical `75b0de3` PASS
+  do **not** establish native v0.3.0 PASS or epic completion. Configuration,
+  actual native loading and model availability remain distinct.
+- Publication was authorized after explicit disclosure of that native-validation
+  limitation. Independent release review still precedes publication.
+  hq-7sm.17 and hq-6pf remain unresolved; hq-xc2 is unimplemented and existing
+  epic-drain/one-reviewed-bead bounds are unchanged.
+- After publication to main, the existing remote alias fetches these features.
+  Preview and pin the same bytes for apply; local source installation remains
+  an option, not a requirement.
