@@ -1,18 +1,23 @@
 # Standalone: install, upgrade and recovery
 
-Current sections are the **v0.3.0 release guide**.
+Current sections are the **v0.3.1 release guide**: explicit parent Git approval
+bypasses Beads/model gates, not native permissions, scope or guest privacy.
+It grants no automatic drain, push or merge authority. Model defaults and
+optional setup were introduced in v0.3.0.
 Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
-Historical evidence below does not qualify v0.3.0.
+Validation is instruction-level/filesystem-only, not new native UX qualification.
+Historical evidence below does not qualify v0.3.1.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-Existing `dom` aliases that fetch `main/domestique.sh` receive v0.3.0's new
-defaults, flags and `dom-models` command on their next invocation after release
-to main, without an alias change. Nothing
+Existing `dom` aliases that fetch `main/domestique.sh` receive v0.3.1's Git
+approval fix on their next invocation, without an alias change.
+Preview with `dom --dry-run`, then run `dom`; refresh cached native instructions
+if needed. Nothing
 updates in the background; publishing only a tag does not change those aliases.
 Run from the intended project root; the optional positional argument is the
 target directory. Bash, Git and Python 3.11+ cover the all-three path.
@@ -35,7 +40,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 ```
 
 A source checkout is optional; the new features are also available through
-remote `dom` after release. To inspect reviewed source locally:
+remote `dom`. To inspect reviewed source locally:
 
 ```sh
 TARGET=$(mktemp -d)

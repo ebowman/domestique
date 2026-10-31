@@ -7,9 +7,12 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.3.0: model defaults and optional setup
+## v0.3.1: explicit parent Git approval
 
-v0.3.0 adds ready-to-use defaults and optional model commands.
+v0.3.1 fixes recognition of explicit parent Git approval, including “go ahead”
+for a concrete proposal, without a Beads/model gate. Normal native permissions,
+scope and guest privacy remain intact; no automatic drain, push or merge authority.
+v0.3.0 introduced ready-to-use defaults and optional model commands.
 Implementation reviews hq-c6o.2–.6 passed, but **native qualification hq-c6o.8
 remains UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized with
 that limitation disclosed; this is not native PASS or epic completion.
@@ -36,8 +39,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-The existing alias fetches v0.3.0's new features once the release is published
-to `main`; no alias change is needed:
+The existing alias fetches v0.3.1 from `main`; no alias change is needed:
 
 ```sh
 alias dom='curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s --'
@@ -57,14 +59,14 @@ curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.
 
 `main` is a **moving channel**: its next invocation downloads whatever is
 published there. There is no background auto-update; a tag alone does not update
-main or an alias. No alias change is needed after release.
+main or an alias. Refresh cached native instructions if needed after upgrading.
 For repeatable dry-run/apply, replace `main` in **both** commands with the same
 full reviewed published commit SHA. Pinning script bytes does not reverse
 migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional, not required for the new features after release.
+A source checkout is optional, not required for these features.
 To inspect reviewed source locally, run from that checkout against a disposable
 Git project:
 
