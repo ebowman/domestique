@@ -1,5 +1,6 @@
 """Installed shared emitter: filesystem guarantees, never native qualification."""
 import copy
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
@@ -91,6 +92,366 @@ class ModelSetup(unittest.TestCase):
         namespace = {"__file__": str(helper), "__name__": "tested_helper"}
         exec(compile(helper.read_bytes(), str(helper), "exec"), namespace)
         return namespace
+
+    @contextmanager
+    def installer(self, root, provider, upgrade=None):
+        # Load trusted emitted code from the installer fixture, NOT target code.
+        module = self.namespace(self.seed, provider)
+        cwd = Path.cwd()
+        os.chdir(root)
+        try:
+            layout = module["Pair"](installed=False)
+            pristine = {p: (self.seed / p).read_bytes() for p in layout.files}
+            manifest = module["Pair"].inventory(layout, pristine[layout.manifest])
+            old_files = manifest["files"].replace("," + layout.helper, "")
+            recognized = {(manifest["domestique_version"], files)
+                          for files in (manifest["files"], old_files)}
+            if upgrade:
+                for role, rel in layout.paths.items():
+                    pristine[rel] = upgrade(module, role, pristine[rel])
+                    pristine[f"{layout.state}/base/{rel}"] = pristine[rel]
+
+            def merge(local, base, upstream):
+                # Exercise real preserving diff3 in external operation scratch.
+                with tempfile.TemporaryDirectory(dir=self.area) as scratch:
+                    paths = [Path(scratch) / name for name in ("local", "base", "upstream")]
+                    for path, data in zip(paths, (local, base, upstream)):
+                        path.write_bytes(data)
+                    result = subprocess.run(["git", "merge-file", "-p", "--diff3", *map(str, paths)],
+                                            capture_output=True, env=self.env)
+                    if result.returncode:
+                        raise ValueError("native preserving merge conflict")
+                    return result.stdout
+
+            def validate(role, base, live, candidate):
+                # Real native parsing and guard checks; .4 supplies its existing
+                # full guard/migration validation, not a success-shaped stub.
+                for data in (base, live, candidate):
+                    _, fields, _ = module["parse"](data, role)
+                    body = (fields["developer_instructions"] if provider == "codex"
+                            else module["split_marker"](data, role)[0].split("---", 2)[2])
+                    required = (("These instructions apply only in the actual native Codex client; foreign or",
+                                 "ambiguous callers stop without work. Installed directories do not identify it.")
+                                if provider == "codex" else
+                                (f"## Active harness boundary ({provider} only)",
+                                 f"These instructions apply only to the native `{provider}` client.",
+                                 "An explicit foreign-harness invocation must STOP"))
+                    if not all(text in body for text in required):
+                        raise ValueError("unsafe native guard")
+            yield module, module["InstallerPair"](pristine, recognized, merge, validate)
+        finally:
+            os.chdir(cwd)
+
+    def test_installer_fresh_defaults_inheritance_and_absent_binding(self):
+        defaults = {
+            "claude": ("sonnet", "opus"), "codex": ("gpt-5.6-sol", "gpt-5.6-terra"),
+            "copilot": (None, None),
+        }
+        for provider in PROVIDERS:
+            for override in ({}, {"reviewer": None}, {"implementer": 'model/α-"quoted"\\exact=a:b'}):
+                with self.subTest(provider=provider, override=override):
+                    root = self.project()
+                    shutil.rmtree(root / PROVIDERS[provider])
+                    with self.installer(root, provider) as (module, pair):
+                        before = CURRENT.snapshot(root)
+                        prepared = pair.prepare(override)
+                        self.assertEqual(before, CURRENT.snapshot(root))
+                        self.assertEqual(prepared["plan"]["eligibility"], "fresh")
+                        self.assertTrue(all(v is None for v in prepared["plan"]["snapshot"]["files"].values()))
+                        result = pair.apply(**prepared)
+                        self.assertTrue(result["configured"])
+                        self.assertFalse(result["native_ready"])
+                        for role, model in zip(("implementer", "reviewer"), defaults[provider]):
+                            wanted = override.get(role, model)
+                            if provider == "claude" and wanted is None:
+                                wanted = "inherit"
+                            self.assertEqual(result["selected"][role]["model"], wanted)
+                            effort = ({"implementer": "medium", "reviewer": "high"}[role]
+                                      if provider == "codex" and role not in override else None)
+                            self.assertEqual(result["selected"][role]["effort"], effort)
+                        # Final pair really verifies using the installed helper.
+                        installed_module = self.namespace(root, provider)
+                        installed = installed_module["Pair"]()
+                        _, contents = installed.snapshot()
+                        self.assertTrue(installed_module["verify"](installed, contents)["confirmed"])
+                    with self.installer(root, provider) as (_, pair):
+                        before = CURRENT.snapshot(root)
+                        inodes = {r: p.stat().st_ino for r, p in self.roles(root, provider).items()}
+                        result = pair.apply(**pair.prepare({}))
+                        self.assertEqual(result["published"], [])
+                        self.assertEqual(before, CURRENT.snapshot(root))
+                        self.assertEqual(inodes, {r: p.stat().st_ino for r, p in self.roles(root, provider).items()})
+
+    def test_installer_confirmed_exact_partial_override_and_upstream_defaults(self):
+        for provider in PROVIDERS:
+            root = self.project()
+            roles = self.roles(root, provider)
+            # Keep local==old pristine settings; even these are pinned on upgrade.
+            with self.installer(root, provider) as (_, pair):
+                self.assertEqual(pair.prepare({})["plan"]["eligibility"], "legacy")
+                pair.apply(**pair.prepare({}))
+            old = self.call(root, provider, "verify")["selected"]
+
+            def upgrade(module, role, data):
+                data = module["patch"](data, role, {"model": "new-upstream", "effort": None})
+                return data + b"\n# reviewed upstream addition\n"
+
+            with self.installer(root, provider, upgrade) as (module, pair):
+                result = pair.apply(**pair.prepare({}))
+                self.assertEqual(result["selected"], old)
+                for role, path in roles.items():
+                    self.assertIn(b"# reviewed upstream addition", path.read_bytes())
+                    base = root / f"{pair.state}/base/{pair.paths[role]}"
+                    self.assertEqual(module["parse"](base.read_bytes(), role)[1]["model"], "new-upstream")
+                    self.assertNotIn(module["MARKER"].encode(), base.read_bytes())
+                before = CURRENT.snapshot(root)
+                self.assertEqual(pair.apply(**pair.prepare({}))["published"], [])
+                self.assertEqual(before, CURRENT.snapshot(root))
+            # A later native Save can confirm custom bodies and exact scalar spelling.
+            data = roles["implementer"].read_bytes()
+            module = self.namespace(root, provider)
+            bare = module["split_marker"](data, "implementer")[0]
+            if provider == "codex":
+                bare = bare.replace('model_reasoning_effort = "medium"',
+                                    "model_reasoning_effort = 'medium'  # pinned effort")
+            elif provider == "claude":
+                bare = bare.replace("model: sonnet", "model: 'sonnet'  # pinned model")
+                bare = bare.replace("---\n", "---\neffort: 'high'  # pinned effort\n", 1)
+            roles["implementer"].write_bytes(bare.replace("\n", "\r\n").encode())
+            roles["reviewer"].write_bytes(roles["reviewer"].read_bytes() + b"\n# approved custom body\n")
+            current = self.call(root, provider, "verify")["selected"]
+            self.apply(root, provider, self.call(root, provider, "prepare", current))
+            with self.installer(root, provider, upgrade) as (module, pair):
+                original = {r: p.read_bytes() for r, p in roles.items()}
+                inodes = {r: p.stat().st_ino for r, p in roles.items()}
+                same = current["implementer"]["model"]
+                if same == "inherit":
+                    same = None
+                pair.apply(**pair.prepare({"implementer": same}))
+                self.assertEqual(original, {r: p.read_bytes() for r, p in roles.items()})
+                self.assertEqual(inodes, {r: p.stat().st_ino for r, p in roles.items()})
+                result = pair.apply(**pair.prepare({"implementer": "different"}))
+                self.assertEqual(result["selected"]["implementer"]["effort"], current["implementer"]["effort"])
+                self.assertEqual(roles["reviewer"].read_bytes(), original["reviewer"])
+                self.assertEqual(roles["reviewer"].stat().st_ino, inodes["reviewer"])
+                expected = module["patch"](original["implementer"], "implementer",
+                                           {"model": "different"}, model_only=True)
+                self.assertEqual(module["split_marker"](roles["implementer"].read_bytes(), "implementer")[0].encode(),
+                                 expected)
+                inherited = pair.apply(**pair.prepare({"implementer": None}))
+                self.assertEqual(inherited["selected"]["implementer"]["effort"],
+                                 current["implementer"]["effort"])
+
+    def test_installer_legacy_inventory_vs_damaged_authority(self):
+        for provider in PROVIDERS:
+            for defect in ("legacy", "legacy-custom", "claimed-helper", "base", "unknown",
+                           "symlink", "malformed-helper", "guard"):
+                with self.subTest(provider=provider, defect=defect):
+                    root = self.project()
+                    with self.installer(root, provider) as (module, pair):
+                        if defect.startswith("legacy"):
+                            (root / pair.helper).unlink()
+                            (root / f"{pair.state}/base/{pair.helper}").unlink()
+                            manifest = root / pair.manifest
+                            manifest.write_text(manifest.read_text().replace("," + pair.helper, ""))
+                            role = root / pair.paths["implementer"]
+                            role.write_bytes(module["patch"](role.read_bytes(), "implementer",
+                                             {"model": "legacy-choice", "effort": None}))
+                            if defect == "legacy-custom":
+                                role.write_bytes(role.read_bytes() + b"\n# custom body\n")
+                        elif defect == "claimed-helper":
+                            (root / pair.helper).unlink()
+                        elif defect == "base":
+                            (root / f"{pair.state}/base/{pair.paths['reviewer']}").unlink()
+                        elif defect == "unknown":
+                            path = root / pair.manifest
+                            path.write_text(path.read_text().replace("domestique_version=", "unknown_version="))
+                        elif defect == "symlink":
+                            path = root / pair.paths["reviewer"]
+                            path.unlink()
+                            path.symlink_to(root / pair.paths["implementer"])
+                        elif defect == "malformed-helper":
+                            for rel in (pair.helper, f"{pair.state}/base/{pair.helper}"):
+                                (root / rel).write_bytes(b"invalid python !\n")
+                        else:
+                            path = root / pair.paths["reviewer"]
+                            guard = (b"These instructions apply only in the actual native Codex client"
+                                     if provider == "codex" else b"An explicit foreign-harness")
+                            path.write_bytes(path.read_bytes().replace(guard, b"Removed"))
+                        before = CURRENT.snapshot(root)
+                        if not defect.startswith("legacy"):
+                            with self.assertRaises(ValueError):
+                                pair.prepare({})
+                            self.assertEqual(before, CURRENT.snapshot(root))
+                        else:
+                            prepared = pair.prepare({})
+                            self.assertEqual(before, CURRENT.snapshot(root))
+                            result = pair.apply(**prepared)
+                            self.assertEqual(result["configured"], defect == "legacy")
+                            self.assertEqual(result["selected"]["implementer"]["model"], "legacy-choice")
+                            if defect == "legacy-custom":
+                                self.assertEqual(result["outcome"], "reconfirmation-required")
+                                self.assertIn(b"# custom body", (root / pair.paths["implementer"]).read_bytes())
+
+    def test_installer_stale_copied_and_partial_never_approve(self):
+        for provider in PROVIDERS:
+            for defect in ("body", "model", "copied", "partial"):
+                with self.subTest(provider=provider, defect=defect):
+                    root = self.project()
+                    with self.installer(root, provider) as (_, pair):
+                        pair.apply(**pair.prepare({}))
+                    if defect == "copied":
+                        destination = self.area / f"copy-{provider}"
+                        shutil.copytree(root, destination)
+                        root = destination
+                    else:
+                        path = self.roles(root, provider)["reviewer"]
+                        if defect == "partial":
+                            path.unlink()
+                        elif defect == "body":
+                            path.write_bytes(path.read_bytes() + b"\n# unreviewed edit\n")
+                        else:
+                            module = self.namespace(root, provider)
+                            path.write_bytes(module["patch"](path.read_bytes(), "reviewer",
+                                                            {"model": "manual"}, model_only=True))
+                    with self.installer(root, provider) as (_, pair):
+                        before = CURRENT.snapshot(root)
+                        with self.assertRaisesRegex(ValueError, "partial owned pair" if defect == "partial"
+                                                    else "unconfirmed pair"):
+                            pair.prepare({"implementer": "new"})
+                        self.assertEqual(before, CURRENT.snapshot(root))
+                        if defect == "partial":
+                            with self.assertRaises(ValueError) as raised:
+                                pair.prepare({})
+                            result = json.loads(str(raised.exception))
+                            self.assertFalse(result["configured"])
+                            self.assertEqual(result["outcome"], "repair-required")
+                            self.assertEqual(before, CURRENT.snapshot(root))
+                            continue
+                        prepared = pair.prepare({})
+                        self.assertEqual(prepared["plan"]["eligibility"], "stale")
+                        result = pair.apply(**prepared)
+                        self.assertFalse(result["configured"])
+                        if defect != "partial":
+                            self.assertEqual(before, CURRENT.snapshot(root))
+                    self.assertFalse(self.call(root, provider, "verify")["confirmed"])
+
+    def test_installer_unreviewed_body_cannot_become_pristine_on_rerun(self):
+        for provider in PROVIDERS:
+            root = self.project()
+            roles = self.roles(root, provider)
+            for path in roles.values():
+                path.write_bytes(path.read_bytes() + b"\n# future upstream body\n")
+
+            def upgrade(module, role, data):
+                return data + b"\n# future upstream body\n"
+
+            with self.installer(root, provider, upgrade) as (_, pair):
+                bases = {p: (root / p).read_bytes() for p in pair.files if "/base/" in p}
+                for _ in range(2):
+                    prepared = pair.prepare({})
+                    self.assertEqual(prepared["plan"]["eligibility"], "custom-unconfirmed")
+                    self.assertFalse(pair.apply(**prepared)["configured"])
+                for path, data in bases.items():
+                    self.assertEqual((root / path).read_bytes(), data)
+
+    def test_installer_tamper_races_and_partial_publication(self):
+        for provider in PROVIDERS:
+            for defect in ("plan", "absent", "parent", "reviewer", "marker", "temporary"):
+                with self.subTest(provider=provider, defect=defect):
+                    root = self.project()
+                    if defect in ("absent", "parent"):
+                        shutil.rmtree(root / PROVIDERS[provider])
+                    with self.installer(root, provider) as (_, pair):
+                        prepared = pair.prepare({"reviewer": "installed-choice"})
+                        if defect == "plan":
+                            prepared["plan"]["outputs"][pair.paths["reviewer"]] = "0" * 64
+                            # Recomputed digest does NOT authorize a body substitution.
+                            prepared["digest"] = __import__("hashlib").sha256(
+                                json.dumps(prepared["plan"], sort_keys=True, ensure_ascii=False,
+                                           separators=(",", ":")).encode()).hexdigest()
+                        elif defect in ("absent", "parent"):
+                            directory = root / PROVIDERS[provider]
+                            directory.mkdir()
+                            if defect == "absent":
+                                directory.joinpath("agents").mkdir()
+                                (root / pair.paths["reviewer"]).write_bytes(b"unowned competing file\n")
+                        real_replace, real_mkstemp = os.replace, tempfile.mkstemp
+                        replaced = []
+
+                        def replace(src, dest):
+                            target = pair.paths["reviewer" if defect == "reviewer" else "implementer"]
+                            if defect in ("reviewer", "marker") and str(dest) == str(root / target):
+                                raise OSError("injected installer publication failure")
+                            replaced.append(str(dest))
+                            return real_replace(src, dest)
+
+                        def mkstemp(*args, **kwargs):
+                            fd, name = real_mkstemp(*args, **kwargs)
+                            if defect == "temporary":
+                                path = root / pair.paths["reviewer"]
+                                path.write_bytes(path.read_bytes() + b"\n# competing write\n")
+                            return fd, name
+
+                        before = CURRENT.snapshot(root)
+                        with patch.object(os, "replace", replace), patch.object(tempfile, "mkstemp", mkstemp):
+                            with self.assertRaises(ValueError) as raised:
+                                pair.apply(**prepared)
+                        if defect in ("plan", "absent", "parent"):
+                            self.assertEqual(before, CURRENT.snapshot(root))
+                        else:
+                            error = json.loads(str(raised.exception))
+                            self.assertEqual(error["published"], [str(Path(p).relative_to(root)) for p in replaced])
+                            self.assertFalse(error["workflow_authorized"])
+                            self.assertFalse(self.call(root, provider, "verify")["confirmed"])
+                        self.assertFalse(list(root.rglob(".domestique-model-setup-*")))
+
+    def test_installer_plan_cannot_enter_native_apply(self):
+        for provider in PROVIDERS:
+            root = self.project()
+            with self.installer(root, provider) as (_, pair):
+                prepared = pair.prepare({})
+            before = CURRENT.snapshot(root)
+            self.apply(root, provider, prepared, ok=False)
+            self.call(root, provider, "installer-apply", prepared["digest"], prepared["plan"], ok=False)
+            self.assertEqual(before, CURRENT.snapshot(root))
+
+    def test_installer_invalidation_precedes_dependency_and_pair_changes(self):
+        for provider in PROVIDERS:
+            for failure in ("base", "reviewer", "marker"):
+                with self.subTest(provider=provider, failure=failure):
+                    root = self.project()
+                    with self.installer(root, provider) as (_, pair):
+                        pair.apply(**pair.prepare({}))
+
+                    def upgrade(module, role, data):
+                        return data + b"\n# reviewed body upgrade\n"
+
+                    with self.installer(root, provider, upgrade) as (module, pair):
+                        prepared = pair.prepare({})
+                        original_replace, stages = os.replace, []
+
+                        def replace(src, dest):
+                            rel = str(Path(dest).relative_to(root))
+                            data = Path(src).read_bytes()
+                            if (failure == "base" and "/base/" in rel or
+                                    failure == "reviewer" and rel == pair.paths["reviewer"] or
+                                    failure == "marker" and module["MARKER"].encode() in data):
+                                raise OSError("injected failure after marker invalidation")
+                            stages.append((rel, data))
+                            return original_replace(src, dest)
+
+                        with patch.object(os, "replace", replace):
+                            with self.assertRaises(ValueError) as raised:
+                                pair.apply(**prepared)
+                        error = json.loads(str(raised.exception))
+                        self.assertTrue(error["partial"])
+                        self.assertEqual(stages[0][0], pair.paths["implementer"])
+                        self.assertNotIn(module["MARKER"].encode(), stages[0][1])
+                        self.assertFalse(self.call(root, provider, "verify")["confirmed"])
+                        with self.assertRaisesRegex(ValueError, "must prepare"):
+                            pair.apply(**prepared)
+                        self.assertFalse(list(root.rglob(".domestique-model-setup-*")))
 
     def test_planning_routes_bypass_setup_at_every_entry_layer(self):
         # Emitted protocol checks, not a simulation of native assistant behavior.

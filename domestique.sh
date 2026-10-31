@@ -203,6 +203,7 @@ emit_model_setup_helper() {
   printf 'HARNESS = "%s"\n' "$CURRENT_PROVIDER"
   cat <<'PY'
 """Bounded filesystem-only model-pair editor. Native consent is external."""
+import ast
 import difflib
 import hashlib
 import json
@@ -273,16 +274,13 @@ def metadata(info):
 
 
 class Pair:
-    def __init__(self):
+    def __init__(self, *, installed=True):
         self.root = Path.cwd()
         need(all(unicodedata.category(c)[0] != "C" and c not in "\u2028\u2029" for c in str(self.root)),
              "unsafe root characters")
-        gitroot = subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")
-        need(str(self.root) == gitroot and self.root.resolve() == self.root,
-             "invoke at physical Git worktree root")
+        self.check_root()
         self.helper = f"{DIRECTORY}/domestique-model-setup.py"
-        need(Path(__file__) == self.root / self.helper, "helper location/root mismatch")
+        need(not installed or Path(__file__) == self.root / self.helper, "helper location/root mismatch")
         self.paths = {
             role: (f"{DIRECTORY}/agents/{role}.toml" if HARNESS == "codex" else
                    f"{DIRECTORY}/agents/domestique-v2-copilot-{role}.agent.md"
@@ -295,11 +293,20 @@ class Pair:
                       *(f"{self.state}/base/{p}" for p in self.paths.values()),
                       self.helper, f"{self.state}/base/{self.helper}"]
 
-    def snapshot(self):
+    def check_root(self):
+        gitroot = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], text=True).rstrip("\n")
+        need(Path.cwd() == self.root and str(self.root) == gitroot and
+             self.root.resolve() == self.root, "invoke at physical Git worktree root")
+
+    def read_snapshot(self, *, absent=False):
         records, contents, parents = {}, {}, {}
         for rel in self.files:
             path = self.root / rel
             for parent in reversed(path.parents):
+                if absent and not parent.exists() and not parent.is_symlink():
+                    parents[str(parent)] = None
+                    continue
                 info = parent.lstat()
                 need(stat.S_ISDIR(info.st_mode), f"unsafe directory: {parent}")
                 if parent == self.root or self.root in parent.parents:
@@ -309,6 +316,9 @@ class Pair:
                 # operation-owned temporary changes it. Bind identity/mode/
                 # ownership, not a filesystem-dependent child count.
                 parents[str(parent)] = [info.st_dev, info.st_ino, info.st_mode, info.st_uid]
+            if absent and not path.exists() and not path.is_symlink():
+                records[rel], contents[rel] = None, None
+                continue
             info = path.lstat()
             need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and
                  info.st_size <= LIMIT and info.st_mode & 0o444 and
@@ -325,10 +335,48 @@ class Pair:
                 os.close(fd)
             records[rel] = metadata(info) + [sha(data)]
             contents[rel] = data
+        return {"files": records, "parents": parents}, contents
+
+    def snapshot(self):
+        snapshot, contents = self.read_snapshot()
+        self.validate_contents(contents)
+        return snapshot, contents
+
+    def validate_contents(self, contents, *, legacy=False, partial=False):
+        manifest = self.inventory(contents[self.manifest])
+        inventory = manifest["files"].split(",")
+        need(all(p in inventory for p in self.paths.values()) and
+             (legacy or self.helper in inventory),
+             "incomplete/unsafe inventory; preserving installer upgrade required")
+        if legacy:
+            need(self.helper not in inventory and contents[self.helper] is None and
+                 contents[f"{self.state}/base/{self.helper}"] is None,
+                 "unowned legacy helper")
+        else:
+            need(contents[self.helper] is not None, "missing claimed helper")
+            need(contents[f"{self.state}/base/{self.helper}"] is not None,
+                 "missing claimed helper base")
+            self.validate_helper(contents)
+        for role in ROLES:
+            if contents[self.paths[role]] is not None or not partial:
+                parse(contents[self.paths[role]], role)
+            base = contents[f"{self.state}/base/{self.paths[role]}"]
+            need(base is not None, "missing required role base")
+            _, _, marker = parse(base, role)
+            need(marker is None, "pristine base must not confirm a pair")
+
+    def validate_helper(self, contents):
         need(contents[self.helper] == contents[f"{self.state}/base/{self.helper}"],
              "modified helper; explicit installer repair required")
+        try:
+            ast.parse(contents[self.helper], filename=self.helper)
+        except SyntaxError as exc:
+            raise ValueError("malformed helper") from exc
+
+    def inventory(self, data):
+        need(type(data) is bytes, "missing manifest")
         manifest = {}
-        for line in contents[self.manifest].decode("utf-8").splitlines():
+        for line in data.decode("utf-8").splitlines():
             key, sep, value = line.partition("=")
             need(sep and key not in manifest and re.fullmatch("[a-z_][a-z_0-9]*", key),
                  "ambiguous manifest")
@@ -339,14 +387,8 @@ class Pair:
         need(len(inventory) == len(set(inventory)) and
              all(p and not p.startswith("/") and ".." not in p.split("/")
                  and not any(unicodedata.category(c)[0] == "C" for c in p)
-                 for p in inventory) and
-             all(p in inventory for p in (*self.paths.values(), self.helper)),
-             "incomplete/unsafe inventory; preserving installer upgrade required")
-        for role in ROLES:
-            parse(contents[self.paths[role]], role)
-            _, _, marker = parse(contents[f"{self.state}/base/{self.paths[role]}"], role)
-            need(marker is None, "pristine base must not confirm a pair")
-        return {"files": records, "parents": parents}, contents
+                 for p in inventory), "incomplete/unsafe inventory; preserving installer upgrade required")
+        return manifest
 
     def publication_writable(self):
         # Only apply, in the consented/protected-write-approved context, checks
@@ -479,13 +521,13 @@ def parse(data, role):
     return (lines, newline, insertion, spans), fields, marker
 
 
-def patch(data, role, choice):
+def patch(data, role, choice, *, model_only=False):
     (lines, newline, insertion, spans), fields, _ = parse(data, role)
     effort = "model_reasoning_effort" if HARNESS == "codex" else "effort"
     selected = {"model": choice["model"]}
     if HARNESS == "claude" and selected["model"] is None:
         selected["model"] = "inherit"
-    if HARNESS != "copilot":
+    if HARNESS != "copilot" and not model_only:
         selected[effort] = choice["effort"]
     additions = []
     for key, value in selected.items():
@@ -516,24 +558,33 @@ def patch(data, role, choice):
 
 def build(pair, selected, snapshot, contents):
     outputs = {r: patch(contents[pair.paths[r]], r, selected[r]) for r in ROLES}
+    mark_outputs(pair, outputs)
+    diff = pair_diff(pair, contents, outputs)
+    plan = {"v": 1, "root": str(pair.root), "harness": HARNESS,
+            "choices": selected, "snapshot": snapshot, "diff": diff}
+    return plan, outputs
+
+
+def mark_outputs(pair, outputs):
     marker = {"v": 1, "project": str(pair.root), "harness": HARNESS,
               **{r + "_sha256": sha(outputs[r]) for r in ROLES}}
     lines = outputs["implementer"].splitlines(keepends=True)
     newline = b"\r\n" if b"\r\n" in outputs["implementer"] else b"\n"
     lines.insert(0 if HARNESS == "codex" else 1, MARKER.encode() + b" " + canonical(marker) + newline)
     outputs["implementer"] = b"".join(lines)
-    diff = ""
-    for role in ROLES:
-        rel = pair.paths[role]
-        # Explicit no-final-newline annotation, never hide that byte distinction.
-        chunks = difflib.unified_diff(contents[rel].decode().splitlines(keepends=True),
-                                     outputs[role].decode().splitlines(keepends=True),
-                                     fromfile="a/" + rel, tofile="b/" + rel)
-        for line in chunks:
-            diff += line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
-    plan = {"v": 1, "root": str(pair.root), "harness": HARNESS,
-            "choices": selected, "snapshot": snapshot, "diff": diff}
-    return plan, outputs
+
+
+def pair_diff(pair, contents, outputs):
+    return "".join(file_diff(pair.paths[r], contents[pair.paths[r]], outputs[r]) for r in ROLES)
+
+
+def file_diff(rel, before, after):
+    chunks = difflib.unified_diff((before or b"").decode().splitlines(keepends=True),
+                                 after.decode().splitlines(keepends=True),
+                                 fromfile="a/" + rel, tofile="b/" + rel)
+    # Explicit no-final-newline annotation, never hide that byte distinction.
+    return "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                   for line in chunks)
 
 
 def verify(pair, contents):
@@ -567,23 +618,43 @@ def publish(pair, plan, digest):
     pair.publication_writable()
     # A plan cannot be replayed after successful publication: even reconfirmation
     # replaces the implementer inode. No registry/receipt is needed.
-    owned, changed = {}, []
+    return publish_outputs(pair, expected, contents, outputs)
+
+
+def publish_outputs(pair, expected, contents, outputs, *, dependencies=None, configured=True):
+    """One publication engine; installer dependencies precede the final marker."""
+    owned, changed, made = {}, [], []
     try:
-        bare, _ = split_marker(contents[pair.paths["implementer"]], "implementer")
+        original = contents[pair.paths["implementer"]]
+        bare = split_marker(original, "implementer")[0].encode() if original else None
         stages = []
-        if bare.encode() != contents[pair.paths["implementer"]]:
-            stages.append(("implementer", bare.encode()))
-        stages += [(r, outputs[r]) for r in ("reviewer", "implementer")]
-        for role, data in stages:
+        pair_changed = any(contents[pair.paths[r]] != outputs[r] for r in ROLES)
+        if bare != original and (dependencies is None or pair_changed):
+            stages.append((pair.paths["implementer"], bare))
+        stages += list((dependencies or {}).items())
+        stages += [(pair.paths[r], outputs[r]) for r in ("reviewer", "implementer")]
+        for rel, data in stages:
+            if dependencies is not None and contents[rel] == data:
+                continue
             current, _ = pair.snapshot()
             need(current == expected, "prepublication state changed")
             pair.publication_writable()
-            path = pair.root / pair.paths[role]
+            path = pair.root / rel
+            for parent in reversed(path.parents):
+                if str(parent) in expected["parents"] and expected["parents"][str(parent)] is None:
+                    current, _ = pair.snapshot()
+                    need(current == expected, "prepublication directory state changed")
+                    parent.mkdir(mode=0o755)
+                    made.append(str(parent))
+                    info = parent.lstat()
+                    expected["parents"][str(parent)] = [
+                        info.st_dev, info.st_ino, info.st_mode, info.st_uid]
             fd, name = tempfile.mkstemp(prefix=".domestique-model-setup-", dir=path.parent)
             temp = Path(name)
             try:
                 owned[temp] = (metadata(os.fstat(fd)), b"")
-                os.fchmod(fd, stat.S_IMODE(expected["files"][pair.paths[role]][2]))
+                record = expected["files"][rel]
+                os.fchmod(fd, stat.S_IMODE(record[2]) if record else 0o644)
                 owned[temp] = (metadata(os.fstat(fd)), b"")
                 with os.fdopen(fd, "wb", closefd=False) as stream:
                     stream.write(data)
@@ -599,18 +670,25 @@ def publish(pair, plan, digest):
             pair.publication_writable()
             os.replace(temp, path)
             del owned[temp]
-            changed.append(pair.paths[role])
-            expected["files"][pair.paths[role]] = info + [sha(data)]
+            changed.append(rel)
+            contents[rel] = data
+            expected["files"][rel] = info + [sha(data)]
         current, contents = pair.snapshot()
         need(current == expected and all(contents[pair.paths[r]] == outputs[r] for r in ROLES),
              "postpublication state changed")
         result = verify(pair, contents)
-        need(result["confirmed"], "postpublication marker invalid")
+        pair.validate_contents(contents)
+        need(result["confirmed"] == configured, "postpublication marker invalid")
+        if dependencies is not None:
+            result.update(configured=configured, native_ready=False,
+                          outcome="configured" if configured else "reconfirmation-required",
+                          published=changed)
         return result
     except (OSError, ValueError) as exc:
         raise ValueError(json.dumps({
-            "scope": "filesystem-only", "error": str(exc), "partial": bool(changed),
+            "scope": "filesystem-only", "error": str(exc), "partial": bool(changed or made),
             "published": changed, "workflow_authorized": False,
+            "created_directories": made,
             "recovery": "No rollback. Inspect current pair; prepare/summarize and obtain new consent.",
             "operation_temporaries": [str(p) for p in owned],
         })) from exc
@@ -626,6 +704,215 @@ def publish(pair, plan, digest):
                 pass
             except OSError as exc:
                 print(f"Retained temporary {path}: {exc}", file=sys.stderr)
+
+
+def project_settings(data, role):
+    """Nonselection merge view; scalar lines (including comments) remain local."""
+    (lines, _, _, spans), _, _ = parse(data, role)
+    indices = {span[0] for span in spans.values()}
+    return "".join(line for i, line in enumerate(lines) if i not in indices).encode()
+
+
+def restore_settings(local, merged, role):
+    """Reinsert exact local scalar lines at unambiguous unchanged boundaries."""
+    (lines, _, _, spans), _, _ = parse(local, role)
+    indices = {span[0] for span in spans.values()}
+    old = [line for i, line in enumerate(lines) if i not in indices]
+    new = merged.decode("utf-8").splitlines(keepends=True)
+    boundaries = {}
+    for tag, a, b, c, d in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag == "equal":
+            for offset in range(b - a + 1):
+                boundaries.setdefault(a + offset, set()).add(c + offset)
+    additions, offset = {}, 0
+    for i, line in enumerate(lines):
+        if i in indices:
+            targets = {0} if offset == 0 else boundaries.get(offset, set())
+            need(len(targets) == 1, "selection boundary changed; preserving merge requires review")
+            additions.setdefault(next(iter(targets)), []).append(line)
+        else:
+            offset += 1
+    for index in sorted(additions, reverse=True):
+        new[index:index] = additions[index]
+    result = "".join(new).encode()
+    need(project_settings(result, role) == merged, "selection restoration changed body")
+    return result
+
+
+class InstallerPair(Pair):
+    """Trusted installer library interface ONLY; deliberately absent from main().
+
+    .4 must load its own emitted helper (not execute an unvalidated live helper),
+    authorize the requested provider/overrides and preflight the WHOLE lifecycle.
+    Supply seven pristine emitter outputs, recognized (version, files) inventory
+    signatures, the existing preserving merge(local, base, upstream) callback,
+    and native guard validation(role, base, live, candidate). Callbacks must raise
+    on conflicts/unsafe guards; no runtime plan supplies code or replacement bodies.
+
+    prepare(overrides) is read-only, including absent files/directories. Keep this
+    object and its returned digest in the trusted installer; apply(plan, digest)
+    accepts ONLY that prepared plan. It publishes only these seven helper-owned
+    paths, not the entire inventory. .4 owns other inventory/lifecycle publication
+    and global success. Reconfirmation-required is explicitly NOT global success.
+    Partial owned pairs refuse without repair: .4 must coordinate repair with
+    explicit reconfirmation. Restoring an absent-marker pair here would erase its
+    partial-state evidence and let a subsequent rerun mistake it for legacy.
+    No provider readiness, CLI authorization, historical attestation or force
+    policy is inferred here. Pristine inputs must NEVER be seeded from custom live
+    bytes. Recognized inventory signatures come from reviewed installer versions,
+    not from the target's own manifest. No persistent second registry is created.
+    """
+
+    def __init__(self, pristine, recognized, merge, validate):
+        super().__init__(installed=False)
+        need(type(pristine) is dict and set(pristine) == set(self.files) and
+             all(type(v) is bytes and len(v) <= LIMIT for v in pristine.values()),
+             "complete bounded pristine install output required")
+        need(callable(merge) and callable(validate), "installer merge/guard validation required")
+        self.pristine = dict(pristine)
+        self.recognized = frozenset(recognized)
+        self.merge, self.guard = merge, validate
+        self.validate_contents(self.pristine)
+        for role, rel in self.paths.items():
+            need(pristine[rel] == pristine[f"{self.state}/base/{rel}"],
+                 "install role must be actual pristine emitter output")
+            self.guard(role, pristine[rel], pristine[rel], pristine[rel])
+        self.prepared = None
+
+    def snapshot(self):
+        return self.read_snapshot(absent=True)
+
+    def publication_writable(self):
+        for rel in self.files:
+            path = self.root / rel
+            while not path.exists():
+                path = path.parent
+            need(path.stat().st_mode & 0o222 and os.access(path, os.W_OK),
+                 f"not writable: {path}")
+            if path.is_file():
+                need(path.parent.stat().st_mode & 0o222 and os.access(path.parent, os.W_OK),
+                     f"not writable: {path.parent}")
+
+    def classify(self, contents, snapshot):
+        if all(v is None for v in contents.values()):
+            need(snapshot["parents"].get(str(self.root / self.state)) is None,
+                 "unknown existing provider authority")
+            return "fresh"
+        manifest = self.inventory(contents[self.manifest])
+        need((manifest.get("domestique_version"), manifest["files"]) in self.recognized,
+             "unknown inventory generation")
+        legacy = self.helper not in manifest["files"].split(",")
+        self.validate_contents(contents, legacy=legacy, partial=True)
+        if any(contents[p] is None for p in self.paths.values()):
+            return "partial"
+        result = verify(self, contents)
+        if result["confirmed"]:
+            need(not legacy, "legacy inventory cannot claim current confirmation")
+            return "confirmed"
+        if parse(contents[self.paths["implementer"]], "implementer")[2] is not None:
+            return "stale"
+        if all(project_settings(contents[p], r) ==
+               project_settings(contents[f"{self.state}/base/{p}"], r)
+               for r, p in self.paths.items()):
+            return "legacy"
+        return "custom-unconfirmed"
+
+    def prepare(self, overrides):
+        self.check_root()
+        need(type(overrides) is dict and set(overrides) <= set(ROLES),
+             "installer overrides name individual roles")
+        overrides = dict(overrides)
+        for value in overrides.values():
+            selection(value)
+            need(value != "inherit", "installer inheritance requires normalized null")
+        snapshot, contents = self.snapshot()
+        eligibility = self.classify(contents, snapshot)
+        need(eligibility != "partial", json.dumps({
+            "scope": "filesystem-only", "configured": False, "outcome": "repair-required",
+            "error": "partial owned pair; safe installer repair and review/Save required",
+            "partial": False, "published": [], "workflow_authorized": False,
+        }))
+        qualified = eligibility in ("fresh", "confirmed", "legacy")
+        need(qualified or not overrides,
+             "unconfirmed pair; review/Save before model override")
+        defaults = {
+            "claude": (("sonnet", None), ("opus", None)),
+            "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
+            "copilot": ((None, None), (None, None)),
+        }[HARNESS]
+        outputs = {}
+        for role, (model, effort) in zip(ROLES, defaults):
+            rel = self.paths[role]
+            local, upstream = contents[rel], self.pristine[rel]
+            base = contents[f"{self.state}/base/{rel}"]
+            if local is None:
+                selected = overrides.get(role, model)
+                outputs[role] = patch(upstream, role, {
+                    "model": selected, "effort": effort if selected == model else None})
+            elif qualified:
+                # No generic merge may decide that local==base unpins a scalar.
+                projected = [project_settings(data, role) for data in (local, base, upstream)]
+                merged = projected[0] if projected[1] == projected[2] else self.merge(*projected)
+                need(type(merged) is bytes and len(merged) <= LIMIT, "invalid preserving merge output")
+                outputs[role] = restore_settings(local, merged, role)
+                if role in overrides:
+                    current_model = parse(outputs[role], role)[1].get("model")
+                    if HARNESS == "claude" and current_model == "inherit":
+                        current_model = None
+                    if current_model != overrides[role]:
+                        outputs[role] = patch(outputs[role], role,
+                                              {"model": overrides[role]}, model_only=True)
+            else:
+                outputs[role] = local
+            self.guard(role, base or upstream, local or upstream, outputs[role])
+            parse(outputs[role], role)
+        if qualified:
+            mark_outputs(self, outputs)
+            # Preserve even noncanonical-but-valid v1 marker formatting and inode.
+            if eligibility == "confirmed" and all(
+                    split_marker(contents[self.paths[r]], r)[0] ==
+                    split_marker(outputs[r], r)[0] for r in ROLES):
+                outputs["implementer"] = contents[self.paths["implementer"]]
+        dependencies = {p: self.pristine[p] for p in self.files if p not in self.paths.values()}
+        if not qualified:
+            # No body upgrade occurred. Retain its corresponding real old base,
+            # otherwise new upstream bytes coinciding with an unreviewed custom
+            # body could silently qualify that body as legacy on the next rerun.
+            for rel in self.paths.values():
+                base = f"{self.state}/base/{rel}"
+                dependencies[base] = contents[base]
+        final = {**dependencies, **{self.paths[r]: outputs[r] for r in ROLES}}
+        self.validate_contents(final)
+        result = verify(self, final)
+        need(result["confirmed"] == qualified, "invalid final installation pair")
+        plan = {
+            "v": 1, "purpose": "installer-selected-pair", "root": str(self.root),
+            "harness": HARNESS, "overrides": overrides, "eligibility": eligibility,
+            "configured": qualified, "snapshot": snapshot,
+            "selected": result["selected"],
+            "outputs": {p: sha(data) for p, data in final.items()},
+            "diff": pair_diff(self, contents, outputs),
+            "dependency_diff": "".join(file_diff(p, contents[p], data)
+                                       for p, data in dependencies.items()),
+        }
+        # Retain independent canonical evidence; never trust a mutable returned plan.
+        digest = sha(canonical(plan))
+        self.prepared = (canonical(plan), digest, contents, outputs, dependencies)
+        return {"plan": plan, "digest": digest}
+
+    def apply(self, plan, digest):
+        self.check_root()
+        need(self.prepared is not None, "installer must prepare before publication")
+        evidence, approved, contents, outputs, dependencies = self.prepared
+        need(digest == approved and sha(canonical(plan)) == digest and
+             canonical(plan) == evidence, "installer plan digest/binding mismatch")
+        expected = load(evidence)["snapshot"]
+        current, _ = self.snapshot()
+        need(current == expected, "stale installer snapshot; no automatic reprepare")
+        self.publication_writable()
+        self.prepared = None  # A failed/partial attempt also consumes this operation.
+        return publish_outputs(self, expected, dict(contents), outputs,
+                               dependencies=dependencies, configured=plan["configured"])
 
 
 def main():
