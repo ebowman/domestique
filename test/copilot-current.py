@@ -74,7 +74,7 @@ class Copilot(unittest.TestCase):
             self.assertIn(f"name: domestique-v2-copilot-{role}\n", body)
             self.assertIn("description: Copilot only;", body)
             self.assertNotIn("\nmodel:", body)
-            self.assertNotIn(MARKER, body)
+            self.assertEqual(MARKER in body, role == "implementer")
             tools = '["read", "edit", "search", "execute"]' if role == "implementer" else '["read", "search", "execute"]'
             self.assertIn(f"tools: {tools}", body)
         for kind in ("decompose", "goal"):
