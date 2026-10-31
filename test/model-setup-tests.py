@@ -40,7 +40,8 @@ def check_execution_protocol(root, provider):
     assert gate == goal.split(start, 1)[1].split(end, 1)[0]
     flat = " ".join(gate.split())
     for phrase in (
-        "BEFORE any Beads command", "exact physical Git worktree root",
+        "BEFORE any Beads writes", "exact physical Git worktree root",
+        "Read-only goal target/scope queries may precede this gate without model questions",
         "pristine helper bootstrap below with `verify`",
         "installer-owned manifest/pristine bases", "BOTH marker hashes",
         "NOT native attestation", "including fresh defaults",
@@ -79,16 +80,16 @@ def check_execution_protocol(root, provider):
     assert "ALL tracked/index dirtiness" in goal
     assert "fresh independent reviewer context" in goal
     prefix = "$" if provider == "codex" else "/"
-    # Native explicit goal at its CURRENT authorization level, not xc2.
+    # Named intent/target routing; the numeric loop ceiling is still retained.
     assert f"{prefix}dom-goal" in goal
+    assert "clear user execution request or native named objective" in goal
+    assert goal.index("## Resolve the authorized target") < goal.index(start)
+    assert "Default bound is ONE reviewed bead" not in goal
+    assert "15" in goal
     if provider == "copilot":
-        assert "Default bound is ONE reviewed bead" in goal
-        assert "native /goal or /autopilot is not" in goal
+        assert "native /goal or /autopilot is not" not in goal
         assert "Fresh defaults omit model in BOTH roles" in gate
         assert "not necessarily the direct parent's model" in gate
-    else:
-        assert "15" in goal
-        assert "explicit" in goal
     bootstrap = gate.split("```python\n", 1)[1].split("\n```", 1)[0]
     result = subprocess.run([sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, "verify"],
                             cwd=root, text=True, capture_output=True)
@@ -744,7 +745,7 @@ class ModelSetup(unittest.TestCase):
             for rel in (".github/skills/domestique-v2-copilot/SKILL.md",
                         *([] if guest else [".github/copilot-instructions.md"])):
                 self.assertIn("Its Beads/readiness/branch gates do not apply to planning",
-                              (root / rel).read_text())
+                              " ".join((root / rel).read_text().split()))
 
     def test_concise_exact_plan_consent_and_terminal_save_protocol(self):
         for provider, rel in MODELS.items():

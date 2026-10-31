@@ -105,14 +105,21 @@ git_init() {
 V2G="$WORKROOT/v2g.sh"
 cp "$DOM" "$V2G"
 ANCHOR='Do not drain the queue unattended unless explicitly told to.'
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  ANCHOR="Authorized named goals use the native goal body's loop and bounds instead"
+fi
 ANCHOR_COUNT="$(grep -cF "$ANCHOR" "$DOM")"
 if [ "$ANCHOR_COUNT" -ne 1 ]; then
   echo "FATAL: expected exactly one occurrence of anchor line in $DOM, found $ANCHOR_COUNT" >&2
   exit 1
 fi
-sed -i.orig \
-  "s/Do not drain the queue unattended unless explicitly told to\\./Do not drain the queue unattended unless explicitly told to (v2-guest-test)./" \
-  "$V2G"
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  sed -i.orig "s/$ANCHOR/$ANCHOR (v2-guest-test)/" "$V2G"
+else
+  sed -i.orig \
+    "s/Do not drain the queue unattended unless explicitly told to\\./Do not drain the queue unattended unless explicitly told to (v2-guest-test)./" \
+    "$V2G"
+fi
 rm -f "$V2G.orig"
 chmod +x "$V2G"
 

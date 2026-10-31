@@ -693,13 +693,13 @@ scenario_public_names() {
         check "Codex compatibility content" grep -qF "\$domestique-$kind" "$t/$rel"
         if [ "$kind" = goal ]; then
           check "explicit-only $entry" grep -qF 'allow_implicit_invocation: false' "$t/.agents/skills/$entry/agents/openai.yaml"
-          check "default prompt $entry" grep -qF "\$$entry with an explicit epic id." "$t/.agents/skills/$entry/agents/openai.yaml"
+          check "default prompt $entry" grep -qF "\$$entry with a named bead or epic objective." "$t/.agents/skills/$entry/agents/openai.yaml"
           check "no implicit authority $entry" grep -qF 'Merely loading or implicitly matching' "$t/$rel"
         fi
       done
     done
-    check "Claude policy short authority" grep -qF '/dom-goal <epic-id>' "$policy"
-    check "Claude policy legacy authority" grep -qF '/goal <epic-id>' "$policy"
+    check "Claude policy short authority" grep -qF '/dom-goal <target>' "$policy"
+    check "Claude policy legacy authority" grep -qF '/goal <target>' "$policy"
     if [ "$mode" = guest ]; then
       check "all new paths private" bash -c 'test -z "$(git -C "$1" status --porcelain --untracked-files=all)"' _ "$t"
       for rel in .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
@@ -707,8 +707,8 @@ scenario_public_names() {
         check "excluded guest alias $rel" grep -qxF "$rel" "$t/.git/info/exclude"
       done
     else
-      check "Codex policy short authority" grep -qF '$dom-goal <epic-id>' "$t/AGENTS.md"
-      check "Codex policy legacy authority" grep -qF '$domestique-goal <epic-id>' "$t/AGENTS.md"
+      check "Codex policy short authority" grep -qF '$dom-goal <target>' "$t/AGENTS.md"
+      check "Codex policy legacy authority" grep -qF '$domestique-goal <target>' "$t/AGENTS.md"
     fi
     before="$(treehash "$t")"
     "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
@@ -984,9 +984,9 @@ for kind in ("decompose", "goal"):
     text = (root / f".agents/skills/dom-{kind}/SKILL.md").read_text()
     for phrase in ("ACTUAL native caller", "Unknown, ambiguous, or unsupported",
                    "Missing, unreadable or foreign native bodies mean STOP",
-                   "ORIGINAL user request verbatim", "explicit epic arguments",
+                   "ORIGINAL user request verbatim", "target arguments",
                    "authorization provenance", "Never synthesize a new",
-                   "Merely loading or implicitly matching", "must not start setup",
+                   "Merely loading or implicitly matching", "setup/Save",
                    "Preserve this explicit goal authorization", "does not establish native readiness",
                    f".agents/skills/domestique-{kind}/SKILL.md",
                    f".github/skills/domestique-v2-copilot-{kind}/SKILL.md",
@@ -1004,9 +1004,9 @@ for kind in ("decompose", "goal"):
     assert "Save these choices?" not in body
     assert "dom-models --confirm" in body
     if kind == "goal":
-        assert "Missing explicit request/epic means STOP" in body
-        assert "native /goal or /autopilot is not" in body
-        assert "literal epic argument" in body
+        assert "clear user execution request or native named objective" in body
+        assert "native /goal or /autopilot is not" not in body
+        assert "original authorized objective and resolved bead/epic scope" in body
     for forbidden in (str(script.parent), "preview/launcher", "workflow --project",
                       "machine-root", "current/bin", "--confirm-model"):
         assert forbidden not in text + body + codex.read_text(), forbidden

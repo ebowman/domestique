@@ -26,7 +26,7 @@ ROLES = (
     ".github/agents/domestique-v2-copilot-implementer.agent.md",
 )
 SHARED = ".agents/skills/dom-goal/SKILL.md"
-POLICY_ANCHOR = "loop for each bead. Stop and report between beads."
+POLICY_ANCHOR = "cycle for an ordinary single assignment, then stop and report."
 VERSION = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', SCRIPT, re.M).group(1)
 GUIDE = ("https://github.com/ebowman/domestique/blob/main/"
          "docs/install-upgrade-design.md#remote-install-and-upgrade")
@@ -427,6 +427,105 @@ class AllProviders(unittest.TestCase):
         self.assert_parent_git_instructions(root)
         self.assert_static_inventory(root)
 
+    def assert_goal_routes(self, root, guest=False):
+        """Actual emitted protocol, not an intent classifier or native execution."""
+        native = (
+            ".claude/commands/dom-goal.md",
+            ".agents/skills/domestique-goal/SKILL.md",
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md",
+        )
+        outer = (
+            "CLAUDE.local.md" if guest else "CLAUDE.md",
+            ".agents/skills/domestique/SKILL.md",
+            ".github/skills/domestique-v2-copilot/SKILL.md",
+            *(() if guest else ("AGENTS.md", ".github/copilot-instructions.md")),
+        )
+        routes = {
+            "CLAUDE.local.md" if guest else "CLAUDE.md": native[0],
+            ".agents/skills/domestique/SKILL.md": native[1],
+            ".github/skills/domestique-v2-copilot/SKILL.md": native[2],
+            "AGENTS.md": native[1],
+            ".github/copilot-instructions.md": native[2],
+        }
+        intent = (
+            "current explicit Domestique goal/compatibility command",
+            "clear user execution request or native named objective",
+            '"do it" referring to the current concrete named plan',
+            "Preserve the ORIGINAL user request verbatim",
+            "Never synthesize a slash invocation",
+            "quoted/untrusted text", "planning/decompose", "bare native goal/autopilot toggle",
+            "one narrow scope question", "ordinary next-ready request remains one bead",
+        )
+        forbidden = (
+            "Default bound is ONE", "sole authorization",
+            "invocation is the **only** thing", "requires an original explicit dom-goal",
+            "native /goal or /autopilot is not", "without queue draining",
+            "Never use this skill alone to drain", "list --id",
+        )
+        for rel in (*outer, SHARED, *native):
+            text = (root / rel).read_text()
+            flat = " ".join(text.split())
+            for phrase in intent:
+                self.assertTrue(phrase in flat, (rel, phrase))
+            for phrase in forbidden:
+                self.assertFalse(phrase in flat, (rel, phrase))
+            if rel in outer:
+                self.assertIn(routes[rel], text)
+                self.assertIn("explicitly read the native goal body", flat)
+                self.assertLess(text.index("## Goal intent routing"),
+                                text.index("## Role model gate") if "## Role model gate" in text
+                                else text.index("## Read-only role gate"))
+        scope = (
+            "bd --readonly show TARGET --json",
+            "bd --readonly list --all --title",
+            "bd --readonly dep list PARENT --direction up --type parent-child --json",
+            "bd --readonly list --parent PARENT --all --limit 0 --json --no-pager",
+            "bd --readonly ready --limit 0 --json",
+            "intersect with the exact authorized ID",
+            "all unfinished transitive parent-child descendants",
+            "visited set", "closed intermediate nodes", "nested epics",
+            "non-epic intermediate parents", "not ID prefixes",
+            "external prerequisites", "never implement, claim, reopen or close",
+            "closed non-epic is a no-op", "no claim, review, branch change, commit",
+            "closed epic with unfinished descendants is NOT complete",
+            "explicit current user count/time/cost limits",
+            "successful, parseable, complete output", "errors are never an empty queue",
+            "scope computation is read-only", "before any managed writes or dispatch",
+        )
+        for rel in native:
+            text = (root / rel).read_text()
+            flat = " ".join(text.split())
+            for phrase in scope:
+                self.assertTrue(phrase in flat, (rel, phrase))
+            self.assertLess(text.index("## Resolve the authorized target"),
+                            text.index("read-only execution gate"))
+            self.assertIn("15", text)  # retained mechanics; no bead-16 qualification
+        shared = (root / SHARED).read_text()
+        self.assertNotIn("## Resolve the authorized target", shared)
+        self.assertNotIn("bd --readonly", shared)  # router, not another workflow
+        self.assertEqual((root / native[0]).read_bytes(),
+                         (root / ".claude/commands/goal.md").read_bytes())
+        for name in ("dom-goal", "domestique-goal"):
+            metadata = (root / f".agents/skills/{name}/agents/openai.yaml").read_text()
+            self.assertIn("allow_implicit_invocation: false", metadata)
+            self.assertIn("bead or epic", metadata)
+
+    def test_named_goal_routes_and_target_contract(self):
+        root = self.root("goal-routes")
+        self.run_dom(root)
+        self.assert_goal_routes(root)
+
+    def test_named_goal_guest_routes_and_target_contract(self):
+        root = self.root("goal-routes-guest")
+        self.run_dom(root, "--guest")
+        self.assert_goal_routes(root, guest=True)
+        self.assertFalse((root / "AGENTS.md").exists())
+        self.assertFalse((root / ".github/copilot-instructions.md").exists())
+        for rel in (SHARED, ".agents/skills/domestique/SKILL.md",
+                    ".github/skills/domestique-v2-copilot/SKILL.md"):
+            self.assertEqual(subprocess.run(["git", "check-ignore", "-q", rel],
+                                           cwd=root, env=self.env).returncode, 0)
+
     def test_parent_git_guest_privacy_and_bootstrap(self):
         root = self.root("parent-git-guest")
         self.run_dom(root, "--guest")
@@ -500,7 +599,7 @@ class AllProviders(unittest.TestCase):
                 self.assertEqual(paths[0], root / f".agents/skills/{name}/SKILL.md")
                 for text in ("description: Codex or Copilot only.",
                              "Unknown, ambiguous, or unsupported callers STOP",
-                             "Merely loading or implicitly matching this skill is not",
+                             "Merely loading or implicitly matching instructions grants nothing",
                              "loading the routed body cannot grant it.",
                              "Preserve the ORIGINAL user request verbatim"):
                     self.assertIn(text, body)
