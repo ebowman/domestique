@@ -29,6 +29,74 @@ MODELS = {
     "copilot": ".github/skills/domestique-v2-copilot-models/SKILL.md",
 }
 
+def check_execution_protocol(root, provider):
+    """Inspect installed instructions/execute their verify, NOT native UX proof."""
+    root = Path(root)
+    decompose = (root / DECOMPOSE[provider]).read_text()
+    goal = (root / DECOMPOSE[provider].replace("decompose", "goal")).read_text()
+    start = f"## {provider} read-only execution gate"
+    end = "## End execution gate"
+    gate = decompose.split(start, 1)[1].split(end, 1)[0]
+    assert gate == goal.split(start, 1)[1].split(end, 1)[0]
+    flat = " ".join(gate.split())
+    for phrase in (
+        "BEFORE any Beads command", "exact physical Git worktree root",
+        "pristine helper bootstrap below with `verify`",
+        "installer-owned manifest/pristine bases", "BOTH marker hashes",
+        "NOT native attestation", "including fresh defaults",
+        "saved custom/inherited pair needs NO questionnaire and NO writes",
+        "requires no Save, setup-only detour, restart or new goal invocation",
+        "Visible default values without a valid marker are NOT confirmation",
+        "never silently repair files or bless bodies", "dom-models --confirm",
+        "dom-models --configure", "no embedded wizard",
+        "present, unambiguous registered intended role IDs",
+        "documented project discovery/precedence", "known competing definitions",
+        "available non-secret model/effort support evidence",
+        "do not repeatedly list catalogs/config",
+        "documented native discovery and inheritance resolution",
+        "absent counterevidence, suffice",
+        "independent inherited-model attestation or future child telemetry alone MUST NOT block",
+        "Genuinely unknown required registration/discovery",
+        "known unavailable/unsupported selection",
+        "STOP before workflow writes or dispatch",
+        "Report only the affected role, precise reason",
+        "Never substitute another model or send a conflicting spawn model/effort override",
+        "Helper `confirmed` alone never means native Ready",
+        "not a freshly installed role already registered",
+        "No invented hot-reload API or permission bypass",
+        "check available child role/model/effort telemetry",
+        "Static instruction/helper tests are not native UX/dispatch qualification",
+    ):
+        assert phrase in flat, (provider, phrase)
+    for text in (decompose, goal):
+        assert text.index("Active harness boundary") < text.index(start)
+        assert "questionnaire INLINE" not in text
+        assert "Save these choices?" not in text
+        assert "Pass `verify`" in text
+        assert "pass `prepare`" not in text
+    assert decompose.index("SKIP the entire role setup section") < decompose.index(start)
+    assert decompose.index(end) < decompose.index("\n# Decompose into beads\n")
+    assert "ALL tracked/index dirtiness" in goal
+    assert "fresh independent reviewer context" in goal
+    prefix = "$" if provider == "codex" else "/"
+    # Native explicit goal at its CURRENT authorization level, not xc2.
+    assert f"{prefix}dom-goal" in goal
+    if provider == "copilot":
+        assert "Default bound is ONE reviewed bead" in goal
+        assert "native /goal or /autopilot is not" in goal
+        assert "Fresh defaults omit model in BOTH roles" in gate
+        assert "not necessarily the direct parent's model" in gate
+    else:
+        assert "15" in goal
+        assert "explicit" in goal
+    bootstrap = gate.split("```python\n", 1)[1].split("\n```", 1)[0]
+    result = subprocess.run([sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, "verify"],
+                            cwd=root, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    verified = json.loads(result.stdout)
+    assert verified["scope"] == "filesystem-only"
+    return verified
+
 
 class ModelSetup(unittest.TestCase):
     @classmethod
@@ -620,7 +688,7 @@ class ModelSetup(unittest.TestCase):
                 with self.subTest(provider=provider, guest=guest):
                     text = (root / rel).read_text()
                     boundary, routed = text.split("## Explicit config-vs-plan routing", 1)
-                    route, rest = routed.split(f"## {provider.title()} first-use role setup", 1)
+                    route, rest = routed.split(f"## {provider} read-only execution gate", 1)
                     setup, plan = rest.split("\n# Decompose into beads\n", 1)
                     self.assertIn("Active harness boundary", boundary)
                     for required in (
@@ -634,8 +702,8 @@ class ModelSetup(unittest.TestCase):
                         "claims/closes beads", "stages or commits",
                     ):
                         self.assertIn(required, route)
-                    self.assertIn("never to ordinary planning-only decompose", setup)
-                    self.assertIn("exec(compile(code", setup)  # config route remains functional
+                    self.assertIn("Ordinary planning-only decompose skips this entire gate", setup)
+                    self.assertIn("exec(compile(code", setup)  # execution verify remains functional
                     for forbidden in ("emit_", "After the gate", "helper", "reload",
                                       "confirmed pair", "questionnaire"):
                         self.assertNotIn(forbidden, plan)
@@ -669,14 +737,12 @@ class ModelSetup(unittest.TestCase):
                               (root / rel).read_text())
 
     def test_concise_exact_plan_consent_and_terminal_save_protocol(self):
-        for provider, rel in DECOMPOSE.items():
+        for provider, rel in MODELS.items():
             text = (self.seed / rel).read_text()
-            goal = (self.seed / rel.replace("decompose", "goal")).read_text()
-            for entry in (text, goal):
+            for entry in (text,):
                 flat = " ".join(entry.split())
                 for required in (
-                    "Reuse saved native selections", "prefill current values",
-                    "These choices will be saved locally", "planning works now",
+                    "prefilled with current saved models/efforts",
                     "project/harness, each current -> chosen model/effort",
                     "both exact role paths", "preserved tools/prompts",
                     "tracked-file consequences", "complete detailed diff on request",
@@ -712,18 +778,91 @@ class ModelSetup(unittest.TestCase):
                                 entry.index("Ask once: `Save these choices?"))
                 self.assertLess(entry.index("Ask once: `Save these choices?"),
                                 entry.index("Only after explicit consent AND"))
-            if provider in ("claude", "codex"):
-                goal_body = " ".join(goal.split(
-                    "Interactive first-use goal setup runs", 1)[1].split())
-                for required in (
-                    "stop execution until fresh explicit goal authorization",
-                    "Planning remains available immediately",
-                    "including an already supplied explicit planning request",
-                    "Execution requires native readiness for the saved pair",
-                    "reload/fresh invocation only if registration is stale/unknown",
-                    "Do not assume saving updates loaded roles",
-                ):
-                    self.assertIn(required, goal_body, provider)
+            for rel in (DECOMPOSE[provider], DECOMPOSE[provider].replace("decompose", "goal")):
+                execution = (self.seed / rel).read_text()
+                self.assertNotIn("Save these choices?", execution)
+                self.assertNotIn("pass `prepare`", execution)
+
+    def test_fresh_configured_defaults_across_execution_layers(self):
+        # Actual fresh installer confirmation at its original physical root.
+        # Text routing/read-only helper checks do not emulate native dispatch.
+        expected = {
+            "claude": (("sonnet", None), ("opus", None)),
+            "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
+            "copilot": ((None, None), (None, None)),
+        }
+        before = CURRENT.snapshot(self.seed)
+        for provider in PROVIDERS:
+            result = check_execution_protocol(self.seed, provider)
+            self.assertTrue(result["confirmed"])
+            self.assertEqual(tuple((c["model"], c["effort"]) for c in result["selected"].values()),
+                             expected[provider])
+            if provider == "copilot":
+                for role in self.roles(self.seed, provider).values():
+                    self.assertNotIn("\nmodel:", role.read_text())
+        # Root/bootstrap, shared public, and native command/skill layers agree.
+        layers = [
+            "CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md",
+            ".agents/skills/domestique/SKILL.md",
+            ".github/skills/domestique-v2-copilot/SKILL.md",
+            ".agents/skills/dom-goal/SKILL.md", ".agents/skills/dom-decompose/SKILL.md",
+        ]
+        for rel in layers:
+            text = " ".join((self.seed / rel).read_text().split())
+            with self.subTest(layer=rel):
+                for required in ("installer-configured defaults", "custom/inherited pairs",
+                                 "dom-models --confirm", "dom-models --configure",
+                                 "independent inherited-model", "counterevidence",
+                                 "stale/unknown current registrations"):
+                    self.assertIn(required, text)
+                self.assertNotIn("questionnaire INLINE", text)
+                self.assertNotIn("Generated defaults are suggestions, never confirmation", text)
+                self.assertNotIn("Save these choices?", text)
+        self.assertEqual(before, CURRENT.snapshot(self.seed))
+
+    def test_saved_pair_and_known_unavailable_route_never_fallback(self):
+        for provider in PROVIDERS:
+            root = self.project()
+            # A literal offline selection is saved, not native availability proof.
+            self.apply(root, provider, self.prepare(root, provider))
+            before = CURRENT.snapshot(root)
+            result = check_execution_protocol(root, provider)
+            self.assertTrue(result["confirmed"])
+            self.assertEqual(result["selected"], self.native(root, provider)["current"])
+            self.assertEqual(before, CURRENT.snapshot(root))
+            # Known unavailability is a native evidence branch documented in the
+            # installed gate, not something filesystem verify can discover.
+            goal = (root / DECOMPOSE[provider].replace("decompose", "goal")).read_text()
+            stop = " ".join(goal.split("Genuinely unknown required registration/discovery", 1)[1]
+                            .split("Helper `confirmed`", 1)[0].split())
+            for phrase in ("known unavailable/unsupported selection",
+                           "STOP before workflow writes or dispatch",
+                           "Report only the affected role, precise reason",
+                           "dom-models --configure", "Never substitute another model",
+                           "conflicting spawn model/effort override"):
+                self.assertIn(phrase, stop)
+            self.assertNotIn("Save these choices?", stop)
+            self.apply(root, provider, self.prepare(root, provider, inherit=True))
+            before = CURRENT.snapshot(root)
+            inherited = check_execution_protocol(root, provider)
+            self.assertTrue(inherited["confirmed"])
+            for choice in inherited["selected"].values():
+                self.assertEqual(choice["model"], "inherit" if provider == "claude" else None)
+                self.assertIsNone(choice["effort"])
+            self.assertEqual(before, CURRENT.snapshot(root))
+
+    def test_unconfirmed_execution_never_autoblesses_current_bodies(self):
+        for provider in PROVIDERS:
+            root = self.project()
+            before = CURRENT.snapshot(root)
+            self.assertFalse(check_execution_protocol(root, provider)["confirmed"])
+            self.assertEqual(before, CURRENT.snapshot(root))
+            self.apply(root, provider, self.native(root, provider, "--confirm"))
+            reviewer = self.roles(root, provider)["reviewer"]
+            reviewer.write_bytes(reviewer.read_bytes() + b"\n# unreviewed body\n")
+            before = CURRENT.snapshot(root)
+            self.assertFalse(check_execution_protocol(root, provider)["confirmed"])
+            self.assertEqual(before, CURRENT.snapshot(root))
 
     def test_published_confirmed_pair_compatibility(self):
         # Released 0.2.2 choices equal its old bases; they must still stay pinned.

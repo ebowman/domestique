@@ -300,8 +300,9 @@ class AllProviders(unittest.TestCase):
         self.assertIn("Project config only", output)
         self.assertIn("not native clients/model software", output)
         self.assertIn("Upgrades and --force retain model/effort choices", output)
-        self.assertIn("independently in each harness", output)
-        self.assertIn("reload/start a fresh invocation", output)
+        self.assertIn("verify configured roles and native readiness", output)
+        self.assertIn("reload only if current registrations are stale/unknown", output)
+        self.assertIn("Fresh configured defaults need no questionnaire", output)
         self.assertIn("not native readiness", output)
         self.assertIn("| bash -s -- --dry-run", output)
         self.assertIn("| bash -s -- --platform claude", output)
@@ -318,6 +319,7 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(before, snapshot(root))
         self.assert_notice(self.run_dom(root), root, modes)
         self.assertEqual(self.installed(root), set(STATES))
+        self.assert_static_inventory(root)
         for role in ROLES:
             self.assertTrue((root / role).is_file())
         for path in root.rglob("*.md"):
@@ -382,7 +384,7 @@ class AllProviders(unittest.TestCase):
                 gate = ("# Role models" if name.endswith("-models") else
                         {"domestique": "## Role model gate",
                          "domestique-v2-copilot": "## Read-only role gate"}.get(
-                             name, f"## {harness.capitalize()} first-use role setup"))
+                             name, f"## {harness} read-only execution gate"))
                 after_guard = body.index("and /dom-goal commands, but do not invoke them automatically.")
                 self.assertIn(gate, body[after_guard:])
                 if name == "domestique":

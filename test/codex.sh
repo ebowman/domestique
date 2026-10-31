@@ -785,237 +785,32 @@ scenario_previous_install_adds_public_names() {
 scenario_codex_setup_protocol() {
   local t="$WORKROOT/setup-protocol"; mkdir -p "$t"; git_init "$t"
   check "install Codex" "$DOM" "$t" --platform codex
-  check "first/repeat/inherit/conflict/cancel instructions (static only)" python3 - "$t" <<'PY'
+  check "configured execution instructions and read-only verify (not native UX)" python3 -B - "$t" "$REPO_DIR" <<'PY'
 from pathlib import Path
+import runpy
 import sys
 
 root = Path(sys.argv[1])
 skills = root / ".agents/skills"
-start = "## Codex first-use role setup — mandatory gate"
-end = "## End role setup gate — continue only for an unchanged confirmed, ready pair"
-def body(text):
-    assert text.count(start) == text.count(end) == 1
-    return text.split(start)[1].split(end)[0]
-decompose = (skills / "domestique-decompose/SKILL.md").read_text()
+checks = runpy.run_path(str(Path(sys.argv[2]) / "test/model-setup-tests.py"))
+assert checks["check_execution_protocol"](root, "codex")["confirmed"]
 goal = (skills / "domestique-goal/SKILL.md").read_text()
-setup = body(decompose)
-assert setup == body(goal)
-for kind, text, action in (
-    ("decompose", decompose, "\n# Decompose into beads\n"),
-    ("goal", goal, "# Unattended epic execution"),
-):
+for kind in ("decompose", "goal"):
     shared = (skills / f"dom-{kind}/SKILL.md").read_text()
     assert f".agents/skills/domestique-{kind}/SKILL.md" in shared
-    assert start not in shared
-    assert text.index(end) < text.index(action)
-
-for phrase in (
-    "BEFORE any Beads command (including readiness/create/claim)",
-    "active harness as `codex`", "exact physical Git", "Never search ancestors",
-    "ROOT/.codex/agents/implementer.toml", "ROOT/.codex/agents/reviewer.toml",
-    "ROOT/.codex/.domestique/manifest",
-    "base/.codex/agents/{implementer,reviewer}.toml",
-    "snapshot_format=1", "platform=codex", "NOT historical inode proof",
-    "Current owned customized bytes may be confirmed", "original pristine bases",
-    "Missing/unmanaged", "never adopt through setup", "Do not impose Copilot",
-    "at most 1 MiB", "no symlinks in any path component", "link count must",
-    "Record current device/inode", "TOML parser", 'name = "implementer"',
-    'name = "reviewer"', "unique top-level scalar string",
-    "Reject duplicate keys", "non-string or multiline selection fields",
-    "duplicate/misplaced setup markers", "nested tables",
-    "single comment at the beginning of implementer",
-    "`# domestique-model-setup: JSON`", "Reviewer must contain no setup marker",
-    "`v` (integer 1)", "`project`", "`harness` (`codex`)",
-    "`implementer_sha256`, `reviewer_sha256`", "removing only",
-    "JSON types/unique keys", "BOTH digests", "pristine generated defaults",
-    "copied/moved", "never complete a partial pair silently", "Any manual",
-    "NO questionnaire and NO writes", "including confirmed\ninheritance",
-    "request `configure role models`", "Aliases share this pair/marker",
-    "Show ROOT / codex", "current model and model_reasoning_effort",
-    "same model", "fresh reviewer context", "exact IDs",
-    "Generated defaults and absent fields are not consent",
-    "Model and effort are independent", "explicitly confirm compatible existing",
-    "explicitly resolve incompatible effort", "Never silently retain unsupported",
-    "OMIT model", "write a literal model named `inherit`",
-    "For inherited effort OMIT\nmodel_reasoning_effort",
-    "concise exact-plan summary", "Save these choices? Save / Cancel",
-    "reprepare, summarize and renew consent", "Goal authorization\nis not settings consent",
-    "Cancel, incomplete/missing values, or noninteractive",
-    "ZERO writes and NO Beads/workflow calls", "preserve any prior pair",
-    "Noninteractive callers may only use an already confirmed pair",
-    "Use the installed helper for ALL mechanical preflight",
-    "exec(compile(code", "assert code == read(base)",
-    "Prepare is READ-ONLY", "independently retained",
-    "all evidence immediately before EVERY publication",
-    "unknown leftovers", "No blind rollback", "SETUP ONLY: no task",
-    "claim, code, dispatch, branch/commit or goal cycle",
-    "supported reload/fresh invocation", "NOT queued for automatic continuation",
-    "Missing setup during truly noninteractive/autopilot goal execution means STOP",
-    "Confirmed setup alone grants no goal authority",
-    "ALL tracked/index dirtiness", "never auto-stage, commit, stash, discard",
-    "never reset pristine\nbases to configured bytes",
-):
-    assert phrase in setup, phrase
-helper = root / ".codex/domestique-model-setup.py"
-assert helper.read_bytes() == (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").read_bytes()
-compile(helper.read_bytes(), str(helper), "exec")
-
-# Real emitted aliases share inline entry and a setup-scoped ban on helpers.
-entry, preflight = setup.split("### Read-only preflight", 1)
-evidence = preflight.split("### Native evidence", 1)[1].split("Before saving", 1)[0]
-for section in (entry, evidence):
-    assert "do NOT use ANY Agent/Task/agent delegation" in section
-    assert "documentation/research helpers or built-in documentation agents" in section
-    assert "missing evidence means STOP, not a helper call" in section
-assert "the workflow still requires implementer and independent reviewer delegation" in entry
-assert "questionnaire INLINE here" in entry and "do not redirect to decompose" in entry
-assert "Ordinary unconfigured delegation instead" in entry
-assert "without a confirmed pair STOP without persistence" in " ".join(entry.split())
-assert "Setup consumes this request: no task, Beads or implementation" in " ".join(entry.split())
-
-# Persistence support is checked before save; loaded registration matching is
-# required after fresh reload, not used to veto a supported setup-only edit.
-pre_save, post_save = setup.split("After saving, require supported reload/fresh invocation", 1)
-for phrase in (
-    "PRE-SAVE check concerns supported persistent native role-file/config semantics",
-    "not readiness to dispatch through this conversation's loaded roles",
-    "Verify that this installed client supports the proposed persistent model/effort fields for these roles and their required tools",
-    "Catalog presence alone does not guarantee role compatibility or provider permission",
-    "actually disallows the requested persistent model/effort, STOP before writes, preserving all bytes",
-    "unknown capability or ambiguous inheritance also stops",
-    "Current immutable/non-overridable role registrations are not expected to change in this conversation",
-    "Their mismatch with a proposed pair during SETUP alone is NOT grounds to reject supported persistent reconfiguration or refuse its actual diff/consent flow",
-    "does not bypass fixed tool registration or provider permissions",
-    "No Task/spawn override attempt, dispatch test, or fallback to old generated defaults",
-    "present the concise exact-plan summary, obtain save consent",
-    "required ordinary native scoped protected-write approval",
-    "wait for verified save completion",
-):
-    assert phrase in " ".join(pre_save.split()), phrase
-for phrase in (
-    "POST-SAVE readiness check is distinct from PRE-SAVE persistence support",
-    "freshly loaded registered pair must match the chosen values and their native-effective model/effort resolution before dispatch",
-    "saving files does not change current-session registrations or authorize an in-session override",
-    "registration must be present and unambiguous",
-    "Missing/ambiguous registration, actual mismatch, unresolved inheritance",
-    "Send no conflicting spawn model/effort override",
-):
-    assert phrase in " ".join(post_save.split()), phrase
-
-# Read-only pair/diff first; consent and native approval precede BOTH-role checks
-# inside the publication command, with denial/change/unwritable paths fail-closed.
-ordered = (
-    "### Read-only preflight", "### One question for BOTH roles",
-    "concise exact-plan summary", "before explicit save consent",
-    "Only AFTER explicit save consent",
-    "request native one-command scoped approval", "sandbox_permissions=require_escalated",
-    "### Deterministic helper", "Only after explicit consent AND",
-    "The helper recomputes the scalar-only patch",
-    "all evidence immediately before EVERY publication",
-)
-positions = [setup.index(phrase, setup.index("### One question"))
-             if phrase == "concise exact-plan summary" else setup.index(phrase)
-             for phrase in ordered]
-assert positions == sorted(positions)
-assert "writable role\nparents" not in preflight.split("### Native evidence")[0]
-for phrase in (
-    "read-only ownership/path/field/identity checks, not a writability gate",
-    "NOT unknown ownership or permanent filesystem read-only status",
-    "Do not write probes", "approval_policy=on-request",
-    "specific justification naming both exact role paths",
-    "No persistent prefix rule, sandbox-mode change, broad permission grant or bypass",
-    "If approval is denied or unavailable, STOP with ZERO mutation and NO success",
-    "No file staging before approval",
-    "including file path/mode/device/inode/nlink/hash and parent identities/modes",
-    "Prepare/verify require only safe readable evidence",
-    "Only apply checks writable roles/parents in the approved execution context",
-    "changed filesystem modes still require prepare/new summary/new consent",
-):
-    assert phrase in " ".join(setup.split()), phrase
-
-for phrase in (
-    "Before saving, use supported evidence", "supported and available",
-    "role-file model/model_reasoning_effort values override",
-    "explicit spawn, then [agents] defaults, then parent",
-    "previously resolved effort; it does NOT reset",
-    "Verify installed-version behavior", "Unknown support/availability",
-    "STOP before writes", "No fallback", "invented verification API or paid probe",
-    "After saving, require supported reload/fresh invocation",
-    "Send no conflicting spawn", "Ephemeral model requests are assertions",
-    "a conflict stops", "resolve/check it anew each session",
-    "STOP without workflow or writes", "not dispatch proof",
-    "Actual observed role dispatch/reload qualification is separate",
-    "static emitted-protocol/lifecycle tests do not qualify runtime",
-):
-    assert phrase in setup, phrase
-# Positive minimum permits supported registration/resolution without an optional
-# origin API; actual mismatches still stop and child evidence comes after spawn.
-for phrase in (
-    "supported pre-dispatch minimum, read-only",
-    "active native client and its registered intended `implementer` and `reviewer` role IDs",
-    "registration must be present and unambiguous",
-    "stored pair, ownership, physical ROOT, BOTH marker hashes",
-    "required fresh-session reload",
-    "Match declared model AND effort and required tools",
-    "Explicit non-overridable registered selections plus documented native resolution are sufficient",
-    "documented project-local discovery and precedence",
-    "competing project/ancestor/global definitions",
-    "current provider/model compatibility with available non-secret native evidence",
-    "not a future entitlement/runtime guarantee",
-    "A doctor subprocess describes its own provider/session, not automatically the active thread",
-    "establish applicability before using it as active-session evidence",
-    "Use native source provenance when exposed",
-    "do not invent exact-origin or loaded-byte attestation",
-    "Missing optional exact-origin/loaded-byte APIs or not-yet-existent child telemetry alone do not block ordinary explicitly authorized work when this minimum is established",
-    "Missing/ambiguous registration, actual mismatch, unresolved inheritance or a known defeating override/unavailability means STOP",
-    "During/after each authorized assignment, check actual available child telemetry",
-    "before accepting work",
-    "selection failure/mismatch means STOP; never silently fall back",
-    "declared selections are not execution proof",
-    "require an unavailable telemetry API or demand a separate paid probe",
-):
-    assert phrase in " ".join(setup.split()), phrase
 for path in (root / "AGENTS.md", skills / "domestique/SKILL.md"):
     text = path.read_text()
     for phrase in (
-        "supported pre-dispatch minimum in that protocol",
-        "registered intended role IDs", "pair/ownership/root/hashes and required reload",
-        "matching declared/resolved model/effort and tools",
-        "documented project discovery/precedence", "competing definitions and known overrides checked",
-        "available non-secret provider/model compatibility evidence",
-        "Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes",
-        "Missing/ambiguous registration, actual mismatch, unresolved inheritance",
-        "known defeating override or unavailability means STOP, never fallback",
-        "during/after each authorized assignment before accepting work",
-        "selection failure/mismatch stops",
-        "distinguish PRE-SAVE persistent role-file support from POST-SAVE fresh-session registered-role readiness",
-        "immutable registrations need not match a proposed pair during setup alone",
-        "that mismatch does not forbid a supported persistent edit",
-        "Verify installed role-file semantics and provider/tool compatibility, not just catalog presence",
-        "Present the concise exact-plan summary (detailed diff on request), obtain save consent and required native scoped protected-write approval",
-        "wait for verified save completion",
-        "Do not attempt an in-session Task/spawn override or use old defaults as fallback",
-        "freshly loaded registered pair must match the chosen/native-effective model and effort before dispatch",
-        "persistence never bypasses fixed tool registration, provider permissions or genuine capability restrictions",
+        "installer-configured defaults", "saved custom/inherited pairs",
+        "NO questionnaire and NO writes", "$dom-models --confirm",
+        "$dom-models --configure", "Native readiness is not helper-only",
+        "documented discovery/resolution", "independent inherited-model",
+        "Genuinely unknown registration", "never fallback or conflicting spawn",
+        "not merely fresh files", "verified terminal completion",
     ):
         assert phrase in " ".join(text.split()), phrase
-    for obsolete in (
-        "verify that these exact files loaded", "requires exact local",
-        "If exact loading/effective selection",
-        "prevention of silent substitution cannot be verified",
-    ):
-        assert obsolete not in " ".join((text + decompose + goal).split()), obsolete
-    assert "Ordinary bounded delegation" in text
-    assert "read-only" in text
-    assert "STOP and direct the human to `$dom-decompose configure role models`" in text
-    assert "do not start another questionnaire" in text
-    assert "Instruction/bootstrap loading alone neither starts setup nor grants goal" in text
-    assert text.index("questionnaire INLINE") < text.index("Ordinary bounded delegation")
-    assert "not a\nredirect to decompose" in text
-    assert "without a confirmed pair STOP without persistence" in text
+    assert "questionnaire INLINE" not in text
     assert text.index("## Role model gate") < text.index("`bd ready`")
-assert goal.index("Interactive first-use goal setup") < goal.index("An explicit `$dom-goal <epic-id>`")
-assert "not the ordinary-delegation redirect" in goal
 assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create/switch")
 for role in ("implementer", "reviewer"):
     assert (b"domestique-model-setup:" in
@@ -1074,15 +869,16 @@ i = (root / ".codex/agents/implementer.toml").read_bytes()
 r = (root / ".codex/agents/reviewer.toml").read_bytes()
 old = (scratch / f"{choice}-implementer").read_bytes()
 anchor = b"- Stay inside the brief. Do not refactor adjacent code or start another bead."
-assert i == old.replace(anchor, anchor + b" (v2)")
+old_line, old_body = old.split(b"\n", 1)
+line, body = i.split(b"\n", 1)
+assert body == old_body.replace(anchor, anchor + b" (v2)")
 assert r == (scratch / f"{choice}-reviewer").read_bytes()
-line = i.splitlines(keepends=True)[0]
 marker = json.loads(line.removeprefix(b"# domestique-model-setup: "))
 assert set(marker) == {"v", "project", "harness", "implementer_sha256", "reviewer_sha256"}
 assert marker["v"] == 1 and marker["harness"] == "codex"
 assert marker["project"] == str(root.resolve())
-assert marker["implementer_sha256"] == hashlib.sha256(old[len(line):]).hexdigest()
-assert marker["implementer_sha256"] != hashlib.sha256(i[len(line):]).hexdigest()
+assert marker["implementer_sha256"] != hashlib.sha256(old_body).hexdigest()
+assert marker["implementer_sha256"] == hashlib.sha256(body).hexdigest()
 assert marker["reviewer_sha256"] == hashlib.sha256(r).hexdigest()
 base = (root / ".codex/.domestique/base/.codex/agents/implementer.toml").read_bytes()
 assert base == (scratch / f"{choice}-base").read_bytes().replace(anchor, anchor + b" (v2)")
@@ -1170,8 +966,8 @@ for path in native:
     for phrase in (*specific, "An explicit foreign-harness invocation must STOP",
                    "without setup, Beads, task", "do not invoke them automatically"):
         assert phrase in text, (path, phrase)
-    if "first-use role setup" in text:
-        assert text.index("Active harness boundary") < text.index("first-use role setup")
+    if "read-only execution gate" in text:
+        assert text.index("Active harness boundary") < text.index("read-only execution gate")
 models = (root / ".agents/skills/dom-models/SKILL.md").read_text()
 for phrase in ("ACTUAL native caller", "Unknown, ambiguous",
                "Missing/unreadable/foreign body", "ORIGINAL explicit request",
@@ -1191,22 +987,22 @@ for kind in ("decompose", "goal"):
                    "ORIGINAL user request verbatim", "explicit epic arguments",
                    "authorization provenance", "Never synthesize a new",
                    "Merely loading or implicitly matching", "must not start setup",
-                   "Setup consumes goal", "does not establish native readiness",
+                   "Preserve this explicit goal authorization", "does not establish native readiness",
                    f".agents/skills/domestique-{kind}/SKILL.md",
                    f".github/skills/domestique-v2-copilot-{kind}/SKILL.md",
                    "domestique-v2-copilot-implementer", "domestique-v2-copilot-reviewer"):
         assert phrase in text, phrase
-    assert "first-use role setup" not in text
+    assert "## codex read-only execution gate" not in text
     codex = root / f".agents/skills/domestique-{kind}/SKILL.md"
     copilot = root / f".github/skills/domestique-v2-copilot-{kind}/SKILL.md"
     assert len({text, codex.read_text(), copilot.read_text()}) == 3
     assert not (root / f".github/skills/dom-{kind}").exists()
     body = copilot.read_text()
-    assert body.index("Active harness boundary") < body.index("first-use role setup")
-    assert body.index("first-use role setup") < body.index("## End setup gate")
-    assert "No setup delegation of ANY kind" in body
-    assert "Save these choices?" in body
-    assert "Setup consumes the request" in body
+    assert body.index("Active harness boundary") < body.index("read-only execution gate")
+    assert body.index("read-only execution gate") < body.index("## End execution gate")
+    assert "NO questionnaire and NO writes" in body
+    assert "Save these choices?" not in body
+    assert "dom-models --confirm" in body
     if kind == "goal":
         assert "Missing explicit request/epic means STOP" in body
         assert "native /goal or /autopilot is not" in body
@@ -1652,6 +1448,8 @@ echo
 if [ "${1:-}" = "--setup-current" ]; then
   run_scenario "Codex setup emitted protocol (static assertions)" scenario_codex_setup_protocol
   run_scenario "installed shared routes and all foreign boundaries (normal/guest, static)" scenario_shared_routing_normal_and_guest
+  run_scenario "saved custom TOML pair lifecycle" scenario_codex_explicit_lifecycle
+  run_scenario "saved inherited TOML pair guest lifecycle" scenario_codex_inherit_guest_lifecycle
   echo "$PASS_COUNT/$((PASS_COUNT + FAIL_COUNT)) passed"
   [ "$FAIL_COUNT" -eq 0 ]
   exit $?
