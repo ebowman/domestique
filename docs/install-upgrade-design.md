@@ -68,23 +68,38 @@ global model override registry.
 
 Use `/dom-decompose configure role models` in Claude/Copilot or
 `$dom-decompose configure role models` in Codex. First interactive goal also
-requires setup if the pair is not confirmed. Ask both role choices, including
-supported effort; check actual native availability and persistent role support.
+requires setup if the pair is not confirmed. Ordinary planning skips setup and
+all helper/role readiness checks, even with missing/unconfirmed/manually edited
+pairs. Only the entire explicit `configure role models` argument selects setup;
+planning text mentioning models does not. Reuse saved native selections.
+Ask missing/unconfirmed choices together, including supported effort, explaining
+local persistence and when they apply; check native availability and persistent role support.
 Explicit inheritance is a choice: Claude uses `model: inherit`; Codex/Copilot
 omit model. Copilot does not support persisted effort through this helper.
 Generated defaults and missing fields are not user consent.
 
 The installed protocol verifies helper ownership and pristine-byte equality,
 then executes the verified bytes. Prepare/verify are **read-only**, with no
-scratch or staged plan. Display the actual minimal diff, obtain explicit
-**Save setup only** consent and ordinary scoped native write approval, then
-apply that exact plan. The digest binds integrity, not consent.
+scratch or staged plan. Summarize project/harness, current → chosen model/effort,
+exact role files, scalar/marker-only change scope, preserved tools/prompts and
+tracked consequences. Offer detailed diff on request; do not require raw diff,
+marker JSON, hashes or verbose evidence output. Retain the digest independently.
+Ask **Save these choices?** after preparation, then obtain any ordinary scoped
+native write approval and apply only that exact plan. Initial choices are not
+save consent; changes require reprepare, new summary and renewed consent.
+Cancel means zero writes. The digest binds integrity, not consent.
 The helper edits model/effort scalars and the pair marker while preserving
 unrelated metadata, comments, body, line endings and modes.
 Changed snapshots/roles/parents cause refusal rather than a stale apply.
 
-After save, **STOP**: no queued goal or task/Beads work. Reload/start a fresh
-native invocation and verify registrations, precedence, inheritance, effective
+Wait for terminal completion, including any background result, check the helper
+result and verify the saved pair before claiming success. Nonzero/partial or
+unverifiable results are failures, not pending success.
+After save, no queued goal or task work. Respond with terse saved choices and
+only the necessary next step. Explicit planning may proceed without reload or
+repeating an already supplied brief; it never delegates, claims or executes tasks.
+Before execution, supported reload/fresh native invocation is required when
+registrations are stale/unknown. Verify registrations, precedence, inheritance, effective
 choices and availability. Explicitly review/dispose of tracked setup changes
 before a fresh goal; do not auto-stage, stash or hide them.
 Codex's current immutable conversation roles need not match a proposed persistent
@@ -94,7 +109,8 @@ old defaults substitutes for a supported saved pair and reload.
 
 The implementer file's `# domestique-model-setup: JSON` marker binds the physical
 project, harness and both role hashes. Manual body/model edits invalidate it.
-Unchanged confirmed pairs survive reruns; changed bytes need new diff/consent.
+Unchanged confirmed pairs survive reruns without prompts; changed bytes need a
+new prepared summary/consent. Helper schema, serialization and pair hashes are unchanged.
 Modified or unowned helpers refuse rather than being adopted or merged.
 Filesystem verification is **not native attestation**: the assistant still
 checks actual discovery, role support, availability and available telemetry.
@@ -114,7 +130,8 @@ Routing follows actual native context, not which other clients' files exist.
 Compatibility entries remain: Claude `/decompose`, `/goal`; Codex
 `$domestique-decompose`, `$domestique-goal`; Copilot
 `/domestique-v2-copilot-decompose`, `/domestique-v2-copilot-goal`.
-They retain the same setup gate. Loading an entry alone never authorizes work;
+They retain the same explicit config-vs-plan routing and execution gate.
+Loading an entry alone never authorizes work;
 a goal needs a fresh explicit request naming the epic.
 
 Provider snapshots live in `.claude/.domestique`, `.codex/.domestique` and

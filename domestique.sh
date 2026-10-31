@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.2.1"
+DOMESTIQUE_VERSION="0.2.2"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -31,11 +31,12 @@ This session is the **orchestrator**. Your job is planning, delegation, and revi
 - **`implementer` subagent (selected role model):** executes one bounded task at a time in its own context and reports back a summary.
 - **`reviewer` subagent (selected role model):** independently verifies a completed task in a fresh context — inspects the real diff, reads the changed files, runs the tests — and reports a pass/fail verdict against the bead's done-criteria. Both roles may use the same model; independence requires a fresh reviewer context, not a stronger model. Does not fix anything; reviewing is its only job.
 
-## Role model gate (before Beads or delegation)
+## Role model gate (execution only, never planning)
+- Planning-only decompose bypasses this entire role gate: no setup, helper verify, model questions, loaded-role checks or reload, even for missing/unconfirmed/manually edited pairs. Apply only the harness boundary and explicit planning request; no delegation or task execution.
 - Claude native entries `/dom-decompose` and `/dom-goal` (aliases `/decompose`, `/goal`) share the setup protocol in their installed command bodies and the same two role files/marker. Generated defaults are suggestions, never confirmation.
 - An interactive first-use `/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) runs the same two-role questionnaire INLINE in this request, not a redirect to decompose. Setup consumes the request: no task, Beads or implementation, and no automatic continuation. The goal's later unattended loop does not make this interactive entry noninteractive. Truly noninteractive/autopilot callers without a confirmed pair STOP without persistence.
 - Ordinary bounded delegation must first validate the confirmed pair and native readiness using that protocol, read-only. If unconfigured or stale, STOP and direct the human to `/dom-decompose configure role models`; do not start another questionnaire or call Beads. Instruction/bootstrap loading alone neither starts setup nor authorizes goal work; do not infer the active harness from directories.
-- Explicit `/dom-decompose configure role models` (or `/decompose configure role models`) is reserved for setup-only reconfiguration, not a planning brief. Saving consumes the request: fresh client session and explicit reinvocation are required, with no automatic goal continuation.
+- Explicit `/dom-decompose configure role models` (or `/decompose configure role models`) is reserved for setup-only reconfiguration, not a planning brief. Saving grants no execution authority; reload only if registrations are stale/unknown before fresh explicit execution authorization. Planning needs no reload.
 - Before dispatch, apply the supported pre-dispatch minimum in that protocol: active native client and registered intended role IDs; verified stored pair/ownership/root/hashes and required reload; matching declared/resolved model/effort and tools; documented project discovery/precedence with competing definitions and known overrides checked; available non-secret provider/model compatibility evidence. Missing optional exact-origin/loaded-byte APIs or future child telemetry alone do not block explicitly authorized work once this minimum passes. Missing/ambiguous registration, actual mismatch, unresolved inheritance, known defeating override or unavailability means STOP, never fallback. Send no conflicting spawn model/effort overrides. Check available child telemetry during/after each authorized assignment before accepting work; selection failure/mismatch stops. Native dispatch qualification remains separate.
 
 ## Work tracking: beads
@@ -555,7 +556,7 @@ def verify(pair, contents):
 
 def publish(pair, plan, digest):
     need(type(digest) is str and re.fullmatch("[0-9a-f]{64}", digest) and
-         sha(canonical(plan)) == digest, "displayed plan digest mismatch")
+         sha(canonical(plan)) == digest, "prepared plan digest mismatch")
     need(type(plan) is dict and set(plan) == {"v", "root", "harness", "choices", "snapshot", "diff"}
          and type(plan["v"]) is int and plan["v"] == 1 and
          plan["root"] == str(pair.root) and plan["harness"] == HARNESS, "plan binding mismatch")
@@ -610,7 +611,7 @@ def publish(pair, plan, digest):
         raise ValueError(json.dumps({
             "scope": "filesystem-only", "error": str(exc), "partial": bool(changed),
             "published": changed, "workflow_authorized": False,
-            "recovery": "No rollback. Inspect current pair; prepare/show diff and obtain new consent.",
+            "recovery": "No rollback. Inspect current pair; prepare/summarize and obtain new consent.",
             "operation_temporaries": [str(p) for p in owned],
         })) from exc
     finally:
@@ -641,7 +642,7 @@ def main():
         plan, _ = build(pair, choices(load(sys.argv[2])), snapshot, contents)
         result = {"plan": plan, "digest": sha(canonical(plan))}
     elif action == "apply":
-        need(len(sys.argv) == 3, "apply requires independent displayed digest; plan on stdin")
+        need(len(sys.argv) == 3, "apply requires independent prepared digest; plan on stdin")
         raw = sys.stdin.buffer.read(8 * LIMIT + 1)
         need(len(raw) <= 8 * LIMIT, "oversize plan")
         result = publish(pair, load(raw), sys.argv[2])
@@ -744,24 +745,34 @@ discovery/precedence, overrides, inheritance resolution and available telemetry
 as specified above. Existing native hooks are not controlled by this helper;
 do not claim zero external hook reads.
 
-After asking BOTH role choices inline and establishing supported persistent
+After confirming BOTH role choices inline and establishing supported persistent
 native model/effort availability, pass `prepare` and one JSON argument:
 `{"implementer":{"model":"EXACT-ID","effort":null},"reviewer":{"model":"EXACT-ID","effort":null}}`.
 Both fields are mandatory for both roles; JSON null means native inheritance.
 Copilot requires effort null and refuses effort settings. Claude model null
 emits `inherit`; Codex/Copilot null removes model. No shipped model registry.
 Prepare is READ-ONLY: no staging, permission probe, marker edit or other write.
-It returns `plan` and `digest`. Display the plan's ACTUAL complete diff,
-including marker, exact root/paths, choices, inherited semantics and tracked
-effects. Retain its digest independently in the conversation/tool invocation,
+It returns `plan` and `digest`. Present a concise summary derived from that exact
+plan: project/harness, each current -> chosen model/effort (including native
+inheritance), both exact role paths, scalar settings + pair confirmation marker
+as the only change scope, preserved tools/prompts, and tracked-file consequences.
+Offer the complete detailed diff on request; do not print raw diffs, marker JSON,
+hashes/digests or verbose provider attestation by default. Keep checks internal;
+briefly report relevant support limits or blockers, not an evidence transcript.
+Retain its digest independently in the conversation/tool invocation,
 not in an editable plan or by recalculating it from a later regenerated plan.
-Changes require prepare/show diff/new explicit human `Save setup only` consent.
+Ask once: `Save these choices? Save / Cancel`. This deliberate save action
+consents only to the exact prepared plan summarized above, not future bytes.
+Initial model selection before prepare is NOT save consent.
+Changes require prepare/new summary/new explicit human save consent.
 Cancellation, missing input or denied native write approval: do not call apply;
-ZERO target writes, no Beads. The digest binds integrity, NOT human consent.
+ZERO target writes, no Beads. Respond concisely: `Setup cancelled; nothing saved`
+and stop. Do not report success or resume the initiating goal.
+The digest binds integrity, NOT human consent.
 
 Only after explicit consent AND the normal native one-command protected-write
 approval, invoke the SAME bootstrap with `apply` and that independently retained
-displayed digest as its only argument, supplying ONLY the exact plan JSON on
+prepared digest as its only argument, supplying ONLY the exact plan JSON on
 stdin. No file staging before approval; no model/body/path/root overrides at
 apply. Do not try ordinary writes as permission probes. No persistent prefix,
 broad permission or sandbox bypass. If approval is unavailable, STOP.
@@ -772,7 +783,7 @@ including file path/mode/device/inode/nlink/hash and parent identities/modes.
 Prepare/verify require only safe readable evidence, including read-only roles
 and parents. Native sandbox write access is not tracked filesystem mode state.
 Only apply checks writable roles/parents in the approved execution context;
-changed filesystem modes still require prepare/show diff/new consent.
+changed filesystem modes still require prepare/new summary/new consent.
 After approval it creates collision-safe operation-owned temporaries, rechecks
 all evidence immediately before EVERY publication, invalidates an old marker
 first if present, publishes reviewer then implementer with the marker LAST,
@@ -781,24 +792,62 @@ Failures are nonzero, with published paths/partial state and owned recovery
 information. No blind rollback; never overwrite concurrent user changes.
 Cleanup removes only unchanged operation-owned temporaries; unknown leftovers
 are retained and reported. No permanent transaction registry/receipt.
-On stale/manual body edits, show current choices and a new actual diff for
-explicit reconfirmation, never infer approval or silently complete a pair.
-Success is SETUP ONLY: STOP, no Beads or queued workflow. Require a fresh native
-invocation and explicit reinvocation before native readiness checks and work.
+On stale/manual body edits, preserve those bytes, show current choices and a
+new prepared summary for explicit reconfirmation; never silently complete a pair.
+Run apply synchronously when supported. If the native tool returns a running
+session/background notification, wait using its supported wait/result mechanism
+until terminal completion; pending is NOT saved. Check exit status and helper
+JSON (filesystem-only, confirmed and chosen pair), then run read-only `verify`
+through the same pristine bootstrap and check both hashes/choices against apply.
+Nonzero exit, partial publication, missing/invalid result or failed verification
+is explicit FAILURE, never success-shaped; report partial state/recovery and stop.
+Only after verified completion say tersely which choices were saved.
+Success is SETUP ONLY: no task, claim, dispatch, branch/commit or queued goal.
+Planning is independent and may proceed on an explicit planning request without
+reload, including one already supplied; do not ask the human to repeat it.
+Before execution, stale/unknown registrations require a supported reload or
+fresh native invocation, readiness checks and fresh explicit execution
+authorization. Do not invent in-session refresh or treat saved files as loaded
+roles. If supported evidence already establishes matching current registration,
+do not demand a ceremonial restart. Setup consent alone never authorizes goal
+work; the initiating goal is consumed, not queued.
+DOM_EOF
+}
+
+emit_decompose_routing() { cat <<'DOM_EOF'
+## Explicit config-vs-plan routing
+After the harness boundary, bind ROOT to this invocation's physical Git worktree
+root; ambiguous root means ask and stop, never search another checkout.
+Only the entire explicit argument `configure role models` selects the setup-only
+section below. An explicit request to configure/reconfigure roles outside that
+form should be directed to this entry with `configure role models`; do not
+silently reinterpret a planning brief. Task text mentioning models, providers,
+effort or role configuration is NOT configuration intent.
+For an explicit planning request, SKIP the entire role setup section and go
+directly to `# Decompose into beads`. No model configuration/questions, helper
+verify, loaded-role check or reload: missing, unconfirmed or manually edited
+role pairs do not gate planning. Do not read role files to decide whether to plan.
+Missing/ambiguous request: ask for a planning brief or the exact configuration
+invocation; loading instructions alone starts neither.
+Configuration uses the existing setup protocol below and never falls through
+into planning or execution. Planning never delegates (including research helpers),
+executes tasks, claims/closes beads, changes branches, stages or commits.
 DOM_EOF
 }
 
 emit_claude_model_setup() { cat <<'DOM_EOF'
 ## Claude first-use role setup — mandatory gate
 
+This section applies ONLY to explicit role configuration or execution entry,
+never to ordinary planning-only decompose; its routing skips this entire section.
 Throughout setup, do NOT use ANY Agent/Task/agent delegation, including
 documentation/research helpers or `claude-code-guide`. The caller must inspect
 tools/docs itself; missing evidence means STOP, not a helper call. This rule is
 scoped to setup, not a global agent prohibition: after setup/reload and readiness,
 the workflow still requires implementer and independent reviewer delegation.
 
-Run this gate BEFORE any Beads command (including readiness/create/claim),
-planning, code, branch changes or dispatch. Establish the actual native
+For execution, run this gate BEFORE any Beads command (including readiness/create/claim),
+code, branch changes or dispatch. Establish the actual native
 harness as `claude` using available client context/tools, not this command's name.
 Bind ROOT to the exact physical Git worktree
 root of this invocation; if cwd is not that root, or identity is ambiguous,
@@ -866,11 +915,11 @@ tools/docs yourself; missing evidence means STOP, not a helper call.
 Before saving, use supported evidence from the installed client's documented
 capabilities/current selectable models and efforts to establish that BOTH
 proposed selections are supported and available with the required role tools.
-Display the evidence and its limits. Check applicable native precedence and
+Keep evidence internal except concise relevant limits/blockers. Check applicable native precedence and
 overrides using supported, non-secret evidence; do not edit client settings.
 Include available non-secret provider/model compatibility evidence (supported
 current session/provider status, restrictions and selectable model/effort data).
-State what each source establishes and what remains unobserved: a catalog is
+Check what each source establishes and what remains unobserved: a catalog is
 selection/support evidence, not execution proof or guaranteed future entitlement.
 A doctor subprocess describes its own provider/session, not automatically the
 active thread; establish applicability before using it as active-session evidence.
@@ -883,8 +932,9 @@ Unknown support/availability, incompatible effort, unresolved inheritance/alias,
 or an override that defeats the selection means STOP before writes, with the
 role and reason. No fallback or silent default substitution; no paid probe.
 
-After saving, require a fresh client session and explicit reinvocation. Before
-any workflow action on a confirmed pair, establish this supported pre-dispatch
+After saving, require supported reload/fresh invocation if registration is
+stale/unknown, then fresh explicit execution authorization. Planning needs none.
+Before execution on a confirmed pair, establish this supported pre-dispatch
 minimum, read-only:
 - Identify the active native client and its registered intended `implementer`
   and `reviewer` role IDs; registration must be present and unambiguous.
@@ -924,14 +974,16 @@ work (hq-7sm.6); static emitted-protocol/lifecycle tests do not qualify runtime.
 That later observation is not a prerequisite to writing this protocol or saving
 choices with supported pre-save evidence, and does not authorize a paid call here.
 
-### One question for BOTH roles; mandatory consent
+### One question for BOTH roles; then exact-plan consent
 Show ROOT / claude, both exact paths, current model and effort values (including
 absent fields and native inheritance semantics), and any tracked-file effects.
-Ask in one form:
-> Configure Domestique roles? Implementer: exact model ID or native inheritance,
+Reuse saved native selections; do not ask users to reselect an unchanged confirmed
+pair. For missing/unconfirmed choices or explicit changes, prefill current values
+and ask both in one concise form:
+> These choices will be saved locally for subsequent role execution after any
+> required reload; planning works now. Implementer: exact model ID or native inheritance,
 > plus confirmed effort or inherited effort. Reviewer: exact model ID or native
 > inheritance, plus confirmed effort or inherited effort.
-> Save the displayed minimal diff to these two files? Save setup only / Cancel.
 
 Use current client choices, not a shipped model menu. Both roles may use the same
 model; always use a fresh reviewer context. Existing Claude aliases may be kept
@@ -942,10 +994,9 @@ Write `model: "inherit"` for native model inheritance; omit effort for inherited
 effort (native resolution, not necessarily the selected model's default).
 Missing model fields/generated defaults are not consent.
 
-Prepare both outputs in memory and show the ACTUAL complete proposed diff
-(including marker), existing settings, inherited semantics and tracked-file
-consequences before explicit Save setup only consent. If selections change,
-redisplay the diff and obtain consent to that exact diff. Consent to a goal is
+Prepare both outputs read-only and present the concise exact-plan summary
+defined below before explicit save consent; detailed diff is opt-in.
+If selections change, reprepare, summarize and renew consent. Consent to a goal is
 not consent to save settings. Cancel, incomplete/missing values, or noninteractive
 setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
 Noninteractive callers may only use an already confirmed pair after readiness
@@ -955,10 +1006,10 @@ DOM_EOF
   emit_model_setup_protocol claude
   cat <<'DOM_EOF'
 
-Every successful first confirmation/reconfiguration is SETUP ONLY: no planning
-beads, claim, code, dispatch, branch/commit or goal cycle. End with a fresh client
-session and the explicit `/dom-decompose` (alias `/decompose`) or
-`/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) invocation to repeat. The initiating
+Every successful first confirmation/reconfiguration is SETUP ONLY: no task
+claim, code, dispatch, branch/commit or goal cycle. Planning can proceed without
+reload on an explicit planning request. Execution requires readiness and fresh
+explicit `/dom-goal EPIC_ID` (alias `/goal EPIC_ID`) authorization. The initiating
 goal request is consumed, NOT queued for automatic continuation.
 Before later goal execution, ALL tracked/index dirtiness, including setup
 changes, requires human disposition: never auto-stage, commit, stash, discard
@@ -978,8 +1029,11 @@ argument-hint: <goal, path to a spec file, or configure role models>
 ---
 DOM_EOF
   emit_harness_guard claude
+  emit_decompose_routing
   emit_claude_model_setup
   cat <<'DOM_EOF'
+
+# Decompose into beads
 
 Decompose the following into a beads work graph: $ARGUMENTS
 
@@ -991,7 +1045,7 @@ Rules for a good decomposition:
 - Wire real dependencies so `bd ready` only ever surfaces work that can actually start:
   `bd dep add <blocked-id> <blocker-id>`   # blocked depends on blocker
 - Keep `bd ready` crisp. No vague someday-items, no research-maybe tasks, nothing not immediately actionable. If it isn't ready to be worked, it doesn't belong in the graph yet.
-- Do not implement anything. Planning only.
+- Do not implement or delegate anything. No claims, close, branch changes, staging or commits. Planning only.
 
 When done, print the resulting graph (`bd ready` plus the epic tree) for my review before any execution.
 DOM_EOF
@@ -1009,7 +1063,11 @@ DOM_EOF
 
 Interactive first-use goal setup runs the two-role questionnaire INLINE above,
 not the ordinary-delegation redirect. Setup consumes this request with no task,
-Beads or implementation; stop for fresh-session reinvocation. Truly
+Beads or implementation; stop execution until fresh explicit goal authorization.
+Planning remains available immediately, including an already supplied explicit
+planning request. Execution requires native readiness for the saved pair, with
+supported reload/fresh invocation only if registration is stale/unknown.
+Do not assume saving updates loaded roles. Truly
 noninteractive/autopilot callers without a confirmed pair STOP without persistence.
 Only an unchanged confirmed, ready pair can enter the unattended loop below.
 
@@ -1116,14 +1174,16 @@ DOM_EOF
 emit_codex_model_setup() { cat <<'DOM_EOF'
 ## Codex first-use role setup — mandatory gate
 
+This section applies ONLY to explicit role configuration or execution entry,
+never to ordinary planning-only decompose; its routing skips this entire section.
 Throughout setup, do NOT use ANY Agent/Task/agent delegation, including
 documentation/research helpers or built-in documentation agents. The caller must inspect
 tools/docs itself; missing evidence means STOP, not a helper call. This rule is
 scoped to setup, not a global agent prohibition: after setup/reload and readiness,
 the workflow still requires implementer and independent reviewer delegation.
 
-Run this gate BEFORE any Beads command (including readiness/create/claim),
-planning, code, branch changes or dispatch. Establish the active harness as `codex`
+For execution, run this gate BEFORE any Beads command (including readiness/create/claim),
+code, branch changes or dispatch. Establish the active harness as `codex`
 from actual client context/tools, not this entry's name. Bind ROOT to the exact physical Git
 worktree root of this invocation; if cwd is not that root or identity is
 ambiguous, STOP and ask for an explicit invocation there. Never search ancestors
@@ -1212,14 +1272,15 @@ is NOT grounds to reject supported persistent reconfiguration or refuse its
 actual diff/consent flow. This does not bypass fixed tool registration or
 provider permissions. No Task/spawn override attempt, dispatch test, or fallback
 to old generated defaults is allowed during setup.
-With supported persistent selections, show the actual complete diff, obtain
-Save setup only consent and any required ordinary native scoped protected-write
-approval as below, save only, then STOP for a fresh session and reinvocation.
-Display the evidence and its limits. Check applicable native precedence and
+With supported persistent selections, present the concise exact-plan summary,
+obtain save consent and any required ordinary native scoped protected-write
+approval as below, then wait for verified save completion. Execution still
+requires readiness and fresh authorization; planning needs no reload.
+Keep evidence internal except concise relevant limits/blockers. Check applicable native precedence and
 overrides with non-secret evidence; do not edit client/provider settings.
 Include available non-secret provider/model compatibility evidence (supported
 current session/provider status, restrictions and selectable model/effort data).
-State what each source establishes and what remains unobserved: a catalog is
+Check what each source establishes and what remains unobserved: a catalog is
 selection/support evidence, not execution proof or guaranteed future entitlement.
 A doctor subprocess describes its own provider/session, not automatically the
 active thread; establish applicability before using it as active-session evidence.
@@ -1233,8 +1294,9 @@ Unknown support/availability, incompatible effort, unresolved inheritance/alias,
 or an override that defeats selection means STOP before writes with role/reason.
 No fallback, silent default substitution, invented verification API or paid probe.
 
-After saving, require a fresh client session and explicit reinvocation. Before
-any workflow action on a confirmed pair, establish this supported pre-dispatch
+After saving, require supported reload/fresh invocation if registration is
+stale/unknown, then fresh explicit execution authorization. Planning needs none.
+Before execution on a confirmed pair, establish this supported pre-dispatch
 minimum, read-only:
 This POST-SAVE readiness check is distinct from PRE-SAVE persistence support.
 The freshly loaded registered pair must match the chosen values and their
@@ -1280,14 +1342,16 @@ That later observation is not a prerequisite to emitting this
 protocol or saving choices with supported pre-save evidence, and does not
 authorize a paid call here.
 
-### One question for BOTH roles; mandatory consent
+### One question for BOTH roles; then exact-plan consent
 Show ROOT / codex, both exact paths, current model and model_reasoning_effort
 values (including absent fields and native resolution), and tracked-file effects.
-Ask in one form:
-> Configure Domestique roles? Implementer: exact model ID or native inheritance,
+Reuse saved native selections; do not ask users to reselect an unchanged confirmed
+pair. For missing/unconfirmed choices or explicit changes, prefill current values
+and ask both in one concise form:
+> These choices will be saved locally for subsequent role execution after any
+> required reload; planning works now. Implementer: exact model ID or native inheritance,
 > plus confirmed effort or inherited effort. Reviewer: exact model ID or native
 > inheritance, plus confirmed effort or inherited effort.
-> Save the displayed minimal diff to these two files? Save setup only / Cancel.
 
 Use current client choices, not a shipped model menu. Both roles may use the
 same model; always use a fresh reviewer context. New explicit choices require
@@ -1302,23 +1366,22 @@ write a literal model named `inherit`. For inherited effort OMIT
 model_reasoning_effort; this means native resolution, not necessarily the
 selected model's default.
 
-Prepare both outputs in memory and show the ACTUAL complete proposed diff
-(including marker), existing settings, inherited semantics and tracked-file
-consequences before explicit Save setup only consent. If selections change,
-redisplay the diff and obtain consent to that exact diff. Goal authorization
+Prepare both outputs read-only and present the concise exact-plan summary
+defined below before explicit save consent; detailed diff is opt-in.
+If selections change, reprepare, summarize and renew consent. Goal authorization
 is not settings consent. Cancel, incomplete/missing values, or noninteractive
 setup mean ZERO writes and NO Beads/workflow calls; preserve any prior pair.
 Noninteractive callers may only use an already confirmed pair after readiness
 checks; otherwise report the interactive setup/reinvoke action and STOP.
 
 ### After save consent — native scoped approval, then publication
-Only AFTER explicit Save setup only consent to the exact prepared diff, if
+Only AFTER explicit save consent to the exact prepared plan, if
 native sandbox protection requires permission to write these config paths,
 request native one-command scoped approval for the EXACT prepared publication
 operation below, including its final preflight. When the native tool supports
 it (for example exec_command with approval_policy=on-request), request
 `sandbox_permissions=require_escalated` with a specific justification naming
-both exact role paths and the consented setup-only diff. Do not try ordinary
+both exact role paths and the consented setup-only plan. Do not try ordinary
 writes as probes before requesting approval. No persistent prefix rule,
 sandbox-mode change, broad permission grant or bypass is permitted.
 Save consent is not native permission; use the supported native approval flow.
@@ -1329,10 +1392,10 @@ DOM_EOF
   emit_model_setup_protocol codex
   cat <<'DOM_EOF'
 
-Every successful first confirmation/reconfiguration is SETUP ONLY: no planning
-beads, claim, code, dispatch, branch/commit or goal cycle. End with a fresh client
-session and explicit `$dom-decompose` (alias `$domestique-decompose`) or
-`$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`) invocation to repeat.
+Every successful first confirmation/reconfiguration is SETUP ONLY: no task
+claim, code, dispatch, branch/commit or goal cycle. Planning can proceed without
+reload on an explicit planning request. Execution requires readiness and fresh
+explicit `$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`) authorization.
 The initiating goal request is consumed, NOT queued for automatic continuation.
 Missing setup during truly noninteractive/autopilot goal execution means STOP,
 not permission to write settings; interactive first-use goal entry asks INLINE
@@ -1349,7 +1412,11 @@ DOM_EOF
 }
 
 emit_codex_role_gate() { cat <<'DOM_EOF'
-## Role model gate (before Beads or delegation)
+## Role model gate (execution only, never planning)
+Planning-only decompose bypasses this entire role gate: no setup, helper verify,
+model questions, loaded-role checks or reload, even for missing/unconfirmed/
+manually edited pairs. Apply only the harness boundary and explicit planning
+request; no delegation or task execution.
 An interactive first-use `$dom-goal EPIC_ID` (alias `$domestique-goal EPIC_ID`)
 runs the same two-role questionnaire INLINE in its installed goal body, not a
 redirect to decompose. Setup consumes the request: no task, Beads or
@@ -1369,8 +1436,10 @@ POST-SAVE fresh-session registered-role readiness in that protocol. Current
 immutable registrations need not match a proposed pair during setup alone;
 that mismatch does not forbid a supported persistent edit. Verify installed
 role-file semantics and provider/tool compatibility, not just catalog presence.
-Show the actual diff, obtain Save setup only consent and required native scoped
-protected-write approval, save only, then STOP for fresh reload/reinvocation.
+Present the concise exact-plan summary (detailed diff on request), obtain save
+consent and required native scoped protected-write approval, then wait for
+verified save completion. Planning needs no reload. Execution requires supported
+reload/fresh invocation if registration is stale/unknown and fresh authorization.
 Do not attempt an in-session Task/spawn override or use old defaults as fallback.
 Before dispatch, apply the supported pre-dispatch minimum in that protocol:
 active native client and registered intended role IDs; verified stored
@@ -1387,8 +1456,8 @@ registration, provider permissions or genuine capability restrictions.
 Send no conflicting spawn model/effort overrides. Check available child telemetry
 during/after each authorized assignment before accepting work; selection
 failure/mismatch stops. Native dispatch qualification remains separate. Explicit
-reconfiguration uses that same two-role gate and ends setup-only, with a fresh
-session/reinvocation and no automatic goal continuation.
+reconfiguration uses that same two-role gate and ends setup-only, with no
+automatic goal continuation.
 DOM_EOF
 }
 
@@ -1442,6 +1511,7 @@ description: Codex only; never match in Copilot, Claude or an unknown harness. D
 ---
 DOM_EOF
   emit_harness_guard codex
+  emit_decompose_routing
   emit_codex_model_setup
   cat <<'DOM_EOF'
 
@@ -1454,7 +1524,8 @@ Use the goal or specification in the invoking prompt.
    in one pass and carrying explicit inputs, outputs, edge cases, and testable
    done criteria.
 3. Add real dependencies so `bd ready` exposes only actionable tasks.
-4. Do not implement anything.
+4. Do not implement or delegate anything. No claims, close, branch changes,
+   staging or commits. Planning never grants execution.
 5. Print `bd ready` plus the epic tree for human review.
 DOM_EOF
 }
@@ -1473,7 +1544,11 @@ DOM_EOF
 
 Interactive first-use goal setup runs the two-role questionnaire INLINE above,
 not the ordinary-delegation redirect. Setup consumes this request with no task,
-Beads or implementation; stop for fresh-session reinvocation. Truly
+Beads or implementation; stop execution until fresh explicit goal authorization.
+Planning remains available immediately, including an already supplied explicit
+planning request. Execution requires native readiness for the saved pair, with
+supported reload/fresh invocation only if registration is stale/unknown.
+Do not assume saving updates loaded roles. Truly
 noninteractive/autopilot callers without a confirmed pair STOP without persistence.
 Only an unchanged confirmed, ready pair can enter the unattended loop below.
 
@@ -1558,9 +1633,11 @@ DOM_EOF
 emit_copilot_model_setup() { cat <<'DOM_EOF'
 ## Copilot first-use role setup — mandatory gate
 
+This section applies ONLY to explicit role configuration or execution entry,
+never to ordinary planning-only decompose; its routing skips this entire section.
 No setup delegation of ANY kind, including documentation/research helpers.
 Inspect supported native tools/docs yourself; missing evidence means STOP.
-Before Beads, planning, code, branch changes or dispatch, establish the actual
+Before execution Beads, code, branch changes or dispatch, establish the actual
 native caller as copilot from session context/tools, never installed directories.
 Bind ROOT to this invocation's exact physical Git worktree root. Ambiguous
 identity or cwd outside that root means STOP; never search ancestors or another
@@ -1615,7 +1692,7 @@ NO writes, but still requires native readiness. Aliases share this same pair.
 Before saving establish BOTH selections' support/availability and required
 role/tools compatibility using the installed client's documented capabilities,
 current selectable models and applicable non-secret session/provider evidence.
-Show sources and limits: a catalog is selection evidence, not execution proof
+Keep evidence internal except concise relevant limits/blockers: a catalog is selection evidence, not execution proof
 or future entitlement. A subprocess's provider/session is not automatically
 the active thread. Verify applicability. Respect explicit provider constraints
 using actual native evidence; do not infer provider from spelling or hardcode a
@@ -1624,7 +1701,8 @@ Unknown/unavailable/unsupported selection, unresolved inheritance or defeating
 override means STOP without writes. No fallback, fake paid probe, invented API
 or caller-assertion CLI flag substitutes for evidence.
 
-After a save require a fresh Copilot invocation/reload and explicit reinvocation.
+After a save require a supported fresh Copilot invocation/reload if registration
+is stale/unknown, then fresh explicit execution authorization. Planning needs none.
 Before any dispatch on a confirmed pair, establish read-only:
 - Actual native client and present, unambiguous registered intended role IDs.
 - Stored pair/ownership/physical ROOT/BOTH hashes and required fresh reload.
@@ -1647,10 +1725,14 @@ each authorized assignment before accepting work. Observed mismatch/failure
 stops without fallback. Report telemetry limits honestly. No paid probe needed.
 Native dispatch/reload qualification remains separate budget-gated work.
 
-### BOTH roles, actual diff and explicit consent
+### BOTH roles, concise summary and exact-plan consent
 Show ROOT / copilot, exact role paths, current selections (including absent
-model/native inheritance), evidence and tracked-file consequences. Ask BOTH:
-> Implementer: exact native model ID or native inheritance?
+model/native inheritance) and tracked-file consequences.
+Reuse saved native selections; do not ask users to reselect an unchanged confirmed
+pair. For missing/unconfirmed choices or explicit changes, prefill current values
+and ask both in one concise form:
+> These choices will be saved locally for subsequent role execution after any
+> required reload; planning works now. Implementer: exact native model ID or native inheritance?
 > Reviewer: exact native model ID or native inheritance?
 Both may use the same model; independent review means a fresh context.
 Use current native choices, not a shipped menu. Resolve existing aliases with
@@ -1662,9 +1744,10 @@ DOM_EOF
   emit_model_setup_protocol copilot
   cat <<'DOM_EOF'
 
-Every successful confirmation/reconfiguration is SETUP ONLY: no Beads, planning,
-code, branch/commit or dispatch. End with fresh Copilot invocation/reload and
-explicit /dom-decompose or /dom-goal EPIC_ID (legacy names also work).
+Every successful confirmation/reconfiguration is SETUP ONLY: no task claims,
+code, branch/commit or dispatch. Planning can proceed without reload on an
+explicit planning request. Execution requires readiness and fresh explicit
+/dom-goal EPIC_ID authorization (legacy names also work).
 The initiating goal is consumed, not queued. Before later goal work, ALL
 tracked/index dirtiness, including setup edits, requires human disposition:
 never auto-stage, commit, stash, discard or hide it. Existing snapshot upgrades
@@ -1677,7 +1760,11 @@ DOM_EOF
 
 emit_copilot_role_gate() { cat <<'DOM_EOF'
 ## Read-only role gate
-Before Beads/delegation validate the confirmed pair and supported pre-dispatch
+Planning-only decompose bypasses this entire role gate and the bounded native
+cycle below: no setup, helper verify, model questions, loaded-role checks or
+reload, even for missing/unconfirmed/manually edited pairs. Apply only the harness
+boundary and explicit planning request; no delegation or task execution.
+Before execution Beads/delegation validate the confirmed pair and supported pre-dispatch
 readiness using `.github/skills/domestique-v2-copilot-decompose/SKILL.md`.
 Read that gate as a protocol, not a new invocation or setup authorization.
 If unconfigured/stale, STOP and direct the human to
@@ -1691,6 +1778,8 @@ DOM_EOF
 
 emit_copilot_loop() { cat <<'DOM_EOF'
 ## Bounded native cycle
+This cycle is for explicitly authorized task execution only, never decompose
+planning or setup. Its Beads/readiness/branch gates do not apply to planning.
 Before task work or Beads writes, the parent owns the routing check: identify
 ACTUAL Copilot from native session context, not a plain parent assertion, file
 paths, model names or generic tool aliases. Unknown, foreign or contradictory
@@ -1754,9 +1843,12 @@ description: Copilot only; never match in Claude, Codex or an unknown harness. H
 ---
 DOM_EOF
   emit_harness_guard copilot
+  emit_decompose_routing
   emit_copilot_model_setup
   cat <<'DOM_EOF'
-After the gate and explicit planning request, create one epic and bounded child
+# Decompose into beads
+
+On an explicit planning request, create one epic and bounded child
 tasks using the existing project-scoped bd. Each task has one deliverable,
 inputs/outputs, edge cases and testable done criteria. Wire real dependencies.
 Check every result and retain actual IDs; errors are not successful creation.
@@ -1831,8 +1923,15 @@ user invocation. Merely loading or implicitly matching this skill is not
 unattended authority and must not start setup. Goal requires an original explicit
 dom-goal invocation naming the epic (Codex $dom-goal; Copilot /dom-goal);
 loading the routed body cannot grant it. Native compatibility invocations retain
-their own explicit authority, never an inferred request. Setup consumes that
-request; fresh-session explicit reinvocation is required, not automatic continuation.
+their own explicit authority, never an inferred request. Setup consumes goal
+authority, never queues work; execution needs fresh explicit authorization.
+Planning-only decompose bypasses ALL role setup/readiness gates in shared,
+native and root/bootstrap policies: no model questions, helper verify,
+loaded-role checks or reload, even for missing/unconfirmed/manually edited pairs.
+Only the entire explicit decompose argument `configure role models` routes to
+setup; task text mentioning models is not configuration intent. Preserve an
+explicit planning request and route directly to the native planning section.
+Planning never delegates or executes tasks, claims/closes beads or commits.
 DOM_EOF
   printf '\n- Codex: `.agents/skills/domestique-%s/SKILL.md` (compatibility `$domestique-%s`); ordinary loop `.agents/skills/domestique/SKILL.md`, native roles `implementer` / `reviewer`.\n' "$kind" "$kind"
   printf -- '- Copilot: `.github/skills/domestique-v2-copilot-%s/SKILL.md`; ordinary loop `.github/skills/domestique-v2-copilot/SKILL.md`, native roles `domestique-v2-copilot-implementer` / `domestique-v2-copilot-reviewer`.\n' "$kind"
@@ -1991,8 +2090,9 @@ Before applying:
   both remains Claude+Codex. Explicit installs are additive, not removal.
   This installs project config, not native clients or model software.
   Preserving upgrades retain model choices (--force can replace provider files).
-  Each harness independently needs first-use role confirmation, then reload/
-  fresh invocation. Installing config does not establish native readiness.
+  Planning needs no model setup or reload. Execution needs confirmed roles
+  and reload/fresh invocation if registrations are stale/unknown.
+  Installing config does not establish native readiness.
   Guest privacy, supported five/seven-definition preview migration, preserving
   refusals and recovery: https://github.com/ebowman/domestique/blob/main/docs/install-upgrade-design.md#remote-install-and-upgrade
 
@@ -2039,7 +2139,7 @@ print_install_notice() (
   done
   printf '\n'
   echo "Project config only, not native clients/model software. Preserving upgrades retain model choices; --force can replace provider files."
-  echo "First use: confirm roles independently in each harness, then reload/start a fresh invocation; config is not native readiness."
+  echo "Planning needs no setup/reload. Before execution, confirm roles independently in each harness; reload/start a fresh invocation if registrations are stale/unknown. Config is not native readiness."
   echo "Choose with --platform claude/codex/copilot/both/all; both remains Claude+Codex."
   echo "Preview: curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run"
   echo "Explicit: curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --platform claude"
@@ -2343,7 +2443,7 @@ install_current_provider() {
         cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes" ||
           cp "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"
       fi
-      echo "Copilot configuration installed; native readiness is NOT established. Use a fresh native invocation and the role setup gate."
+      echo "Copilot configuration installed; native readiness is NOT established. Planning needs no setup/reload; check role setup and readiness before execution."
       ;;
   esac
 
