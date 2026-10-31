@@ -280,7 +280,7 @@ def installer_defaults():
 def installer_request(platform, assignments):
     """Read-only CLI boundary. Missing role = default/preserve; null = explicit inherit.
 
-    .4 passes request["overrides"][harness] to InstallerPair.prepare(), after
+    The installer passes request["overrides"][harness] to InstallerPair.prepare(), after
     preflighting its whole lifecycle. This request is NOT publication authority.
     """
     platforms = {"claude": ["claude"], "codex": ["codex"],
@@ -749,7 +749,7 @@ def publish_outputs(pair, expected, contents, outputs, *, dependencies=None, con
         if dependencies is not None:
             result.update(configured=configured, native_ready=False,
                           outcome="configured" if configured else "reconfirmation-required",
-                          published=changed)
+                          published=changed, publication_snapshot=expected)
         return result
     except (OSError, ValueError) as exc:
         raise ValueError(json.dumps({
@@ -809,7 +809,7 @@ def restore_settings(local, merged, role):
 class InstallerPair(Pair):
     """Trusted installer library interface ONLY; deliberately absent from main().
 
-    .4 must load its own emitted helper (not execute an unvalidated live helper),
+    Load the installer's own emitted helper (not an unvalidated live helper),
     authorize the requested provider/overrides and preflight the WHOLE lifecycle.
     Supply seven pristine emitter outputs, recognized (version, files) inventory
     signatures, the existing preserving merge(local, base, upstream) callback,
@@ -819,9 +819,13 @@ class InstallerPair(Pair):
     prepare(overrides) is read-only, including absent files/directories. Keep this
     object and its returned digest in the trusted installer; apply(plan, digest)
     accepts ONLY that prepared plan. It publishes only these seven helper-owned
-    paths, not the entire inventory. .4 owns other inventory/lifecycle publication
+    paths, not the entire inventory. The installer owns other lifecycle publication
     and global success. Reconfirmation-required is explicitly NOT global success.
-    Partial owned pairs refuse without repair: .4 must coordinate repair with
+    The internal result's publication_snapshot binds the verified outputs and
+    identities. Carry it through final lifecycle verification without rereading a
+    new baseline. No remaining installer step may mutate these seven paths.
+    Native CLI publication results deliberately do not expose this internal field.
+    Partial owned pairs refuse without repair: the installer must coordinate repair with
     explicit reconfirmation. Restoring an absent-marker pair here would erase its
     partial-state evidence and let a subsequent rerun mistake it for legacy.
     No provider readiness, CLI authorization, historical attestation or force
@@ -884,7 +888,7 @@ class InstallerPair(Pair):
             return "legacy"
         return "custom-unconfirmed"
 
-    def prepare(self, overrides):
+    def prepare(self, overrides, *, force=False):
         self.check_root()
         need(type(overrides) is dict and set(overrides) <= set(ROLES),
              "installer overrides name individual roles")
@@ -916,6 +920,9 @@ class InstallerPair(Pair):
                 projected = [project_settings(data, role) for data in (local, base, upstream)]
                 merged = projected[0] if projected[1] == projected[2] else self.merge(*projected)
                 need(type(merged) is bytes and len(merged) <= LIMIT, "invalid preserving merge output")
+                if force:
+                    self.guard(role, base, local, restore_settings(local, merged, role))
+                    merged = projected[2]
                 outputs[role] = restore_settings(local, merged, role)
                 if role in overrides:
                     current_model = parse(outputs[role], role)[1].get("model")
@@ -950,6 +957,7 @@ class InstallerPair(Pair):
         plan = {
             "v": 1, "purpose": "installer-selected-pair", "root": str(self.root),
             "harness": HARNESS, "overrides": overrides, "eligibility": eligibility,
+            "force": force,
             "configured": qualified, "snapshot": snapshot,
             "selected": result["selected"],
             "outputs": {p: sha(data) for p, data in final.items()},
@@ -1466,7 +1474,7 @@ DOM_EOF
 emit_codex_implementer() { cat <<'DOM_EOF'
 name = "implementer"
 description = "Codex only; never match in another harness. Executes one bounded beads task, validates it, and returns a terse handoff without closing the bead."
-model = "gpt-5.6-terra"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 developer_instructions = """
@@ -1493,7 +1501,7 @@ DOM_EOF
 emit_codex_reviewer() { cat <<'DOM_EOF'
 name = "reviewer"
 description = "Codex only; never match in another harness. Independently verifies one completed bead against its done criteria, real diff, and tests; never fixes or changes bead state."
-model = "gpt-5.6"
+model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 developer_instructions = """
@@ -2358,14 +2366,14 @@ Options:
                  IDs are literal (quote as one shell argument); inherit uses
                  native resolution. No effort flag; existing effort is preserved.
                  Incompatible with --force, --uninstall and --purge-beads.
-                 TEMPORARY: selection preview only with --dry-run; applying
-                 --model refuses before writes pending lifecycle integration.
-                 Preview defaults: Claude sonnet/opus (no effort), Codex
+                 Fresh defaults: Claude sonnet/opus (no effort), Codex
                  gpt-5.6-sol/medium and gpt-5.6-terra/high, Copilot inheritance.
   --with-beads   If `bd` is on PATH, initialize with safe skip flags when
                  needed. Normal mode runs setup only for selected providers;
                  guest mode uses --stealth and never runs provider setup.
-  --force        Overwrite differing provider files without a .bak backup.
+  --force        Regenerate qualified role bodies, preserving model/effort.
+                 Never bypass ownership/guards or confirm an unconfirmed pair.
+                 Other differing provider files are replaced without a .bak.
                  Managed policy files are always backed up before change.
   --guest        Use personal/guest mode. Claude routes policy to
                  CLAUDE.local.md; Codex leaves both root AGENTS files
@@ -2449,7 +2457,7 @@ Before applying:
   and GitHub Copilot. Use --platform claude/codex/copilot/both/all to choose;
   both remains Claude+Codex. Explicit installs are additive, not removal.
   This installs project config, not native clients or model software.
-  Preserving upgrades retain model choices (--force can replace provider files).
+  Upgrades and --force retain existing role model/effort choices.
   Planning needs no model setup or reload. Execution needs confirmed roles
   and reload/fresh invocation if registrations are stale/unknown.
   Installing config does not establish native readiness.
@@ -2498,7 +2506,7 @@ print_install_notice() (
     separator=", "
   done
   printf '\n'
-  echo "Project config only, not native clients/model software. Preserving upgrades retain model choices; --force can replace provider files."
+  echo "Project config only, not native clients/model software. Upgrades and --force retain model/effort choices."
   echo "Planning needs no setup/reload. Before execution, confirm roles independently in each harness; reload/start a fresh invocation if registrations are stale/unknown. Config is not native readiness."
   echo "Choose with --platform claude/codex/copilot/both/all; both remains Claude+Codex."
   echo "Preview: curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.sh | bash -s -- --dry-run"
@@ -2589,21 +2597,18 @@ emit_installer_model_library() {
 }
 
 MODEL_REQUEST=""
-if [ "${#MODEL_ARGS[@]}" -gt 0 ] || { [ "$DRY_RUN" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; }; then
+if [ "$UNINSTALL" -eq 0 ]; then
   MODEL_REQUEST="$(python3 -I -B -c "$(CURRENT_PROVIDER=claude emit_installer_model_library)
 try:
     print(canonical(installer_request(sys.argv[1], sys.argv[2:])).decode())
 except ValueError as error:
     print('Error: ' + str(error) + '. No project writes.', file=sys.stderr)
     sys.exit(2)
-" "${PLATFORM_ARG:-all}" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"})" || exit $?
-fi
-
-# hq-c6o.4 removes this guard ONLY when the validated request is consumed by
-# whole-lifecycle preflight/publication. Never silently ignore an explicit model.
-if [ "${#MODEL_ARGS[@]}" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-  echo "Error: --model application is not yet integrated; use --dry-run for selection preview. No project writes." >&2
-  exit 3
+" "${PLATFORM_ARG:-all}" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"})" || {
+    model_rc=$?
+    echo "Error: Python model-request validation failed (Codex requires Python 3.11+/tomllib). No project writes." >&2
+    exit "$model_rc"
+  }
 fi
 
 # Check even the tools used to construct inventories and temporary staging
@@ -2798,6 +2803,7 @@ write_codex_guest_ownership() {
 }
 
 write_provider_manifest() {
+  if model_pair_managed && [ -f "$TMPDIR_WORK/model-selected-$CURRENT_PROVIDER" ]; then return 0; fi
   [ "$SNAPSHOT_TOUCHED" -eq 1 ] || return 0
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
@@ -2892,54 +2898,6 @@ fi
 if [ ! -d "$TARGET_DIR" ]; then
   echo "Target directory does not exist: $TARGET_DIR" >&2
   exit 1
-fi
-
-# Selection preview, deliberately NOT InstallerPair.prepare(): .4 supplies the
-# pristine inventory, recognized migrations, merge and guard callbacks, and
-# classifies eligibility across the complete lifecycle before publishing.
-if [ -n "$MODEL_REQUEST" ]; then
-  for model_provider in claude codex copilot; do
-    python3 -I -B -c "$(CURRENT_PROVIDER="$model_provider" emit_installer_model_library)
-request = load(sys.argv[1])
-if HARNESS not in request['selected']:
-    sys.exit(0)
-try:
-    os.chdir(sys.argv[2])
-    pair = Pair(installed=False)
-    snapshot, contents = pair.read_snapshot(absent=True)
-    if all(data is None for data in contents.values()):
-        need(snapshot['parents'].get(str(pair.root / pair.state)) is None,
-             'unknown existing provider authority')
-        current = None
-    else:
-        # Full owned current inventory only. Historical migration/repair belongs
-        # to .4; don't guess choices or execute an unvalidated installed helper.
-        pair.validate_contents(contents)
-        current = {role: {key: parse(contents[rel], role)[1].get(key)
-                          for key in ('model', 'effort')}
-                   for role, rel in pair.paths.items()}
-    plan = installer_model_plan(request['overrides'][HARNESS], current)
-    def display(choice):
-        if choice is None:
-            return '(absent)'
-        model = choice['model']
-        text = ('native inheritance' if model is None or
-                (HARNESS == 'claude' and model == 'inherit')
-                else json.dumps(model, ensure_ascii=False))
-        return text + ('; effort ' + json.dumps(choice['effort'])
-                       if choice['effort'] is not None else '; effort inherited/omitted')
-    for role, value in plan['roles'].items():
-        print('  [model selection] ' + HARNESS + ':' + role + ': ' +
-              display(value['current']) + ' -> ' + display(value['requested']) +
-              ' [' + value['provenance'] + ']')
-except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-    print('Model selection preview unavailable for ' + HARNESS + ': ' +
-          str(error) + '. Lifecycle eligibility not evaluated. No project writes.',
-          file=sys.stderr)
-    sys.exit(3 if int(sys.argv[3]) else 0)
-" "$MODEL_REQUEST" "$TARGET_DIR" "${#MODEL_ARGS[@]}" || exit $?
-  done
-  echo "Model selection preview only: lifecycle eligibility/configured status not evaluated; no model publication is integrated yet."
 fi
 
 # ---------------------------------------------------------------------------
@@ -4019,6 +3977,9 @@ copilot_preflight() {
     if [ ! -e "$native_root/$rel" ]; then
       printf '%s\n' "$rel" >> "$TMPDIR_WORK/copilot-excludes"
     elif [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+      if [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] && [ "$PREVIEW_MIGRATE" -eq 0 ]; then
+        case "$rel" in .github/agents/*.agent.md) continue ;; esac
+      fi
       "$emitter" > "$TMPDIR_WORK/copilot-upstream"
       if [ "$rel" = ".github/domestique-model-setup.py" ]; then
         cmp -s "$native_root/$rel" "$base" || shared_refuse "modified Copilot helper"
@@ -4209,6 +4170,9 @@ PY
     fi
     [ "$provider" != claude ] || [ "$SELECT_CLAUDE" -eq 1 ] || continue
     [ "$provider" != codex ] || [ "$SELECT_CODEX" -eq 1 ] || continue
+    if [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+      case "$rel" in .claude/agents/*.md|.codex/agents/*.toml) continue ;; esac
+    fi
     base=".$provider/.domestique/base/$rel"
     shared_safe_path "$rel" && shared_safe_path "$base" &&
       shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" ||
@@ -4770,6 +4734,285 @@ native_merge_refuse() {
   exit 3
 }
 
+model_pair_managed() {
+  [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] &&
+    [ "$CURRENT_PROVIDER" != shared ] &&
+    { [ "$CURRENT_PROVIDER" != copilot ] || [ "$PREVIEW_MIGRATE" -eq 0 ]; }
+}
+
+installer_model_pairs() {
+  local provider requested selected policy rel emitter input
+  mkdir -p "$TMPDIR_WORK/model-input"
+  {
+    declare -f merge_native_plain
+    printf '\nTMPDIR_WORK="$6"\nmerge_native_plain "$1" "$2" "$3" "$4" "$5"\n'
+  } > "$TMPDIR_WORK/model-merge.sh"
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    selected=0
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE" ;;
+      codex) selected="$SELECT_CODEX" ;;
+      copilot) selected="$SELECT_COPILOT" ;;
+    esac
+    [ "$selected" -eq 1 ] || continue
+    if [ "$provider" = copilot ] && [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+      echo "Copilot preview migration remains unconfirmed; review/Save required."
+      touch "$TMPDIR_WORK/model-unconfirmed"
+      touch "$TMPDIR_WORK/model-preview-unconfirmed"
+      continue
+    fi
+    input="$TMPDIR_WORK/model-input/$provider"
+    mkdir -p "$input"
+    emit_installer_model_library > "$input/helper"
+    emit_harness_guard "$provider" > "$input/entry-guard"
+    emit_harness_guard "$provider" delegated > "$input/delegated-guard"
+    printf '%s\n' "$MANAGED_PLAIN_FILES" > "$input/files"
+    printf '%s\n' "$POLICY_CANDIDATES" > "$input/policies"
+    requested="$REQUESTED_GUEST"
+    if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
+       [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ]; then requested=1; fi
+    POLICY_DEST=""
+    case "$provider:$requested" in
+      claude:0) POLICY_DEST=CLAUDE.md ;;
+      claude:1) POLICY_DEST=CLAUDE.local.md ;;
+      codex:0)
+        POLICY_DEST=AGENTS.md
+        [ ! -e "$TARGET_DIR/AGENTS.override.md" ] || POLICY_DEST=AGENTS.override.md ;;
+      copilot:0) POLICY_DEST=.github/copilot-instructions.md ;;
+    esac
+    ( SNAPSHOT_DIR="$input"; write_manifest )
+    while IFS='|' read -r policy rel emitter; do
+      [ "$policy" = "$provider" ] || continue
+      mkdir -p "$input/$(dirname "$rel")"
+      "$emitter" > "$input/$rel"
+    done <<'ENTRIES'
+claude|.claude/agents/implementer.md|emit_implementer
+claude|.claude/agents/reviewer.md|emit_reviewer
+claude|.claude/commands/decompose.md|emit_decompose
+claude|.claude/commands/goal.md|emit_goal
+claude|.claude/commands/dom-decompose.md|emit_decompose
+claude|.claude/commands/dom-goal.md|emit_goal
+claude|.claude/domestique-model-setup.py|emit_claude_model_helper
+codex|.codex/agents/implementer.toml|emit_codex_implementer
+codex|.codex/agents/reviewer.toml|emit_codex_reviewer
+codex|.agents/skills/domestique/SKILL.md|emit_codex_skill
+codex|.agents/skills/domestique-decompose/SKILL.md|emit_codex_decompose_skill
+codex|.agents/skills/domestique-goal/SKILL.md|emit_codex_goal_skill
+codex|.agents/skills/domestique-goal/agents/openai.yaml|emit_codex_goal_metadata
+codex|.codex/domestique-model-setup.py|emit_codex_model_helper
+copilot|.github/agents/domestique-v2-copilot-implementer.agent.md|emit_copilot_implementer
+copilot|.github/agents/domestique-v2-copilot-reviewer.agent.md|emit_copilot_reviewer
+copilot|.github/skills/domestique-v2-copilot/SKILL.md|emit_copilot_skill
+copilot|.github/skills/domestique-v2-copilot-decompose/SKILL.md|emit_copilot_decompose_skill
+copilot|.github/skills/domestique-v2-copilot-goal/SKILL.md|emit_copilot_goal_skill
+copilot|.github/domestique-model-setup.py|emit_copilot_model_helper
+ENTRIES
+  done
+  python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$MODEL_REQUEST" "$DRY_RUN" "$FORCE" <<'PY'
+import itertools
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+root, scratch, request, dry, force = sys.argv[1:]
+root, scratch = Path(root).resolve(), Path(scratch)
+request = json.loads(request)
+os.chdir(root)
+prepared, completed = [], []
+publishing = False
+
+def display(choice):
+    if choice is None:
+        return "(absent)"
+    model = choice["model"]
+    text = ("native inheritance" if model is None or model == "inherit"
+            else json.dumps(model, ensure_ascii=False))
+    return text + ('; effort ' + json.dumps(choice["effort"])
+                   if choice["effort"] is not None else '; effort inherited/omitted')
+
+def prepare(provider):
+    directory = scratch / "model-input" / provider
+    lib = {"__name__": "trusted_installer"}
+    exec(compile((directory / "helper").read_bytes(), "<installer emitter>", "exec"), lib)
+    need, parse = lib["need"], lib["parse"]
+    layout = lib["Pair"](installed=False)
+    files = (directory / "files").read_text().strip()
+    policies = (directory / "policies").read_text().split()
+    pristine = {layout.manifest: (directory / "manifest").read_bytes()}
+    for rel in (*layout.paths.values(), layout.helper):
+        pristine[rel] = (directory / rel).read_bytes()
+        pristine[f"{layout.state}/base/{rel}"] = pristine[rel]
+    # Finite source-backed inventories, NOT today's inventory minus a helper.
+    # v0.1.0 / 76d217f: four Claude files; 6158d35: Claude aliases and
+    # Codex-owned shared aliases; 8cb30cb: shared aliases leave Codex;
+    # 4dc26fd: five Copilot files; 9f33930: helpers for all three.
+    # v0.2.0, v0.2.1 and v0.2.2 retain the 9f33930 inventories.
+    historical = {
+        "claude": (
+            ".claude/agents/implementer.md,.claude/agents/reviewer.md,"
+            ".claude/commands/decompose.md,.claude/commands/goal.md,"
+            ".claude/commands/dom-decompose.md,.claude/commands/dom-goal.md"),
+        "codex": (
+            ".codex/agents/implementer.toml,.codex/agents/reviewer.toml,"
+            ".agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,"
+            ".agents/skills/domestique-goal/SKILL.md,"
+            ".agents/skills/domestique-goal/agents/openai.yaml"),
+        "copilot": (
+            ".github/agents/domestique-v2-copilot-implementer.agent.md,"
+            ".github/agents/domestique-v2-copilot-reviewer.agent.md,"
+            ".github/skills/domestique-v2-copilot/SKILL.md,"
+            ".github/skills/domestique-v2-copilot-decompose/SKILL.md,"
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md"),
+    }
+    old_files = historical[provider]
+    recognized = set()
+    # Policy destinations are the historical disk-state union, in emitter order.
+    for count in range(len(policies) + 1):
+        for subset in itertools.combinations(policies, count):
+            suffix = "".join("," + p for p in subset)
+            recognized.add(("0.1.0", old_files + suffix))
+            if provider == "claude":
+                recognized.add(("0.1.0", ",".join(old_files.split(",")[:4]) + suffix))
+            if provider == "codex":
+                recognized.add(("0.1.0", old_files +
+                                ",.agents/skills/dom-decompose/SKILL.md"
+                                ",.agents/skills/dom-goal/SKILL.md"
+                                ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
+            for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
+                recognized.add((version, old_files + "," + layout.helper + suffix))
+
+    def merge_for(rel, local, base, upstream):
+        with tempfile.TemporaryDirectory(dir=scratch) as temporary:
+            paths = [Path(temporary) / name for name in ("local", "base", "upstream", "merged")]
+            for path, data in zip(paths, (local, base, upstream)):
+                path.write_bytes(data)
+            result = subprocess.run(["bash", str(scratch / "model-merge.sh"), rel,
+                                     *map(str, paths), str(scratch)], capture_output=True)
+            need(result.returncode == 0, "preserving merge conflict: " + rel +
+                 "; no force conflict recovery. " + result.stderr.decode("utf-8", "replace") +
+                 "\n  local: ./" + rel + "\n  pristine base: ./" + layout.state + "/base/" + rel +
+                 "\n  upstream: Domestique emitted candidate\n"
+                 "No project writes. Keep local and base copies; install this same script into an "
+                 "empty disposable directory with the same --platform selection to inspect upstream. "
+                 "Reconcile competing edits, keep the pristine base unchanged, then retry --dry-run.")
+            return paths[-1].read_bytes()
+
+    def merge(local, base, upstream):
+        # Both roles use the same native merge strategy, not the role identity.
+        return merge_for(layout.paths["implementer"], local, base, upstream)
+
+    entry = (directory / "entry-guard").read_text()
+    guard = (directory / ("delegated-guard" if provider == "copilot" else "entry-guard")).read_text()
+    prefix = {"claude": "Claude Code only; never match in another harness.",
+              "codex": "Codex only; never match in another harness.",
+              "copilot": "Copilot only; never match in Claude, Codex or an unknown harness."}[provider]
+
+    def validate(role, base, live, candidate):
+        bodies, descriptions = [], []
+        for data in (base, live, candidate):
+            parsed, fields, _ = parse(data, role)
+            descriptions.append(fields["description"])
+            if provider == "codex":
+                bodies.append(fields["developer_instructions"])
+            else:
+                lines, _, end, _ = parsed
+                bodies.append("".join(lines[end + 1:]).replace("\r\n", "\n"))
+        scoped = [d == prefix or d.startswith(prefix + " ") for d in descriptions]
+        unchanged_legacy = lib["project_settings"](base, role) == lib["project_settings"](live, role)
+        need(scoped[2] and (scoped[0] and scoped[1] or not scoped[0] and unchanged_legacy),
+             "missing native discovery guard: " + layout.paths[role])
+        if provider == "codex":
+            required = ("These instructions apply only in the actual native Codex client; foreign or\n"
+                        "ambiguous callers stop without work. Installed directories do not identify it.")
+            need(required in bodies[2] and
+                 (required in bodies[0] and required in bodies[1] or
+                  required not in bodies[0] and unchanged_legacy), "missing native Codex body guard")
+        else:
+            expected = entry if provider == "copilot" and bodies[0].startswith(entry) else guard
+            source_safe = (bodies[0].startswith(expected) and bodies[1].startswith(expected) or
+                           provider == "claude" and not bodies[0].startswith(expected) and unchanged_legacy)
+            need(source_safe and (bodies[2].startswith(guard) or
+                                  candidate == live and bodies[2].startswith(expected)),
+                 "missing native body guard: " + layout.paths[role])
+
+    pair = lib["InstallerPair"](pristine, recognized, merge, validate)
+    before, contents = pair.snapshot()
+    if contents[layout.manifest] is not None:
+        old = pair.inventory(contents[layout.manifest])
+        need((old.get("domestique_version"), old["files"]) in recognized,
+             "unknown inventory generation")
+        if layout.helper not in old["files"].split(","):
+            # Even an unconfirmed historical pair must reach the existing native
+            # metadata conflict guards. This is read-only, not permission to
+            # publish a custom body or treat it as pristine.
+            for rel in layout.paths.values():
+                base = contents[f"{layout.state}/base/{rel}"]
+                need(base is not None, "missing required role base")
+                if contents[rel] is not None:
+                    merge_for(rel, contents[rel], base, pristine[rel])
+        new = pair.inventory(pristine[layout.manifest])
+        if all(old.get(k) == new[k] for k in
+               ("snapshot_format", "platform", "domestique_version", "files")):
+            pristine[layout.manifest] = contents[layout.manifest]
+            pair.pristine[layout.manifest] = contents[layout.manifest]
+    # Preflight every other selected provider file, even when Copilot is absent.
+    for rel in files.split(","):
+        if rel in layout.files:
+            continue
+        live, base = root / rel, root / layout.state / "base" / rel
+        if live.exists():
+            need(base.is_file(), "unknown provider ownership: " + rel)
+            merge_for(rel, live.read_bytes(), base.read_bytes(), (directory / rel).read_bytes())
+    overrides = request["overrides"].get(provider, {})
+    result = pair.prepare(overrides, force=force == "1" and provider in request["selected"])
+    if provider not in request["selected"]:
+        return
+    current = (None if result["plan"]["eligibility"] == "fresh" else
+               lib["verify"](pair, contents)["selected"])
+    selection = lib["installer_model_plan"](overrides, current)
+    for role, value in selection["roles"].items():
+        print("  [model selection] " + provider + ":" + role + ": " +
+              display(value["current"]) + " -> " + display(value["requested"]) +
+              " [" + value["provenance"] + "]", flush=True)
+    print("  [model pair] " + provider + ": " + result["plan"]["eligibility"] +
+          " -> " + ("configured locally" if result["plan"]["configured"] else
+                    "reconfirmation-required"), flush=True)
+    (scratch / ("model-selected-" + provider)).touch()
+    prepared.append((provider, pair, result))
+
+try:
+    for provider in ("claude", "codex", "copilot"):
+        if (scratch / "model-input" / provider).exists():
+            prepare(provider)
+        elif provider == "copilot" and (scratch / "model-preview-unconfirmed").exists():
+            if request["overrides"].get(provider):
+                raise ValueError("unconfirmed Copilot preview; migrate and review/Save before model override")
+    # No selected pair is published until every provider has been planned.
+    for provider, pair, result in prepared:
+        if dry == "0":
+            publishing = True
+            (scratch / "model-publication-started").touch()
+            outcome = pair.apply(**result)
+            (scratch / ("model-final-" + provider)).write_text(
+                json.dumps(outcome["publication_snapshot"]))
+            completed.append(provider + ":" + outcome["outcome"])
+            print("  [model publication] " + completed[-1] +
+                  "; native readiness NOT established", flush=True)
+    if any(not result["plan"]["configured"] for _, _, result in prepared):
+        (scratch / "model-unconfirmed").write_text("review/Save required\n")
+except (OSError, ValueError, subprocess.SubprocessError) as error:
+    print("Model lifecycle refused (" + provider + "): " + str(error) + "\nCompleted pairs: " +
+          (", ".join(completed) or "none") +
+          (". No rollback; inspect reported partial publication before retrying." if publishing
+           else ". Publication not started; no project writes."), file=sys.stderr)
+    sys.exit(3)
+PY
+}
+
 # install_plain <dest> <emitter-fn>
 # Missing -> write. Identical -> skip. --force -> overwrite verbatim, no merge.
 # Differs (no --force):
@@ -4786,6 +5029,17 @@ native_merge_refuse() {
 #     further edit is made, causing the next merge to silently drop it.)
 # See docs/install-upgrade-design.md §2.
 install_plain() {
+  if model_pair_managed; then
+    case "${1#"$TARGET_DIR"/}" in
+      .claude/agents/implementer.md|.claude/agents/reviewer.md|\
+      .codex/agents/implementer.toml|.codex/agents/reviewer.toml|\
+      .github/agents/domestique-v2-copilot-implementer.agent.md|\
+      .github/agents/domestique-v2-copilot-reviewer.agent.md)
+        return 0 ;;
+      */domestique-model-setup.py)
+        [ ! -f "$TMPDIR_WORK/model-selected-$CURRENT_PROVIDER" ] || return 0 ;;
+    esac
+  fi
   local dest="$1" emitter="$2" staged
   # Cutover has already preserved native metadata against pristine snapshots.
   # Force cannot discard that transfer on this same invocation.
@@ -5792,6 +6046,21 @@ UNINSTALL_POLICIES
   echo "Done."
 }
 
+MODEL_PAIRS_ACTIVE=0
+MODEL_CODEX_IMPL_ABSENT=0
+MODEL_CODEX_REVIEWER_ABSENT=0
+if [ "$UNINSTALL" -eq 0 ]; then
+  model_gitroot="$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null)" || model_gitroot=""
+  if [ "$model_gitroot" = "$(cd "$TARGET_DIR" && pwd -P)" ]; then
+    MODEL_PAIRS_ACTIVE=1
+  elif [ "${#MODEL_ARGS[@]}" -gt 0 ]; then
+    echo "Error: --model requires the physical Git worktree root. No project writes." >&2
+    exit 3
+  else
+    echo "Model configuration requires the physical Git worktree root; this installation will remain unconfirmed." >&2
+    touch "$TMPDIR_WORK/model-unconfirmed"
+  fi
+fi
 lifecycle_preflight
 preview_preflight
 copilot_preflight
@@ -5822,6 +6091,16 @@ fi
 
 # ---------------------------------------------------------------------------
 print_install_notice
+[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+  MUTATION_STARTED=0
+  [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] || MODEL_CODEX_IMPL_ABSENT=1
+  [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] || MODEL_CODEX_REVIEWER_ABSENT=1
+  model_rc=0
+  installer_model_pairs || model_rc=$?
+  [ ! -f "$TMPDIR_WORK/model-publication-started" ] || MUTATION_STARTED=1
+  [ "$model_rc" -eq 0 ] || exit "$model_rc"
+fi
 [ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
 
 if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
@@ -5866,6 +6145,8 @@ CODEX_PREEXIST_DOM_GOAL_SKILL=0
 CODEX_PREEXIST_DOM_GOAL_META=0
 [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] && ! codex_exclude_was_owned '.codex/agents/implementer.toml' && CODEX_PREEXIST_IMPL=1
 [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] && ! codex_exclude_was_owned '.codex/agents/reviewer.toml' && CODEX_PREEXIST_REVIEWER=1
+[ "$MODEL_CODEX_IMPL_ABSENT" -eq 0 ] || CODEX_PREEXIST_IMPL=0
+[ "$MODEL_CODEX_REVIEWER_ABSENT" -eq 0 ] || CODEX_PREEXIST_REVIEWER=0
 [ -e "$TARGET_DIR/.agents/skills/domestique/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique/SKILL.md' && CODEX_PREEXIST_BASE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-decompose/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-decompose/SKILL.md' && CODEX_PREEXIST_DECOMPOSE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/domestique-goal/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/domestique-goal/SKILL.md' && CODEX_PREEXIST_GOAL_SKILL=1
@@ -5989,6 +6270,31 @@ else
 fi
 
 # --- summary ---------------------------------------------------------------
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
+  for model_provider in claude codex copilot; do
+    [ -d "$TMPDIR_WORK/model-input/$model_provider" ] || continue
+    python3 -I -B -c "$(CURRENT_PROVIDER="$model_provider" emit_installer_model_library)
+request = load(sys.argv[1])
+if HARNESS not in request['selected']:
+    sys.exit(0)
+try:
+    os.chdir(sys.argv[2])
+    pair = Pair(installed=False)
+    actual, contents = pair.snapshot()
+    expected = load(Path(sys.argv[3], 'model-final-' + HARNESS).read_bytes())
+    need(actual == expected, HARNESS + ': state changed after pair publication')
+    result = verify(pair, contents)
+    need(result['confirmed'], HARNESS + ': reconfirmation-required')
+except (OSError, ValueError, subprocess.SubprocessError) as error:
+    print('Final model verification: ' + str(error), file=sys.stderr)
+    sys.exit(3)
+" "$MODEL_REQUEST" "$TARGET_DIR" "$TMPDIR_WORK" || CONFLICT_OCCURRED=1
+  done
+fi
+if [ -f "$TMPDIR_WORK/model-unconfirmed" ]; then
+  echo "Configuration incomplete: review/Save required; no native readiness or workflow authorization." >&2
+  CONFLICT_OCCURRED=1
+fi
 echo
 if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned):"; else echo "Summary:"; fi
 [ "${#SUM_CREATED[@]}"  -gt 0 ] && print_group "Created"    "${SUM_CREATED[@]}"

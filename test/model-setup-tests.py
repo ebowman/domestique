@@ -45,6 +45,11 @@ class ModelSetup(unittest.TestCase):
         self.sequence += 1
         root = self.area / str(self.sequence)
         shutil.copytree(self.seed, root)
+        # Most helper tests deliberately start with an owned, unconfirmed pair.
+        for provider in PROVIDERS:
+            module = self.namespace(self.seed, provider)
+            impl = self.roles(root, provider)["implementer"]
+            impl.write_bytes(module["split_marker"](impl.read_bytes(), "implementer")[0].encode())
         return root
 
     def helper(self, root, provider):
@@ -102,6 +107,8 @@ class ModelSetup(unittest.TestCase):
         try:
             layout = module["Pair"](installed=False)
             pristine = {p: (self.seed / p).read_bytes() for p in layout.files}
+            for rel in layout.paths.values():
+                pristine[rel] = pristine[f"{layout.state}/base/{rel}"]
             manifest = module["Pair"].inventory(layout, pristine[layout.manifest])
             old_files = manifest["files"].replace("," + layout.helper, "")
             recognized = {(manifest["domestique_version"], files)
@@ -159,6 +166,7 @@ class ModelSetup(unittest.TestCase):
                         self.assertEqual(prepared["plan"]["eligibility"], "fresh")
                         self.assertTrue(all(v is None for v in prepared["plan"]["snapshot"]["files"].values()))
                         result = pair.apply(**prepared)
+                        self.assertEqual(result["publication_snapshot"], pair.snapshot()[0])
                         self.assertTrue(result["configured"])
                         self.assertFalse(result["native_ready"])
                         for role, model in zip(("implementer", "reviewer"), defaults[provider]):
@@ -569,21 +577,26 @@ class ModelSetup(unittest.TestCase):
                     self.assertIn(required, goal_body, provider)
 
     def test_published_confirmed_pair_compatibility(self):
-        # Real v0.2.1 installer + its emitted prepare/apply/bootstrap, then upgrade.
+        # Released 0.2.2 choices equal its old bases; they must still stay pinned.
         published = subprocess.check_output(
-            ["git", "show", "92fd8505933f78ad7e3a35f7d7260ad70b0c648b:domestique.sh"],
+            ["git", "show", "337ccf0dce0c466d53ffce695dfd84f817f82719:domestique.sh"],
             cwd=CURRENT.SOURCE.parent, text=True)
         root = self.fixture.root("published-confirmed")
         self.fixture.run_dom(root, script=published)
+        selected = {}
         for provider in PROVIDERS:
-            self.apply(root, provider, self.prepare(root, provider))
+            reviewer = self.roles(root, provider)["reviewer"]
+            reviewer.write_bytes(reviewer.read_bytes().replace(b"Read, Bash, Glob, Grep", b"Read, Grep")
+                                 .replace(b'"search", "execute"', b'"search"'))
+            selected[provider] = self.call(root, provider, "verify")["selected"]
+            self.apply(root, provider, self.call(root, provider, "prepare", selected[provider]))
         before = {str(p): p.read_bytes() for provider in PROVIDERS
                   for p in self.roles(root, provider).values()}
         self.fixture.run_dom(root)
         for provider in PROVIDERS:
             state = self.call(root, provider, "verify")
             self.assertTrue(state["confirmed"])
-            self.assertEqual(state["selected"], self.choices(provider))
+            self.assertEqual(state["selected"], selected[provider])
             for p in self.roles(root, provider).values():
                 self.assertEqual(before[str(p)], p.read_bytes())
         stable = CURRENT.snapshot(root)
@@ -594,6 +607,243 @@ class ModelSetup(unittest.TestCase):
             path = self.roles(root, provider)["reviewer"]
             path.write_bytes(path.read_bytes() + b"\n# manual edit\n")
             self.assertFalse(self.call(root, provider, "verify")["confirmed"])
+
+    def test_actual_installer_defaults_override_inherit_and_exact_rerun(self):
+        root = self.area / "fresh"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], env=self.env, check=True)
+        self.fixture.run_dom(root)
+        defaults = {
+            "claude": (("sonnet", None), ("opus", None)),
+            "codex": (("gpt-5.6-sol", "medium"), ("gpt-5.6-terra", "high")),
+            "copilot": ((None, None), (None, None)),
+        }
+        for provider in PROVIDERS:
+            state = self.call(root, provider, "verify")
+            self.assertTrue(state["confirmed"])
+            self.assertEqual(state["selected"], {
+                role: dict(zip(("model", "effort"), value))
+                for role, value in zip(("implementer", "reviewer"), defaults[provider])})
+            for role, path in self.roles(root, provider).items():
+                base = root / PROVIDERS[provider] / ".domestique/base" / path.relative_to(root)
+                self.assertNotIn(b"# domestique-model-setup:", base.read_bytes())
+        stable = CURRENT.snapshot(root)
+        inodes = {p: p.stat().st_ino for p in root.rglob("*") if p.is_file()}
+        self.fixture.run_dom(root)
+        self.assertEqual(stable, CURRENT.snapshot(root))
+        self.assertEqual(inodes, {p: p.stat().st_ino for p in inodes})
+        for provider in PROVIDERS:
+            module = self.namespace(self.seed, provider)
+            roles = self.roles(root, provider)
+            impl = roles["implementer"]
+            original = self.call(root, provider, "verify")["selected"]
+            choice = dict(original["implementer"], effort=None if provider == "copilot" else "high")
+            data = module["patch"](impl.read_bytes(), "implementer", choice)
+            data += b"\n# confirmed custom prompt\n"
+            data = data.replace(b"effort: \"high\"", b'effort: "high" # keep exact effort')
+            data = data.replace(b'model_reasoning_effort = "high"',
+                                b'model_reasoning_effort = "high" # keep exact effort')
+            impl.write_bytes(data)
+            original["implementer"] = choice
+            self.apply(root, provider, self.call(root, provider, "prepare", original))
+            for value in ('literal/model-"quoted"\\exact=a:b', "inherit"):
+                before = {p: p.read_bytes() for h in PROVIDERS for p in self.roles(root, h).values()}
+                all_before = CURRENT.snapshot(root)
+                args = ("--platform", provider, "--model", f"{provider}:implementer={value}")
+                self.fixture.run_dom(root, "--dry-run", *args)
+                self.assertEqual(all_before, CURRENT.snapshot(root))
+                self.fixture.run_dom(root, *args)
+                expected = module["patch"](before[impl], "implementer",
+                                           {"model": None if value == "inherit" else value},
+                                           model_only=True)
+                self.assertEqual(module["split_marker"](impl.read_bytes(), "implementer")[0].encode(),
+                                 expected)
+                for path, old in before.items():
+                    if path != impl:
+                        self.assertEqual(old, path.read_bytes())
+                state = self.call(root, provider, "verify")
+                self.assertTrue(state["confirmed"])
+                self.assertEqual(state["selected"]["implementer"]["effort"], choice["effort"])
+                base = root / PROVIDERS[provider] / ".domestique/base" / impl.relative_to(root)
+                self.assertNotIn(b"literal/model", base.read_bytes())
+                self.assertNotIn(b"confirmed custom prompt", base.read_bytes())
+            before = self.call(root, provider, "verify")["selected"]
+            self.fixture.run_dom(root, "--platform", provider, "--force")
+            state = self.call(root, provider, "verify")
+            self.assertTrue(state["confirmed"])
+            self.assertEqual(before, state["selected"])
+            self.assertNotIn(b"confirmed custom prompt", impl.read_bytes())
+            if provider != "copilot":
+                self.assertIn(b"# keep exact effort", impl.read_bytes())
+
+    def test_actual_installer_unconfirmed_unknown_and_partial_refuse(self):
+        for kind in ("stale", "custom", "partial", "unknown", "missing-helper",
+                     "custom-inventory", "current-without-helper-inventory"):
+            with self.subTest(kind=kind):
+                root = self.project()
+                roles = self.roles(root, "codex")
+                if kind == "stale":
+                    self.apply(root, "codex", self.prepare(root, "codex"))
+                    roles["reviewer"].write_bytes(roles["reviewer"].read_bytes() + b"\n# manual\n")
+                elif kind == "custom":
+                    roles["reviewer"].write_bytes(roles["reviewer"].read_bytes() + b"\n# legacy custom\n")
+                elif kind == "partial":
+                    roles["reviewer"].unlink()
+                elif kind == "unknown":
+                    manifest = root / ".codex/.domestique/manifest"
+                    manifest.write_text(manifest.read_text().replace("domestique_version=0.2.2",
+                                                                    "domestique_version=unknown"))
+                elif kind in ("custom-inventory", "current-without-helper-inventory"):
+                    manifest = root / ".codex/.domestique/manifest"
+                    remove = (",.agents/skills/domestique/SKILL.md"
+                              if kind == "custom-inventory" else
+                              ",.codex/domestique-model-setup.py")
+                    manifest.write_text(manifest.read_text().replace(remove, ""))
+                    if kind == "current-without-helper-inventory":
+                        self.helper(root, "codex").unlink()
+                        (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").unlink()
+                else:
+                    self.helper(root, "codex").unlink()
+                    (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").unlink()
+                before = CURRENT.snapshot(root)
+                for dry in (("--dry-run",), ()):
+                    result = self.fixture.run_dom(root, *dry, "--model=codex:implementer=new", ok=False)
+                    if kind in ("unknown", "custom-inventory", "current-without-helper-inventory"):
+                        self.assertIn("unknown inventory generation", result.stderr)
+                    elif kind == "missing-helper":
+                        self.assertIn("missing claimed helper", result.stderr)
+                    self.assertEqual(before, CURRENT.snapshot(root))
+                if kind in ("stale", "custom"):
+                    old = {p: p.read_bytes() for p in roles.values()}
+                    self.fixture.run_dom(root, "--platform", "codex", ok=False)
+                    self.assertEqual(old, {p: p.read_bytes() for p in roles.values()})
+                    self.assertFalse(self.call(root, "codex", "verify")["confirmed"])
+                else:
+                    self.fixture.run_dom(root, ok=False)
+                    self.assertEqual(before, CURRENT.snapshot(root))
+
+    def test_actual_installer_partial_publication_never_marks_failed_pair(self):
+        root = self.area / "failure"
+        root.mkdir()
+        subprocess.run(["git", "init", "-q", str(root)], env=self.env, check=True)
+        source = CURRENT.SCRIPT.replace(
+            "            os.replace(temp, path)",
+            "            if HARNESS == 'codex' and rel == pair.paths['reviewer']:\n"
+            "                raise OSError('injected reviewer publication failure')\n"
+            "            os.replace(temp, path)")
+        self.assertNotEqual(source, CURRENT.SCRIPT)
+        result = self.fixture.run_dom(root, script=source, ok=False)
+        self.assertIn("injected reviewer publication failure", result.stderr)
+        self.assertIn("claude:configured", result.stderr)
+        self.assertIn('"partial": true', result.stderr)
+        state = subprocess.run([sys.executable, "-I", "-B", str(self.helper(root, "claude")), "verify"],
+                               cwd=root, env=self.env, capture_output=True, text=True, check=True)
+        self.assertTrue(json.loads(state.stdout)["confirmed"])
+        self.assertFalse(self.roles(root, "codex")["implementer"].exists())
+        self.assertFalse(self.roles(root, "copilot")["implementer"].exists())
+
+    def test_actual_v010_upgrade_preserves_models_and_configures_defaults(self):
+        root, _ = self.fixture.legacy_claude("model-v010", ref="v0.1.0")
+        lib = self.namespace(self.seed, "claude")
+        expected = {r: lib["parse"](p.read_bytes(), r)[1]["model"]
+                    for r, p in self.roles(root, "claude").items()}
+        before = CURRENT.snapshot(root)
+        result = self.fixture.run_dom(root, "--dry-run")
+        self.assertIn("claude: legacy -> configured locally", result.stdout)
+        self.assertEqual(before, CURRENT.snapshot(root))
+        self.fixture.run_dom(root)
+        for provider in PROVIDERS:
+            state = self.call(root, provider, "verify")
+            self.assertTrue(state["confirmed"])
+            if provider == "claude":
+                self.assertEqual(expected, {r: c["model"] for r, c in state["selected"].items()})
+                for path in self.roles(root, provider).values():
+                    self.assertIn("## Active harness boundary (claude only)", path.read_text())
+                    self.assertIn("description: Claude Code only;", path.read_text())
+            elif provider == "codex":
+                self.assertEqual(state["selected"], {
+                    "implementer": {"model": "gpt-5.6-sol", "effort": "medium"},
+                    "reviewer": {"model": "gpt-5.6-terra", "effort": "high"}})
+            else:
+                self.assertEqual(state["selected"], {
+                    r: {"model": None, "effort": None} for r in ("implementer", "reviewer")})
+
+    def test_historical_inventory_table_matches_repository_sources(self):
+        # Read actual source, never project-supplied inventory authority. Exercise
+        # the production finite-set builder without installing a version matrix.
+        block = CURRENT.SCRIPT.split("    historical = {\n", 1)[1]
+        block = "historical = {\n" + block.split("\n    def merge_for", 1)[0]
+        block = block.replace("\n    ", "\n")
+        import itertools
+        from types import SimpleNamespace
+        for provider in PROVIDERS:
+            helper = f"{PROVIDERS[provider]}/domestique-model-setup.py"
+            policies = {"claude": ["CLAUDE.md", "CLAUDE.local.md"],
+                        "codex": ["AGENTS.md", "AGENTS.override.md"],
+                        "copilot": [".github/copilot-instructions.md"]}[provider]
+            namespace = dict(provider=provider, policies=policies, itertools=itertools,
+                             layout=SimpleNamespace(helper=helper))
+            exec(compile(block, "<installer inventory builder>", "exec"), namespace)
+            recognized = namespace["recognized"]
+            observed = set()
+            refs = ("v0.1.0", "76d217f", "6158d35", "8cb30cb", "4dc26fd",
+                    "9f33930", "v0.2.0", "v0.2.1", "v0.2.2")
+            for ref in refs:
+                source = subprocess.check_output(
+                    ["git", "-C", str(CURRENT.SOURCE.parent), "show", ref + ":domestique.sh"],
+                    text=True)
+                version = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', source, re.M)[1]
+                inventories = re.findall(r'^\s*MANAGED_PLAIN_FILES="([^"$]+)"', source, re.M)
+                if provider == "claude" and ref == "v0.1.0":
+                    inventory = re.search(r'^MANAGED_FILES="([^"]+)"', source, re.M)[1]
+                    self.assertIn((version, inventory), recognized)
+                    continue
+                if provider == "copilot":
+                    if "COPILOT_ENTRIES='" not in source:
+                        continue
+                    entries = source.split("COPILOT_ENTRIES='", 1)[1].split("'", 1)[0]
+                    inventory = ",".join(line.split("|")[0] for line in entries.splitlines())
+                    if 'COPILOT_FILES="$COPILOT_OLD_FILES,.github/domestique-model-setup.py"' in source:
+                        inventory += "," + helper
+                else:
+                    inventory = next((i for i in inventories
+                                      if i.startswith(PROVIDERS[provider])), None)
+                    if inventory is None:  # This historical source predates the provider.
+                        continue
+                for count in range(len(policies) + 1):
+                    for subset in itertools.combinations(policies, count):
+                        observed.add((version, inventory + "".join("," + p for p in subset)))
+            self.assertEqual(recognized, observed)
+
+    def test_actual_installer_helper_return_race_refuses_final_success(self):
+        # Deterministic fault at the exact apply-return/caller handoff, not an
+        # environment hook or a timing race. Only this disposable script changes.
+        anchor = "            outcome = pair.apply(**result)\n"
+        self.assertEqual(CURRENT.SCRIPT.count(anchor), 1)
+        for kind in ("hash", "inode"):
+            with self.subTest(kind=kind):
+                root = self.project()
+                injection = (
+                    "            for rel in (pair.helper, f'{pair.state}/base/{pair.helper}'):\n"
+                    "                path = root / rel\n"
+                    "                data = path.read_bytes()\n"
+                    + ("                path.write_bytes(data + b'\\n# concurrent fixture edit\\n')\n"
+                       if kind == "hash" else
+                       "                temporary = path.with_name(path.name + '.fixture')\n"
+                       "                temporary.write_bytes(data)\n"
+                       "                os.replace(temporary, path)\n"))
+                source = CURRENT.SCRIPT.replace(anchor, anchor + injection)
+                result = self.fixture.run_dom(root, "--platform", "claude", script=source, ok=False)
+                self.assertEqual(result.returncode, 3)
+                self.assertIn("Final model verification: claude: state changed after pair publication",
+                              result.stderr)
+                # The v1 marker binds roles, not dependencies. Its continuing
+                # validity must NOT be mistaken for lifecycle success.
+                state = self.call(root, "claude", "verify")
+                self.assertTrue(state["confirmed"])
+                self.assertEqual(self.helper(root, "claude").read_bytes(),
+                                 (root / ".claude/.domestique/base/.claude/domestique-model-setup.py")
+                                 .read_bytes())
 
     def test_prepare_verify_cancel_denied_zero_writes_all_formats(self):
         for provider in PROVIDERS:
@@ -622,8 +872,8 @@ class ModelSetup(unittest.TestCase):
                     if provider == "codex":
                         text = text.replace('developer_instructions = """\n',
                                             'developer_instructions = """\nCustom native prompt preface.\n')
-                        text = text.replace('model = "gpt-5.6-terra"', 'model = "old"  # retained model')
-                        text = text.replace('model = "gpt-5.6"', 'model = "old"  # retained model')
+                        text = re.sub(r'(?m)^model = "[^"]*"$',
+                                      'model = "old"  # retained model', text)
                         text = text.replace('model_reasoning_effort = "medium"',
                                             'model_reasoning_effort = "medium"  # retained effort')
                         text = text.replace('model_reasoning_effort = "high"',
@@ -944,12 +1194,14 @@ class ModelSetup(unittest.TestCase):
             (root / directory / ".domestique/base" / relative).unlink()
             manifest = root / directory / ".domestique/manifest"
             manifest.write_text(manifest.read_text().replace("," + relative, ""))
+            manifest.write_text(manifest.read_text().replace("domestique_version=0.2.2",
+                                                            "domestique_version=0.1.0"))
             ownership = root / directory / ".domestique/guest-excludes"
             if ownership.exists():
                 ownership.write_text(ownership.read_text().replace(relative + "\n", ""))
             role = self.roles(root, provider)["reviewer"]
             role.write_bytes(role.read_bytes() + b"\n# customized body\n")
-        self.fixture.run_dom(root, "--guest")
+        self.fixture.run_dom(root, "--guest", ok=False)
         for provider in PROVIDERS:
             self.assertTrue(self.helper(root, provider).is_file())
             self.assertIn(b"# customized body", self.roles(root, provider)["reviewer"].read_bytes())

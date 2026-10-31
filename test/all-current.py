@@ -159,7 +159,7 @@ class AllProviders(unittest.TestCase):
             self.assertEqual(parse("claude", ["claude:reviewer=" + value])["overrides"],
                              {"claude": {"reviewer": value}})
 
-    def test_model_cli_stdin_preview_and_prewrite_guard(self):
+    def test_model_cli_stdin_preview_and_apply(self):
         root = self.root("models-fresh")
         before = snapshot(root)
         result = self.run_dom(root, "--dry-run")
@@ -168,7 +168,7 @@ class AllProviders(unittest.TestCase):
                      'claude:implementer: (absent) -> "sonnet"',
                      'claude:reviewer: (absent) -> "opus"',
                      "copilot:reviewer: (absent) -> native inheritance",
-                     "fresh-default", "configured status not evaluated"):
+                     "fresh-default", "fresh -> configured locally"):
             self.assertIn(text, result.stdout)
         self.assertEqual(snapshot(root), before)
         literal = 'model/α-"quoted"\\exact=a:b $(touch MODEL_EXECUTED)'
@@ -183,11 +183,23 @@ class AllProviders(unittest.TestCase):
             self.assertIn("explicit-override", lines)
             self.assertNotIn("copilot:", lines)
             self.assertEqual(snapshot(root), before)
-        result = self.run_dom(root, *args, ok=False)
-        self.assertIn("--model application is not yet integrated", result.stderr)
-        self.assertEqual(snapshot(root), before)
+        self.run_dom(root, *args)
+        for provider, rel in zip(STATES, ROLES):
+            if provider == "copilot":
+                self.assertFalse((root / rel).exists())
+                continue
+            fields = self.model_library(provider)["parse"]((root / rel).read_bytes(), "implementer")[1]
+            self.assertEqual(fields["model"], literal if provider == "claude" else "gpt-5.6-sol")
+            if provider == "codex":
+                self.assertEqual(fields["model_reasoning_effort"], "medium")
+                reviewer = self.model_library(provider)["parse"](
+                    (root / rel.replace("implementer", "reviewer")).read_bytes(), "reviewer")[1]
+                self.assertNotIn("model", reviewer)
+                self.assertNotIn("model_reasoning_effort", reviewer)
+        self.assertFalse((root / "MODEL_EXECUTED").exists())
+        before = snapshot(root)
         help_result = self.run_dom(root, "--model", "not-an-assignment", "--help")
-        self.assertIn("TEMPORARY: selection preview only", help_result.stdout)
+        self.assertIn("Fresh defaults:", help_result.stdout)
         self.assertEqual(snapshot(root), before)
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show",
@@ -262,7 +274,7 @@ class AllProviders(unittest.TestCase):
         before = snapshot(root)
         result = self.run_dom(root, "--platform=codex", "--dry-run",
                               "--model=codex:reviewer=inherit", ok=False)
-        self.assertIn("missing claimed helper base", result.stderr)
+        self.assertIn("modified/unowned helper", result.stderr)
         self.assertEqual(snapshot(root), before)
 
     def seed(self, root, providers, *flags):
@@ -287,8 +299,7 @@ class AllProviders(unittest.TestCase):
         self.assertIn("both remains Claude+Codex", output)
         self.assertIn("Project config only", output)
         self.assertIn("not native clients/model software", output)
-        self.assertIn("retain model choices", output)
-        self.assertIn("--force can replace", output)
+        self.assertIn("Upgrades and --force retain model/effort choices", output)
         self.assertIn("independently in each harness", output)
         self.assertIn("reload/start a fresh invocation", output)
         self.assertIn("not native readiness", output)
@@ -502,7 +513,7 @@ class AllProviders(unittest.TestCase):
                     pair = {}
                     for role in ("implementer", "reviewer"):
                         path = root / impl.replace("implementer", role)
-                        text = path.read_text()
+                        text = self.model_library(provider)["split_marker"](path.read_bytes(), role)[0]
                         model = f"fixture-{provider}-{role}"
                         if provider == "codex":
                             text = re.sub(r'(?m)^model = .+$', f'model = "{model}"', text)
@@ -540,14 +551,17 @@ class AllProviders(unittest.TestCase):
                     pairs[changed]["implementer"] = pairs[changed]["implementer"].replace(
                         old.encode(), new.encode())
                     for provider, impl in zip(STATES, ROLES):
-                        marker = json.loads(markers[provider].decode()[len(marker_prefix):])
+                        module = self.model_library(provider)
+                        live_marker = module["split_marker"]((root / impl).read_bytes(), "implementer")[1]
                         for role, expected in pairs[provider].items():
                             data = (root / impl.replace("implementer", role)).read_bytes()
-                            self.assertEqual(data, expected)  # tools, metadata, marker, body
-                            clean = data.replace(markers[provider], b"")
-                            valid = hashlib.sha256(clean).hexdigest() == marker[role + "_sha256"]
-                            updated = list(changes).index(provider) <= list(changes).index(changed)
-                            self.assertEqual(valid, role == "reviewer" or not updated)
+                            clean = module["split_marker"](data, role)[0].encode()
+                            expected_clean = module["split_marker"](expected, role)[0].encode()
+                            self.assertEqual(clean, expected_clean)  # exact settings/tools/body
+                            self.assertEqual(hashlib.sha256(clean).hexdigest(),
+                                             live_marker[role + "_sha256"])
+                            pairs[provider][role] = data
+                        self.assertEqual(live_marker["project"], str(root))
                     before = byte_snapshot(root)
                     self.run_dom(root, script=upstream)
                     self.assertEqual(before, byte_snapshot(root))
@@ -810,6 +824,16 @@ class AllProviders(unittest.TestCase):
                 for flags in (("--dry-run",), ()):
                     result = self.run_dom(root, *flags, script=script, ok=False)
                     self.assertEqual(result.returncode, 3)
+                    self.assertNotIn("unknown inventory generation", result.stderr)
+                    self.assertIn("Native role fallback refused:", result.stderr)
+                    self.assertIn({
+                        "field": "competing metadata field",
+                        "body": "layout or body conflict",
+                        "duplicate": "malformed/duplicate/multiline field",
+                        "multiline": "unsupported scalar",
+                        "ambiguous": "ambiguous scalar",
+                        "malformed": "malformed or unreadable frontmatter",
+                    }[kind], result.stderr)
                     self.assertIn(f"local: ./{rel}", result.stderr)
                     self.assertIn(f"pristine base: ./{STATES['claude']}/base/{rel}", result.stderr)
                     self.assertIn("upstream: Domestique", result.stderr)
@@ -1041,7 +1065,7 @@ class AllProviders(unittest.TestCase):
         cp = self.bin / "cp"
         cp.write_text(
             '#!/bin/sh\ncase "$2" in\n'
-            '  */.github/agents/*) exit 17 ;;\n'
+            '  */.github/skills/*) exit 17 ;;\n'
             'esac\nexec /bin/cp "$@"\n'
         )
         cp.chmod(0o755)
@@ -1052,7 +1076,8 @@ class AllProviders(unittest.TestCase):
         self.assertIn("install plan", result.stdout)
         self.assertNotIn("\nDone.", result.stdout)
         self.assertTrue((root / ROLES[0]).is_file())
-        self.assertFalse((root / ROLES[2]).exists())
+        self.assertTrue((root / ROLES[2]).exists())
+        self.assertFalse((root / ".github/skills/domestique-v2-copilot/SKILL.md").exists())
 
     def test_notice_precedes_first_target_mutation_and_dry_run_plan(self):
         # Combined xtrace/output observes real execution order, including mode
