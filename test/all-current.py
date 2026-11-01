@@ -2124,21 +2124,199 @@ class AllProviders(unittest.TestCase):
                 wrapper.symlink_to(sys.executable)
 
     def test_guarded_policy_conflict_preflights_all_project_writes(self):
+        root = self.root("selected-conflict")
+        self.seed(root, ["codex"])
+        policy = root / "AGENTS.md"
+        policy.write_text("host prefix\n" + policy.read_text().replace(
+            POLICY_ANCHOR, "local conflicting bead rule.") + "host suffix")
+        upstream = SCRIPT.replace(POLICY_ANCHOR, "upstream changed bead rule.")
+        before = snapshot(self.work)
+        for flags in ((), ("--dry-run",), ("--force",)):
+            result = self.run_dom(root, *flags, script=upstream, ok=False)
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertIn("policy merge conflict", result.stderr)
+            self.assertEqual(before, snapshot(self.work))
+
+    def retained_legacy_claude(self, name, suffix=b"\nPublic host suffix\n"):
+        # Public historical installer only; no real project's policy prose.
+        old = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "64f4e09:domestique.sh"],
+            text=True)
+        root = self.root(name)
+        self.run_dom(root, "--platform", "claude", script=old)
+        policy = root / "CLAUDE.md"
+        base = root / STATES["claude"] / "base/CLAUDE.md.block"
+        pristine = base.read_bytes()
+        custom = re.sub(rb"## Writing briefs\n.*?(?=## Delegation loop)",
+                        b"", pristine, flags=re.S)
+        custom = re.sub(rb"## Unattended epic mode .*?(?=## Discipline)",
+                        b"", custom, flags=re.S)
+        custom = custom.replace(b" and commit its changes (one commit, bead id in the message)",
+                                b"")
+        self.assertNotEqual(pristine, custom)
+        self.assertNotIn(b"## Writing briefs", custom)
+        self.assertNotIn(b"## Unattended epic mode", custom)
+        self.assertNotIn(b"and commit its changes", custom)
+        policy.write_bytes(b"Public host prefix\r\n\n" +
+                           policy.read_bytes().replace(pristine, custom) +
+                           suffix)
+        return root, policy, base, pristine, custom
+
+    def claude_policy_guard(self):
+        # Exact trusted emitter prefix, not a loose heading match.
+        emitter = SCRIPT.split("emit_harness_guard() {", 1)[1].split(
+            "\n}\n", 1)[0]
+        return subprocess.check_output(
+            ["bash", "-s"], input=("emit_harness_guard() {" + emitter +
+                                   "\n}\nemit_harness_guard claude policy\n").encode(),
+            env=self.env)
+
+    def test_retained_legacy_copilot_guard_only_and_selected_conflict(self):
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "67195ab:domestique.sh"],
+            text=True)
+        fixed = SCRIPT.replace('TS="$(date +%Y%m%d%H%M%S)"', 'TS="20990101000000"')
+        guard = self.claude_policy_guard()
+        for force in (False, True):
+            with self.subTest(force=force):
+                root, policy, base, pristine, custom = self.retained_legacy_claude(
+                    f"retained-{force}")
+                original = policy.read_bytes()
+                flags = ("--force",) if force else ()
+                before = snapshot(root)
+                # v0.4.0 negative control: the unrelated full workflow merge fails.
+                result = self.run_dom(root, "--platform=copilot", "--dry-run",
+                                      *flags, script=released, ok=False)
+                self.assertIn("owned policy merge conflict for CLAUDE.md", result.stderr)
+                self.assertEqual(before, snapshot(root))
+                # Explicit Claude selection still refuses the genuine conflict.
+                result = self.run_dom(root, "--platform=claude", *flags,
+                                      script=fixed, ok=False)
+                self.assertIn("owned policy merge conflict for CLAUDE.md", result.stderr)
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, "--platform=copilot", "--dry-run", *flags, script=fixed)
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, "--platform=copilot", *flags, script=fixed)
+                self.assertEqual(policy.read_bytes(), original.replace(custom, guard + custom))
+                self.assertEqual(base.read_bytes(), guard + pristine)
+                self.assertNotEqual(base.read_bytes(), guard + custom)
+                self.assertEqual((root / "CLAUDE.md.bak.20990101000000").read_bytes(),
+                                 original)
+                manifest = (root / STATES["claude"] / "manifest").read_text()
+                inventory = next(line[6:] for line in manifest.splitlines()
+                                 if line.startswith("files=")).split(",")
+                self.assertIn("CLAUDE.md", inventory)
+                for rel in inventory:
+                    suffix = ".block" if rel in ("CLAUDE.md", "CLAUDE.local.md") else ""
+                    self.assertTrue((root / STATES["claude"] / "base" / (rel + suffix)).is_file())
+                before = snapshot(root)
+                self.run_dom(root, "--platform=copilot", *flags, script=fixed)
+                self.assertEqual(before, snapshot(root))
+                # Advancing only the guard must not bless custom text as pristine
+                # or silently bypass a later explicitly selected workflow conflict.
+                result = self.run_dom(root, "--platform=claude", "--force",
+                                      script=fixed, ok=False)
+                self.assertIn("policy merge conflict", result.stderr)
+                self.assertEqual(before, snapshot(root))
+                retained = {str(p.relative_to(root)): p.read_bytes()
+                            for p in (policy, base)}
+                self.run_dom(root, "--uninstall", "--platform=copilot")
+                self.assertEqual(retained, {rel: (root / rel).read_bytes() for rel in retained})
+                self.run_dom(root, "--uninstall", "--platform=claude")
+                self.assertEqual(policy.read_bytes(), original.replace(
+                    b"<!-- BEGIN domestique (managed) -->\n" + custom +
+                    b"<!-- END domestique -->\n", b""))
+
+    def test_retained_legacy_install_preserves_unterminated_suffix(self):
+        guard = self.claude_policy_guard()
+        for force in (False, True):
+            with self.subTest(force=force):
+                root, policy, base, pristine, custom = self.retained_legacy_claude(
+                    f"unterminated-{force}", suffix=b"\nPublic host suffix without newline")
+                original = policy.read_bytes()
+                flags = ("--force",) if force else ()
+                before = snapshot(root)
+                self.run_dom(root, "--platform=copilot", "--dry-run", *flags)
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, "--platform=copilot", *flags)
+                self.assertEqual(policy.read_bytes(), original.replace(custom, guard + custom))
+                self.assertEqual(base.read_bytes(), guard + pristine)
+                backups = list(root.glob("CLAUDE.md.bak.*"))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups[0].read_bytes(), original)
+
+    def test_retained_legacy_guard_backup_collision_preflight(self):
+        root, _policy, _base, _pristine, _custom = self.retained_legacy_claude("collision")
+        fixed = SCRIPT.replace('TS="$(date +%Y%m%d%H%M%S)"', 'TS="20990101000000"')
+        (root / "CLAUDE.md.bak.20990101000000").write_bytes(b"existing evidence")
+        before = snapshot(root)
+        for flags in ((), ("--force",), ("--dry-run",)):
+            result = self.run_dom(root, "--platform=copilot", *flags, script=fixed, ok=False)
+            self.assertIn("occupied policy backup CLAUDE.md", result.stderr)
+            self.assertEqual(before, snapshot(root))
+
+    def test_guarded_retained_policy_skips_unselected_workflow_conflict(self):
         for inactive in (False, True):
             with self.subTest(inactive=inactive):
-                root = self.root(f"conflict-{inactive}")
+                root = self.root(f"guarded-retained-{inactive}")
                 self.seed(root, ["codex"])
                 policy = root / "AGENTS.md"
-                policy.write_text("host prefix\n" + policy.read_text().replace(
-                    POLICY_ANCHOR, "local conflicting bead rule.") + "host suffix")
+                base = root / STATES["codex"] / "base/AGENTS.md.block"
+                policy.write_bytes(b"host prefix\r\n" + policy.read_bytes().replace(
+                    POLICY_ANCHOR.encode(), b"local conflicting bead rule.") + b"host suffix")
                 if inactive:
                     (root / "AGENTS.override.md").write_text("host override\n")
+                args = () if inactive else ("--platform=copilot",)
                 upstream = SCRIPT.replace(POLICY_ANCHOR, "upstream changed bead rule.")
+                original = {p: p.read_bytes() for p in (policy, base)}
+                before = snapshot(root)
+                self.run_dom(root, *args, "--dry-run", script=upstream)
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, *args, "--force", script=upstream)
+                self.assertEqual(original, {p: p.read_bytes() for p in original})
+
+    def test_retained_policy_ownership_guard_and_guest_refusals(self):
+        for defect in ("unknown-base", "inventory", "arbitrary-live", "base-symlink",
+                       "live-hardlink", "guest-tracked", "removed", "altered", "stripped-base"):
+            with self.subTest(defect=defect):
+                root, policy, base, pristine, custom = self.retained_legacy_claude(defect)
+                guard = self.claude_policy_guard()
+                if defect == "unknown-base":
+                    base.write_bytes(pristine + b"unknown pristine change\n")
+                elif defect == "inventory":
+                    manifest = root / STATES["claude"] / "manifest"
+                    manifest.write_text(manifest.read_text().replace(",CLAUDE.md", ""))
+                elif defect == "arbitrary-live":
+                    policy.write_bytes(policy.read_bytes().replace(custom, b"Arbitrary host body\n"))
+                elif defect == "base-symlink":
+                    victim = self.work / "outside-base"
+                    base.rename(victim)
+                    base.symlink_to(victim)
+                elif defect == "live-hardlink":
+                    os.link(policy, self.work / "outside-policy")
+                elif defect == "guest-tracked":
+                    subprocess.run(["git", "-C", str(root), "add", "CLAUDE.md"],
+                                   check=True, env=self.env)
+                else:
+                    # A genuine current guarded base, not an old unguarded base,
+                    # must not authorize re-insertion of a removed/altered guard.
+                    current = self.root(f"current-{defect}")
+                    self.run_dom(current, "--platform=claude")
+                    current_body = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+                    self.assertTrue(current_body.startswith(guard))
+                    base.write_bytes(current_body)
+                    live = current_body.removeprefix(guard)
+                    if defect == "altered":
+                        live = current_body.replace(b"Other harnesses must ignore",
+                                                    b"Other harnesses may apply", 1)
+                    elif defect == "stripped-base":
+                        base.write_bytes(live)
+                    policy.write_bytes(policy.read_bytes().replace(custom, live))
                 before = snapshot(self.work)
-                for flags in ((), ("--dry-run",), ("--force",)):
-                    result = self.run_dom(root, *flags, script=upstream, ok=False)
+                for flags in ((), ("--force",), ("--dry-run",)):
+                    guest = ("--guest",) if defect == "guest-tracked" else ()
+                    result = self.run_dom(root, "--platform=copilot", *guest, *flags, ok=False)
                     self.assertEqual(result.returncode, 3, result.stderr)
-                    self.assertIn("policy merge conflict", result.stderr)
                     self.assertEqual(before, snapshot(self.work))
 
     def assert_shared_visibility(self, root, guest):
