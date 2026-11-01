@@ -1,7 +1,11 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.4.0 release guide**: complete nested-epic or exact-task goals
-and soft progress checkpoints. Explicit parent Git approval, introduced in v0.3.1,
+This is the **v0.4.1 release guide**: preserve customized retained policies,
+adding only harness isolation to known-owned legacy blocks instead of upgrading
+unrelated workflows. Independent pristine bases and genuine-conflict refusal for
+explicitly selected active policies remain intact.
+v0.4.0 introduced complete nested-epic or exact-task goals and soft progress
+checkpoints. Explicit parent Git approval, introduced in v0.3.1,
 bypasses Beads/model gates, not native permissions, scope or guest privacy.
 It grants no automatic drain, push or merge authority. Model defaults and
 optional setup were introduced in v0.3.0.
@@ -9,18 +13,21 @@ Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
 Validation is instruction-level/filesystem-only, not new native UX qualification.
-Historical evidence below does not qualify v0.3.1 or v0.4.0.
+Historical evidence below does not qualify v0.3.1, v0.4.0 or v0.4.1.
 hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
+See [v0.4.1 evidence and limits](#v041-release-status-and-limits) for this fix.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.4.0 is published to `main`, existing `dom` aliases that fetch
-`main/domestique.sh` receive its goal features on their next invocation,
+After v0.4.1 is published to `main`, existing `dom` aliases that fetch
+`main/domestique.sh` receive its retained-policy fix on their next invocation,
 without an alias change.
+For the covered unselected/inactive retained-policy case, ordinary
+`dom --platform=copilot` needs neither `--force` nor manual repair.
 Preview with `dom --dry-run`, then run `dom`; refresh cached native instructions
 if needed. Nothing
 updates in the background; publishing only a tag does not change those aliases.
@@ -44,7 +51,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.4.0's goal features are included in remote
+A source checkout is optional; v0.4.1's retained-policy fix is included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -442,6 +449,29 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.4.1 release status and limits
+
+- The retained-policy fix (hq-pu1, `ae02624`, against published v0.4.0
+  `67195ab`) independently passed source review. Unselected/inactive retained
+  policies preserve custom workflows; known-owned legacy blocks receive only
+  harness isolation. Already guarded retained workflows stay unchanged.
+  Pristine bases remain independent of custom live text, and explicitly selected
+  active providers still refuse real workflow conflicts.
+- Implementation validation passed **7 policy tests and 2 Codex scenarios**;
+  independent review passed **9 relevant tests, 2 Codex scenarios and provider
+  probes**. Independent consumer normal/force dry-runs both exited `0`, changing
+  none of 79 scoped records or Git status. These are bounded offline results,
+  not a universal clean test matrix or live native proof.
+- Supplementary legacy-recovery failures reproduced unchanged on the baseline;
+  they are not fixed here. Historical malformed-marker uninstall (hq-7sm.17)
+  and migration-timeout (hq-6pf) investigations remain unresolved. The
+  pre-existing unterminated-host-suffix uninstall newline behavior (hq-6yh)
+  is also not fixed.
+- **Native defaults/goal coverage remains unqualified:** authorization for new
+  paid fixtures/model usage was unavailable, not authentication. hq-c6o.8
+  remains UNQUALIFIED and hq-xc2 native coverage remains BLOCKED; prior evidence
+  below is not new native qualification.
 
 ### v0.4.0 release status and limits
 

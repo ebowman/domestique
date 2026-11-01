@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.4.0"
+DOMESTIQUE_VERSION="0.4.1"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -4622,10 +4622,49 @@ install_shared() {
   [ "$DRY_RUN" -eq 1 ] || SHARED_PRESENT=1
 }
 
-# Every retained owned root block needs a preserving merge preflight, even if
-# already guarded or inactive. Guarded inactive blocks are not update targets.
+# Finite public pre-boundary emitter bodies, not "anything without a guard".
+# Inventory ownership is checked separately. In particular, stripping today's
+# guard from a current base must never turn it into a legacy migration source.
+policy_legacy_base() {
+  python3 - "$1" "$2" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+provider, path = sys.argv[1:]
+known = {
+    "claude": {
+        # v0.1.0 / 415fb69 (normal, personal)
+        "951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e",
+        "eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94",
+        # 6158d35, 9e584a6, 3b29b26, 9f34a02 (= 64f4e09), each normal/personal
+        "07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2",
+        "f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b",
+        "bcbef1c12f21e380cc46181d314e05d9a36430eddc5cc1826f7775969588da22",
+        "a45d341faa7bd74e01b657e57c4b73a4ba5c99292302ce04f255353fb12f7070",
+        "5084bcfc8099e95720eb855eb93111be04c566eaf92561bc1a229a0377277465",
+        "0f3d6e32816bb2786079aa2bbb8297c3d5e95183550d38f2fbe01abb1580ef11",
+        "bb94e7a0d0e0872ef01358096139eaf48f9bffd127a0310a6bb1afdce99931b5",
+        "2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e",
+    },
+    "codex": {
+        # 76d217f, 6158d35, c0b62ef, 3b29b26, 9f34a02 (= 64f4e09)
+        "ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb",
+        "032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474",
+        "7e3e37e67c698f347bb21f31721af7e07c919737eeaa7a3cc4e75d918a5292db",
+        "44b2375b0b95a26fec0119718b3f36703c8fccbe718d4fb4edd90f6f7c181174",
+        "879d49e91009d7496bf3a479b5f51be8b9de6687b5520eb86bb5f4f22ed354a4",
+    },
+}
+sys.exit(hashlib.sha256(Path(path).read_bytes()).hexdigest() not in known.get(provider, ()))
+PY
+}
+
+# Retained roots need isolation, not an unrelated workflow upgrade. Preflight
+# stages a guard-only pristine upstream for the existing block merge/snapshot
+# pipeline; both retained and later additive-provider passes use that same plan.
 policy_preflight() {
-  local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active
+  local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active upstream
   for provider in claude codex copilot; do
     configure_provider "$provider"
     selected=0
@@ -4634,6 +4673,14 @@ policy_preflight() {
       codex) selected="$SELECT_CODEX" ;;
       copilot) selected="$SELECT_COPILOT" ;;
     esac
+    # Provider installation remains additive (roles, aliases, model setup and
+    # mode handling). Only explicitly requested root workflows are upgraded.
+    if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
+      case "$PLATFORM_ARG:$provider" in
+        all:*|both:claude|both:codex|claude:claude|codex:codex|copilot:copilot) ;;
+        *) selected=0 ;;
+      esac
+    fi
     state=".$provider/.domestique"
     [ "$provider" != copilot ] || state=".github/.domestique"
     shared_safe_path "$state/mode" || shared_refuse "unsafe $state/mode"
@@ -4723,16 +4770,46 @@ policy_preflight() {
       fi
       shared_safe_path "$base" && [ -f "$TARGET_DIR/$base" ] ||
         shared_refuse "unguarded owned policy $rel lacks a safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
+      snapshot_has_file "$state" "$provider" "$rel" .block ||
+        shared_refuse "unowned policy base $base; reconcile its inventory explicitly"
+      if head -c "$(wc -c < "$expected")" "$TARGET_DIR/$base" | cmp -s "$expected" -; then
+        [ "$guarded" -eq 1 ] ||
+          shared_refuse "owned policy $rel has a removed or altered harness guard; reconcile against $base explicitly"
+      else
+        policy_legacy_base "$provider" "$TARGET_DIR/$base" ||
+          shared_refuse "unknown legacy policy base $base; reconcile its pristine ownership explicitly"
+        if [ "$guarded" -eq 0 ] && grep -qF 'Active harness boundary' "$block"; then
+          shared_refuse "owned policy $rel has an altered harness guard; reconcile it explicitly"
+        fi
+      fi
+      upstream="$TMPDIR_WORK/retained-upstream"
+      if [ "$rel" != "$active" ] || [ -f "$TMPDIR_WORK/keep-$rel" ]; then
+        if [ "$guarded" -eq 1 ]; then
+          mkdir -p "$(dirname "$TMPDIR_WORK/retain-$rel")"
+          touch "$TMPDIR_WORK/retain-$rel"
+          continue
+        fi
+        upstream="$TMPDIR_WORK/policy-upstream/$rel"
+        mkdir -p "$(dirname "$upstream")"
+        {
+          cat "$expected"
+          if [ "$provider" = codex ]; then
+            # The known Codex emitter already has the title in expected.
+            tail -n +3 "$TARGET_DIR/$base"
+          else
+            cat "$TARGET_DIR/$base"
+          fi
+        } > "$upstream"
+      fi
       merged="$TMPDIR_WORK/retained-merged"
       rc=0
-      git merge-file -p "$block" "$TARGET_DIR/$base" "$TMPDIR_WORK/retained-upstream" > "$merged" || rc=$?
+      git merge-file -p "$block" "$TARGET_DIR/$base" "$upstream" > "$merged" || rc=$?
       [ "$rc" -eq 0 ] ||
         shared_refuse "owned policy merge conflict for $rel against $base; preserve custom text and reconcile the block explicitly before retrying"
       head -c "$(wc -c < "$expected")" "$merged" | cmp -s "$expected" - ||
         shared_refuse "merged owned policy $rel lacks the harness guard; reconcile the block against $base explicitly"
       mkdir -p "$(dirname "$TMPDIR_WORK/preserve-$rel")"
       touch "$TMPDIR_WORK/preserve-$rel"
-      if [ "$guarded" -eq 1 ] && { [ "$rel" != "$active" ] || [ -f "$TMPDIR_WORK/keep-$rel" ]; }; then continue; fi
       cmp -s "$merged" "$block" || policy_backup_preflight "$rel"
       [ "$guarded" -eq 0 ] || continue
       # Ephemeral plan only, not another project registry. The existing block
@@ -5141,7 +5218,7 @@ def prepare(provider):
                                 ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
             for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
                 recognized.add((version, old_files + "," + layout.helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0"):
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1"):
                 recognized.add((version, files + suffix))
 
     def merge_for(rel, local, base, upstream):
@@ -5497,6 +5574,10 @@ splice_policy_body() {
 install_claude_md() {
   local dest="$1" mode="${2:-normal}" emitter="${3:-emit_policy}"
   local FORCE="$FORCE"
+  if [ -f "$TMPDIR_WORK/retain-${dest#"$TARGET_DIR"/}" ]; then
+    SUM_SKIPPED+=("$dest (guarded retained policy; workflow unchanged)")
+    return 0
+  fi
   if [ -f "$TMPDIR_WORK/keep-${dest##*/}" ]; then
     SUM_SKIPPED+=("$dest (guarded tracked personal policy retained in guest mode)")
     return 0
@@ -5507,7 +5588,11 @@ install_claude_md() {
   local blk="$TMPDIR_WORK/block" result="$TMPDIR_WORK/claude_result"
   local policybody="$TMPDIR_WORK/policybody"
 
-  "$emitter" "$mode" > "$policybody"
+  if [ -f "$TMPDIR_WORK/policy-upstream/${dest#"$TARGET_DIR"/}" ]; then
+    cp "$TMPDIR_WORK/policy-upstream/${dest#"$TARGET_DIR"/}" "$policybody"
+  else
+    "$emitter" "$mode" > "$policybody"
+  fi
 
   # Build the managed block: BEGIN marker + verbatim policy + END marker.
   {
