@@ -1314,6 +1314,117 @@ class AllProviders(unittest.TestCase):
         self.assertTrue((state / f"base/{rel}.block").is_file())
         return root, rel
 
+    def historical_policy_fixture(self, name, ref, digest, *, provider="claude", guest=False):
+        # Execute public installers offline, not reconstructed emitter bodies or
+        # edited manifests. These revisions have no network/bootstrap dependency.
+        old = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", f"{ref}:domestique.sh"], text=True)
+        root = self.root(name)
+        # Claude-only revisions predate --platform; Claude is also the later default.
+        flags = () if provider == "claude" else ("--platform", provider)
+        self.run_dom(root, *flags, *(("--guest",) if guest else ()), script=old)
+        state = root / STATES[provider]
+        rel = ("CLAUDE.local.md" if guest else "CLAUDE.md") if provider == "claude" else "AGENTS.md"
+        policy, base = root / rel, state / f"base/{rel}.block"
+        pristine = base.read_bytes()
+        self.assertEqual(hashlib.sha256(pristine).hexdigest(), digest)
+        self.assertIn(b"<!-- BEGIN domestique (managed) -->\n" + pristine +
+                      b"<!-- END domestique -->", policy.read_bytes())
+        manifest = dict(line.split("=", 1) for line in (state / "manifest").read_text().splitlines())
+        self.assertEqual(manifest["snapshot_format"], "1")
+        self.assertEqual(manifest["domestique_version"], "0.1.0")
+        self.assertEqual(manifest.get("platform", "claude"), provider)
+        inventory = manifest["files"].split(",")
+        self.assertIn(rel, inventory)
+        for path in inventory:
+            suffix = ".block" if path == rel else ""
+            self.assertTrue((root / path).is_file(), path)
+            self.assertTrue((state / "base" / (path + suffix)).is_file(), path)
+        return root, policy, base, pristine
+
+    def test_historical_claude_policy_identity_upgrade(self):
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "9841ab9:domestique.sh"], text=True)
+        current = self.root("current-policy")
+        self.run_dom(current, "--platform=claude")
+        upstream = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+        for customized in (False, True):
+            with self.subTest(customized=customized):
+                root, policy, base, pristine = self.historical_policy_fixture(
+                    f"pre-release-{customized}", "99e6274",
+                    "378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c")
+                custom = b"- Public fixture: retain the local review checklist.\n"
+                if customized:
+                    anchor = b"- One task in flight at a time. Bounded WIP.\n"
+                    self.assertIn(anchor, pristine)
+                    policy.write_bytes(policy.read_bytes().replace(anchor, anchor + custom))
+                original = policy.read_bytes()
+                before = snapshot(root)
+                for flags in ((), ("--force",)):
+                    result = self.run_dom(root, "--platform", "claude", "--dry-run", *flags,
+                                          script=released, ok=False)
+                    self.assertEqual(result.returncode, 3)
+                    self.assertIn("unknown legacy policy base .claude/.domestique/base/CLAUDE.md.block",
+                                  result.stderr)
+                    self.assertEqual(before, snapshot(root))
+                    self.run_dom(root, "--platform", "claude", "--dry-run", *flags)
+                    self.assertEqual(before, snapshot(root))
+                self.run_dom(root, "--platform=claude", *(("--force",) if customized else ()))
+                self.assertEqual(base.read_bytes(), upstream)
+                self.assertTrue(base.read_bytes().startswith(self.claude_policy_guard()))
+                self.assertNotEqual(base.read_bytes(), pristine)
+                self.assertEqual(custom in policy.read_bytes(), customized)
+                self.assertNotIn(custom, base.read_bytes())
+                backups = list(root.glob("CLAUDE.md.bak.*"))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups[0].read_bytes(), original)
+
+    def test_historical_claude_early_inventory_still_refused(self):
+        root, _policy, _base, _pristine = self.historical_policy_fixture(
+            "first-snapshots", "ff41544",
+            "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d")
+        manifest = (root / STATES["claude"] / "manifest").read_text()
+        self.assertIn("files=.claude/agents/implementer.md,.claude/agents/reviewer.md,"
+                      ".claude/commands/decompose.md,CLAUDE.md\n", manifest)
+        # A proven pristine policy is not permission to invent missing goal
+        # inventory. This generation independently fails unchanged authority.
+        before = snapshot(root)
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "9841ab9:domestique.sh"], text=True)
+        result = self.run_dom(root, "--platform=claude", "--force", "--dry-run",
+                              script=released, ok=False)
+        self.assertIn("unknown legacy policy base", result.stderr)
+        self.assertEqual(before, snapshot(root))
+        for flags in ((), ("--force",), ("--force", "--dry-run")):
+            result = self.run_dom(root, "--platform=claude", *flags, ok=False)
+            self.assertEqual(result.returncode, 3)
+            self.assertIn("unknown inventory generation", result.stderr)
+            self.assertNotIn("unknown legacy policy base", result.stderr)
+            self.assertEqual(before, snapshot(root))
+
+    def test_historical_policy_runtime_scope_variants(self):
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "9841ab9:domestique.sh"], text=True)
+        # Additional actual main-line bodies found by the bounded history audit.
+        for provider, guest, digest in (
+            ("claude", False, "86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120"),
+            ("claude", True, "7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b"),
+            ("codex", False, "7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12"),
+        ):
+            with self.subTest(provider=provider, guest=guest):
+                root, _policy, base, pristine = self.historical_policy_fixture(
+                    f"runtime-{provider}-{guest}", "58f4d29", digest, provider=provider, guest=guest)
+                before = snapshot(root)
+                result = self.run_dom(root, f"--platform={provider}", "--force", "--dry-run",
+                                      script=released, ok=False)
+                self.assertIn("unknown legacy policy base", result.stderr)
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, f"--platform={provider}", "--force", "--dry-run")
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, f"--platform={provider}")
+                self.assertNotEqual(base.read_bytes(), pristine)
+                self.assertIn(b"Active harness boundary", base.read_bytes())
+
     def test_platformless_legacy_claude_policy_recovery(self):
         for ref, guest in (("v0.1.0", False), ("415fb69", False), ("415fb69", True)):
             for missing in (False, True):
@@ -2137,13 +2248,13 @@ class AllProviders(unittest.TestCase):
             self.assertIn("policy merge conflict", result.stderr)
             self.assertEqual(before, snapshot(self.work))
 
-    def retained_legacy_claude(self, name, suffix=b"\nPublic host suffix\n"):
+    def retained_legacy_claude(self, name, suffix=b"\nPublic host suffix\n", *, ref="64f4e09"):
         # Public historical installer only; no real project's policy prose.
         old = subprocess.check_output(
-            ["git", "-C", str(SOURCE.parent), "show", "64f4e09:domestique.sh"],
+            ["git", "-C", str(SOURCE.parent), "show", f"{ref}:domestique.sh"],
             text=True)
         root = self.root(name)
-        self.run_dom(root, "--platform", "claude", script=old)
+        self.run_dom(root, script=old)  # Claude default, even before --platform existed.
         policy = root / "CLAUDE.md"
         base = root / STATES["claude"] / "base/CLAUDE.md.block"
         pristine = base.read_bytes()
@@ -2170,6 +2281,33 @@ class AllProviders(unittest.TestCase):
             ["bash", "-s"], input=("emit_harness_guard() {" + emitter +
                                    "\n}\nemit_harness_guard claude policy\n").encode(),
             env=self.env)
+
+    def test_historical_claude_retained_guard_only(self):
+        root, policy, base, pristine, custom = self.retained_legacy_claude(
+            "pre-release-retained", ref="99e6274")
+        self.assertEqual(hashlib.sha256(pristine).hexdigest(),
+                         "378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c")
+        original = policy.read_bytes()
+        before = snapshot(root)
+        for flags in ((), ("--force",)):
+            # Selecting Claude still performs the full workflow merge and refuses
+            # genuine conflicts, even though its historical base is now recognized.
+            result = self.run_dom(root, "--platform=claude", "--dry-run", *flags, ok=False)
+            self.assertIn("owned policy merge conflict for CLAUDE.md", result.stderr)
+            self.assertEqual(before, snapshot(root))
+            self.run_dom(root, "--platform=copilot", "--dry-run", *flags)
+            self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=copilot", "--force")
+        guard = self.claude_policy_guard()
+        self.assertEqual(policy.read_bytes(), original.replace(custom, guard + custom))
+        self.assertEqual(base.read_bytes(), guard + pristine)
+        self.assertNotEqual(base.read_bytes(), guard + custom)
+        backups = list(root.glob("CLAUDE.md.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), original)
+        before = snapshot(root)
+        self.run_dom(root, "--platform=copilot", "--force")
+        self.assertEqual(before, snapshot(root))
 
     def test_retained_legacy_copilot_guard_only_and_selected_conflict(self):
         released = subprocess.check_output(
