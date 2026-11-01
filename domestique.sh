@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.4.1"
+DOMESTIQUE_VERSION="0.4.2"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -4634,9 +4634,18 @@ import sys
 provider, path = sys.argv[1:]
 known = {
     "claude": {
-        # v0.1.0 / 415fb69 (normal, personal)
+        # 858c1f3..ff41544: first snapshot body (normal only). Its older
+        # three-file role/command inventory still needs separate authorization.
+        "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d",
+        # 99e6274..21dcb26: integrated goal inventory, before bd export.
+        "378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c",
+        # 4aa67ae / v0.1.0 / 415fb69 (normal, personal)
         "951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e",
         "eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94",
+        # 58f4d29..58732cc: public Runtime scope variant (normal, personal).
+        # Audited snapshot-era main-line bodies through guard introduction 8cb30cb.
+        "86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120",
+        "7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b",
         # 6158d35, 9e584a6, 3b29b26, 9f34a02 (= 64f4e09), each normal/personal
         "07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2",
         "f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b",
@@ -4648,6 +4657,8 @@ known = {
         "2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e",
     },
     "codex": {
+        # 58f4d29..58732cc: public Runtime scope variant, installed AGENTS base.
+        "7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12",
         # 76d217f, 6158d35, c0b62ef, 3b29b26, 9f34a02 (= 64f4e09)
         "ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb",
         "032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474",
@@ -5218,7 +5229,7 @@ def prepare(provider):
                                 ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
             for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
                 recognized.add((version, old_files + "," + layout.helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1"):
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2"):
                 recognized.add((version, files + suffix))
 
     def merge_for(rel, local, base, upstream):

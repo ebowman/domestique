@@ -1,6 +1,8 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.4.1 release guide**: preserve customized retained policies,
+This is the **v0.4.2 release guide**: recognize five verified historical
+policy-base identities omitted by v0.4.1, without relaxing inventory authority
+or conflict checks. The v0.4.1 fix still preserves customized retained policies,
 adding only harness isolation to known-owned legacy blocks instead of upgrading
 unrelated workflows. Independent pristine bases and genuine-conflict refusal for
 explicitly selected active policies remain intact.
@@ -13,19 +15,22 @@ Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
 Validation is instruction-level/filesystem-only, not new native UX qualification.
-Historical evidence below does not qualify v0.3.1, v0.4.0 or v0.4.1.
+Historical evidence below does not qualify v0.3.1, v0.4.0, v0.4.1 or v0.4.2.
 hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
-See [v0.4.1 evidence and limits](#v041-release-status-and-limits) for this fix.
+See [v0.4.2 evidence and limits](#v042-release-status-and-limits) for this fix.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.4.1 is published to `main`, existing `dom` aliases that fetch
-`main/domestique.sh` receive its retained-policy fix on their next invocation,
+After v0.4.2 is published to `main`, existing `dom` aliases that fetch
+`main/domestique.sh` receive its historical-policy fix on their next invocation,
 without an alias change.
+For the covered historical Claude base, preview with
+`dom --platform claude --dry-run`, then run `dom --platform claude`.
+Hash recognition needs no `--force`.
 For the covered unselected/inactive retained-policy case, ordinary
 `dom --platform=copilot` needs neither `--force` nor manual repair.
 Preview with `dom --dry-run`, then run `dom`; refresh cached native instructions
@@ -51,7 +56,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.4.1's retained-policy fix is included in remote
+A source checkout is optional; v0.4.2's historical-policy fix is included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -449,6 +454,31 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.4.2 release status and limits
+
+- The historical-policy fix (hq-qmf, `28ddf41`, against published v0.4.1
+  `9841ab9`) independently passed source review. An audit of 74 public commits
+  and actual old installers verified five omitted policy-base identities,
+  including `99e6274` with SHA-256
+  `378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c`.
+- Recognition is finite: unknown or modified bases, current-guard tampering
+  and selected-policy conflicts still refuse, including with `--force`.
+  Very early `ff41544` lacks the complete inventory and still refuses
+  independently. Not every historical installation is supported.
+  The v0.4.1 retained-policy preservation fix remains intact.
+- Independent review passed **12 focused tests**, Bash syntax,
+  warning-level ShellCheck, Python AST and diff checks. Published v0.4.1
+  rejects the matching fixture as a negative control; the candidate passes
+  ordinary/force selected-Claude dry-runs and preserving upgrades, plus
+  retained-Copilot guard migration. These are local offline fixtures.
+  The reported actual base hash matched known public source, but the complete
+  actual remote project was not verified and no upgrade was applied there.
+- **Native coverage remains unqualified:** authorization for new paid
+  fixtures/model usage was unavailable, not authentication. Historical
+  malformed-marker uninstall (hq-7sm.17), migration timeout (hq-6pf) and
+  unterminated-host-suffix uninstall newline behavior (hq-6yh) remain unresolved.
+  See the retained [v0.4.1 limits](#v041-release-status-and-limits) below.
 
 ### v0.4.1 release status and limits
 

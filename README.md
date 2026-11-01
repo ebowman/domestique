@@ -7,15 +7,21 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.4.1: preserve retained policy customizations
+## v0.4.2: recognize verified historical policy bases
 
-v0.4.1 preserves custom workflows in unselected or inactive retained policies
-instead of attempting an unrelated full workflow upgrade. Known-owned legacy
+v0.4.2 recognizes five verified historical policy-base identities omitted by
+v0.4.1, including the public `99e6274` Claude base. Unknown or modified bases,
+current-guard tampering and selected-policy conflicts still refuse; `--force`
+does not bypass these checks. Very early `ff41544` installs still fail the
+independent complete-inventory check: this is not support for every historical install.
+After publication to `main`, preview with `dom --platform claude --dry-run`,
+then run `dom --platform claude`. Hash recognition needs no `--force`.
+See [evidence and limits](docs/install-upgrade-design.md#v042-release-status-and-limits).
+
+The v0.4.1 fix remains: custom workflows in unselected or inactive retained
+policies are preserved instead of attempting an unrelated full workflow upgrade. Known-owned legacy
 policies receive only harness isolation, with independent pristine bases;
 explicitly selected active policies still refuse genuine merge conflicts.
-After publication to `main`, use ordinary `dom --platform=copilot`: the covered
-retained-policy case needs neither `--force` nor manual repair.
-See [evidence and limits](docs/install-upgrade-design.md#v041-release-status-and-limits).
 
 <a id="v040-complete-named-goals"></a>
 
@@ -57,7 +63,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-After v0.4.1 is published to `main`, the existing alias fetches it on its next
+After v0.4.2 is published to `main`, the existing alias fetches it on its next
 invocation; no alias change is needed:
 
 ```sh
@@ -85,7 +91,7 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional; v0.4.1's retained-policy fix is included in remote
+A source checkout is optional; v0.4.2's historical-policy fix is included in remote
 `dom` after publication to `main`. To inspect reviewed source locally, run from
 that checkout against a disposable Git project:
 
@@ -339,7 +345,7 @@ bash test/upgrade.sh --current
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.4.1 qualification limits](docs/install-upgrade-design.md#v041-release-status-and-limits).
+ancestry and the [v0.4.2 qualification limits](docs/install-upgrade-design.md#v042-release-status-and-limits).
 
 ## License
 
