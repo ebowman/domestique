@@ -1342,6 +1342,337 @@ class AllProviders(unittest.TestCase):
             self.assertTrue((state / "base" / (path + suffix)).is_file(), path)
         return root, policy, base, pristine
 
+    def removed_provider(self, name, ref="99e6274", provider="claude"):
+        old = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", f"{ref}:domestique.sh"], text=True)
+        root = self.root(name)
+        flags = () if ref in ("99e6274", "v0.1.0") else ("--platform", provider)
+        self.run_dom(root, *flags, script=old)
+        state = root / STATES[provider]
+        inventory = dict(line.split("=", 1) for line in
+                         (state / "manifest").read_text().splitlines())["files"].split(",")
+        policy = "CLAUDE.md" if provider == "claude" else "AGENTS.md"
+        host = b"# Public host policy\nKeep this unrelated policy exactly.\n"
+        # Simulate manual removal, not uninstall: empty native directories and
+        # pristine manifest/bases remain. No consumer host prose is copied here.
+        for rel in inventory:
+            if rel == policy:
+                (root / rel).write_bytes(host)
+            else:
+                (root / rel).unlink()
+        return root, state, policy, host, inventory
+
+    def test_removed_legacy_provider_release_negative_control(self):
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "v0.4.2:domestique.sh"], text=True)
+        for ref in ("99e6274", "v0.1.0"):
+            root, _, _, _, _ = self.removed_provider("negative-" + ref, ref)
+            for flags in ((), ("--force",), ("--dry-run",), ("--force", "--dry-run")):
+                with self.subTest(ref=ref, flags=flags):
+                    before = snapshot(root)
+                    result = self.run_dom(root, "--platform", "copilot", *flags,
+                                          ok=False, script=released)
+                    self.assertIn("partial owned pair", result.stderr)
+                    self.assertEqual(before, snapshot(root))
+
+    def test_removed_unrequested_provider_retains_history(self):
+        for ref, provider in (("99e6274", "claude"), ("v0.1.0", "claude"),
+                              ("v0.4.2", "claude"), ("v0.4.2", "codex")):
+            for force in (False, True):
+                with self.subTest(ref=ref, provider=provider, force=force):
+                    root, state, policy, host, inventory = self.removed_provider(
+                        f"removed-{ref}-{provider}-{force}", ref, provider)
+                    if ref == "v0.1.0":
+                        for path in (state, *state.rglob("*")):
+                            path.chmod(0o700 if path.is_dir() else 0o600)
+                    history = snapshot(state)
+                    flags = ("--force",) if force else ()
+                    before = snapshot(root)
+                    result = self.run_dom(root, "--platform", "copilot", *flags, "--dry-run")
+                    self.assertIn(f"Retained inactive {provider}", result.stdout)
+                    self.assertEqual(before, snapshot(root))
+                    for _ in range(2):
+                        result = self.run_dom(root, "--platform", "copilot", *flags)
+                        self.assertIn("Selected: GitHub Copilot", result.stdout)
+                        self.assertNotIn(f"platform={provider} ", result.stdout)
+                        self.assertEqual(history, snapshot(state))
+                        self.assertEqual((root / policy).read_bytes(), host)
+                        for rel in inventory:
+                            if rel != policy:
+                                self.assertFalse((root / rel).exists(), rel)
+                        lib = self.model_library("copilot")
+                        cwd = Path.cwd()
+                        try:
+                            os.chdir(root)
+                            pair = lib["Pair"](installed=False)
+                            _, contents = pair.snapshot()
+                            self.assertTrue(lib["verify"](pair, contents)["confirmed"])
+                        finally:
+                            os.chdir(cwd)
+                    platforms = (root / STATES["copilot"] / "platforms").read_text()
+                    self.assertEqual(platforms.strip(), f"{provider},copilot")
+                    before = snapshot(root)
+                    self.run_dom(root, "--platform", "copilot", "--dry-run")
+                    self.assertEqual(before, snapshot(root))
+                    # Selectorless and explicit damaged-provider operations do
+                    # not turn retained ownership into a fresh configured pair.
+                    for selected in ((), ("--platform", provider), ("--platform", "all")):
+                        for repair in ((), ("--force",)):
+                            before = snapshot(root)
+                            self.run_dom(root, *selected, *repair, ok=False)
+                            self.assertEqual(before, snapshot(root))
+                    if provider == "codex":
+                        self.assertTrue((root / SHARED).is_file())
+                        self.assertTrue((root / ".agents/.domestique/base" / SHARED).is_file())
+                        self.assertFalse((state / "base" / SHARED).exists())
+                    self.run_dom(root, "--uninstall", "--platform", "copilot")
+                    self.assertEqual(history, snapshot(state))
+                    self.assertEqual((root / policy).read_bytes(), host)
+
+    def test_removed_codex_legacy_shared_authority_not_reassigned(self):
+        for live in (False, True):
+            root, state, _, _, inventory = self.removed_provider(
+                f"legacy-codex-{live}", "6158d35", "codex")
+            self.assertIn(SHARED, inventory)
+            if live:
+                shutil.copyfile(state / "base" / SHARED, root / SHARED)
+            for flags in ((), ("--force",), ("--dry-run",)):
+                before = snapshot(root)
+                self.run_dom(root, "--platform", "copilot", *flags, ok=False)
+                self.assertEqual(before, snapshot(root))
+
+    def test_removed_provider_stale_platform_history_does_not_resurrect(self):
+        for force in (False, True):
+            with self.subTest(force=force):
+                root = self.root(f"stale-platforms-{force}")
+                self.run_dom(root, "--platform", "both")
+                state = root / STATES["codex"]
+                inventory = dict(line.split("=", 1) for line in
+                                 (state / "manifest").read_text().splitlines())["files"].split(",")
+                for rel in inventory:
+                    (root / rel).unlink()
+                history = snapshot(state)
+                self.assertEqual((state / "platforms").read_bytes(), b"both\n")
+                self.run_dom(root, "--uninstall", "--platform", "claude")
+                self.assertEqual(history, snapshot(state))
+                # Configured roles may have .uninstalled preservation copies;
+                # those are not live native registrations and must stay intact.
+                claude_history = snapshot(root / ".claude")
+                flags = ("--force",) if force else ()
+                before = snapshot(root)
+                self.run_dom(root, "--platform", "copilot", *flags, "--dry-run")
+                self.assertEqual(before, snapshot(root))
+                for _ in range(2):
+                    result = self.run_dom(root, "--platform", "copilot", *flags)
+                    self.assertIn("Selected: GitHub Copilot", result.stdout)
+                    self.assertEqual(history, snapshot(state))
+                    self.assertFalse((root / STATES["claude"]).exists())
+                    for rel in ("CLAUDE.md", "CLAUDE.local.md",
+                                ".claude/domestique-model-setup.py"):
+                        self.assertFalse((root / rel).exists(), rel)
+                    self.assertEqual(claude_history, snapshot(root / ".claude"))
+                    for rel in (ROLES[0], ".claude/agents/reviewer.md",
+                                ".claude/commands/goal.md", ".claude/commands/dom-goal.md"):
+                        self.assertFalse((root / rel).exists(), rel)
+                    self.assertTrue((root / ROLES[2]).is_file())
+                    self.assertEqual((root / STATES["copilot"] / "platforms").read_bytes(),
+                                     b"codex,copilot\n")
+                # Historical bytes remain validated, never silently normalized.
+                (state / "platforms").write_text("both,unknown\n")
+                before = snapshot(root)
+                result = self.run_dom(root, "--platform", "copilot", *flags, ok=False)
+                self.assertIn("invalid domestique platform state", result.stderr)
+                self.assertEqual(before, snapshot(root))
+
+    def test_removed_state_cross_history_live_guard_refuses_like_release(self):
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "v0.4.2:domestique.sh"], text=True)
+        root = self.root("removed-state-live-guard")
+        self.run_dom(root, "--platform", "both")
+        state = root / STATES["claude"]
+        policy = root / "CLAUDE.md"
+        block = (b"<!-- BEGIN domestique (managed) -->\n" +
+                 (state / "base/CLAUDE.md.block").read_bytes() +
+                 b"<!-- END domestique -->")
+        self.assertIn(block, policy.read_bytes())
+        policy.write_bytes(policy.read_bytes().replace(block, b"", 1))
+        shutil.rmtree(state)
+        role = root / ROLES[0]
+        original = role.read_text()
+        changed = original.replace(
+            "Claude Code only; never match in another harness.", "Foreign harness allowed.")
+        self.assertNotEqual(original, changed)
+        role.write_text(changed)
+        self.assertEqual((root / STATES["codex"] / "platforms").read_bytes(), b"both\n")
+        for label, script in (("release", released), ("candidate", SCRIPT)):
+            for flags in (("--dry-run",), ("--force", "--dry-run"), (), ("--force",)):
+                with self.subTest(script=label, flags=flags):
+                    before = snapshot(root)
+                    result = self.run_dom(root, "--platform", "copilot", *flags,
+                                          script=script, ok=False)
+                    self.assertEqual(result.returncode, 3)
+                    self.assertIn("modified/unowned helper", result.stderr)
+                    self.assertEqual(before, snapshot(root))
+
+    def test_removed_state_cross_history_partial_and_unsafe_refuses(self):
+        for case in ("role", "alias", "policy", "symlink", "parent-symlink", "state-symlink"):
+            with self.subTest(case=case):
+                root = self.root("removed-state-" + case)
+                self.run_dom(root, "--platform", "both")
+                state = root / STATES["claude"]
+                inventory = dict(line.split("=", 1) for line in
+                                 (state / "manifest").read_text().splitlines())["files"].split(",")
+                survivor = {"role": ROLES[0], "alias": ".claude/commands/dom-goal.md",
+                            "policy": "CLAUDE.md"}.get(case)
+                for rel in inventory:
+                    if rel != survivor:
+                        (root / rel).unlink()
+                shutil.rmtree(state)
+                if case == "role":
+                    role = root / ROLES[0]
+                    role.write_text(role.read_text().replace(
+                        "Claude Code only; never match in another harness.",
+                        "Foreign harness allowed."))
+                elif case == "policy":
+                    policy = root / "CLAUDE.md"
+                    policy.write_bytes(policy.read_bytes().replace(
+                        b"<!-- END domestique -->", b"", 1))
+                elif case == "symlink":
+                    (root / ROLES[0]).symlink_to("missing")
+                elif case == "parent-symlink":
+                    agents = root / ".claude/agents"
+                    agents.rmdir()
+                    agents.symlink_to("missing", target_is_directory=True)
+                elif case == "state-symlink":
+                    state.symlink_to("missing", target_is_directory=True)
+                for flags in (("--dry-run",), ("--force", "--dry-run"), (), ("--force",)):
+                    before = snapshot(root)
+                    self.run_dom(root, "--platform", "copilot", *flags, ok=False)
+                    self.assertEqual(before, snapshot(root))
+
+    def removed_guest_beads_provider(self, name, provider, present):
+        root = self.root(name)
+        self.run_dom(root, "--platform", provider, "--guest")
+        state = root / STATES[provider]
+        inventory = dict(line.split("=", 1) for line in
+                         (state / "manifest").read_text().splitlines())["files"].split(",")
+        for rel in inventory:
+            (root / rel).unlink()
+        # Public synthetic provenance: no bd/native calls or consumer data.
+        marker = state / "beads-owned"
+        marker.write_bytes(b"retained guest provenance\n")
+        os.utime(marker, ns=(1_600_000_000_000_000_000, 1_600_000_000_000_000_000))
+        if present:
+            (root / ".beads").mkdir()
+            (root / ".beads/issues.jsonl").write_text("{}\n")
+        return root, state, marker
+
+    def test_removed_provider_absent_beads_preserves_marker(self):
+        for provider in ("claude", "codex"):
+            for force in (False, True):
+                with self.subTest(provider=provider, force=force):
+                    root, state, marker = self.removed_guest_beads_provider(
+                        f"absent-beads-{provider}-{force}", provider, False)
+                    history, inode = snapshot(state), marker.stat().st_ino
+                    flags = ("--force",) if force else ()
+                    before = snapshot(root)
+                    self.run_dom(root, "--platform", "copilot", "--guest", *flags, "--dry-run")
+                    self.assertEqual(before, snapshot(root))
+                    for _ in range(2):
+                        self.run_dom(root, "--platform", "copilot", "--guest", *flags)
+                        self.assertEqual(history, snapshot(state))
+                        self.assertEqual(inode, marker.stat().st_ino)
+                        self.assertFalse((root / ".beads").exists())
+                        self.assertFalse((root / STATES["copilot"] / "beads-owned").exists())
+
+    def test_removed_guest_beads_marker_preserved_and_active_provenance_propagates(self):
+        for provider in ("claude", "codex"):
+            for force in (False, True):
+                with self.subTest(provider=provider, force=force):
+                    root, state, marker = self.removed_guest_beads_provider(
+                        f"present-beads-{provider}-{force}", provider, True)
+                    history, inode = snapshot(state), marker.stat().st_ino
+                    flags = ("--force",) if force else ()
+                    before = snapshot(root)
+                    self.run_dom(root, "--platform", "copilot", "--guest", *flags, "--dry-run")
+                    self.assertEqual(before, snapshot(root))
+                    for _ in range(2):
+                        self.run_dom(root, "--platform", "copilot", "--guest", *flags)
+                        self.assertEqual(history, snapshot(state))
+                        self.assertEqual(inode, marker.stat().st_ino)
+                        self.assertTrue((root / STATES["copilot"] / "beads-owned").is_file())
+                        for rel in (".beads/issues.jsonl", ROLES[2], SHARED):
+                            self.assertEqual(subprocess.run(
+                                ["git", "-C", str(root), "check-ignore", "-q", rel],
+                                env=self.env).returncode, 0, rel)
+                    # Scoped removal of the active provider leaves the inactive
+                    # provenance unchanged and the shared workspace private.
+                    self.run_dom(root, "--uninstall", "--platform", "copilot")
+                    self.assertEqual(history, snapshot(state))
+                    self.assertEqual(inode, marker.stat().st_ino)
+                    self.assertFalse((root / STATES["copilot"]).exists())
+                    self.assertEqual(subprocess.run(
+                        ["git", "-C", str(root), "check-ignore", "-q", ".beads/issues.jsonl"],
+                        env=self.env).returncode, 0)
+
+    def test_live_provider_missing_role_guard_not_bypassed(self):
+        root = self.root("live-missing-guard")
+        self.run_dom(root, "--platform", "claude")
+        role = root / ROLES[0]
+        original = role.read_text()
+        changed = original.replace(
+            "Claude Code only; never match in another harness.", "Foreign harness allowed.")
+        self.assertNotEqual(original, changed)
+        role.write_text(changed)
+        for flags in ((), ("--force",), ("--dry-run",)):
+            before = snapshot(root)
+            self.run_dom(root, "--platform", "copilot", *flags, ok=False)
+            self.assertEqual(before, snapshot(root))
+
+    def test_removed_provider_live_and_unsafe_evidence_refuses(self):
+        cases = ("role", "alias", "policy", "helper", "symlink", "hardlink",
+                 "parent-symlink", "base-symlink", "missing-base", "unknown-state",
+                 "unknown-manifest", "mode")
+        for case in cases:
+            with self.subTest(case=case):
+                root, state, policy, _, _ = self.removed_provider("unsafe-" + case)
+                role = root / ROLES[0]
+                if case == "role":
+                    shutil.copyfile(state / "base" / ROLES[0], role)
+                elif case == "alias":
+                    (root / ".claude/commands/dom-goal.md").write_text("live alias\n")
+                elif case == "policy":
+                    (root / policy).write_bytes(
+                        b"<!-- BEGIN domestique (managed) -->\n" +
+                        (state / "base/CLAUDE.md.block").read_bytes() +
+                        b"<!-- END domestique -->\n")
+                elif case == "helper":
+                    (root / ".claude/domestique-model-setup.py").write_text("# live\n")
+                elif case == "symlink":
+                    role.symlink_to("missing")
+                elif case == "hardlink":
+                    os.link(state / "base" / ROLES[0], role)
+                elif case == "parent-symlink":
+                    role.parent.rmdir()
+                    role.parent.symlink_to("missing", target_is_directory=True)
+                elif case == "base-symlink":
+                    base = state / "base" / ROLES[0]
+                    base.unlink()
+                    base.symlink_to("missing")
+                elif case == "missing-base":
+                    (state / "base/.claude/commands/goal.md").unlink()
+                elif case == "unknown-state":
+                    (state / "unexpected").write_text("unknown\n")
+                elif case == "unknown-manifest":
+                    manifest = state / "manifest"
+                    manifest.write_text(manifest.read_text().replace("0.1.0", "99.0.0"))
+                elif case == "mode":
+                    (state / "mode").write_text("unknown\n")
+                for flags in ((), ("--force",), ("--dry-run",), ("--force", "--dry-run")):
+                    before = snapshot(root)
+                    self.run_dom(root, "--platform", "copilot", *flags, ok=False)
+                    self.assertEqual(before, snapshot(root))
+
     def test_historical_claude_policy_identity_upgrade(self):
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show", "9841ab9:domestique.sh"], text=True)

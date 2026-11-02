@@ -3083,8 +3083,10 @@ persist_platform_set() {
   [ "$CONFLICT_OCCURRED" -eq 0 ] || return 0
   for state_dir in "$TARGET_DIR/.claude/.domestique" "$TARGET_DIR/.codex/.domestique" "$TARGET_DIR/.github/.domestique"; do
     case "$state_dir" in
-      "$TARGET_DIR/.claude/.domestique") [ "$SELECT_CLAUDE" -eq 1 ] || continue ;;
-      "$TARGET_DIR/.codex/.domestique") [ "$SELECT_CODEX" -eq 1 ] || continue ;;
+      "$TARGET_DIR/.claude/.domestique")
+        [ "$SELECT_CLAUDE" -eq 1 ] && [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ] || continue ;;
+      "$TARGET_DIR/.codex/.domestique")
+        [ "$SELECT_CODEX" -eq 1 ] && [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ] || continue ;;
       "$TARGET_DIR/.github/.domestique") [ "$SELECT_COPILOT" -eq 1 ] || continue ;;
     esac
     state_file="$state_dir/platforms"
@@ -3113,9 +3115,10 @@ if [ ! -d "$TARGET_DIR" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Platform selection. Provider-owned `platforms` files all carry the same
-# canonical installed set. Explicit installs add to that set; selector-less
-# reruns select all three. Legacy state directories count as installed too.
+# Platform selection. Provider-owned `platforms` files record historical sets,
+# including in inactive retained state. Keep cross-provider hints until the
+# inactive preflight proves actual native paths and ownership state absent.
+# Explicit installs add to that set; selector-less reruns select all three.
 # ---------------------------------------------------------------------------
 SELECT_CLAUDE=0
 SELECT_CODEX=0
@@ -3143,7 +3146,7 @@ read_platform_state() {
     case "$provider" in
       claude) PERSISTED_CLAUDE=1 ;;
       codex) PERSISTED_CODEX=1 ;;
-      copilot) PERSISTED_COPILOT=1 ;;
+      copilot) : ;;  # Explicit unrelated operations retain Copilot by own state.
       *) echo "Error: invalid domestique platform state in $statefile. No project writes." >&2; exit 3 ;;
     esac
   done
@@ -3153,11 +3156,12 @@ read_platform_state "$TARGET_DIR/.claude/.domestique/platforms"
 read_platform_state "$TARGET_DIR/.codex/.domestique/platforms"
 read_platform_state "$TARGET_DIR/.github/.domestique/platforms"
 
-# Backfill provider state that predates the platforms marker.
-if [ "$PERSISTED_CLAUDE" -eq 0 ] && [ -d "$TARGET_DIR/.claude/.domestique" ]; then
+# Own state is evidence even when it predates the platforms marker. The
+# lifecycle/inactive preflights below validate it before any project writes.
+if [ -d "$TARGET_DIR/.claude/.domestique" ]; then
   PERSISTED_CLAUDE=1
 fi
-if [ "$PERSISTED_CODEX" -eq 0 ] && [ -d "$TARGET_DIR/.codex/.domestique" ]; then
+if [ -d "$TARGET_DIR/.codex/.domestique" ]; then
   PERSISTED_CODEX=1
 fi
 if [ -d "$TARGET_DIR/.github/.domestique" ]; then
@@ -3186,11 +3190,16 @@ else
 fi
 
 platform_set() {
-if [ "$SELECT_CLAUDE" -eq 1 ] && [ "$SELECT_CODEX" -eq 1 ]; then
+local claude="$SELECT_CLAUDE" codex="$SELECT_CODEX"
+if [ "$UNINSTALL" -eq 0 ]; then
+  [ "$PERSISTED_CLAUDE" -eq 0 ] || claude=1
+  [ "$PERSISTED_CODEX" -eq 0 ] || codex=1
+fi
+if [ "$claude" -eq 1 ] && [ "$codex" -eq 1 ]; then
   PLATFORM_SET="both"
-elif [ "$SELECT_CODEX" -eq 1 ]; then
+elif [ "$codex" -eq 1 ]; then
   PLATFORM_SET="codex"
-elif [ "$SELECT_CLAUDE" -eq 1 ]; then
+elif [ "$claude" -eq 1 ]; then
   PLATFORM_SET="claude"
 else
   PLATFORM_SET=""
@@ -3915,7 +3924,9 @@ shared_consumer_valid() {
   # have its owned base and live body; omission is not a readiness claim.
   if grep '^files=' "$TARGET_DIR/$state/manifest" | tr ',' '\n' | grep -qxF "$models"; then
     snapshot_has_file "$state" "$provider" "$models" &&
-      shared_safe_path "$models" && [ -f "$TARGET_DIR/$models" ] || return 1
+      shared_safe_path "$models" &&
+      { [ -f "$TARGET_DIR/$models" ] ||
+        { [ "$provider" = codex ] && [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 1 ]; }; } || return 1
   fi
   shared_safe_path "$state/mode" || return 1
   [ ! -e "$TARGET_DIR/$state/mode" ] || [ "$(cat "$TARGET_DIR/$state/mode")" = guest ]
@@ -5082,6 +5093,169 @@ model_pair_managed() {
     { [ "$CURRENT_PROVIDER" != copilot ] || [ "$PREVIEW_MIGRATE" -eq 0 ]; }
 }
 
+# Shared finite inventory authority for pair preparation and inactive retention.
+emit_installer_inventory_library() {
+  cat <<'PY'
+def installer_inventories(provider, files, policies, helper):
+    import itertools
+    # Finite source-backed inventories, NOT today's inventory minus a helper.
+    # v0.1.0 / 76d217f: four Claude files; 6158d35: Claude aliases and
+    # Codex-owned shared aliases; 8cb30cb: shared aliases leave Codex;
+    # 4dc26fd: five Copilot files; 9f33930: helpers for all three.
+    historical = {
+        "claude": (
+            ".claude/agents/implementer.md,.claude/agents/reviewer.md,"
+            ".claude/commands/decompose.md,.claude/commands/goal.md,"
+            ".claude/commands/dom-decompose.md,.claude/commands/dom-goal.md"),
+        "codex": (
+            ".codex/agents/implementer.toml,.codex/agents/reviewer.toml,"
+            ".agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,"
+            ".agents/skills/domestique-goal/SKILL.md,"
+            ".agents/skills/domestique-goal/agents/openai.yaml"),
+        "copilot": (
+            ".github/agents/domestique-v2-copilot-implementer.agent.md,"
+            ".github/agents/domestique-v2-copilot-reviewer.agent.md,"
+            ".github/skills/domestique-v2-copilot/SKILL.md,"
+            ".github/skills/domestique-v2-copilot-decompose/SKILL.md,"
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md"),
+    }
+    old_files = historical[provider]
+    recognized = set()
+    for count in range(len(policies) + 1):
+        for subset in itertools.combinations(policies, count):
+            suffix = "".join("," + p for p in subset)
+            recognized.add(("0.1.0", old_files + suffix))
+            if provider == "claude":
+                recognized.add(("0.1.0", ",".join(old_files.split(",")[:4]) + suffix))
+            if provider == "codex":
+                recognized.add(("0.1.0", old_files +
+                                ",.agents/skills/dom-decompose/SKILL.md"
+                                ",.agents/skills/dom-goal/SKILL.md"
+                                ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
+            for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
+                recognized.add((version, old_files + "," + helper + suffix))
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2"):
+                recognized.add((version, files + suffix))
+    return recognized
+PY
+}
+
+# Only wholly absent, unrequested native projections may become inactive.
+# This is not pair repair: validate and retain every byte of ownership history.
+retain_inactive_providers() {
+  [ "$PLATFORM_EXPLICIT" -eq 1 ] || return 0
+  local provider rc
+  for provider in claude codex; do
+    case "$PLATFORM_ARG:$provider" in
+      all:*|both:*|claude:claude|codex:codex) continue ;;
+    esac
+    case "$provider" in
+      claude) [ "$PERSISTED_CLAUDE" -eq 1 ] || continue ;;
+      codex) [ "$PERSISTED_CODEX" -eq 1 ] || continue ;;
+    esac
+    configure_provider "$provider"
+    emit_installer_model_library > "$TMPDIR_WORK/inactive-library"
+    emit_installer_inventory_library >> "$TMPDIR_WORK/inactive-library"
+    rc=0
+    python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK/inactive-library" "$provider" \
+      "$MANAGED_PLAIN_FILES" "$POLICY_CANDIDATES" "$SHARED_FILES" \
+      "$MARKER_BEGIN" "$MARKER_END" <<'PY' || rc=$?
+import ast
+import os
+from pathlib import Path
+import sys
+
+root, library, provider, files, policies, shared, begin, end = sys.argv[1:]
+os.chdir(root)
+lib = {"__name__": "trusted_installer"}
+exec(compile(Path(library).read_bytes(), "<installer emitter>", "exec"), lib)
+need = lib["need"]
+
+class Inventory(lib["Pair"]):
+    def check_root(self):
+        # Retention also works in non-Git projects. read_snapshot still checks
+        # physical ancestors, ownership, modes, hardlinks and bounded reads.
+        need(self.root.resolve() == self.root, "unsafe physical root")
+
+try:
+    pair = Inventory(installed=False)
+    policies = policies.split()
+    native = files.split(",")
+    # Canonical routes belong to their actual snapshot owner. An old Codex
+    # base still owns/discovers that route; a shared-owned route is not Codex.
+    legacy_shared = []
+    if provider == "codex":
+        legacy_shared = [p for p in shared.split(",")
+                         if os.path.lexists(pair.root / pair.state / "base" / p)]
+        native += legacy_shared
+    # Any live leaf (including an unsafe/dangling link) stays on the existing
+    # selected-provider path. Do not change live additive merge/guard behavior.
+    if any(os.path.lexists(pair.root / p) for p in native):
+        sys.exit(1)
+    pair.files = list(dict.fromkeys([pair.manifest, *native, *policies]))
+    _, contents = pair.read_snapshot(absent=True)
+    if any(contents[p] is not None for p in native) or any(
+            contents[p] is not None and
+            (begin.encode() in contents[p] or end.encode() in contents[p])
+            for p in policies):
+        sys.exit(1)  # Live or partially live: keep the normal safety pipeline.
+    if not os.path.lexists(pair.root / pair.state):
+        sys.exit(2)  # Safe complete absence: discard only the historical hint.
+    need(not legacy_shared,
+         "inactive Codex still owns canonical route bases; reconcile shared ownership explicitly")
+    manifest = pair.inventory(contents[pair.manifest])
+    need((manifest.get("domestique_version"), manifest["files"]) in
+         lib["installer_inventories"](provider, files, policies, pair.helper),
+         "unknown inactive inventory generation")
+    inventory = manifest["files"].split(",")
+    bases = [f"{pair.state}/base/{p}" + (".block" if p in policies else "")
+             for p in inventory]
+    metadata = [f"{pair.state}/{p}" for p in
+                ("manifest", "mode", "platforms", "guest-excludes", "beads-owned")]
+    allowed = set(bases + metadata)
+    directories = {parent for p in allowed for parent in Path(p).parents
+                   if str(parent).startswith(pair.state)}
+    # No symlink traversal, and no unknown snapshot evidence is discarded.
+    for directory, dirs, leaves in os.walk(pair.state, followlinks=False):
+        for name in dirs:
+            path = Path(directory) / name
+            need(not path.is_symlink() and path in directories,
+                 "unsafe/unknown inactive state directory: " + str(path))
+        for name in leaves:
+            need(str(Path(directory) / name) in allowed,
+                 "unknown inactive state path: " + str(Path(directory) / name))
+    pair.files = list(allowed)
+    _, evidence = pair.read_snapshot(absent=True)
+    need(all(evidence[p] is not None for p in bases), "missing inactive pristine base")
+    for role, rel in pair.paths.items():
+        _, _, marker = lib["parse"](evidence[f"{pair.state}/base/{rel}"], role)
+        need(marker is None, "pristine base must not confirm a pair")
+    if pair.helper in inventory:
+        ast.parse(evidence[f"{pair.state}/base/{pair.helper}"])
+    need(evidence[f"{pair.state}/mode"] in (None, b"guest\n"), "invalid inactive mode")
+except (OSError, ValueError, SyntaxError) as exc:
+    print(f"Inactive provider refused ({provider}): {exc}. No project writes.", file=sys.stderr)
+    sys.exit(3)
+PY
+    case "$rc" in
+      0)
+        case "$provider" in
+          claude) SELECT_CLAUDE=0; RETAINED_INACTIVE_CLAUDE=1 ;;
+          codex) SELECT_CODEX=0; RETAINED_INACTIVE_CODEX=1 ;;
+        esac
+        echo "Retained inactive $provider ownership history (no native projection selected)." ;;
+      1) : ;;
+      2)
+        case "$provider" in
+          claude) SELECT_CLAUDE=0; PERSISTED_CLAUDE=0 ;;
+          codex) SELECT_CODEX=0; PERSISTED_CODEX=0 ;;
+        esac ;;
+      *) shared_refuse "unsafe inactive $provider ownership history" ;;
+    esac
+  done
+  platform_set
+}
+
 installer_model_pairs() {
   local provider requested selected policy rel emitter input
   mkdir -p "$TMPDIR_WORK/model-input"
@@ -5107,6 +5281,7 @@ installer_model_pairs() {
     input="$TMPDIR_WORK/model-input/$provider"
     mkdir -p "$input"
     emit_installer_model_library > "$input/helper"
+    emit_installer_inventory_library >> "$input/helper"
     emit_harness_guard "$provider" > "$input/entry-guard"
     emit_harness_guard "$provider" delegated > "$input/delegated-guard"
     printf '%s\n' "$MANAGED_PLAIN_FILES" > "$input/files"
@@ -5155,7 +5330,6 @@ copilot|.github/skills/domestique-v2-copilot-models/SKILL.md|emit_copilot_models
 ENTRIES
   done
   python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$MODEL_REQUEST" "$DRY_RUN" "$FORCE" <<'PY'
-import itertools
 import json
 import os
 from pathlib import Path
@@ -5191,46 +5365,7 @@ def prepare(provider):
     for rel in (*layout.paths.values(), layout.helper):
         pristine[rel] = (directory / rel).read_bytes()
         pristine[f"{layout.state}/base/{rel}"] = pristine[rel]
-    # Finite source-backed inventories, NOT today's inventory minus a helper.
-    # v0.1.0 / 76d217f: four Claude files; 6158d35: Claude aliases and
-    # Codex-owned shared aliases; 8cb30cb: shared aliases leave Codex;
-    # 4dc26fd: five Copilot files; 9f33930: helpers for all three.
-    # v0.2.0, v0.2.1 and v0.2.2 retain the 9f33930 inventories.
-    historical = {
-        "claude": (
-            ".claude/agents/implementer.md,.claude/agents/reviewer.md,"
-            ".claude/commands/decompose.md,.claude/commands/goal.md,"
-            ".claude/commands/dom-decompose.md,.claude/commands/dom-goal.md"),
-        "codex": (
-            ".codex/agents/implementer.toml,.codex/agents/reviewer.toml,"
-            ".agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,"
-            ".agents/skills/domestique-goal/SKILL.md,"
-            ".agents/skills/domestique-goal/agents/openai.yaml"),
-        "copilot": (
-            ".github/agents/domestique-v2-copilot-implementer.agent.md,"
-            ".github/agents/domestique-v2-copilot-reviewer.agent.md,"
-            ".github/skills/domestique-v2-copilot/SKILL.md,"
-            ".github/skills/domestique-v2-copilot-decompose/SKILL.md,"
-            ".github/skills/domestique-v2-copilot-goal/SKILL.md"),
-    }
-    old_files = historical[provider]
-    recognized = set()
-    # Policy destinations are the historical disk-state union, in emitter order.
-    for count in range(len(policies) + 1):
-        for subset in itertools.combinations(policies, count):
-            suffix = "".join("," + p for p in subset)
-            recognized.add(("0.1.0", old_files + suffix))
-            if provider == "claude":
-                recognized.add(("0.1.0", ",".join(old_files.split(",")[:4]) + suffix))
-            if provider == "codex":
-                recognized.add(("0.1.0", old_files +
-                                ",.agents/skills/dom-decompose/SKILL.md"
-                                ",.agents/skills/dom-goal/SKILL.md"
-                                ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
-            for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
-                recognized.add((version, old_files + "," + layout.helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2"):
-                recognized.add((version, files + suffix))
+    recognized = lib["installer_inventories"](provider, files, policies, layout.helper)
 
     def merge_for(rel, local, base, upstream):
         with tempfile.TemporaryDirectory(dir=scratch) as temporary:
@@ -5989,7 +6124,9 @@ sync_guest_beads_ownership() {
   local copilot_marker="$TARGET_DIR/.github/.domestique/beads-owned"
   if [ ! -d "$TARGET_DIR/.beads" ]; then
     if [ "$DRY_RUN" -eq 0 ]; then
-      rm -f "$claude_marker" "$codex_marker" "$copilot_marker"
+      [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 1 ] || rm -f "$claude_marker"
+      [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 1 ] || rm -f "$codex_marker"
+      rm -f "$copilot_marker"
     fi
     return 0
   fi
@@ -6001,11 +6138,14 @@ sync_guest_beads_ownership() {
     note_dry "propagate shared .beads ownership across active guest providers"
     return 0
   fi
-  if [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ]; then
+  # Inactive provenance remains a source for active guests, not a write target.
+  if [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] &&
+     [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ]; then
     mkdir -p "$(dirname "$claude_marker")"
     : > "$claude_marker"
   fi
-  if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ]; then
+  if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] &&
+     [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ]; then
     mkdir -p "$(dirname "$codex_marker")"
     : > "$codex_marker"
   fi
@@ -6442,6 +6582,7 @@ if [ "$UNINSTALL" -eq 0 ]; then
     touch "$TMPDIR_WORK/model-unconfirmed"
   fi
 fi
+retain_inactive_providers
 lifecycle_preflight
 preview_preflight
 copilot_preflight
@@ -6601,11 +6742,13 @@ if [ "$WITH_BEADS" -eq 1 ]; then
       else
         if [ "$ANY_GUEST" -eq 1 ]; then
           ( cd "$TARGET_DIR" && bd init --stealth --skip-agents --skip-hooks --non-interactive )
-          if [ "$CLAUDE_GUEST_SELECTED" -eq 1 ]; then
+          if [ "$CLAUDE_GUEST_SELECTED" -eq 1 ] &&
+             [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ]; then
             mkdir -p "$TARGET_DIR/.claude/.domestique"
             : > "$TARGET_DIR/.claude/.domestique/beads-owned"
           fi
-          if [ "$CODEX_GUEST_SELECTED" -eq 1 ]; then
+          if [ "$CODEX_GUEST_SELECTED" -eq 1 ] &&
+             [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ]; then
             mkdir -p "$TARGET_DIR/.codex/.domestique"
             : > "$TARGET_DIR/.codex/.domestique/beads-owned"
           fi
