@@ -1208,11 +1208,11 @@ class ModelSetup(unittest.TestCase):
     def test_historical_inventory_table_matches_repository_sources(self):
         # Read actual source, never project-supplied inventory authority. Exercise
         # the production finite-set builder without installing a version matrix.
-        block = CURRENT.SCRIPT.split("    historical = {\n", 1)[1]
-        block = "historical = {\n" + block.split("\n    def merge_for", 1)[0]
-        block = block.replace("\n    ", "\n")
+        block = CURRENT.SCRIPT.split("emit_installer_inventory_library() {\n", 1)[1]
+        block = block.split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
+        namespace = {}
+        exec(compile(block, "<installer inventory builder>", "exec"), namespace)
         import itertools
-        from types import SimpleNamespace
         for provider in PROVIDERS:
             helper = f"{PROVIDERS[provider]}/domestique-model-setup.py"
             policies = {"claude": ["CLAUDE.md", "CLAUDE.local.md"],
@@ -1222,10 +1222,7 @@ class ModelSetup(unittest.TestCase):
             files = next(line[6:] for line in manifest.read_text().splitlines()
                          if line.startswith("files="))
             files = ",".join(p for p in files.split(",") if p not in policies)
-            namespace = dict(provider=provider, policies=policies, itertools=itertools, files=files,
-                             layout=SimpleNamespace(helper=helper))
-            exec(compile(block, "<installer inventory builder>", "exec"), namespace)
-            recognized = namespace["recognized"]
+            recognized = namespace["installer_inventories"](provider, files, policies, helper)
             observed = set()
             refs = ("v0.1.0", "76d217f", "6158d35", "8cb30cb", "4dc26fd",
                     "9f33930", "v0.2.0", "v0.2.1", "v0.2.2")
@@ -1256,7 +1253,7 @@ class ModelSetup(unittest.TestCase):
                         observed.add((version, inventory + "".join("," + p for p in subset)))
             for count in range(len(policies) + 1):
                 for subset in itertools.combinations(policies, count):
-                    for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", CURRENT.VERSION):
+                    for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", CURRENT.VERSION):
                         observed.add((version, files + "".join("," + p for p in subset)))
             self.assertEqual(recognized, observed)
 

@@ -1,6 +1,15 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.4.2 release guide**: recognize five verified historical
+This is the **v0.4.3 release guide**: explicit unrelated-provider installs retain
+completely removed Claude/Codex projections as inactive when actual safe absence
+is established, rather than reactivating them from leftover owned metadata.
+Metadata, pristine bases, host policy bytes and inactive guest Beads markers are
+preserved. Surviving partial, unowned, guard-tampered or unsafe files still undergo
+validation; explicitly selecting a damaged pair still refuses, even with `--force`.
+Live-provider additive behavior and the selector-less all-provider default are
+unchanged; stale history alone does not resurrect completely removed providers.
+Legacy Codex canonical shared ownership still refuses reassignment.
+The v0.4.2 fix still recognizes five verified historical
 policy-base identities omitted by v0.4.1, without relaxing inventory authority
 or conflict checks. The v0.4.1 fix still preserves customized retained policies,
 adding only harness isolation to known-owned legacy blocks instead of upgrading
@@ -15,19 +24,22 @@ Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
 Validation is instruction-level/filesystem-only, not new native UX qualification.
-Historical evidence below does not qualify v0.3.1, v0.4.0, v0.4.1 or v0.4.2.
+Historical evidence below does not qualify v0.3.1, v0.4.0, v0.4.1, v0.4.2 or v0.4.3.
 hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
-See [v0.4.2 evidence and limits](#v042-release-status-and-limits) for this fix.
+See [v0.4.3 evidence and limits](#v043-release-status-and-limits) for this fix.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.4.2 is published to `main`, existing `dom` aliases that fetch
-`main/domestique.sh` receive its historical-policy fix on their next invocation,
+After v0.4.3 is published to `main`, existing `dom` aliases that fetch
+`main/domestique.sh` receive its removed-provider fix on their next invocation,
 without an alias change.
+For the covered completely removed Claude/Codex case, optionally preview with
+`dom --platform copilot --dry-run`, then run `dom --platform copilot`.
+Neither `--force` nor manual metadata repair is needed.
 For the covered historical Claude base, preview with
 `dom --platform claude --dry-run`, then run `dom --platform claude`.
 Hash recognition needs no `--force`.
@@ -56,7 +68,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.4.2's historical-policy fix is included in remote
+A source checkout is optional; v0.4.3's removed-provider fix is included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -90,7 +102,7 @@ stdin questionnaire, so `curl | bash` works.
 | Option | Meaning |
 | --- | --- |
 | No selector | **All Claude Code, Codex and Copilot on fresh installs and reruns.** |
-| `--platform claude`, `codex`, `copilot`, `both`, `all` | Explicit selection; **both = Claude+Codex**. Installs are additive: persisted Claude/Codex may also be selected; unselected Copilot remains. Read the actual plan. |
+| `--platform claude`, `codex`, `copilot`, `both`, `all` | Explicit selection; **both = Claude+Codex**. Installs are additive: live persisted Claude/Codex may also be selected; unselected Copilot remains. Stale history alone does not resurrect completely removed providers. Read the actual plan. |
 | `--dry-run` | Preview without target changes. |
 | `--guest` / `--no-guest` | Explicit mode/conversion; mutually exclusive. |
 | `--model harness:role=id-or-inherit` | Repeatable per-role model override; also `--model=harness:role=value`. Rules below. |
@@ -454,6 +466,31 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.4.3 release status and limits
+
+- The removed-provider fix (hq-owe, `29fdc40`, against published v0.4.2)
+  independently passed source review and **14 focused offline tests**, Bash
+  syntax, warning-level ShellCheck, Python AST and diff checks before release
+  preparation. This is not a full matrix or native qualification.
+- Actual historical installers in generic disposable fixtures reproduce the
+  failure on published v0.4.2 and verify the fix. Explicit unrelated-provider
+  installs preserve inactive metadata/bases, host policies and guest Beads
+  markers without reviving completely removed Claude/Codex projections.
+  Safe absence is required, not blanket exemption for unselected providers:
+  surviving partial, unowned, guard-tampered or unsafe files remain validated.
+  Explicitly selected damaged pairs still refuse, including with `--force`;
+  legacy Codex canonical shared ownership still refuses reassignment.
+- Live-provider additive selection and default-all behavior are unchanged.
+  Stale provider history alone does not resurrect completely removed providers.
+  The reported consumer state was externally cleaned up before the final real
+  check; an upgrade of its original old state was **not verified**.
+- **Native coverage remains unqualified:** authorization for new paid
+  fixtures/model usage remains pending, not authentication. Prior historical
+  uninstall, migration-timeout, unterminated-host-suffix and recovery
+  qualification limitations remain; see the retained
+  [v0.4.2](#v042-release-status-and-limits) and
+  [v0.4.1 limits](#v041-release-status-and-limits).
 
 ### v0.4.2 release status and limits
 
