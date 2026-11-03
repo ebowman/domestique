@@ -1676,7 +1676,11 @@ Rules for a good decomposition:
 - Keep `bd ready` crisp. No vague someday-items, no research-maybe tasks, nothing not immediately actionable. If it isn't ready to be worked, it doesn't belong in the graph yet.
 - Do not implement or delegate anything. No claims, close, branch changes, staging or commits. Planning only.
 
-When done, print the resulting graph (`bd ready` plus the epic tree) for my review before any execution.
+When done, print the resulting graph (`bd ready` plus the epic tree) for my review before any execution, then show the dispatch order:
+1. Run `bd dep tree <epic-id> --direction=up`.
+2. Render a compact markdown table with one row per task — columns **bead**, **needs first** (its blockers), **then unblocks** (its dependents). Derive it from `bd dep list <all task ids>`, ignoring parent-child edges (epic membership, not blockers).
+
+Note: the tree view dedups diamond dependencies — each node is drawn once, so repeated edges are invisible. The table is the source of truth for exact blockers.
 DOM_EOF
 }
 
@@ -2001,6 +2005,13 @@ Use the goal or specification in the invoking prompt.
 4. Do not implement or delegate anything. No claims, close, branch changes,
    staging or commits. Planning never grants execution.
 5. Print `bd ready` plus the epic tree for human review.
+6. Show the dispatch order: run `bd dep tree <epic-id> --direction=up`, then
+   render a compact markdown table with one row per task (columns: bead,
+   needs first — its blockers, then unblocks — its dependents) derived from
+   `bd dep list <all task ids>`, ignoring parent-child edges (epic
+   membership, not blockers). The tree view dedups diamond dependencies —
+   each node is drawn once, so repeated edges are invisible; the table is
+   the source of truth for exact blockers.
 DOM_EOF
 }
 
