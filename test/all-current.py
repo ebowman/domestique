@@ -1788,9 +1788,22 @@ class AllProviders(unittest.TestCase):
                     modes = {p: p.stat().st_mode for p in private}
                     old_backups = {p: p.read_bytes() for p in root.glob(f"{rel}.bak.*")}
                     before = snapshot(root)
-                    self.run_dom(root, "--dry-run")
-                    self.assertEqual(before, snapshot(root))
-                    self.run_dom(root)
+                    # The fixture customizes both role models, so the legacy pair
+                    # is custom-unconfirmed (3d1a3d3, hq-c6o.4): policy recovery
+                    # proceeds but both runs exit 3 until dom-models --confirm.
+                    for flags in (("--dry-run",), ()):
+                        incomplete = self.run_dom(root, *flags, ok=False)
+                        self.assertEqual(incomplete.returncode, 3)
+                        self.assertIn("claude: custom-unconfirmed -> reconfirmation-required"
+                                      if flags else "Configuration incomplete",
+                                      incomplete.stdout if flags else incomplete.stderr)
+                        self.assertIn("dom-models --confirm", incomplete.stderr)
+                        if flags:
+                            self.assertEqual(before, snapshot(root))
+                        else:
+                            # Exit 3 must come only from reconfirmation, not a real conflict.
+                            self.assertIn("[historical migration completed] claude:", incomplete.stdout)
+                            self.assertNotIn("Conflicted:", incomplete.stdout)
                     self.assertEqual(self.installed(root), set(STATES))
                     self.assertEqual(modes, {p: p.stat().st_mode for p in private})
                     if not missing:
@@ -1864,7 +1877,13 @@ class AllProviders(unittest.TestCase):
                 if not line.startswith(b"description:"):
                     self.assertIn(line + b"\n", actual_header + b"\n")
             self.assertIn(b"description: Claude Code only;", actual_header)
-            self.assertTrue(actual_body.endswith(body))
+            # The fixture's appended user bytes must survive at the end; the
+            # upstream body above them legitimately moves (2264890, hq-xc2.3
+            # changed the role body), so compare only the anchored user suffix.
+            fixture = b"\nFixture body bytes: \xc3\xa9\t \n"
+            self.assertTrue(body.endswith(fixture))
+            anchor = body[:-len(fixture)].rstrip(b"\n").splitlines()[-1]
+            self.assertTrue(actual_body.endswith(anchor + b"\n" + fixture))
             self.assertIn(b"## Active harness boundary (claude only)", actual_body)
             base = (root / STATES["claude"] / "base" / rel).read_bytes()
             self.assertEqual(base, bases[rel])
