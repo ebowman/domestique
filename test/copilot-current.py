@@ -52,6 +52,18 @@ class Copilot(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
+    def run_dom_unconfirmed(self, *flags, dom=DOM):
+        # Custom native model fields make the pair custom-unconfirmed/stale, so
+        # since 3d1a3d3 (hq-c6o.4) a run exits 3 until dom-models --confirm
+        # (README, install-upgrade-design). Exit 3 must come only from that
+        # reconfirmation, never from a real file conflict or refusal.
+        result = self.run_dom(*flags, dom=dom, ok=False)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("reconfirmation-required", result.stdout)
+        self.assertIn("dom-models --confirm", result.stdout + result.stderr)
+        self.assertNotIn("Conflicted:", result.stdout)
+        return result
+
     def install(self, *flags, **kwargs):
         return self.run_dom("--platform", "copilot", *flags, **kwargs)
 
@@ -368,14 +380,21 @@ class Copilot(unittest.TestCase):
                             self.assertEqual(tomllib.loads(text)["description"], description)
                         path.write_text(text)
                         expected[rel] = text
-                self.run_dom()
+                self.run_dom_unconfirmed()
                 for rel, text in expected.items():
                     self.assertEqual((self.root / rel).read_text(), text)
-                self.run_dom(dom=revised)
+                # Customized roles are custom-unconfirmed: model plans only merge
+                # qualified/historical pairs (domestique.sh Model setup prepare,
+                # 3d1a3d3 hq-c6o.4; install-upgrade-design "Preserving upgrades"),
+                # so an upstream body revision must leave every custom byte
+                # untouched until dom-models --confirm, not merge or conflict.
+                before_revised = snapshot(self.root)
+                self.run_dom_unconfirmed(dom=revised)
+                self.assertEqual(snapshot(self.root), before_revised)
                 for rel, text in expected.items():
-                    for old, new in changes.items():
-                        text = text.replace(old, new)
                     self.assertEqual((self.root / rel).read_text(), text)
+                    for new in changes.values():
+                        self.assertNotIn(new, text)
                 # Even with a customized description, removing the body boundary
                 # must refuse before changing any file/mode/base/exclusion.
                 for rel, guard in (
@@ -388,7 +407,11 @@ class Copilot(unittest.TestCase):
                     self.assertIn(guard, original)
                     path.write_text(original.replace(guard, "REMOVED CALLER BOUNDARY"))
                     before = snapshot(self.root)
-                    self.run_dom(dom=revised, ok=False)
+                    refused = self.run_dom(dom=revised, ok=False)
+                    # Not the generic reconfirmation exit: the missing caller
+                    # boundary itself must be named as the refusal.
+                    self.assertIn("Model lifecycle refused", refused.stderr)
+                    self.assertIn("body guard", refused.stderr)
                     self.assertEqual(snapshot(self.root), before)
                     path.write_text(original)
 
