@@ -3078,6 +3078,82 @@ class AllProviders(unittest.TestCase):
                      "--model", "claude:reviewer=inherit", ok=False)
         self.assertEqual(before, snapshot(self.work))
 
+    def test_subdir_target_skips_model_setup_and_exits_zero(self):
+        info = "Model setup skipped: run dom at the repository root ("
+        top = self.root("subdir-fresh")
+        root = top / "pkg" / "app"
+        root.mkdir(parents=True)
+        result = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(result.stdout.count("Model setup skipped"), 1, result.stdout)
+        self.assertEqual(result.stdout.count(info), 1, result.stdout)
+        self.assertIn(str(top), result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertNotIn("unconfirmed", result.stderr)
+        self.assertTrue((root / ".claude/agents/implementer.md").is_file())
+        before = byte_snapshot(root)
+        rerun = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(rerun.stdout.count("Model setup skipped"), 1, rerun.stdout)
+        self.assertEqual(before, byte_snapshot(root))
+        self.run_dom(root, "--uninstall")
+        self.assertFalse((root / STATES["claude"]).exists())
+
+    def test_subdir_dry_run_writes_nothing_and_exits_zero(self):
+        top = self.root("subdir-dry")
+        root = top / "sub"
+        root.mkdir()
+        before = snapshot(self.work)
+        result = self.run_dom(root, "--platform", "claude", "--dry-run")
+        self.assertEqual(result.stdout.count("Model setup skipped"), 1, result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertEqual(before, snapshot(self.work))
+
+    def test_subdir_model_flag_still_refuses(self):
+        top = self.root("subdir-model-flag")
+        root = top / "sub"
+        root.mkdir()
+        before = snapshot(self.work)
+        self.run_dom(root, "--platform", "claude",
+                     "--model", "claude:reviewer=inherit", ok=False)
+        self.assertEqual(before, snapshot(self.work))
+
+    def test_subdir_linked_worktree_root_unchanged(self):
+        main = self.root("subdir-wt-main")
+        git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "i"],
+                       check=True, env=self.env)
+        linked = self.work / "subdir-wt-linked"
+        subprocess.run([*git, "worktree", "add", "-q", str(linked)],
+                       check=True, env=self.env)
+        result = self.run_dom(linked, "--platform", "claude")
+        self.assertNotIn("Model setup skipped", result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertTrue((linked / ".claude/agents/implementer.md").is_file())
+
+    def test_subdir_dubious_ownership_does_not_skip_silently(self):
+        top = self.root("subdir-dubious")
+        sub = top / "sub"
+        sub.mkdir()
+        env = dict(self.env, GIT_TEST_ASSUME_DIFFERENT_OWNER="1")
+        for target in (top, sub):
+            result = self.run_dom(target, "--platform", "claude", env=env, ok=False)
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertNotIn("Model setup skipped", result.stdout)
+            self.assertIn("dubious ownership", result.stderr)
+            self.assertRegex(result.stderr, r"(?m)^git: .*dubious ownership")
+            self.assertIn("unconfirmed", result.stderr)
+            # The install itself proceeds; only the model pair is unconfirmed.
+            self.assertTrue((target / ".claude/agents/implementer.md").is_file())
+
+    def test_subdir_root_via_case_variant_path_is_root(self):
+        top = self.root("subdir-case")
+        variant = Path(str(top).swapcase())
+        if not variant.exists() or not variant.samefile(top):
+            self.skipTest("case-sensitive filesystem")
+        result = self.run_dom(variant, "--platform", "claude")
+        self.assertNotIn("Model setup skipped", result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertTrue((top / ".claude/agents/implementer.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

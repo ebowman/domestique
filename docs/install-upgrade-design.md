@@ -150,12 +150,16 @@ uses a fresh independent context. No installer catalog/auth lookup is required.
 Valid installer-configured defaults and saved custom/inherited pairs need
 **no questionnaire, Save or restart merely because fresh**. Configuration is
 per physical Git worktree root and per harness; there is no global model registry.
-Targets outside any Git worktree skip model-pair setup entirely: roles and
-policy install as before, one informational line ("Model setup skipped:
-requires a Git repository") is printed, and the install exits 0 with no
-unconfirmed-pair state (`--model` there still refuses). Installs into a
-subdirectory of a Git worktree (not its root) remain unconfirmed and cannot
-claim helper-configured status outside that root.
+Targets outside any Git worktree, and targets inside a worktree but not at
+its root, skip model-pair setup entirely: roles and policy install as before,
+exactly one informational line is printed ("Model setup skipped: requires a Git
+repository" or "Model setup skipped: run dom at the repository root (<root>)
+to configure role models"), and the install exits 0 with no unconfirmed-pair
+state (`--model` there still refuses with exit 3). Only git's "not a git
+repository" error (matched under `LC_ALL=C`) counts as non-Git; any other git
+failure (dubious ownership / `safe.directory`, git missing, permission errors)
+is not skipped silently: the install stays unconfirmed (exit 3) and git's own
+error text is shown.
 
 | Harness | Implementer / reviewer paths | Deterministic helper |
 | --- | --- | --- |

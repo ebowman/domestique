@@ -6571,18 +6571,49 @@ MODEL_PAIRS_ACTIVE=0
 MODEL_CODEX_IMPL_ABSENT=0
 MODEL_CODEX_REVIEWER_ABSENT=0
 if [ "$UNINSTALL" -eq 0 ]; then
-  model_gitroot="$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null)" || model_gitroot=""
-  if [ "$model_gitroot" = "$(cd "$TARGET_DIR" && pwd -P)" ]; then
+  # Classify the target: Git root, inside a worktree (not root), not a Git
+  # repository, or some other git failure. "Not a repository" is detected from
+  # git's stderr under LC_ALL=C (which also disables LANGUAGE translations);
+  # git exits 128 for every fatal error, so the exit status alone cannot tell
+  # it apart from dubious ownership, permission errors, etc.
+  model_gitroot=""
+  model_gitprefix=""
+  model_gitout=""
+  model_git_err=""
+  model_not_git=0
+  if ! command -v git >/dev/null 2>&1; then
+    model_git_err="git executable not found"
+  elif model_gitout="$(LC_ALL=C git -C "$TARGET_DIR" rev-parse --show-toplevel --show-prefix 2>"$TMPDIR_WORK/model-git-err")"; then
+    # Line 1: worktree root (message text only); line 2: path of the target
+    # relative to it ("" at the root). --show-prefix is used instead of
+    # comparing paths so case-insensitive filesystems and symlinked spellings
+    # of a real root are not misread as subdirectories.
+    model_gitroot="$(printf '%s\n' "$model_gitout" | sed -n 1p)"
+    model_gitprefix="$(printf '%s\n' "$model_gitout" | sed -n 2p)"
+  else
+    model_gitroot=""
+    model_git_err="$(cat "$TMPDIR_WORK/model-git-err" 2>/dev/null)"
+    case "$model_git_err" in
+      *"not a git repository"*) model_not_git=1 ;;
+    esac
+  fi
+  if [ -n "$model_gitroot" ] && [ -z "$model_gitprefix" ]; then
     MODEL_PAIRS_ACTIVE=1
   elif [ "${#MODEL_ARGS[@]}" -gt 0 ]; then
     echo "Error: --model requires the physical Git worktree root. No project writes." >&2
     exit 3
-  elif [ -z "$model_gitroot" ]; then
+  elif [ "$model_not_git" -eq 1 ]; then
     # Not inside any Git worktree: model setup cannot apply; install roles/policy
     # without a model lifecycle and without claiming an unconfirmed pair.
     echo "Model setup skipped: requires a Git repository (run dom inside a Git worktree to configure role models)."
+  elif [ -n "$model_gitroot" ]; then
+    # Inside a worktree but not at its root: same skip, no unconfirmed state.
+    echo "Model setup skipped: run dom at the repository root ($model_gitroot) to configure role models."
   else
+    # git failed for a reason other than "not a repository": do not skip
+    # silently; keep the unconfirmed (exit 3) behavior and show git's error.
     echo "Model configuration requires the physical Git worktree root; this installation will remain unconfirmed." >&2
+    [ -z "$model_git_err" ] || echo "git: $model_git_err" >&2
     touch "$TMPDIR_WORK/model-unconfirmed"
   fi
 fi
