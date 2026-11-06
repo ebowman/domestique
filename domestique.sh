@@ -6155,6 +6155,66 @@ sync_guest_beads_ownership() {
   fi
 }
 
+# uninstall_unmarked <provider> <rel> <src> <out> <target> <implementer-base>
+# The installer (dom-models) inserts one '# domestique-model-setup: <json>'
+# line into the implementer role file (line 1 for Codex .toml, line 2 for
+# Claude/Copilot, after the '---' frontmatter opener). That line is
+# installer-owned, so it must not make an otherwise pristine role look
+# user-modified. Write <src> minus that line to <out> and return 0 only when
+# the line is EXACTLY the installer's format at its expected position: the
+# canonical JSON with the exact key set, v=1, matching harness, a
+# project equal to the physical target root, and an implementer_sha256 that
+# attests the remaining content, and a reviewer_sha256 equal to the sha256 of
+# the reviewer's base copy (absent base: fail safe). Anything else
+# (edited marker, extra/misplaced marker, edited body) returns 1 and the file
+# is compared unmodified, i.e. counts as modified. A marker whose value was
+# changed no longer attests the content, so it is user-owned and retained.
+uninstall_unmarked() {
+  case "$2" in
+    */implementer.md | */implementer.toml | */*implementer.agent.md) ;;
+    *) return 1 ;;
+  esac
+  local base_impl="$6" base_rev
+  base_rev="${base_impl%/*}/$(basename "$base_impl" | sed 's/implementer/reviewer/')"
+  [ -f "$base_rev" ] || return 1
+  python3 -I -B - "$1" "$3" "$4" "$5" "$base_rev" <<'PY'
+import hashlib, json, os, re, sys
+harness, src, out, target, base_rev = sys.argv[1:6]
+try:
+    data = open(src, "rb").read()
+    lines = data.splitlines(keepends=True)
+    marker = b"# domestique-model-setup:"
+    pos = 0 if harness == "codex" else 1
+    if sum(marker in l for l in lines) != 1 or len(lines) <= pos or \
+            not lines[pos].startswith(marker + b" "):
+        sys.exit(1)
+    raw = lines[pos][len(marker) + 1:]
+    nl = b"\r\n" if raw.endswith(b"\r\n") else b"\n"
+    if not raw.endswith(nl):
+        sys.exit(1)
+    body = raw[:-len(nl)]
+    value = json.loads(body.decode("utf-8"))
+    canon = json.dumps(value, sort_keys=True, ensure_ascii=False,
+                       separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if body != canon or not isinstance(value, dict) or set(value) != {
+            "v", "project", "harness", "implementer_sha256", "reviewer_sha256"} or \
+            type(value["v"]) is not int or value["v"] != 1 or \
+            value["project"] != os.path.realpath(target) or value["harness"] != harness or \
+            any(type(value[k]) is not str or not re.fullmatch("[0-9a-f]{64}", value[k])
+                for k in ("implementer_sha256", "reviewer_sha256")):
+        sys.exit(1)
+    rest = b"".join(lines[:pos] + lines[pos + 1:])
+    if hashlib.sha256(rest).hexdigest() != value["implementer_sha256"]:
+        sys.exit(1)
+    # reviewer_sha256 must attest the installed reviewer file (its base copy).
+    if hashlib.sha256(open(base_rev, "rb").read()).hexdigest() != value["reviewer_sha256"]:
+        sys.exit(1)
+    open(out, "wb").write(rest)
+except Exception:
+    sys.exit(1)
+PY
+}
+
 # do_uninstall <target-dir>
 # Remove everything domestique installed into <target-dir>, and only that.
 # See usage() --uninstall for the summary of what is (and is not) removed.
@@ -6184,7 +6244,7 @@ do_uninstall() {
   # --- 1. provider-owned plain files, safety-compared ----------------------
   # Traverse the same ownership/selection inventory twice, so even the last
   # preservation collision refuses before any earlier file/state is removed.
-  local provider state_rel rel emitter dest staged basepath reference phase
+  local provider state_rel rel emitter dest staged basepath reference phase cmpdest
   for phase in preflight apply; do
     if [ "$phase" = apply ] && [ "$DRY_RUN" -eq 0 ]; then MUTATION_STARTED=1; fi
   while IFS='|' read -r provider state_rel rel emitter; do
@@ -6219,16 +6279,22 @@ do_uninstall() {
     basepath="$target/$state_rel/base/$rel"
     reference="$basepath"
     [ -e "$reference" ] || reference="$staged"
+    # Compare against base with only the installer's own model-setup marker
+    # line removed (see uninstall_unmarked); dest itself stays untouched.
+    cmpdest="$dest"
+    if uninstall_unmarked "$provider" "$rel" "$dest" "$TMPDIR_WORK/uninstall_unmarked" "$target" "$basepath"; then
+      cmpdest="$TMPDIR_WORK/uninstall_unmarked"
+    fi
 
     if [ "$phase" = preflight ]; then
-      if [ "$FORCE" -eq 0 ] && ! cmp -s "$dest" "$reference"; then
+      if [ "$FORCE" -eq 0 ] && ! cmp -s "$cmpdest" "$reference"; then
         shared_safe_path "$rel.uninstalled.$TS" && [ ! -e "$dest.uninstalled.$TS" ] ||
           shared_refuse "unsafe or occupied uninstall preservation $rel.uninstalled.$TS; preserve it and retry with a new timestamp"
       fi
       continue
     fi
 
-    if cmp -s "$dest" "$reference"; then
+    if cmp -s "$cmpdest" "$reference"; then
       anything_done=1
       if [ "$DRY_RUN" -eq 1 ]; then
         note_dry "remove $dest"
