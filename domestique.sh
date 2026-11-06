@@ -6577,6 +6577,10 @@ if [ "$UNINSTALL" -eq 0 ]; then
   elif [ "${#MODEL_ARGS[@]}" -gt 0 ]; then
     echo "Error: --model requires the physical Git worktree root. No project writes." >&2
     exit 3
+  elif [ -z "$model_gitroot" ]; then
+    # Not inside any Git worktree: model setup cannot apply; install roles/policy
+    # without a model lifecycle and without claiming an unconfirmed pair.
+    echo "Model setup skipped: requires a Git repository (run dom inside a Git worktree to configure role models)."
   else
     echo "Model configuration requires the physical Git worktree root; this installation will remain unconfirmed." >&2
     touch "$TMPDIR_WORK/model-unconfirmed"

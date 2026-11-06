@@ -3022,5 +3022,62 @@ class AllProviders(unittest.TestCase):
             self.assertEqual(before, snapshot(self.work))
 
 
+    def nongit(self, name):
+        root = self.work / name
+        root.mkdir()
+        return root
+
+    def test_nongit_target_skips_model_setup_and_exits_zero(self):
+        info = "Model setup skipped: requires a Git repository"
+        root = self.nongit("nongit-fresh")
+        result = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(result.stdout.count(info), 1, result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertNotIn("unconfirmed", result.stderr)
+        self.assertTrue((root / ".claude/agents/implementer.md").is_file())
+        self.assertFalse((root / ".git").exists())
+        # (b) rerun is idempotent and still exits 0.
+        before = byte_snapshot(root)
+        rerun = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(rerun.stdout.count(info), 1, rerun.stdout)
+        self.assertEqual(before, byte_snapshot(root))
+        # (g) uninstall is not affected.
+        self.run_dom(root, "--uninstall")
+        self.assertFalse((root / STATES["claude"]).exists())
+
+    def test_nongit_target_with_prior_model_state_not_corrupted(self):
+        # (c) A confirmed pair from a Git install, copied without .git.
+        git_root = self.root("nongit-prior-src")
+        self.run_dom(git_root, "--platform", "claude")
+        root = self.work / "nongit-prior"
+        shutil.copytree(git_root, root, ignore=shutil.ignore_patterns(".git"))
+        before = byte_snapshot(root)
+        result = self.run_dom(root, "--platform", "claude")
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertEqual(before, byte_snapshot(root))
+
+    def test_nongit_dry_run_writes_nothing_and_exits_zero(self):
+        root = self.nongit("nongit-dry")
+        before = snapshot(self.work)
+        result = self.run_dom(root, "--platform", "claude", "--dry-run")
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertEqual(before, snapshot(self.work))
+
+    def test_nongit_refusals_still_exit_nonzero(self):
+        # (e) Conflicting unowned snapshot path, and --model without a Git root.
+        root = self.nongit("nongit-refuse")
+        base = root / STATES["codex"] / "base/AGENTS.md.block"
+        base.parent.mkdir(parents=True)
+        base.write_bytes(b"unrelated file at predictable snapshot path")
+        before = snapshot(self.work)
+        self.run_dom(root, "--platform", "codex", ok=False)
+        self.assertEqual(before, snapshot(self.work))
+        clean = self.nongit("nongit-model-flag")
+        before = snapshot(self.work)
+        self.run_dom(clean, "--platform", "claude",
+                     "--model", "claude:reviewer=inherit", ok=False)
+        self.assertEqual(before, snapshot(self.work))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
