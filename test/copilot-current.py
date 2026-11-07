@@ -212,50 +212,59 @@ class Copilot(unittest.TestCase):
     def test_role_guard_migration_and_current_tampering_refuse_atomically(self):
         parent = self.root
         for mode in ("normal", "guest"):
-            self.root = parent / mode
-            self.root.mkdir()
-            self.git("init", "-q")
-            self.install(*(["--guest"] if mode == "guest" else []))
             for role, rel in ROLES.items():
-                path = self.root / rel
-                base = self.root / STATE / "base" / rel
-                current = path.read_text()
-                legacy = (OLD_ROLES / f"{role}.agent.md").read_text()
-                for generation, source in (("old", legacy), ("current", current)):
-                    base.write_text(source)
-                    prefix, task = source.split("Delegated role only:", 1)
-                    front, guard = prefix.split("\n## Active harness boundary", 1)
-                    guard = "\n## Active harness boundary" + guard
-                    mutations = {
-                        "removed": front + "Delegated role only:" + task,
-                        "tampered": source.replace("STOP", "CONTINUE", 1),
-                        "quoted": front + "Delegated role only:" + task + "\n```text\n" + guard + "```\n",
-                        "wrong-surface": legacy if generation == "current" else current,
-                        "malformed": source.replace("---\n", "BROKEN\n", 1),
-                        "unowned": source,
-                        "tampered-base": source,
-                    }
-                    for kind, changed in mutations.items():
-                        with self.subTest(mode=mode, role=role, generation=generation, kind=kind):
-                            path.write_text(changed)
-                            base.write_text(source)
-                            if kind == "unowned":
-                                base.unlink()
-                            elif kind == "tampered-base":
-                                base.write_text(source.replace("STOP", "CONTINUE", 1))
-                            before = snapshot(self.root)
-                            directories = {p.relative_to(self.root) for p in self.root.rglob("*")
-                                           if p.is_dir()}
-                            for flags in ((), ("--force", "--dry-run")):
+                for generation in ("old", "current"):
+                    for kind in ("removed", "tampered", "quoted", "wrong-surface",
+                                 "malformed", "unowned", "tampered-base"):
+                        for flags in ((), ("--force", "--dry-run")):
+                            with self.subTest(mode=mode, role=role, generation=generation,
+                                              kind=kind, flags=flags):
+                                # Each invocation gets its own real installation:
+                                # even an unexpected successful write cannot seed
+                                # another role, mutation or flags variant.
+                                variant = "force-dry-run" if flags else "normal"
+                                self.root = parent / f"{mode}-{role}-{generation}-{kind}-{variant}"
+                                self.root.mkdir()
+                                self.git("init", "-q")
+                                self.install(*(["--guest"] if mode == "guest" else []))
+                                path = self.root / rel
+                                base = self.root / STATE / "base" / rel
+                                current = path.read_text()
+                                pristine = base.read_text()
+                                self.assertNotIn(MARKER, pristine)
+                                legacy = (OLD_ROLES / f"{role}.agent.md").read_text()
+                                source = legacy if generation == "old" else current
+                                baseline = legacy if generation == "old" else pristine
+                                prefix, task = source.split("Delegated role only:", 1)
+                                front, guard = prefix.split("\n## Active harness boundary", 1)
+                                guard = "\n## Active harness boundary" + guard
+                                mutations = {
+                                    "removed": front + "Delegated role only:" + task,
+                                    "tampered": source.replace("STOP", "CONTINUE", 1),
+                                    "quoted": front + "Delegated role only:" + task + "\n```text\n" + guard + "```\n",
+                                    "wrong-surface": legacy if generation == "current" else current,
+                                    "malformed": source.replace("---\n", "BROKEN\n", 1),
+                                    "unowned": source,
+                                    "tampered-base": source,
+                                }
+                                path.write_text(mutations[kind])
+                                # Pristine authority comes only from the actual
+                                # installation or the historical fixture, never
+                                # from the live implementer's confirmed bytes.
+                                base.write_text(baseline)
+                                if kind == "unowned":
+                                    base.unlink()
+                                elif kind == "tampered-base":
+                                    base.write_text(baseline.replace("STOP", "CONTINUE", 1))
+                                before = snapshot(self.root)
+                                directories = {p.relative_to(self.root) for p in self.root.rglob("*")
+                                               if p.is_dir()}
                                 result = self.install(*flags, ok=False)
-                                self.assertEqual(result.returncode, 3)
+                                self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
                                 self.assertIn("No project writes", result.stderr)
                                 self.assertEqual(snapshot(self.root), before)
                                 self.assertEqual(directories, {
                                     p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
-                            base.write_text(source)
-                path.write_text(current)
-                base.write_text(current)
 
     def test_rerun_merge_marker_and_modified_removal(self):
         self.install()
