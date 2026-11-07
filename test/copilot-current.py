@@ -473,39 +473,83 @@ class Copilot(unittest.TestCase):
                         path.write_text(original)
 
     def test_guarded_description_merge_conflicts_refuse_without_writes(self):
-        self.run_dom("--platform", "codex", "--guest")
-        self.install("--guest")
+        parent = self.root
         for harness in ("codex", "copilot"):
             for role in ("implementer", "reviewer"):
                 rel = ROLES[role] if harness == "copilot" else f".codex/agents/{role}.toml"
-                path = self.root / rel
-                original = path.read_text()
-                line = next(s for s in original.splitlines() if s.startswith("description"))
-                field = "description: " if harness == "copilot" else "description = "
-                local = field + json.dumps(DESCRIPTION_GUARDS[harness] + " Custom local remainder.")
-                upstream = field + json.dumps(DESCRIPTION_GUARDS[harness] + " New upstream remainder.")
-                path.write_text(original.replace(line, local))
-                source = DOM.read_text()
-                self.assertEqual(source.count(line), 1)
-                revised = WORK / f"conflict-{harness}-{role}.sh"
-                revised.write_text(source.replace(line, upstream))
-                before = snapshot(self.root)
-                for flags in ((), ("--force",), ("--dry-run",), ("--no-guest",)):
-                    with self.subTest(harness=harness, role=role, flags=flags):
-                        result = self.run_dom(*flags, dom=revised, ok=False)
-                        self.assertEqual(result.returncode, 3)
-                        self.assertIn("conflict", result.stderr)
-                        self.assertIn(rel, result.stderr)
-                        self.assertEqual(snapshot(self.root), before)
-                # Also validate the *merged* description, not merely the live
-                # role: an upstream edit cannot drop the discovery boundary.
-                path.write_text(original)
-                revised.write_text(source.replace(line, field + '"Use only in Claude"'))
-                before = snapshot(self.root)
-                for flags in ((), ("--force",), ("--dry-run",)):
-                    result = self.run_dom(*flags, dom=revised, ok=False)
-                    self.assertIn("discovery description", result.stderr)
-                    self.assertEqual(snapshot(self.root), before)
+                for kind in ("conflict", "invalid-upstream"):
+                    variants = ((), ("--force",), ("--dry-run",))
+                    if kind == "conflict":
+                        variants += (("--no-guest",),)
+                    for index, flags in enumerate(variants):
+                        with self.subTest(harness=harness, role=role, kind=kind, flags=flags):
+                            # Real independent installations prevent unexpected
+                            # publication from contaminating subsequent cases.
+                            name = f"{harness}-{role}-{kind}-{index}"
+                            self.root = parent / name
+                            self.root.mkdir()
+                            self.git("init", "-q")
+                            self.run_dom("--platform", "codex", "--guest")
+                            self.install("--guest")
+                            path = self.root / rel
+                            original = path.read_text()
+                            line = next(s for s in original.splitlines() if s.startswith("description"))
+                            field = "description: " if harness == "copilot" else "description = "
+                            if kind == "conflict":
+                                local = field + json.dumps(
+                                    DESCRIPTION_GUARDS[harness] + " Custom local remainder.")
+                                upstream = field + json.dumps(
+                                    DESCRIPTION_GUARDS[harness] + " New upstream remainder.")
+                                path.write_text(original.replace(line, local))
+                                # Customization invalidates pair confirmation.
+                                # Review/Save through the installed authority
+                                # bootstrap, never synthesize marker hashes or
+                                # replace pristine bases with customized bytes.
+                                models = (
+                                    ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                                    if harness == "copilot"
+                                    else ".agents/skills/domestique-models/SKILL.md")
+                                bootstrap = (self.root / models).read_text()
+                                bootstrap = bootstrap.split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                                def helper(*args, plan=None):
+                                    result = subprocess.run(
+                                        [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                                        input=json.dumps(plan) if plan is not None else None,
+                                        cwd=self.root, text=True, capture_output=True)
+                                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                                    return json.loads(result.stdout)
+
+                                state = STATE if harness == "copilot" else ".codex/.domestique"
+                                bases = snapshot(self.root / state / "base")
+                                before_review = snapshot(self.root)
+                                review = helper("request", "--confirm")
+                                self.assertFalse(review["configured"])
+                                self.assertEqual(review["chosen"], review["current"])
+                                self.assertEqual(snapshot(self.root), before_review)
+                                self.assertTrue(helper(
+                                    "apply", review["digest"], plan=review["plan"])["confirmed"])
+                                self.assertTrue(helper("verify")["confirmed"])
+                                self.assertEqual(snapshot(self.root / state / "base"), bases)
+                                self.assertIn(local, path.read_text())
+                                self.assertIn(line, (self.root / state / "base" / rel).read_text())
+                            else:
+                                # Also validate the merged description: an
+                                # upstream edit cannot drop the boundary.
+                                upstream = field + '"Use only in Claude"'
+                            source = DOM.read_text()
+                            self.assertEqual(source.count(line), 1)
+                            revised = WORK / f"{name}.sh"
+                            revised.write_text(source.replace(line, upstream))
+                            before = snapshot(self.root)
+                            result = self.run_dom(*flags, dom=revised, ok=False)
+                            self.assertEqual(result.returncode, 3)
+                            if kind == "conflict":
+                                self.assertIn("conflict", result.stderr)
+                                self.assertIn(rel, result.stderr)
+                            else:
+                                self.assertIn("discovery description", result.stderr)
+                            self.assertEqual(snapshot(self.root), before)
 
     def test_shared_consumers_and_scoped_removal(self):
         for provider in ("codex", "claude"):
