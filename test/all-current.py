@@ -2947,9 +2947,31 @@ class AllProviders(unittest.TestCase):
         before_roles = {str(p.relative_to(root)): p.read_bytes()
                         for provider in ROLES for p in
                         (root / provider, root / provider.replace("implementer", "reviewer"))}
+        current = self.root("models-current-emitter")
+        self.run_dom(current)
         self.run_dom(root)
-        for rel, data in before_roles.items():
-            self.assertEqual((root / rel).read_bytes(), data)
+        # 2264890 (hq-xc2.3) intentionally updates implementer instructions.
+        # Require the entire current emitter body and retained model/effort,
+        # rather than freezing old upstream bytes (including marker hashes).
+        for provider, impl in zip(STATES, ROLES):
+            lib = self.model_library(provider)
+            for role in ("implementer", "reviewer"):
+                rel = impl.replace("implementer", role)
+                data = (root / rel).read_bytes()
+                clean = lib["split_marker"](data, role)[0].encode()
+                emitted = (current / STATES[provider] / "base" / rel).read_bytes()
+                self.assertEqual(clean, emitted)
+                self.assertEqual((root / STATES[provider] / "base" / rel).read_bytes(), emitted)
+                old_fields = lib["parse"](before_roles[rel], role)[1]
+                fields = lib["parse"](data, role)[1]
+                for key in ("model", "effort", "model_reasoning_effort"):
+                    self.assertEqual(fields.get(key), old_fields.get(key))
+                if role == "implementer":
+                    self.assertIn(b"## Child bead ownership handoff\n", clean)
+                    marker = lib["parse"](data, role)[2]
+                    self.assertEqual(marker["project"], str(root.resolve()))
+                    self.assertEqual(marker["harness"], provider)
+                self.assertEqual(marker[role + "_sha256"], hashlib.sha256(clean).hexdigest())
         for provider, rel in native.items():
             self.assertIn(rel, (root / STATES[provider] / "manifest").read_text())
             self.assertEqual((root / rel).read_bytes(),

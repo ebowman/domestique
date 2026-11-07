@@ -143,7 +143,7 @@ class Copilot(unittest.TestCase):
     def test_old_role_guard_upgrade_preserves_custom_pair(self):
         # Bounded pristine role bytes from 9f339305a4f900176b647248f68907499dcc0620.
         # Seed only the two owned role snapshots, as in old-inventory helper tests.
-        # Synthetic confirmation tests hash invalidation, NOT native consent.
+        # Installed helper review/Save confirms filesystem bytes, NOT native consent.
         parent = self.root
         for mode in ("normal", "guest"):
             for custom in (False, True):
@@ -165,15 +165,48 @@ class Copilot(unittest.TestCase):
                             old = old.replace("an unknown harness.", "an unknown harness. Custom discovery.", 1)
                             old += "\nUser-owned instructions.\n"
                         pair[role] = old
-                    marker = dict(v=1, project=str(self.root.resolve()), harness="copilot")
-                    marker.update({r + "_sha256": hashlib.sha256(text.encode()).hexdigest()
-                                   for r, text in pair.items()})
-                    marker_line = MARKER + json.dumps(marker) + "\n"
                     for role, rel in ROLES.items():
-                        text = pair[role]
-                        if role == "implementer":
-                            text = text[:4] + marker_line + text[4:]
-                        (self.root / rel).write_text(text)
+                        (self.root / rel).write_text(pair[role])
+                    models = self.root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                    bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                    def helper(*args, plan=None):
+                        result = subprocess.run(
+                            [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                            input=json.dumps(plan) if plan is not None else None,
+                            cwd=self.root, text=True, capture_output=True)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        return json.loads(result.stdout)
+
+                    before = snapshot(self.root)
+                    if custom:
+                        # Current-inventory custom roles must await Save unchanged;
+                        # legacy guard migration is a separate, qualified step.
+                        self.run_dom_unconfirmed("--platform", "copilot", "--dry-run")
+                        self.assertEqual(snapshot(self.root), before)
+                        self.run_dom_unconfirmed("--platform", "copilot")
+                        self.assertEqual(snapshot(self.root), before)
+                    review = helper("request", "--confirm")
+                    self.assertFalse(review["configured"])
+                    selected = {r: {"model": "custom-native-id" if custom else None,
+                                    "effort": None} for r in ROLES}
+                    self.assertEqual(review["chosen"], selected)
+                    self.assertEqual(review["current"], selected)
+                    self.assertEqual(snapshot(self.root), before)
+                    self.assertTrue(helper(
+                        "apply", review["digest"], plan=review["plan"])["confirmed"])
+                    marker = json.loads(next(
+                        line[len(MARKER):] for line in
+                        (self.root / ROLES["implementer"]).read_text().splitlines()
+                        if line.startswith(MARKER)))
+                    for role, rel in ROLES.items():
+                        clean = "".join(line for line in (self.root / rel).read_text().splitlines(True)
+                                        if not line.startswith(MARKER))
+                        self.assertEqual(clean, pair[role])
+                        self.assertEqual(marker[role + "_sha256"],
+                                         hashlib.sha256(clean.encode()).hexdigest())
+                        self.assertEqual((self.root / STATE / "base" / rel).read_text(),
+                                         (OLD_ROLES / f"{role}.agent.md").read_text())
                     before = snapshot(self.root)
                     self.install("--dry-run")
                     self.assertEqual(snapshot(self.root), before)
@@ -183,15 +216,26 @@ class Copilot(unittest.TestCase):
                         text = path.read_text()
                         self.assertIn(DELEGATED, text)
                         self.assertNotIn("Before applying ANY instructions below", text)
-                        old_body = pair[role].split("Delegated role only:", 1)[1]
-                        self.assertEqual(text.split("Delegated role only:", 1)[1], old_body)
+                        # 2264890 (hq-xc2.3) adds ownership handoff and revises
+                        # the delegated task. Compare current emitter + ALL edits.
+                        expected = current[role]
                         if custom:
+                            expected = expected.replace(
+                                "\n---\n", '\nmodel: "custom-native-id"\n'
+                                'custom: "retained"\n---\n', 1)
+                            expected = expected.replace('"search", "execute"', '"search"')
+                            expected = expected.replace(
+                                "an unknown harness.", "an unknown harness. Custom discovery.", 1)
+                            expected += "\nUser-owned instructions.\n"
                             self.assertIn('model: "custom-native-id"', text)
                             self.assertIn('custom: "retained"', text)
                             self.assertIn("Custom discovery.", text)
                             self.assertNotIn('"execute"', text)
                         clean = "".join(line for line in text.splitlines(keepends=True)
                                         if not line.startswith(MARKER))
+                        self.assertEqual(clean, expected)
+                        if role == "implementer":
+                            self.assertIn("## Child bead ownership handoff\n", clean)
                         self.assertNotEqual(hashlib.sha256(clean.encode()).hexdigest(),
                                             marker[role + "_sha256"])
                         self.assertEqual((self.root / STATE / "base" / rel).read_text(),
@@ -206,6 +250,8 @@ class Copilot(unittest.TestCase):
                         self.assertEqual(saved[role + "_sha256"],
                                          hashlib.sha256(clean.encode()).hexdigest())
                     upgraded = snapshot(self.root)
+                    self.assertTrue(helper("verify")["confirmed"])
+                    self.assertEqual(helper("verify")["selected"], selected)
                     self.install()
                     self.assertEqual(snapshot(self.root), upgraded)
 

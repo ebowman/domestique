@@ -1191,7 +1191,14 @@ class ModelSetup(unittest.TestCase):
             self.assertEqual(state["selected"][role]["model"], lib["parse"](old[role], role)[1]["model"])
             base = root / ".claude/.domestique/base" / path.relative_to(root)
             self.assertEqual(base.read_bytes(), old[role])
-            self.assertTrue(path.read_bytes().endswith(old[role].split(b"\n---\n", 1)[1]))
+            # 2264890 (hq-xc2.3) intentionally changes the upstream body.
+            # Preserve the exact tool delta, not the whole historical body.
+            expected = lib["split_marker"](
+                self.roles(self.seed, "claude")[role].read_bytes(), role)[0].encode()
+            if role == "implementer":
+                expected = expected.replace(b"tools: ", b"tools: mcp__example__search, ", 1)
+                self.assertIn(b"## Child bead ownership handoff\n", path.read_bytes())
+            self.assertEqual(path.read_bytes(), expected)
         self.assertIn(b"tools: mcp__example__search, ", roles["implementer"].read_bytes())
         self.assertNotIn(b"mcp__example__search", roles["reviewer"].read_bytes())
         migrated = {r: p.read_bytes() for r, p in roles.items()}
