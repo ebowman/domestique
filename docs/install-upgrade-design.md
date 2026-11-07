@@ -496,6 +496,56 @@ cannot reverse migrated ownership/workflows. See the concise
 
 ## Qualification and known issues
 
+### Offline baseline release gate
+
+The hq-dds.3 baseline targets installer revision
+`7abd9b72338f72485bb573ce8f9e3f5d902a24d0`. Run the following complete suites
+from that full-history, tag-enabled checkout, without changing installer or test
+bytes between runs. Use disposable fixtures, a fresh temporary `HOME` and
+`TMPDIR` per suite, no consumer configuration, and a tool-only `PATH` containing
+Python 3.11+, Bash and Git but no native clients or real Beads executable.
+Disable inherited Git configuration with `GIT_CONFIG_NOSYSTEM=1` and
+`GIT_CONFIG_GLOBAL=/dev/null`; do not change global configuration.
+`COPILOT_WORKROOT` must name a newly created empty temporary directory.
+
+```sh
+python3 -B -Werror test/all-current.py
+python3 -B -Werror test/copilot-current.py ./domestique.sh "$COPILOT_WORKROOT"
+python3 -B -Werror test/model-setup-tests.py
+bash test/upgrade.sh --current
+bash test/uninstall.sh --current
+bash test/guest.sh --current
+bash test/codex.sh --current
+bash test/upgrade.sh
+bash test/uninstall.sh
+bash test/guest.sh
+bash test/codex.sh
+```
+
+Copilot's installer and workroot arguments precede any optional unittest
+selectors; the baseline uses no selectors. Shell `--current` runs exercise the
+candidate; the four unflagged runs exercise frozen `b60feef` fixtures, not the
+candidate CLI. Keep at most two suite processes concurrent. The baseline uses
+finite outer deadlines of 24 hours per Python suite and 4 hours per shell suite;
+the notice tests retain their default 300-second subprocess deadline.
+Preserve separate stdout/stderr and command, revision, exit, duration, count,
+skip and failure evidence. A timeout/interruption is incomplete, never PASS;
+nonzero results require individually tracked release blockers, not silent
+acceptance. This command list alone is not a green qualification claim.
+
+At the recorded revision, all eleven runs completed without test skips or
+interruptions; ten exited zero. Current guest completed **15/16**, failing
+`tracked CLAUDE.local.md warning` (expected zero exit and warning assertions).
+Its captured installer diagnostics were not emitted by the harness; cause and
+regression status remain unknown. The baseline is **not green**; release
+acceptance requires the parent to track this failure as a blocker.
+
+These are offline filesystem, generated-instruction and helper checks only.
+They do not qualify native clients, model/account availability, consumer
+repositories, or comprehensive ancestor upgrades. The generated ancestor matrix
+is a separate future gate; neither historical passes nor this baseline replace
+it or the native qualification gaps below.
+
 ### v0.4.3 release status and limits
 
 - The removed-provider fix (hq-owe, `29fdc40`, against published v0.4.2)
