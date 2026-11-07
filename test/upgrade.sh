@@ -82,9 +82,24 @@ treehash() {
   ( cd "$dir" && find . -type f | sort | xargs shasum -a 256 2>/dev/null ) | shasum -a 256 | awk '{print $1}'
 }
 
+# Fail loudly if an emitter edit becomes stale or ambiguous.
+replace_fixture_text() {
+  python3 - "$@" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+old, new = sys.argv[2:]
+text = path.read_text()
+assert old != new and text.count(old) == 1, f"{path}: expected one fixture target: {old}"
+changed = text.replace(old, new, 1)
+assert changed != text and changed.count(new) == 1
+path.write_text(changed)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # v2.sh — a modified copy of domestique.sh simulating an upstream change,
-# per the brief's suggested technique: copy the real script, then sed-edit
+# per the brief's suggested technique: copy the real script, then edit
 # ONE line inside an emitter body (not the emitter machinery itself). We
 # change two independent lines so both the plain-file merge path
 # (emit_implementer) and the CLAUDE.md block merge path (emit_policy) can be
@@ -96,15 +111,20 @@ V2="$WORKROOT/v2.sh"
 cp "$DOM" "$V2"
 # emit_implementer: change the "Blockers or decisions..." line (plain-file
 # upgrade target).
-sed -i.orig \
-  's/Blockers or decisions the orchestrator should know about/Blockers or decisions the orchestrator should know about (v2)/' \
-  "$V2"
-# emit_policy: change the "Do not drain the queue..." line (CLAUDE.md
-# managed-block upgrade target).
-sed -i.orig \
-  "s/Do not drain the queue unattended unless explicitly told to\\./Do not drain the queue unattended unless explicitly told to (v2-policy)./" \
-  "$V2"
-rm -f "$V2.orig"
+replace_fixture_text "$V2" \
+  'Blockers or decisions the orchestrator should know about' \
+  'Blockers or decisions the orchestrator should know about (v2)' || exit 1
+# Keep the frozen historical policy target; current policy has a new stop rule.
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  POLICY_OLD='5. For an ordinary single assignment, **stop and report to the human before dispatching the next task.** Authorized named goals use the native goal body'\''s loop and bounds instead.'
+  POLICY_NEW="$POLICY_OLD (v2-policy)"
+  POLICY_CONFLICT="$POLICY_OLD (conflicting-edit)"
+else
+  POLICY_OLD='Do not drain the queue unattended unless explicitly told to.'
+  POLICY_NEW='Do not drain the queue unattended unless explicitly told to (v2-policy).'
+  POLICY_CONFLICT='Do not drain the queue unattended unless explicitly told to (conflicting-edit).'
+fi
+replace_fixture_text "$V2" "$POLICY_OLD" "$POLICY_NEW" || exit 1
 chmod +x "$V2"
 
 # ---------------------------------------------------------------------------
@@ -112,14 +132,13 @@ chmod +x "$V2"
 # version than the one under test, used only to construct a "predates the
 # emitter change" legacy install: a file whose pristine content differs from
 # the CURRENT script's pristine emit at the same spot v2.sh changes further
-# still. Same sed-one-line technique as v2.sh.
+# still. Same one-line technique as v2.sh.
 # ---------------------------------------------------------------------------
 V0="$WORKROOT/v0.sh"
 cp "$DOM" "$V0"
-sed -i.orig \
-  's/Blockers or decisions the orchestrator should know about/Old-style blockers wording (predates-emitter-change)/' \
-  "$V0"
-rm -f "$V0.orig"
+replace_fixture_text "$V0" \
+  'Blockers or decisions the orchestrator should know about' \
+  'Old-style blockers wording (predates-emitter-change)' || exit 1
 chmod +x "$V0"
 
 IMPL_REL=".claude/agents/implementer.md"
@@ -182,6 +201,8 @@ scenario_upgrade_no_local_edits() {
 
   check "exit 0" test "$rc" -eq 0
   check "implementer.md picked up upstream change" grep -q "(v2)" "$t/$IMPL_REL"
+  check "CLAUDE.md picked up upstream policy change" grep -qF "$POLICY_NEW" "$t/$CLAUDE_REL"
+  check "base block advanced to changed policy emission" grep -qF "$POLICY_NEW" "$t/$BASE_CLAUDE_BLOCK_REL"
   check "no .new written" test ! -e "$t/$IMPL_REL.new"
   check "base snapshot advanced to v2 content" grep -q "(v2)" "$t/$BASE_IMPL_REL"
 }
@@ -266,10 +287,8 @@ scenario_claude_md_conflict() {
   claude_install "$DOM" "$t" >/dev/null 2>&1
 
   # Edit the SAME in-block line v2's emit_policy change touches.
-  sed -i.orig \
-    "s/Do not drain the queue unattended unless explicitly told to\\./Do not drain the queue unattended unless explicitly told to (conflicting-edit)./" \
-    "$t/$CLAUDE_REL"
-  rm -f "$t/$CLAUDE_REL.orig"
+  check "colliding policy fixture changed the installed line" \
+    replace_fixture_text "$t/$CLAUDE_REL" "$POLICY_OLD" "$POLICY_CONFLICT" || return
 
   local before="$WORKROOT/s7.before" out rc tree_before
   cp "$t/$CLAUDE_REL" "$before"
@@ -297,8 +316,9 @@ scenario_legacy_fallback() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  # A real pre-helper legacy install has no executable to silently adopt.
-  rm -f "$t/.claude/domestique-model-setup.py"
+  # A pre-model-setup install has neither helper nor model command. Leaving
+  # either behind without snapshots correctly triggers an ownership refusal.
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   sed -i.orig 's/^tools:/tools: EDITED/' "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
@@ -311,7 +331,7 @@ scenario_legacy_fallback() {
   check "no backup written" bash -c '! find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
   check "live file unchanged (local edit preserved)" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$IMPL_REL"
   check "edit still present" grep -q "tools: EDITED" "$t/$IMPL_REL"
-  check "base snapshot seeded from pristine emit (no edit)" bash -c '! grep -q "tools: EDITED" "$1"' _ "$t/$BASE_IMPL_REL"
+  check "base snapshot seeded from pristine emit (no edit)" bash -c 'test -f "$1" && ! grep -q "tools: EDITED" "$1"' _ "$t/$BASE_IMPL_REL"
   check "fresh manifest recreated" test -f "$t/$MANIFEST_REL"
   check "reported as adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out"
 }
@@ -344,7 +364,7 @@ scenario_adopt_then_upgrade_merges_plain() {
   local t="$WORKROOT/s10"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  rm -f "$t/.claude/domestique-model-setup.py"
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   # Local edit: append an mcp__ tool to the tools: line.
   sed -i.orig \
@@ -360,7 +380,7 @@ scenario_adopt_then_upgrade_merges_plain() {
   check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
   check "adopt: live file byte-unchanged" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$IMPL_REL"
   check "adopt: no .bak written" bash -c '! find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
-  check "adopt: base snapshot seeded (pristine, no local edit)" bash -c '! grep -q "mcp__filesystem" "$1"' _ "$t/$BASE_IMPL_REL"
+  check "adopt: base snapshot seeded (pristine, no local edit)" bash -c 'test -f "$1" && ! grep -q "mcp__filesystem" "$1"' _ "$t/$BASE_IMPL_REL"
 
   local out2 rc2
   # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
@@ -382,7 +402,7 @@ scenario_adopt_then_upgrade_merges_claude_md() {
   local t="$WORKROOT/s11"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  rm -f "$t/.claude/domestique-model-setup.py"
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   # Local edit inside the block, on a DIFFERENT line than v2's emit_policy change.
   sed -i.orig \
@@ -400,7 +420,7 @@ scenario_adopt_then_upgrade_merges_claude_md() {
   check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
   check "adopt: CLAUDE.md byte-unchanged" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$CLAUDE_REL"
   check "adopt: no .bak written" bash -c '! find "$1" -maxdepth 1 -name "CLAUDE.md.bak.*" | grep -q .' _ "$t"
-  check "adopt: base block snapshot seeded (pristine, no local edit)" bash -c '! grep -q "user-edit-block2" "$1"' _ "$t/$BASE_CLAUDE_BLOCK_REL"
+  check "adopt: base block snapshot seeded (pristine, no local edit)" bash -c 'test -f "$1" && ! grep -q "user-edit-block2" "$1"' _ "$t/$BASE_CLAUDE_BLOCK_REL"
 
   local out2 rc2
   out2="$(claude_install "$V2" "$t" 2>&1)"; rc2=$?
@@ -426,7 +446,7 @@ scenario_predates_emitter_change_conflict() {
   local t="$WORKROOT/s12"; mkdir -p "$t"
   claude_install "$V0" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  rm -f "$t/.claude/domestique-model-setup.py"
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   # Unrelated local edit (legacy user edit), on a different line than the
   # Blockers region v0/v2 touch.
