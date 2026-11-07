@@ -409,6 +409,12 @@ Guest mode:
   the normal installation as above and review the Git changes before retrying.
   Unrelated tracked files and genuinely unchanged tracked policies do not
   cause refusal; exclusions still cannot hide them.
+  In particular, tracked `CLAUDE.local.md` containing only personal notes
+  refuses: appending the managed block would rewrite a tracked file. An
+  already-owned, valid guarded guest policy can instead be retained unchanged,
+  with an `already tracked` warning. `test/guest.sh --current` checks both
+  cases; the no-argument suite runs frozen `b60feef`, whose warning-only
+  personal-notes behavior is historical coverage, not the current contract.
 - Shared Git-common exclude path/type and marker structure are checked before
   any guest model, policy or state publication, even for a single provider and
   with `--force` or `--dry-run`. Repair unsafe paths or malformed markers by hand

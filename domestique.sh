@@ -2660,8 +2660,11 @@ Behavior:
     and state. `.beads/` is added only when domestique's safe guest
     initialization created it; broad backup and `.new` suffix patterns
     are never added. Pre-existing visible Codex paths remain visible across
-    reruns and scoped uninstall. If an owned path is already tracked, a
-    warning is printed (an exclude can't hide it). `.gitignore` itself
+    reruns and scoped uninstall. Guest writes to tracked paths refuse before
+    any project publication, even with --force or --dry-run. An already-owned,
+    guarded tracked CLAUDE.local.md can be retained unchanged, with a warning
+    (an exclude can't hide it); tracked personal notes needing a managed block
+    refuse instead. Unrelated tracked files do not cause refusal. `.gitignore` itself
     is never read, written, or otherwise touched by guest mode. A non-git target
     directory prints a warning and skips the exclude step entirely (guest
     install of the rest still proceeds). Net effect: a --guest install
@@ -6128,8 +6131,8 @@ install_git_exclude() {
 
   exclude_file="$common_dir/info/exclude"
 
-  # Warn (never fail) if a guest-managed path is already tracked in the
-  # target repo — an exclude entry cannot hide an already-tracked path.
+  # Tracked-write preflight has already passed. Warn for retained tracked
+  # paths: an exclude entry cannot hide them, even though no rewrite is needed.
   if command -v git >/dev/null 2>&1; then
     local trackme tracked_paths=".beads"
     [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths="CLAUDE.local.md .claude $tracked_paths"
