@@ -636,7 +636,16 @@ class Pair:
             base = contents[f"{self.state}/base/{self.paths[role]}"]
             need(base is not None, "missing required role base")
             _, _, marker = parse(base, role)
-            need(marker is None, "pristine base must not confirm a pair")
+            need(marker is None, self.pristine_base_guidance(role))
+
+    def pristine_base_guidance(self, role):
+        base = f"{self.state}/base/{self.paths[role]}"
+        return ("pristine base must not confirm a pair: ./" + base + " carries a "
+                "'# domestique-model-setup:' marker. Keep copies of the local role and base; "
+                "restore the original pristine snapshot for that installed generation, without "
+                "the marker line. Do not replace it with current upstream text: the historical "
+                "base is merge authority. Reconcile the role ./" +
+                self.paths[role] + " by hand and retry. --force cannot authorize repair.")
 
     def validate_helper(self, contents):
         need(contents[self.helper] == contents[f"{self.state}/base/{self.helper}"],
@@ -723,6 +732,19 @@ def scalar_span(raw, toml=False):
     return value, end
 
 
+def description_guidance(role):
+    rel = (f"{DIRECTORY}/agents/{role}.toml" if HARNESS == "codex" else
+           f"{DIRECTORY}/agents/domestique-v2-copilot-{role}.agent.md"
+           if HARNESS == "copilot" else f"{DIRECTORY}/agents/{role}.md")
+    prefix = {"claude": "Claude Code only; never match in another harness.",
+              "codex": "Codex only; never match in another harness.",
+              "copilot": "Copilot only; never match in Claude, Codex or an unknown harness."}[HARNESS]
+    return ("missing/invalid native description: ./" + rel + ". The discovery description "
+            "must be a non-empty string that starts with " + repr(prefix) + "; restore that prefix "
+            "(custom text may follow it), reconcile the role by hand and retry. --force cannot "
+            "authorize guard repair.")
+
+
 def parse(data, role):
     text, marker = split_marker(data, role)
     need(not any(unicodedata.category(c) == "Cc" and c not in "\r\n\t" for c in text),
@@ -779,7 +801,13 @@ def parse(data, role):
                      (not raw[stop:].strip() or re.fullmatch(r"[ \t]+#.*", raw[stop:])),
                      "unsupported tools")
             else:
-                value, stop = scalar_span(raw)
+                try:
+                    value, stop = scalar_span(raw)
+                except ValueError as exc:
+                    # An empty/ambiguous description is a discovery-boundary
+                    # refusal, not a generic selection error.
+                    need(key != "description", description_guidance(role) + " Cause: " + str(exc))
+                    raise
             fields[key] = value
             if key in ("model", effort):
                 spans[key] = (i, len(key + match[2]), stop)
@@ -790,7 +818,7 @@ def parse(data, role):
     need(type(fields.get("name")) is str and fields["name"] == native_name,
          "wrong/missing native role name")
     need(type(fields.get("description")) is str and fields["description"].strip(),
-         "missing/invalid native description")
+         description_guidance(role))
     return (lines, newline, insertion, spans), fields, marker
 
 
@@ -1022,7 +1050,7 @@ class InstallerPair(Pair):
     Load the installer's own emitted helper (not an unvalidated live helper),
     authorize the requested provider/overrides and preflight the WHOLE lifecycle.
     Supply seven pristine emitter outputs, recognized (version, files) inventory
-    signatures, the existing preserving merge(local, base, upstream) callback,
+    signatures, the existing preserving merge(role, local, base, upstream) callback,
     and native guard validation(role, base, live, candidate). Callbacks must raise
     on conflicts/unsafe guards; no runtime plan supplies code or replacement bodies.
 
@@ -1130,7 +1158,7 @@ class InstallerPair(Pair):
             elif qualified or historical:
                 # No generic merge may decide that local==base unpins a scalar.
                 projected = [project_settings(data, role) for data in (local, base, upstream)]
-                merged = projected[0] if projected[1] == projected[2] else self.merge(*projected)
+                merged = projected[0] if projected[1] == projected[2] else self.merge(role, *projected)
                 need(type(merged) is bytes and len(merged) <= LIMIT, "invalid preserving merge output")
                 if force and qualified:
                     self.guard(role, base, local, restore_settings(local, merged, role))
@@ -5229,7 +5257,7 @@ try:
     need(all(evidence[p] is not None for p in bases), "missing inactive pristine base")
     for role, rel in pair.paths.items():
         _, _, marker = lib["parse"](evidence[f"{pair.state}/base/{rel}"], role)
-        need(marker is None, "pristine base must not confirm a pair")
+        need(marker is None, pair.pristine_base_guidance(role))
     if pair.helper in inventory:
         ast.parse(evidence[f"{pair.state}/base/{pair.helper}"])
     need(evidence[f"{pair.state}/mode"] in (None, b"guest\n"), "invalid inactive mode")
@@ -5383,9 +5411,8 @@ def prepare(provider):
                  "Reconcile competing edits, keep the pristine base unchanged, then retry --dry-run.")
             return paths[-1].read_bytes()
 
-    def merge(local, base, upstream):
-        # Both roles use the same native merge strategy, not the role identity.
-        return merge_for(layout.paths["implementer"], local, base, upstream)
+    def merge(role, local, base, upstream):
+        return merge_for(layout.paths[role], local, base, upstream)
 
     entry = (directory / "entry-guard").read_text()
     guard = (directory / ("delegated-guard" if provider == "copilot" else "entry-guard")).read_text()
@@ -5416,13 +5443,21 @@ def prepare(provider):
                                  merge_for(layout.paths[role], *projected))
         need(scoped[2] and (scoped[1] or not scoped[0] and
                            (unchanged_legacy or preserving_legacy)),
-             "missing native discovery guard: " + layout.paths[role])
+             "missing native discovery guard: " + layout.paths[role] +
+             ". The decoded discovery description in ./" + layout.paths[role] +
+             " must start with " + repr(prefix) + "; restore that prefix (custom text may follow it), " +
+             "reconcile the role by hand and retry. --force cannot authorize guard repair. " +
+             "Role body guards are also required.")
         if provider == "codex":
             required = ("These instructions apply only in the actual native Codex client; foreign or\n"
                         "ambiguous callers stop without work. Installed directories do not identify it.")
             need(required in bodies[2] and
                  (required in bodies[1] or required not in bodies[0] and
-                  (unchanged_legacy or preserving_legacy)), "missing native Codex body guard")
+                  (unchanged_legacy or preserving_legacy)),
+                 "missing native Codex body guard: " + layout.paths[role] +
+                 ". Restore this required text in the developer_instructions of ./" + layout.paths[role] +
+                 ": " + json.dumps(required) + " Reconcile the role by hand and retry; " +
+                 "--force cannot authorize guard repair.")
         else:
             expected = entry if provider == "copilot" and bodies[0].startswith(entry) else guard
             # Copilot has exactly two known role-boundary shapes: the historical
@@ -5441,7 +5476,10 @@ def prepare(provider):
                            (unchanged_legacy or preserving_legacy))
             need(source_safe and (bodies[2].startswith(guard) or
                                   candidate == live and bodies[2].startswith(expected)),
-                 "missing native body guard: " + layout.paths[role])
+                 "missing native body guard: " + layout.paths[role] +
+                 ". Restore the '## Active harness boundary (" + provider + " only)' caller guard at the " +
+                 "start of the role body in ./" + layout.paths[role] + " (as emitted by this installer), " +
+                 "reconcile the role by hand and retry. --force cannot authorize guard repair.")
 
     pair = lib["InstallerPair"](pristine, recognized, merge, validate)
     before, contents = pair.snapshot()

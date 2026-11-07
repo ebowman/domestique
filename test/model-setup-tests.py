@@ -337,8 +337,11 @@ class ModelSetup(unittest.TestCase):
                     pristine[rel] = upgrade(module, role, pristine[rel])
                     pristine[f"{layout.state}/base/{rel}"] = pristine[rel]
 
-            def merge(local, base, upstream):
+            def merge(role, local, base, upstream):
                 # Exercise real preserving diff3 in external operation scratch.
+                self.assertIn(role, layout.paths)
+                for data in (local, base, upstream):
+                    module["parse"](data, role)
                 with tempfile.TemporaryDirectory(dir=self.area) as scratch:
                     paths = [Path(scratch) / name for name in ("local", "base", "upstream")]
                     for path, data in zip(paths, (local, base, upstream)):

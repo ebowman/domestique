@@ -261,7 +261,27 @@ class Copilot(unittest.TestCase):
                                                if p.is_dir()}
                                 result = self.install(*flags, ok=False)
                                 self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
-                                self.assertIn("No project writes", result.stderr)
+                                self.assertIn("no project writes", result.stderr.lower())
+                                lowered = result.stderr.lower()
+                                # Every refusal carries some repair guidance;
+                                # the lifecycle preflight must say what is
+                                # wrong, what to restore, and which file.
+                                self.assertTrue(
+                                    any(w in lowered for w in ("repair", "restore", "reconcile")),
+                                    result.stderr)
+                                if "Model lifecycle refused" in result.stderr:
+                                    self.assertIn("missing native body guard", result.stderr)
+                                    self.assertIn("restore", lowered)
+                                    self.assertIn("reconcile", lowered)
+                                    self.assertIn(rel, result.stderr)
+                                    if kind == "tampered-base":
+                                        self.assertIn(f"./{STATE}/base/{rel}", result.stderr)
+                                        self.assertIn("original pristine snapshot", result.stderr)
+                                        self.assertIn("not current upstream", result.stderr)
+                                        self.assertIn("historical base is merge authority", result.stderr)
+                                    else:
+                                        self.assertIn("## Active harness boundary (copilot only)", result.stderr)
+                                        self.assertIn("start of the role body", result.stderr)
                                 self.assertEqual(snapshot(self.root), before)
                                 self.assertEqual(directories, {
                                     p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
@@ -563,7 +583,10 @@ class Copilot(unittest.TestCase):
                                 self.assertIn("discovery description", result.stderr)
                                 self.assertIn(DESCRIPTION_GUARDS[harness], result.stderr)
                                 self.assertIn(rel, result.stderr)
-                                self.assertIn("No project writes", result.stderr)
+                                self.assertIn("no project writes", result.stderr.lower())
+                                self.assertRegex(result.stderr, r"must start with|starts with")
+                                self.assertIn("restore", result.stderr.lower())
+                                self.assertIn("reconcile", result.stderr.lower())
                                 self.assertEqual(snapshot(self.root), before)
                                 self.assertEqual(
                                     {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()},
@@ -642,11 +665,20 @@ class Copilot(unittest.TestCase):
                             before = snapshot(self.root)
                             result = self.run_dom(*flags, dom=revised, ok=False)
                             self.assertEqual(result.returncode, 3)
+                            self.assertIn("no project writes", result.stderr.lower())
+                            self.assertIn("reconcile", result.stderr.lower())
                             if kind == "conflict":
                                 self.assertIn("conflict", result.stderr)
                                 self.assertIn(rel, result.stderr)
+                                self.assertIn(f"./{state}/base/{rel}", result.stderr)
+                                self.assertIn("keep the pristine base unchanged", result.stderr)
+                                self.assertIn("retry --dry-run", result.stderr)
                             else:
                                 self.assertIn("discovery description", result.stderr)
+                                self.assertIn(DESCRIPTION_GUARDS[harness], result.stderr)
+                                self.assertIn("must start with", result.stderr)
+                                self.assertIn("restore", result.stderr.lower())
+                                self.assertIn(rel, result.stderr)
                             self.assertEqual(snapshot(self.root), before)
 
     def test_shared_consumers_and_scoped_removal(self):
