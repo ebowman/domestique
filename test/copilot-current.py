@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 
@@ -35,7 +36,9 @@ def snapshot(root):
 
 class Copilot(unittest.TestCase):
     def setUp(self):
-        self.root = WORK / self._testMethodName
+        # Retain prior runs for diagnosis; never reuse or clean caller-owned paths.
+        self.work = Path(tempfile.mkdtemp(prefix=self._testMethodName + "-", dir=WORK)).resolve()
+        self.root = self.work / "project"
         self.root.mkdir()
         self.git("init", "-q")
 
@@ -70,13 +73,37 @@ class Copilot(unittest.TestCase):
     def hidden(self, path):
         return self.git("check-ignore", "-q", path).returncode == 0
 
+    def test_setup_reused_workroot_preserves_prior_results(self):
+        self.install("--guest")
+        (self.root / "prior-result").write_text("keep prior project\n")
+        for name in ("outside-role", "conflict-dom.sh"):
+            (self.work / name).write_text("keep prior fixture\n")
+        before = snapshot(self.work)
+
+        repeated = type(self)(self._testMethodName)
+        repeated.setUp()
+        self.assertEqual(repeated.work.parent, WORK.resolve())
+        self.assertNotEqual(repeated.work, self.work)
+        self.assertFalse((repeated.root / "prior-result").exists())
+        self.assertFalse((repeated.root / STATE).exists())
+        for name in ("outside-role", "conflict-dom.sh"):
+            self.assertFalse((repeated.work / name).exists())
+            (repeated.work / name).write_text("independent new fixture\n")
+        repeated.install("--guest")
+        for case in (self, repeated):
+            marker = json.loads(next(
+                line[len(MARKER):] for line in
+                (case.root / ROLES["implementer"]).read_text().splitlines()
+                if line.startswith(MARKER)))
+            self.assertEqual(marker["project"], str(case.root.resolve()))
+        self.assertEqual(snapshot(self.work), before)
+
     def test_install_native_contents_and_routing(self):
         # A restricted PATH proves missing Copilot does not block installation.
-        bindir = WORK / "bin"
-        bindir.mkdir(exist_ok=True)
+        bindir = self.work / "bin"
+        bindir.mkdir()
         python = bindir / "python3"
-        if not python.exists():
-            python.symlink_to(sys.executable)
+        python.symlink_to(sys.executable)
         env = dict(os.environ, PATH=f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin")
         self.assertIsNone(shutil.which("copilot", path=env["PATH"]))
         result = self.install(env=env)
@@ -558,7 +585,7 @@ class Copilot(unittest.TestCase):
         for role, rel in ROLES.items():
             self.assertEqual((self.root / rel).read_bytes(), before[role])
         # A qualified pair's preserving upgrade renews its final-byte marker.
-        revised = WORK / "revised-dom.sh"
+        revised = self.work / "revised-dom.sh"
         revised.write_text(DOM.read_text().replace(
             "Return a terse summary: files changed, actual validation/results, discovered",
             "Return a brief summary: files changed, actual validation/results, discovered"))
@@ -621,7 +648,7 @@ class Copilot(unittest.TestCase):
         for old, new in changes.items():
             self.assertEqual(upstream.count(old), 1)
             upstream = upstream.replace(old, new)
-        revised = WORK / "custom-descriptions-upgrade.sh"
+        revised = self.work / "custom-descriptions-upgrade.sh"
         revised.write_text(upstream)
         parent = self.root
         for mode in ("normal", "guest"):
@@ -809,7 +836,7 @@ class Copilot(unittest.TestCase):
                                 upstream = field + '"Use only in Claude"'
                             source = DOM.read_text()
                             self.assertEqual(source.count(line), 1)
-                            revised = WORK / f"{name}.sh"
+                            revised = self.work / f"{name}.sh"
                             revised.write_text(source.replace(line, upstream))
                             before = snapshot(self.root)
                             result = self.run_dom(*flags, dom=revised, ok=False)
@@ -849,7 +876,7 @@ class Copilot(unittest.TestCase):
     def test_source_free_stdin_normal_repeat_and_isolation(self):
         result = subprocess.run(["bash", "-s", "--", str(self.root),
                                  "--platform", "copilot"], input=DOM.read_text(),
-                                capture_output=True, text=True, cwd=WORK)
+                                capture_output=True, text=True, cwd=self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.install()
         before = snapshot(self.root)
@@ -916,27 +943,64 @@ class Copilot(unittest.TestCase):
         path = self.root / ROLES["implementer"]
         original = path.read_bytes()
         path.unlink()
-        outside = WORK / "outside-role"
+        outside = self.work / "outside-role"
         outside.write_bytes(original)
         path.symlink_to(outside)
         tree = snapshot(self.root)
-        self.install("--no-guest", ok=False)
+        result = self.install("--no-guest", ok=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("unsafe", result.stderr)
+        self.assertIn(ROLES["implementer"], result.stderr)
+        self.assertIn("no project writes", result.stderr.lower())
+        self.assertNotIn("reconfirmation-required", result.stdout)
         self.assertEqual(snapshot(self.root), tree)
+        self.assertEqual(path.readlink(), outside)
         self.assertEqual(outside.read_bytes(), original)
         path.unlink()
         path.write_bytes(original)
         (self.root / STATE / "unknown-authority").write_text("unknown\n")
         tree = snapshot(self.root)
-        self.install("--force", ok=False)
+        result = self.install("--force", ok=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("unknown state file unknown-authority", result.stderr)
+        self.assertIn("no project writes", result.stderr.lower())
+        self.assertNotIn("reconfirmation-required", result.stdout)
         self.assertEqual(snapshot(self.root), tree)
         (self.root / STATE / "unknown-authority").unlink()
-        # User and upstream change the same owned line: refuse before mode writes.
-        path.write_bytes(original.replace(b"Return a terse summary:", b"Return my special summary:"))
-        revised = WORK / "conflict-dom.sh"
+        # An edited pair is stale/unconfirmed, not eligible for a merge conflict.
+        # Preserve every role/base byte until review/Save, even when upstream
+        # changes the same line. Genuine confirmed conflicts are tested above.
+        pair = {}
+        for role, rel in ROLES.items():
+            path = self.root / rel
+            text = path.read_bytes().replace(
+                b"\n---\n", b'\nmodel: "custom-native-id"\ncustom: "retained"\n---\n', 1)
+            text = text.replace(b"Return a terse summary:", b"Return my special summary:")
+            text += b"\nUser-owned instructions.\n"
+            path.write_bytes(text)
+            pair[role] = text
+        revised = self.work / "conflict-dom.sh"
         revised.write_text(DOM.read_text().replace("Return a terse summary:", "Return a brief summary:"))
         tree = snapshot(self.root)
-        self.install("--no-guest", dom=revised, ok=False)
-        self.assertEqual(snapshot(self.root), tree)
+        # Actual --no-guest may publish mode changes despite exit 3; preview it
+        # without writes, then rerun in the retained guest mode for preservation.
+        for flags in (("--no-guest", "--dry-run"), ()):
+            with self.subTest(unconfirmed_flags=flags):
+                result = self.run_dom_unconfirmed("--platform", "copilot", *flags, dom=revised)
+                self.assertNotIn("Model lifecycle refused", result.stderr)
+                self.assertEqual(snapshot(self.root), tree)
+                for role, rel in ROLES.items():
+                    text = (self.root / rel).read_bytes()
+                    self.assertEqual(text, pair[role])
+                    self.assertIn(b'model: "custom-native-id"', text)
+                    self.assertIn(b'custom: "retained"', text)
+                    self.assertIn(b"User-owned instructions.", text)
+                    # Copilot has no supported effort field; do not introduce one.
+                    self.assertNotIn(b"\neffort:", text)
+                    self.assertNotIn(b"\nmodel_reasoning_effort:", text)
+                    self.assertNotIn(b"Return a brief summary:", text)
+                self.assertIn(b"Return my special summary:",
+                              (self.root / ROLES["implementer"]).read_bytes())
 
     def test_preview_competing_authority_is_not_adopted(self):
         receipt = self.root / ".domestique-private/copilot-preview.json"
