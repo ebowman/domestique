@@ -2,6 +2,7 @@
 import itertools
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "domestique.sh"
@@ -31,6 +33,29 @@ VERSION = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', SCRIPT, re.M).group(1)
 GUIDE = ("https://github.com/ebowman/domestique/blob/main/"
          "docs/install-upgrade-design.md#remote-install-and-upgrade")
 LABELS = {"claude": "Claude Code", "codex": "Codex", "copilot": "GitHub Copilot"}
+
+
+def notice_timeout():
+    """Per-subprocess deadline for the two bounded notice tests, in seconds."""
+    message = "TEST_TIMEOUT must be a positive finite number of seconds"
+    try:
+        seconds = float(os.environ.get("TEST_TIMEOUT", "300"))
+    except ValueError:
+        raise ValueError(message) from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(message)
+    return seconds
+
+
+class NoticeTimeoutConfig(unittest.TestCase):
+    def test_numeric_boundaries(self):
+        for value in ("0.01", "1", "1e2"):
+            with self.subTest(value=value), patch.dict(os.environ, TEST_TIMEOUT=value):
+                self.assertEqual(notice_timeout(), float(value))
+        for value in ("", "invalid", "NaN", "inf", "-inf", "0", "-1", "1e999", "1e-999"):
+            with self.subTest(value=value), patch.dict(os.environ, TEST_TIMEOUT=value):
+                with self.assertRaisesRegex(ValueError, "positive finite"):
+                    notice_timeout()
 
 
 def snapshot(root):
@@ -2331,7 +2356,7 @@ class AllProviders(unittest.TestCase):
                 result = subprocess.run(
                     ["bash", "-x", "-s", "--", str(root), *args], cwd=root, input=SCRIPT,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    env=self.env, timeout=60)
+                    env=self.env, timeout=notice_timeout())
                 self.assertEqual(result.returncode, 0, result.stdout)
                 lines = result.stdout.splitlines()
                 notice_end = next(i for i, line in enumerate(lines)
@@ -2374,7 +2399,7 @@ class AllProviders(unittest.TestCase):
                  'printf "UNCONSUMED:%s\\n" "$remaining"\n',
                  "stdin-check", str(SOURCE), *args],
                 cwd=root, input="caller-owned stdin\n", text=True, capture_output=True,
-                env=self.env, timeout=60)
+                env=self.env, timeout=notice_timeout())
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(result.stdout.endswith("UNCONSUMED:caller-owned stdin\n"))
 

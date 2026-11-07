@@ -354,6 +354,22 @@ python3 -B -Werror test/all-current.py
 bash test/upgrade.sh --current
 ```
 
+The two bounded notice tests in `test/all-current.py` allow **300 seconds per
+timed subprocess** (previously 60) to accommodate shared-machine contention.
+Override with a positive finite number of seconds, for example:
+
+```sh
+TEST_TIMEOUT=600 python3 -B -Werror test/all-current.py \
+  AllProviders.test_notice_precedes_first_target_mutation_and_dry_run_plan \
+  AllProviders.test_notice_does_not_consume_stdin_or_prompt
+```
+
+Non-numeric, NaN, infinite and nonpositive values are rejected. An expired
+deadline still raises `subprocess.TimeoutExpired` and fails the test; there
+are no retries or skipped assertions. This is only a test-harness allowance,
+not an installer behavior change or a deadline for the entire suite (fixture
+setup and other installer calls are unchanged).
+
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
