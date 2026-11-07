@@ -187,14 +187,34 @@ scenario_agent_toml() {
   check "implementer name field" grep -Eq '^name[[:space:]]*=[[:space:]]*"implementer"' "$t/$IMPL_REL"
   check "implementer description field" grep -Eq '^description[[:space:]]*=' "$t/$IMPL_REL"
   check "implementer developer_instructions field" grep -Eq '^developer_instructions[[:space:]]*=' "$t/$IMPL_REL"
-  check "implementer model terra" grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6-terra"' "$t/$IMPL_REL"
-  check "implementer effort medium" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"medium"' "$t/$IMPL_REL"
 
   check "reviewer name field" grep -Eq '^name[[:space:]]*=[[:space:]]*"reviewer"' "$t/$REVIEWER_REL"
   check "reviewer description field" grep -Eq '^description[[:space:]]*=' "$t/$REVIEWER_REL"
   check "reviewer developer_instructions field" grep -Eq '^developer_instructions[[:space:]]*=' "$t/$REVIEWER_REL"
-  check "reviewer model gpt-5.6" grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6"' "$t/$REVIEWER_REL"
-  check "reviewer effort high" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"high"' "$t/$REVIEWER_REL"
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "agent models and efforts match installer defaults" python3 -B - "$SCRIPT_DIR" "$t/$IMPL_REL" "$t/$REVIEWER_REL" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+import tomllib
+
+# Extract only the trusted repository installer library, never a target helper.
+spec = importlib.util.spec_from_file_location("current_fixture", Path(sys.argv[1]) / "all-current.py")
+current = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(current)
+defaults = current.AllProviders().model_library("codex")["installer_defaults"]()
+for role, filename in zip(("implementer", "reviewer"), sys.argv[2:]):
+    agent = tomllib.loads(Path(filename).read_text())
+    actual = (agent["model"], agent["model_reasoning_effort"])
+    assert actual == defaults[role], (role, actual, defaults[role])
+PY
+  else
+    # Frozen b60feef predates the shared installer model library.
+    check "implementer model terra" grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6-terra"' "$t/$IMPL_REL"
+    check "implementer effort medium" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"medium"' "$t/$IMPL_REL"
+    check "reviewer model gpt-5.6" grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6"' "$t/$REVIEWER_REL"
+    check "reviewer effort high" grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"high"' "$t/$REVIEWER_REL"
+  fi
   check "reviewer is not forced read-only" bash -c '! grep -Eq '\''^sandbox_mode[[:space:]]*=[[:space:]]*"read-only"'\'' "$1"' _ "$t/$REVIEWER_REL"
   check "reviewer forbids source edits" grep -Eqi 'do not (edit|modify)|never (edit|modify)|must not (edit|modify)' "$t/$REVIEWER_REL"
   check "orchestrator policy has pre/post diff guard" bash -c '
