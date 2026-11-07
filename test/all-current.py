@@ -1909,6 +1909,10 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(migrated.returncode, 3)
         self.assertIn("[historical migration completed] claude:", migrated.stdout)
         self.assertIn("dom-models --confirm", migrated.stderr)
+        for result in (planned, migrated):
+            for misleading in ("conflict/error", "Conflicted", ".new/.bak",
+                               "lifecycle interrupted", "partial results may remain"):
+                self.assertNotIn(misleading, result.stdout + result.stderr)
         for rel, data in expected.items():
             path = root / rel
             header, body = data.split(b"\n---\n", 1)
@@ -3473,6 +3477,36 @@ class AllProviders(unittest.TestCase):
                      "--model", "claude:reviewer=inherit", ok=False)
         self.assertEqual(before, snapshot(self.work))
 
+    def test_real_merge_conflict_keeps_summary_warning(self):
+        # Non-Git installs use the ordinary three-way merge path rather than
+        # the model-pair preflight, so a real conflict reaches the summary.
+        root = self.nongit("summary-conflict")
+        self.run_dom(root, "--platform", "claude")
+        role = root / ROLES[0]
+        anchor = "Keep the return small."
+        self.assertIn(anchor, role.read_text())
+        role.write_text(role.read_text().replace(anchor, "Keep my custom return format."))
+        upstream = SCRIPT.replace(anchor, "Keep the upstream return format.")
+        original = role.read_bytes()
+        base = root / STATES["claude"] / "base" / ROLES[0]
+        pristine = base.read_bytes()
+        for flags in (("--dry-run",), ()):
+            before = snapshot(root)
+            result = self.run_dom(root, "--platform", "claude", *flags,
+                                  script=upstream, ok=False)
+            self.assertEqual(result.returncode, 3)
+            self.assertIn("Conflicted", result.stdout)
+            self.assertIn("One or more files ended in conflict/error", result.stderr)
+            self.assertNotIn("dom-models --confirm", result.stderr)
+            self.assertEqual(role.read_bytes(), original)
+            self.assertEqual(base.read_bytes(), pristine)
+            if flags:
+                self.assertEqual(snapshot(root), before)
+            else:
+                self.assertIn(b"<<<<<<<", Path(str(role) + ".new").read_bytes())
+                self.assertEqual([p.read_bytes() for p in role.parent.glob(role.name + ".bak.*")],
+                                 [original])
+
     def test_subdir_target_skips_model_setup_and_exits_zero(self):
         info = "Model setup skipped: run dom at the repository root ("
         top = self.root("subdir-fresh")
@@ -3536,6 +3570,8 @@ class AllProviders(unittest.TestCase):
             self.assertIn("dubious ownership", result.stderr)
             self.assertRegex(result.stderr, r"(?m)^git: .*dubious ownership")
             self.assertIn("unconfirmed", result.stderr)
+            self.assertIn("conflict/error", result.stderr)
+            self.assertIn("partial results may remain", result.stderr)
             # The install itself proceeds; only the model pair is unconfirmed.
             self.assertTrue((target / ".claude/agents/implementer.md").is_file())
 

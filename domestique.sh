@@ -3252,7 +3252,8 @@ REQUESTED_GUEST="$GUEST"
 TS="$(date +%Y%m%d%H%M%S)"
 TMPDIR_WORK="$(mktemp -d)"
 MUTATION_STARTED=0
-trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ]; then echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2; fi; rm -rf "$TMPDIR_WORK"; exit "$rc"' EXIT
+LIFECYCLE_COMPLETED=0
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ] && [ "$LIFECYCLE_COMPLETED" -eq 0 ]; then echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2; fi; rm -rf "$TMPDIR_WORK"; exit "$rc"' EXIT
 
 # Summary accumulators.
 SUM_CREATED=()
@@ -6858,6 +6859,7 @@ if [ "$UNINSTALL" -eq 0 ]; then
     echo "Model configuration requires the physical Git worktree root; this installation will remain unconfirmed." >&2
     [ -z "$model_git_err" ] || echo "git: $model_git_err" >&2
     touch "$TMPDIR_WORK/model-unconfirmed"
+    CONFLICT_OCCURRED=1
   fi
 fi
 retain_inactive_providers
@@ -7134,9 +7136,11 @@ else
 fi
 
 # --- summary ---------------------------------------------------------------
+RECONFIRMATION_REQUIRED=0
 if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
   for model_provider in claude codex copilot; do
     [ -d "$TMPDIR_WORK/model-input/$model_provider" ] || continue
+    model_verify_rc=0
     python3 -I -B -c "$(CURRENT_PROVIDER="$model_provider" emit_installer_model_library)
 request = load(sys.argv[1])
 if HARNESS not in request['selected']:
@@ -7148,17 +7152,27 @@ try:
     expected = load(Path(sys.argv[3], 'model-final-' + HARNESS).read_bytes())
     need(actual == expected, HARNESS + ': state changed after pair publication')
     result = verify(pair, contents)
-    need(result['confirmed'], HARNESS + ': reconfirmation-required')
+    if not result['confirmed']:
+        print('Final model verification: ' + HARNESS + ': reconfirmation-required',
+              file=sys.stderr)
+        sys.exit(4)  # Internal status: verified publication, pending review/Save.
 except (OSError, ValueError, subprocess.SubprocessError) as error:
     print('Final model verification: ' + str(error), file=sys.stderr)
     sys.exit(3)
-" "$MODEL_REQUEST" "$TARGET_DIR" "$TMPDIR_WORK" || CONFLICT_OCCURRED=1
+" "$MODEL_REQUEST" "$TARGET_DIR" "$TMPDIR_WORK" || model_verify_rc=$?
+    case "$model_verify_rc" in
+      0) : ;;
+      4) RECONFIRMATION_REQUIRED=1 ;;
+      *) CONFLICT_OCCURRED=1 ;;
+    esac
   done
 fi
 if [ -f "$TMPDIR_WORK/model-unconfirmed" ]; then
+  RECONFIRMATION_REQUIRED=1
+fi
+if [ "$RECONFIRMATION_REQUIRED" -eq 1 ]; then
   echo "Configuration incomplete: review/Save required; no native readiness or workflow authorization." >&2
   echo "Use dom-models --confirm in the selected native client to review the current pair, then Save." >&2
-  CONFLICT_OCCURRED=1
 fi
 echo
 if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned):"; else echo "Summary:"; fi
@@ -7176,4 +7190,7 @@ if [ "$CONFLICT_OCCURRED" -eq 1 ]; then
   echo "One or more files ended in conflict/error — see 'Conflicted' above and the .new/.bak files for each." >&2
   exit 3
 fi
+# Publication finished without errors; pending review/Save is not interruption.
+LIFECYCLE_COMPLETED=1
+[ "$RECONFIRMATION_REQUIRED" -eq 0 ] || exit 3
 echo "Done."

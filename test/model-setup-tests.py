@@ -1128,6 +1128,45 @@ class ModelSetup(unittest.TestCase):
                     self.fixture.run_dom(root, ok=False)
                     self.assertEqual(before, CURRENT.snapshot(root))
 
+    def test_actual_installer_reconfirmation_only_summary(self):
+        for provider in PROVIDERS:
+            with self.subTest(provider=provider):
+                root = self.project()
+                # Use real helper publication for valid custom model selections,
+                # then a manual role edit/removal of the receipt requires review.
+                self.apply(root, provider, self.prepare(root, provider))
+                roles = self.roles(root, provider)
+                lib = self.namespace(root, provider)
+                impl = roles["implementer"]
+                impl.write_bytes(lib["split_marker"](impl.read_bytes(), "implementer")[0].encode())
+                reviewer = roles["reviewer"]
+                reviewer.write_bytes(reviewer.read_bytes() + b"\n# Custom role instructions.\n")
+                bases = CURRENT.snapshot(root / CURRENT.STATES[provider] / "base")
+                selected = self.call(root, provider, "verify")["selected"]
+                for flags in (("--dry-run",), (), ()):
+                    before = CURRENT.snapshot(root)
+                    result = self.fixture.run_dom(root, "--platform", provider, *flags, ok=False)
+                    self.assertEqual(result.returncode, 3)
+                    self.assertIn("custom-unconfirmed -> reconfirmation-required", result.stdout)
+                    self.assertIn("dom-models --confirm", result.stderr)
+                    self.assertIn("Configuration incomplete", result.stderr)
+                    for misleading in ("conflict/error", "Conflicted", ".new/.bak",
+                                       "lifecycle interrupted", "partial results may remain"):
+                        self.assertNotIn(misleading, result.stdout + result.stderr)
+                    self.assertEqual(CURRENT.snapshot(root / CURRENT.STATES[provider] / "base"), bases)
+                    if flags:
+                        self.assertEqual(CURRENT.snapshot(root), before)
+                    self.assertFalse(self.call(root, provider, "verify")["confirmed"])
+                # The advertised native command really prepares current-pair
+                # review, and only explicit Save clears the nonzero outcome.
+                before = CURRENT.snapshot(root)
+                review = self.native(root, provider, "--confirm")
+                self.assertEqual(review["chosen"], selected)
+                self.assertEqual(CURRENT.snapshot(root), before)
+                self.apply(root, provider, review)
+                self.fixture.run_dom(root, "--platform", provider)
+                self.assertTrue(self.call(root, provider, "verify")["confirmed"])
+
     def test_actual_installer_partial_publication_never_marks_failed_pair(self):
         root = self.area / "failure"
         root.mkdir()
@@ -1142,6 +1181,7 @@ class ModelSetup(unittest.TestCase):
         self.assertIn("injected reviewer publication failure", result.stderr)
         self.assertIn("claude:configured", result.stderr)
         self.assertIn('"partial": true', result.stderr)
+        self.assertIn("partial results may remain", result.stderr)
         state = subprocess.run([sys.executable, "-I", "-B", str(self.helper(root, "claude")), "verify"],
                                cwd=root, env=self.env, capture_output=True, text=True, check=True)
         self.assertTrue(json.loads(state.stdout)["confirmed"])
@@ -1289,6 +1329,8 @@ class ModelSetup(unittest.TestCase):
                 self.assertEqual(result.returncode, 3)
                 self.assertIn("Final model verification: claude: state changed after pair publication",
                               result.stderr)
+                self.assertIn("conflict/error", result.stderr)
+                self.assertIn("partial results may remain", result.stderr)
                 # The v1 marker binds roles, not dependencies. Its continuing
                 # validity must NOT be mistaken for lifecycle success.
                 state = self.call(root, "claude", "verify")
