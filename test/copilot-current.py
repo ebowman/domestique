@@ -214,8 +214,11 @@ class Copilot(unittest.TestCase):
         for mode in ("normal", "guest"):
             for role, rel in ROLES.items():
                 for generation in ("old", "current"):
-                    for kind in ("removed", "tampered", "quoted", "wrong-surface",
-                                 "malformed", "unowned", "tampered-base"):
+                    kinds = ("removed", "tampered", "quoted", "malformed",
+                             "unowned", "tampered-base")
+                    if generation == "current":
+                        kinds += ("legacy-live-on-delegated-base",)
+                    for kind in kinds:
                         for flags in ((), ("--force", "--dry-run")):
                             with self.subTest(mode=mode, role=role, generation=generation,
                                               kind=kind, flags=flags):
@@ -242,7 +245,7 @@ class Copilot(unittest.TestCase):
                                     "removed": front + "Delegated role only:" + task,
                                     "tampered": source.replace("STOP", "CONTINUE", 1),
                                     "quoted": front + "Delegated role only:" + task + "\n```text\n" + guard + "```\n",
-                                    "wrong-surface": legacy if generation == "current" else current,
+                                    "legacy-live-on-delegated-base": legacy,
                                     "malformed": source.replace("---\n", "BROKEN\n", 1),
                                     "unowned": source,
                                     "tampered-base": source,
@@ -285,6 +288,106 @@ class Copilot(unittest.TestCase):
                                 self.assertEqual(snapshot(self.root), before)
                                 self.assertEqual(directories, {
                                     p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
+
+    def test_entry_base_with_confirmed_delegated_live_preserves_pair(self):
+        # 75b0de3 introduced entry -> delegated migration; da7f4be explicitly
+        # accepts delegated live roles over retained entry-era bases after Save.
+        # This is not the reverse (legacy live over delegated base) refusal above.
+        parent = self.root
+
+        def tree():
+            return {
+                str(p.relative_to(self.root)): (
+                    p.lstat().st_mode, p.lstat().st_mtime_ns, p.lstat().st_ino,
+                    os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+                for p in self.root.rglob("*")
+            }
+
+        for mode in ("normal", "guest"):
+            for role, rel in ROLES.items():
+                for custom in (False, True):
+                    for flags in ((), ("--force", "--dry-run")):
+                        with self.subTest(mode=mode, role=role, custom=custom, flags=flags):
+                            variant = "force-dry-run" if flags else "normal"
+                            self.root = parent / f"{mode}-{role}-{custom}-{variant}"
+                            self.root.mkdir()
+                            self.git("init", "-q")
+                            self.install(*(["--guest"] if mode == "guest" else []))
+                            pristine = {r: (self.root / STATE / "base" / p).read_bytes()
+                                        for r, p in ROLES.items()}
+                            models = self.root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                            bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                            def helper(*args, plan=None):
+                                result = subprocess.run(
+                                    [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                                    input=json.dumps(plan) if plan is not None else None,
+                                    cwd=self.root, text=True, capture_output=True)
+                                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                                return json.loads(result.stdout)
+
+                            if custom:
+                                path = self.root / rel
+                                # Keep the scalar at an unchanged header boundary;
+                                # force need not guess its position beside removed metadata.
+                                text = path.read_text().replace(
+                                    "\nname:", f'\nmodel: "fixture-{role}"\nname:', 1)
+                                text = text.replace("\n---\n", '\ncustom: "retained"\n---\n', 1)
+                                text = text.replace('"search", "execute"', '"search"')
+                                text = text.replace("an unknown harness.",
+                                                    "an unknown harness. Local discovery.", 1)
+                                path.write_text(text + "\nLocal role instructions.\n")
+                                self.assertFalse(helper("verify")["confirmed"])
+                                before = tree()
+                                review = helper("request", "--confirm")
+                                self.assertFalse(review["configured"])
+                                self.assertEqual(tree(), before)
+                                self.assertTrue(helper(
+                                    "apply", review["digest"], plan=review["plan"])["confirmed"])
+                            selected = {r: {"model": f"fixture-{r}" if custom and r == role else None,
+                                            "effort": None} for r in ROLES}
+                            live = {p: (self.root / p).read_bytes() for p in ROLES.values()}
+                            base = self.root / STATE / "base" / rel
+                            legacy = (OLD_ROLES / f"{role}.agent.md").read_bytes()
+                            self.assertIn(b"Before applying ANY instructions below", legacy)
+                            self.assertNotIn(MARKER.encode(), legacy)
+                            base.write_bytes(legacy)
+                            for data in live.values():
+                                self.assertIn(DELEGATED.encode(), data)
+                                self.assertNotIn(b"Before applying ANY instructions below", data)
+                            verified = helper("verify")
+                            self.assertTrue(verified["confirmed"])
+                            self.assertEqual(verified["selected"], selected)
+
+                            before = tree()
+                            result = self.install(*(flags or ("--dry-run",)))
+                            self.assertIn("[model pair] copilot: confirmed -> configured locally", result.stdout)
+                            for r, choice in selected.items():
+                                model = json.dumps(choice["model"]) if choice["model"] else "native inheritance"
+                                display = model + "; effort inherited/omitted"
+                                self.assertIn(
+                                    f"[model selection] copilot:{r}: {display} -> {display} [preserved-existing]",
+                                    result.stdout)
+                            self.assertNotIn("[model publication]", result.stdout)
+                            self.assertEqual(tree(), before)
+                            self.assertEqual(helper("verify"), verified)
+                            expected = snapshot(self.root)
+                            expected[str(base.relative_to(self.root))] = (
+                                base.lstat().st_mode, pristine[role])
+                            # Publish without force even after a force preview: local
+                            # bodies/settings survive, only pristine authority advances.
+                            result = self.install()
+                            self.assertIn("[model pair] copilot: confirmed -> configured locally", result.stdout)
+                            self.assertIn("[model publication] copilot:configured", result.stdout)
+                            self.assertEqual(snapshot(self.root), expected)
+                            self.assertEqual(live, {p: (self.root / p).read_bytes() for p in ROLES.values()})
+                            self.assertEqual(helper("verify"), verified)
+                            for r, p in ROLES.items():
+                                self.assertEqual((self.root / STATE / "base" / p).read_bytes(), pristine[r])
+                            stable = tree()
+                            self.install()
+                            self.assertEqual(tree(), stable)
+                            self.assertEqual(helper("verify"), verified)
 
     def test_invalid_pristine_role_guard_with_confirmed_current_live(self):
         parent = self.root
