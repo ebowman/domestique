@@ -905,13 +905,26 @@ class AllProviders(unittest.TestCase):
             roles = {rel.replace("implementer", role):
                      (root / rel.replace("implementer", role)).read_bytes()
                      for rel in ROLES for role in ("implementer", "reviewer")}
-            # Explicit installs retain additive Claude/Codex selection and
-            # upgrade retained root policies, but not unrelated Copilot skills.
+            # ae02624: unselected root policies retain their workflow, even
+            # when additive installation updates other provider projections.
+            codex_policy = root / "AGENTS.md"
+            retained = codex_policy.read_bytes() if codex_policy.exists() else None
+            if retained is not None:
+                self.assertIn(b"## Active harness boundary (codex only)", retained)
+                self.assertNotIn(b"## Direct parent Git requests", retained)
             copilot_skills = snapshot(root / ".github/skills")
             self.run_dom(root, "--platform", "claude")
             self.assertEqual(snapshot(root / ".github/skills"), copilot_skills)
+            self.assertEqual(codex_policy.read_bytes() if codex_policy.exists() else None,
+                             retained)
+            self.assertIn("## Direct parent Git requests", policy.read_text())
             self.run_dom(root, "--platform", "copilot")
-            self.assert_parent_git_instructions(root, guest=mode == "guest")
+            self.assertEqual(codex_policy.read_bytes() if codex_policy.exists() else None,
+                             retained)
+            for selected in (policy, root / ".github/skills/domestique-v2-copilot/SKILL.md",
+                             *(() if mode == "guest" else
+                               (root / ".github/copilot-instructions.md",))):
+                self.assertIn("## Direct parent Git requests", selected.read_text())
             self.assertTrue(policy.read_text().endswith("\nHost-owned policy tail.\n"))
             for provider, impl in zip(STATES, ROLES):
                 module = self.model_library(provider)
@@ -941,6 +954,7 @@ class AllProviders(unittest.TestCase):
                                             "effort": fields.get("model_reasoning_effort")})
                 self.assertEqual(module["split_marker"](
                     (root / rel).read_bytes(), role)[0].encode(), expected)
+            self.assert_parent_git_instructions(root, guest=mode == "guest")
             self.assert_parent_child_ownership(root, guest=mode == "guest")
             before = byte_snapshot(root)
             self.run_dom(root)
@@ -2012,31 +2026,97 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), saved)
 
     def test_native_metadata_copilot_preflight_matches_apply(self):
+        # Actual published v0.4.3 output supplies inventory and original bases.
+        # Never turn a confirmed live role into pristine merge authority.
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show",
+             "067569a331539883c326a5d221e0e5837efefddd:domestique.sh"])
+        self.assertEqual(hashlib.sha256(released).hexdigest(),
+                         "2c2c48b5914d48b5e366034095c87b708979a83c0d2f210efd814605b82e1451")
         root = self.root("metadata-copilot")
-        self.run_dom(root, "--platform", "copilot")
+        self.run_dom(root, "--platform", "copilot", script=released.decode())
+        bases = snapshot(root / STATES["copilot"] / "base")
+        module = self.model_library("copilot")
         expected = {}
+        upstream = SCRIPT
         for role in ("implementer", "reviewer"):
             rel = f".github/agents/domestique-v2-copilot-{role}.agent.md"
             path = root / rel
-            pristine = path.read_bytes()
-            prefix = b"Copilot only; never match in Claude, Codex or an unknown harness. "
-            old = pristine.replace(prefix, b"")
-            (root / STATES["copilot"] / "base" / rel).write_bytes(old)
-            custom = old.replace(b'"search"', b'"search", "mcp__example__search"')
+            pristine = (root / STATES["copilot"] / "base" / rel).read_bytes()
+            self.assertNotIn(b"# domestique-model-setup:", pristine)
+            self.assertEqual(module["split_marker"](path.read_bytes(), role)[0].encode(),
+                             pristine)
+            description = next(line for line in pristine.splitlines()
+                               if line.startswith(b"description:"))
+            revised = description + b" Updated upstream discovery."
+            self.assertEqual(upstream.count(description.decode()), 1)
+            upstream = upstream.replace(description.decode(), revised.decode())
+            custom = pristine.replace(b'"search"', b'"search", "mcp__example__search"')
             custom = custom.replace(b"\n---\n", b'\nmodel: "example-native" # exact\n---\n', 1)
             custom += b"\nUnrelated fixture body.\n"
             path.write_bytes(custom)
-            expected[rel] = custom.replace(
-                b"description: ", b"description: " + prefix, 1)
+            expected[rel] = custom.replace(description, revised, 1)
+            # Adjacent independent description/tools edits really conflict in
+            # ordinary Git; success must exercise the native-field fallback.
+            with tempfile.TemporaryDirectory(dir=self.work) as temporary:
+                paths = [Path(temporary) / name for name in ("local", "base", "upstream")]
+                for target, data in zip(paths, (
+                        custom, pristine, pristine.replace(description, revised, 1))):
+                    target.write_bytes(data)
+                conflict = subprocess.run(["git", "merge-file", "-p", *map(str, paths)],
+                                          env=self.env, capture_output=True)
+                self.assertEqual(conflict.returncode, 1)
+                self.assertIn(b"<<<<<<<", conflict.stdout)
+
+        # Class E: custom-unconfirmed roles do not merge on rerun. Explicit
+        # current-pair review/Save establishes eligibility (hq-g14 precedent).
+        models = root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+        bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+        def helper(*args, plan=None):
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                input=json.dumps(plan) if plan is not None else None,
+                cwd=root, env=self.env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
         before = snapshot(root)
-        self.run_dom(root, "--platform", "copilot", "--dry-run")
+        review = helper("request", "--confirm")
+        self.assertFalse(review["configured"])
+        self.assertEqual(review["chosen"], review["current"])
         self.assertEqual(snapshot(root), before)
-        self.run_dom(root, "--platform", "copilot")
+        self.assertTrue(helper("apply", review["digest"], plan=review["plan"])["confirmed"])
+        self.assertTrue(helper("verify")["confirmed"])
+        self.assertEqual(snapshot(root / STATES["copilot"] / "base"), bases)
+
+        # A genuinely competing tools edit must still refuse atomically.
+        tools = 'tools: ["read", "edit", "search", "execute"]'
+        self.assertEqual(upstream.count(tools), 1)
+        competing = upstream.replace(tools, tools.replace('"search"', '"upstream-search"'), 1)
+        before = snapshot(root)
+        for flags in (("--dry-run",), ()):
+            refused = self.run_dom(root, "--platform", "copilot", *flags,
+                                   script=competing, ok=False)
+            self.assertEqual(refused.returncode, 3)
+            self.assertIn("Native role fallback refused: competing metadata field", refused.stderr)
+            self.assertIn(".github/agents/domestique-v2-copilot-implementer.agent.md", refused.stderr)
+            self.assertIn("Publication not started; no project writes.", refused.stderr)
+            self.assertEqual(snapshot(root), before)
+        self.run_dom(root, "--platform", "copilot", "--dry-run", script=upstream)
+        self.assertEqual(snapshot(root), before)
+        self.run_dom(root, "--platform", "copilot", script=upstream)
         for rel, data in expected.items():
-            self.assertEqual((root / rel).read_bytes(), data)
-            self.assertNotIn(b"example-native", (root / STATES["copilot"] / "base" / rel).read_bytes())
+            role = "implementer" if "implementer" in rel else "reviewer"
+            self.assertEqual(module["split_marker"]((root / rel).read_bytes(), role)[0].encode(),
+                             data)
+            base = (root / STATES["copilot"] / "base" / rel).read_bytes()
+            for custom in (b"example-native", b"mcp__example__search",
+                           b"Unrelated fixture body.", b"# domestique-model-setup:"):
+                self.assertNotIn(custom, base)
+        self.assertTrue(helper("verify")["confirmed"])
         before = byte_snapshot(root)
-        self.run_dom(root, "--platform", "copilot")
+        self.run_dom(root, "--platform", "copilot", script=upstream)
         self.assertEqual(byte_snapshot(root), before)
 
     def test_platformless_legacy_claude_invalid_ownership_zero_writes(self):
