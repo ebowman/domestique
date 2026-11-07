@@ -5425,6 +5425,17 @@ def prepare(provider):
                   (unchanged_legacy or preserving_legacy)), "missing native Codex body guard")
         else:
             expected = entry if provider == "copilot" and bodies[0].startswith(entry) else guard
+            # Copilot has exactly two known role-boundary shapes: the historical
+            # entry guard and the delegated guard. A valid live/confirmed pair
+            # cannot authorize a damaged pristine merge anchor as "legacy".
+            need(provider != "copilot" or bodies[0].startswith(expected),
+                 "missing native body guard in pristine base: ./" + layout.state +
+                 "/base/" + layout.paths[role] + " (role ./" + layout.paths[role] + "). "
+                 "Keep copies of the local role and base; restore the original pristine snapshot "
+                 "for that installed generation, not current upstream or customized live text. "
+                 "The historical base is merge authority. Reconcile the local role separately "
+                 "without discarding custom text, then retry --dry-run. "
+                 "--force cannot authorize base repair.")
             source_safe = (bodies[1].startswith(expected) or bodies[1].startswith(guard) or
                            provider == "claude" and not bodies[0].startswith(expected) and
                            (unchanged_legacy or preserving_legacy))

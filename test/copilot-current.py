@@ -266,6 +266,104 @@ class Copilot(unittest.TestCase):
                                 self.assertEqual(directories, {
                                     p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
 
+    def test_invalid_pristine_role_guard_with_confirmed_current_live(self):
+        parent = self.root
+        for role, rel in ROLES.items():
+            for kind in ("tampered-entry", "missing-delegated"):
+                for flags in ((), ("--force", "--dry-run")):
+                    with self.subTest(role=role, kind=kind, flags=flags):
+                        variant = "force-dry-run" if flags else "normal"
+                        self.root = parent / f"{role}-{kind}-{variant}"
+                        self.root.mkdir()
+                        self.git("init", "-q")
+                        self.install()
+                        base = self.root / STATE / "base" / rel
+                        if kind == "tampered-entry":
+                            original = (OLD_ROLES / f"{role}.agent.md").read_text()
+                            base.write_text(original.replace("STOP", "CONTINUE", 1))
+                        else:
+                            original = base.read_text()
+                            front = original.split("\n## Active harness boundary", 1)[0]
+                            task = original.split("Delegated role only:", 1)[1]
+                            base.write_text(front + "\nDelegated role only:" + task)
+                        # The live pair still has its valid installed confirmation
+                        # and delegated guard; neither authorizes a damaged base.
+                        before = snapshot(self.root)
+                        directories = {p.relative_to(self.root) for p in self.root.rglob("*")
+                                       if p.is_dir()}
+                        result = self.install(*flags, ok=False)
+                        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                        self.assertIn("pristine base", result.stderr)
+                        self.assertIn(f"{STATE}/base/{rel}", result.stderr)
+                        self.assertIn("original pristine snapshot", result.stderr)
+                        self.assertIn("no project writes", result.stderr.lower())
+                        self.assertEqual(snapshot(self.root), before)
+                        self.assertEqual(directories, {
+                            p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
+
+    def test_known_entry_role_base_preserves_confirmation_contract(self):
+        parent = self.root
+        for mode in ("normal", "guest"):
+            for custom in (False, True):
+                with self.subTest(mode=mode, custom=custom):
+                    self.root = parent / f"{mode}-{custom}"
+                    self.root.mkdir()
+                    self.git("init", "-q")
+                    self.install(*(["--guest"] if mode == "guest" else []))
+                    bases = {}
+                    for role, rel in ROLES.items():
+                        old = (OLD_ROLES / f"{role}.agent.md").read_bytes()
+                        bases[role] = old
+                        (self.root / STATE / "base" / rel).write_bytes(old)
+                        local = old + (b"\nUser-owned instructions.\n" if custom else b"")
+                        (self.root / rel).write_bytes(local)
+                    before = snapshot(self.root)
+                    if custom:
+                        self.run_dom_unconfirmed("--platform", "copilot", "--dry-run")
+                        self.assertEqual(snapshot(self.root), before)
+                        self.run_dom_unconfirmed("--platform", "copilot")
+                        # A current-inventory custom pair awaits explicit Save,
+                        # rather than gaining confirmation through guard migration.
+                        self.assertEqual(snapshot(self.root), before)
+                        models = self.root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                        bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                        def helper(*args, plan=None):
+                            result = subprocess.run(
+                                [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                                input=json.dumps(plan) if plan is not None else None,
+                                cwd=self.root, text=True, capture_output=True)
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            return json.loads(result.stdout)
+
+                        review = helper("request", "--confirm")
+                        self.assertFalse(review["configured"])
+                        self.assertEqual(snapshot(self.root), before)
+                        self.assertTrue(helper(
+                            "apply", review["digest"], plan=review["plan"])["confirmed"])
+                        for role, rel in ROLES.items():
+                            self.assertEqual((self.root / STATE / "base" / rel).read_bytes(), bases[role])
+                    before = snapshot(self.root)
+                    self.install("--dry-run")
+                    self.assertEqual(snapshot(self.root), before)
+                    self.install()
+                    for role, rel in ROLES.items():
+                        text = (self.root / rel).read_text()
+                        self.assertIn(DELEGATED, text)
+                        self.assertNotIn("Before applying ANY instructions below", text)
+                        self.assertEqual("User-owned instructions." in text, custom)
+                    if custom:
+                        self.assertTrue(helper("verify")["confirmed"])
+                        # A retained, intact entry-era base is also legitimate
+                        # after migration/Save when the live role is delegated.
+                        live = {rel: (self.root / rel).read_bytes() for rel in ROLES.values()}
+                        for role, rel in ROLES.items():
+                            (self.root / STATE / "base" / rel).write_bytes(bases[role])
+                        self.install()
+                        self.assertEqual(live, {
+                            rel: (self.root / rel).read_bytes() for rel in ROLES.values()})
+                        self.assertTrue(helper("verify")["confirmed"])
+
     def test_rerun_merge_marker_and_modified_removal(self):
         self.install()
         pair = {}
