@@ -368,6 +368,72 @@ scenario_persisted_platform_selection() {
 # Scenario 8: Codex-only output contains no Claude setup/model paths or
 # deprecated custom prompts. Foreign-client boundary/redirect text is allowed.
 # ---------------------------------------------------------------------------
+assert_no_claude_workflow_leakage() {
+  python3 - "$1" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+# Inspect invocation surfaces, not shared helper implementation or merge bases.
+paths = [root / "AGENTS.md"]
+paths += sorted((root / ".codex/agents").glob("*.toml"))
+paths += sorted((root / ".agents/skills").glob("dom*/SKILL.md"))
+paths += sorted((root / ".agents/skills").glob("dom*/agents/openai.yaml"))
+alias_map = """Only the entire explicit argument `configure role models` is an alias for
+the current native `dom-models --configure` body. Read that project-local body
+instead of the execution gate below, preserving the original request and
+this explicit alias mapping. Claude: `.claude/commands/dom-models.md`;
+Codex: `.agents/skills/domestique-models/SKILL.md`;
+Copilot: `.github/skills/domestique-v2-copilot-models/SKILL.md`.
+Missing/foreign bodies stop; never initialize or embed a replacement setup."""
+foreign_refusal = """An explicit foreign-harness invocation must STOP without setup, Beads, task,
+branch or dispatch writes. Report the mismatch; suggest the shared project-local
+dom-decompose/dom-goal entry for Codex/Copilot or Claude's /dom-decompose
+and /dom-goal commands, but do not invoke them automatically."""
+shared_refusal = """Unknown, ambiguous, or unsupported callers STOP explicitly, without setup,
+Beads, task, branch or dispatch writes. Claude must use its /dom-decompose or
+/dom-goal command in Claude Code instead; do not auto-invoke another entry."""
+models_route = """Identify the ACTUAL native caller from session context/native tools, never
+installed directories, file names or skill matching. Unknown, ambiguous or
+unsupported callers STOP without writes. Claude uses `/dom-models` in Claude
+Code, never this skill. Do not auto-invoke another entry or cross harnesses.
+Bind ROOT to this invocation's physical Git worktree root; no path/harness
+selector, ancestor/global search or fallback. Read only its native body:
+- Codex: `.agents/skills/domestique-models/SKILL.md` (`$dom-models`).
+- Copilot: `.github/skills/domestique-v2-copilot-models/SKILL.md` (`/dom-models`).
+Missing/unreadable/foreign body: STOP, required native projection not installed."""
+native_goal = """entries, not required spellings. A native `/goal` with a clear named execution
+objective qualifies; a generic mode toggle alone does not."""
+leak = re.compile(
+    r"Sonnet|Opus|CLAUDE(?:\.local)?\.md|\.claude/|~/\.codex/prompts"
+    r"|(?<![\w.-])/(?:dom-(?:decompose|goal|models)|decompose|goal)\b",
+    re.I,
+)
+failures = []
+for path in paths:
+    rel = path.relative_to(root).as_posix()
+    text = path.read_text()
+    # Exact, fail-closed allowances: the STOP/no-auto-invocation guidance and
+    # the native-only configuration alias map, not arbitrary Claude references.
+    text = text.replace(foreign_refusal, "", 1)
+    if path == root / ".agents/skills/domestique-decompose/SKILL.md":
+        text = text.replace(alias_map, "", 1)
+    if rel in (".agents/skills/dom-decompose/SKILL.md", ".agents/skills/dom-goal/SKILL.md"):
+        text = text.replace(shared_refusal, "", 1)
+    if rel == ".agents/skills/dom-models/SKILL.md":
+        text = text.replace(models_route, "", 1)
+    if rel == "AGENTS.md":
+        text = text.replace(native_goal, "", 1)
+    for line in text.splitlines():
+        if leak.search(line):
+            failures.append(f"{path.relative_to(root)}: {line}")
+if failures:
+    print("\n".join(failures), file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 scenario_no_claude_leakage() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
   local rc
@@ -378,11 +444,24 @@ scenario_no_claude_leakage() {
   check "Codex agents exist" bash -c 'test -f "$1" && test -f "$2"' _ "$t/$IMPL_REL" "$t/$REVIEWER_REL"
   check "no Claude artifacts" test ! -e "$t/CLAUDE.md"
   check "no Claude state" test ! -e "$t/.claude"
-  check "no Claude setup/model paths in Codex output" bash -c '
-    ! grep -R -E -i "Sonnet|Opus|CLAUDE\\.md|\\.claude/|~/\\.codex/prompts" \
-      "$1/AGENTS.md" "$1/.codex" "$1/.agents/skills/domestique" \
-      "$1/.agents/skills/domestique-decompose" "$1/.agents/skills/domestique-goal"
-  ' _ "$t"
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "no Claude invocation leakage in Codex workflows" assert_no_claude_workflow_leakage "$t"
+    local injected="$WORKROOT/s8-injected" rel
+    cp -R "$t" "$injected"
+    for rel in AGENTS.md "$IMPL_REL" .agents/skills/dom-goal/SKILL.md; do
+      printf '\nInvoke /dom-goal via .claude/commands/goal.md and delegate to Opus.\n' >> "$injected/$rel"
+      assert_no_claude_workflow_leakage "$injected" >/dev/null 2>&1; rc=$?
+      check "detects injected workflow leakage in $rel" test "$rc" -eq 1
+      cp "$t/$rel" "$injected/$rel"
+    done
+    check "restored isolated workflows pass" assert_no_claude_workflow_leakage "$injected"
+  else
+    check "no Claude setup/model paths in Codex output" bash -c '
+      ! grep -R -E -i "Sonnet|Opus|CLAUDE\\.md|\\.claude/|~/\\.codex/prompts" \
+        "$1/AGENTS.md" "$1/.codex" "$1/.agents/skills/domestique" \
+        "$1/.agents/skills/domestique-decompose" "$1/.agents/skills/domestique-goal"
+    ' _ "$t"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -523,15 +602,37 @@ scenario_guest_scoped_uninstall_exact_excludes() {
 # untracked Codex paths and generic suffixes remain visible, and --no-guest
 # removes the managed ignore block instead of leaving normal assets hidden.
 # ---------------------------------------------------------------------------
+assert_unowned_guest_refusal() {
+  local t="$1" rel="$2" reason="$3" before out rc
+  mkdir -p "$t/$(dirname "$rel")"
+  git_init "$t"
+  printf 'host customization\n' > "$t/$rel"
+  before="$(treehash "$t")"
+  out="$("$DOM" "$t" --platform both --guest 2>&1)"; rc=$?
+  if [ "$rc" -ne 3 ] || ! grep -qF "$reason" <<< "$out" ||
+     [ "$before" != "$(treehash "$t")" ]; then
+    printf 'Expected ownership refusal without writes for %s (exit %s):\n%s\n' "$rel" "$rc" "$out" >&2
+    return 1
+  fi
+}
+
 scenario_guest_visibility_ownership() {
   local t="$WORKROOT/s13"; mkdir -p "$t"
+  local host_rel="$IMPL_REL"
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "unowned role refuses without writes" assert_unowned_guest_refusal "$WORKROOT/s13-unowned" "$IMPL_REL" "missing manifest"
+    # Managed roles now require ownership and a valid pair. Keep the supported
+    # host visibility lifecycle on an unrelated Codex role, alongside real
+    # installer-owned roles; do not manufacture a manifest for a host file.
+    host_rel=".codex/agents/host.toml"
+  fi
   git_init "$t"
   printf 'host\n' > "$t/main.txt"
   git -C "$t" add main.txt
   git -C "$t" commit -q -m initial
 
   mkdir -p "$t/.codex/agents" "$t/.beads"
-  printf 'host-owned agent\n' > "$t/$IMPL_REL"
+  printf 'host-owned agent\n' > "$t/$host_rel"
   printf 'host beads\n' > "$t/.beads/user.txt"
   printf 'host suffix\n' > "$t/notes.new"
 
@@ -540,15 +641,21 @@ scenario_guest_visibility_ownership() {
   "$DOM" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
   after_first="$(git -C "$t" status --porcelain --untracked-files=all)"
   scoped_install both "$DOM" "$t" >/dev/null 2>&1
+  check "guest rerun exits 0" test "$?" -eq 0
   after_second="$(git -C "$t" status --porcelain --untracked-files=all)"
   "$DOM" "$t" --uninstall --platform claude >/dev/null 2>&1
+  check "scoped uninstall exits 0" test "$?" -eq 0
   after_scope="$(git -C "$t" status --porcelain --untracked-files=all)"
 
   check "mixed guest install exits 0" test "$rc" -eq 0
   check "first run preserves pre-existing visibility" test "$before" = "$after_first"
   check "selector-less rerun preserves ownership" test "$before" = "$after_second"
   check "scoped uninstall preserves adopted visibility" test "$before" = "$after_scope"
-  check "pre-existing Codex file is not ignored" bash -c '! git -C "$1" check-ignore -q "$2"' _ "$t" "$IMPL_REL"
+  check "pre-existing Codex file is not ignored" bash -c '! git -C "$1" check-ignore -q "$2"' _ "$t" "$host_rel"
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "owned Codex role remains installed" test -f "$t/$IMPL_REL"
+    check "owned Codex role remains private" git -C "$t" check-ignore -q "$IMPL_REL"
+  fi
   check "pre-existing .beads is not ignored" bash -c '! git -C "$1" check-ignore -q .beads/user.txt' _ "$t"
   check "generic .new suffix is not ignored" bash -c '! git -C "$1" check-ignore -q notes.new' _ "$t"
 
@@ -558,8 +665,8 @@ scenario_guest_visibility_ownership() {
 
   "$DOM" "$t" --uninstall --platform codex >/dev/null 2>&1; rc=$?
   check "Codex uninstall exits 0 after conversion" test "$rc" -eq 0
-  check "uninstall leaves adopted host file in place" grep -qxF 'host-owned agent' "$t/$IMPL_REL"
-  check "uninstall does not rename adopted host file" bash -c '! compgen -G "$1.uninstalled.*" >/dev/null' _ "$t/$IMPL_REL"
+  check "uninstall leaves host file in place" grep -qxF 'host-owned agent' "$t/$host_rel"
+  check "uninstall does not rename host file" bash -c '! compgen -G "$1.uninstalled.*" >/dev/null' _ "$t/$host_rel"
 }
 
 # ---------------------------------------------------------------------------
@@ -756,13 +863,20 @@ scenario_public_names() {
 scenario_public_name_host_collisions() {
   local t="$WORKROOT/public-host" rel rc before
   mkdir -p "$t"; git_init "$t"
-  for rel in .claude/commands/dom-goal.md .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
+  check "unowned Claude command refuses without writes" assert_unowned_guest_refusal "$WORKROOT/public-unowned" .claude/commands/dom-goal.md "unknown provider ownership"
+  # Claude commands require real ownership; shared Codex aliases still support
+  # host collisions. Seed only Claude, then customize its owned command.
+  "$DOM" "$t" --platform claude --guest >/dev/null 2>&1; rc=$?
+  check "seed owned Claude command" test "$rc" -eq 0
+  printf '\nhost customization\n' >> "$t/.claude/commands/dom-goal.md"
+  for rel in .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
     mkdir -p "$(dirname "$t/$rel")"
     printf 'host customization\n' > "$t/$rel"
   done
   "$DOM" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
   check "collision install preserves via helpers" test "$rc" -eq 0
-  "$DOM" "$t" --platform both >/dev/null 2>&1
+  "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
+  check "collision rerun succeeds" test "$rc" -eq 0
   for rel in .claude/commands/dom-goal.md .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
     check "host bytes preserved $rel" grep -qxF 'host customization' "$t/$rel"
   done
@@ -777,23 +891,55 @@ scenario_public_name_host_collisions() {
 }
 
 scenario_previous_install_adds_public_names() {
-  local t="$WORKROOT/previous-install" old="$WORKROOT/previous-domestique.sh" rc rel
+  local t="$WORKROOT/previous-install" old="$WORKROOT/previous-domestique.sh" rc rel out
   mkdir -p "$t"; git_init "$t"
   git -C "$REPO_DIR" show 654414025554defe9eeef50c39b14a87326088b8:domestique.sh > "$old"
   bash "$old" "$t" --platform both --guest >/dev/null 2>&1; rc=$?
   check "frozen previous install" test "$rc" -eq 0
   check "previous install had no short skill" test ! -e "$t/.agents/skills/dom-goal"
   check "previous install had no short command" test ! -e "$t/.claude/commands/dom-goal.md"
-  printf '\nUser role edit\n' >> "$t/$IMPL_REL"
-  "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
-  check "ordinary rerun adds aliases" test "$rc" -eq 0
-  check "role customization preserved" grep -qxF 'User role edit' "$t/$IMPL_REL"
+  printf '\n# User role edit\n' >> "$t/$IMPL_REL"
+  out="$("$DOM" "$t" --platform both 2>&1)"; rc=$?
+  check "custom historical pair requires confirmation" test "$rc" -eq 3
+  check "upgrade requests Codex reconfirmation" grep -qF 'Final model verification: codex: reconfirmation-required' <<< "$out"
+  check "role customization preserved" grep -qxF '# User role edit' "$t/$IMPL_REL"
   check "Claude alias added" cmp -s "$t/.claude/commands/goal.md" "$t/.claude/commands/dom-goal.md"
   for rel in .agents/skills/dom-decompose/SKILL.md .agents/skills/dom-goal/SKILL.md .agents/skills/dom-goal/agents/openai.yaml; do
     check "alias exists after upgrade" test -f "$t/$rel"
     check "new alias guest ownership" grep -qxF "$rel" "$t/.codex/.domestique/guest-excludes"
     check "new alias guest exclusion" grep -qxF "$rel" "$t/.git/info/exclude"
   done
+  # Offline Save against the real installed bootstrap, not native readiness.
+  # Confirm the preserved historical customization, then exercise a successful
+  # ordinary rerun rather than mistaking reconfirmation for a failed migration.
+  check "confirm preserved historical pair through installed helper" python3 - "$t" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tomllib
+
+root = Path(sys.argv[1])
+role = root / ".codex/agents/implementer.toml"
+tomllib.loads(role.read_text())
+body = (root / ".agents/skills/domestique-models/SKILL.md").read_text()
+bootstrap = body.split("```python\n", 1)[1].split("\n```", 1)[0]
+def call(*args, plan=None):
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", bootstrap, *args], cwd=root,
+        input=json.dumps(plan) if plan is not None else None,
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout)
+prepared = call("request", "--confirm")
+call("apply", prepared["digest"], plan=prepared["plan"])
+assert call("verify")["confirmed"]
+assert "# User role edit" in role.read_text()
+PY
+  "$DOM" "$t" --platform both >/dev/null 2>&1; rc=$?
+  check "confirmed ordinary rerun succeeds" test "$rc" -eq 0
+  check "confirmed rerun preserves role customization" grep -qxF '# User role edit' "$t/$IMPL_REL"
   # Existing v1 policy merge deliberately leaves a visible CLAUDE.local.md
   # backup. Do not broaden excludes or change that lifecycle for alias naming.
   check "upgrade exposes only existing policy-backup behavior" bash -c '
