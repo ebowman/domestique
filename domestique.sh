@@ -2918,6 +2918,7 @@ resolve_provider_mode() {
     case "$marker_content" in
       guest)
         if [ "$NO_GUEST" -eq 1 ]; then
+          guest_plan_write "$MODE_MARKER"
           if [ "$DRY_RUN" -eq 1 ]; then
             note_dry "remove mode marker $MODE_MARKER (--no-guest)"
           else
@@ -2949,9 +2950,6 @@ resolve_provider_mode() {
     claude:1)
       POLICY_DEST="CLAUDE.local.md"
       POLICY_LABEL="$POLICY_DEST"
-      if [ -e "$TARGET_DIR/CLAUDE.md" ] && grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/CLAUDE.md" 2>/dev/null; then
-        echo "Warning: a normal domestique install exists in $TARGET_DIR/CLAUDE.md — left untouched; guest policy goes to $TARGET_DIR/$POLICY_DEST." >&2
-      fi
       ;;
     claude:0)
       POLICY_DEST="CLAUDE.md"
@@ -3032,6 +3030,7 @@ write_codex_guest_ownership() {
     [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
     [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
   } > "$staged"
+  if ! cmp -s "$staged" "$ownership"; then guest_plan_write "$ownership"; fi
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "record exact Codex guest ownership -> $ownership"
   else
@@ -3043,6 +3042,7 @@ write_codex_guest_ownership() {
 write_provider_manifest() {
   if model_pair_managed && [ -f "$TMPDIR_WORK/model-selected-$CURRENT_PROVIDER" ]; then return 0; fi
   [ "$SNAPSHOT_TOUCHED" -eq 1 ] || return 0
+  guest_plan_write "$SNAPSHOT_DIR/manifest"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
   else
@@ -3086,6 +3086,9 @@ install_current_provider() {
       while IFS='|' read -r rel emitter; do
         install_plain "$TARGET_DIR/$rel" "$emitter"
       done <<< "$COPILOT_ENTRIES"
+      if ! cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"; then
+        guest_plan_write "$SNAPSHOT_DIR/guest-excludes"
+      fi
       if [ "$DRY_RUN" -eq 0 ]; then
         cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes" ||
           cp "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"
@@ -3095,6 +3098,9 @@ install_current_provider() {
   esac
 
   if [ "$GUEST" -eq 1 ]; then
+    if [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" != guest ]; then
+      guest_plan_write "$MODE_MARKER"
+    fi
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "write mode marker -> $MODE_MARKER (guest)"
     else
@@ -3120,6 +3126,7 @@ persist_platform_set() {
     state_file="$state_dir/platforms"
     old="$(cat "$state_file" 2>/dev/null || true)"
     [ "$old" = "$PLATFORM_SET" ] && continue
+    guest_plan_write "$state_file"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "persist platform set '$PLATFORM_SET' -> $state_file"
     else
@@ -3833,6 +3840,67 @@ shared_refuse() {
   exit 3
 }
 
+# Collect publication intents by exercising the real installers read-only, not
+# by treating every owned (or every tracked) path as a write. Pair publication
+# adds its prepared byte deltas before this plan is checked, across providers.
+GUEST_WRITE_PLAN=""
+guest_plan_write() {
+  [ -n "${GUEST_WRITE_PLAN:-}" ] || return 0
+  printf '%s\n' "${1#"$TARGET_DIR"/}" >> "$GUEST_WRITE_PLAN"
+}
+
+emit_guest_plan_validator() {
+  cat <<'PY'
+def validate_guest_writes(root, paths):
+    import os
+    tracked = subprocess.check_output(
+        ["git", "-C", str(root), "ls-files", "-z"]).decode("utf-8", "surrogateescape").split("\0")
+    paths = set(paths)
+    blocked = paths.intersection(tracked)
+    # Respect physical aliases on case-insensitive worktrees without refusing
+    # unrelated tracked files or treating case-distinct Linux files as aliases.
+    for indexed in tracked:
+        for planned in paths:
+            if indexed != planned and indexed.casefold() == planned.casefold():
+                try:
+                    if os.path.samefile(root / indexed, root / planned):
+                        blocked.add(indexed)
+                except FileNotFoundError:
+                    pass
+    blocked = sorted(blocked)
+    if blocked:
+        raise ValueError(
+            "guest install would rewrite tracked paths:\n" +
+            "".join("  " + p + "\n" for p in blocked) +
+            "No project writes. --force cannot bypass this check. Use --no-guest "
+            "to remain normal. To convert, review the normal installation first: "
+            "dom --uninstall --platform all --dry-run; after reviewing the exact "
+            "removal/backup plan, explicitly run dom --uninstall --platform all, "
+            "review the Git changes, then retry dom --guest --dry-run. "
+            "Do not blindly delete base/state files or whole host policy files.")
+PY
+}
+
+warn_visible_guest_policies() (
+  [ "$UNINSTALL" -eq 0 ] || return 0
+  local provider rel visible="" listed
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    for rel in $POLICY_CANDIDATES; do
+      [ "$rel" != CLAUDE.local.md ] || continue
+      [ -f "$TARGET_DIR/$rel" ] &&
+        grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/$rel" || continue
+      listed="$(git -C "$TARGET_DIR" ls-files --others --exclude-standard -- "$rel" 2>/dev/null)" || listed="$rel"
+      [ "$listed" = "$rel" ] || continue
+      visible="$visible  $rel"$'\n'
+    done
+  done
+  [ -n "$visible" ] || return 0
+  printf 'Warning: Domestique owned root policies remain visible and untracked (not hidden by --guest):\n%s' "$visible" >&2
+  echo "They can stay visible; do not commit them unintentionally. Guest mode preserves every byte, including host text outside the owned block." >&2
+  echo "For cleanup, review: dom --uninstall --platform all --dry-run. After reviewing its removal/backup plan, explicitly run dom --uninstall --platform all, then dom --guest --dry-run and dom --guest. Uninstall removes only the owned policy block, preserving outside host text; never delete a whole host policy file or blindly delete base/state files." >&2
+)
+
 # Fixed, project-relative paths only. Do not follow symlinks or hardlinks when
 # reading management evidence. Missing leaf paths are allowed for creation.
 shared_safe_path() {
@@ -4122,9 +4190,23 @@ lifecycle_preflight() {
       esac
     done
   fi
+  # Validate the shared exclude against the original state, before even model
+  # pairs publish. A selected/sticky guest (including a retained provider), or
+  # conversion out of guest mode, will reconcile it later. Keep Copilot's
+  # existing unconditional exclude preflight, but do not gate other guests on it.
+  local check_exclude=0
+  # This read precedes shared_preflight: validate the leaf and its ancestors
+  # first, even for a Claude-only operation with no shared consumer selected.
+  shared_safe_path ".agents/.domestique/mode" || shared_refuse "unsafe .agents/.domestique/mode"
+  if [ "$REQUESTED_GUEST" -eq 1 ] || [ "$guests" -gt 0 ] ||
+     [ "$(cat "$TARGET_DIR/.agents/.domestique/mode" 2>/dev/null || true)" = guest ] ||
+     [ "$SELECT_COPILOT" -eq 1 ] || [ -e "$TARGET_DIR/.github/.domestique" ]; then
+    check_exclude=1
+  fi
   # Writable ancestors and the Git-common exclude need checking together with
-  # prospective leaves. This is a read-only check, not a write probe.
-  python3 - "$TARGET_DIR" "$paths" <<'PY' ||
+  # prospective leaves. This common read-only check also owns exclude type and
+  # marker validation for every provider; no post-publication state is needed.
+  python3 - "$TARGET_DIR" "$paths" "$check_exclude" <<'PY' ||
 import os
 from pathlib import Path
 import stat
@@ -4135,12 +4217,34 @@ root = Path(sys.argv[1]).resolve()
 paths = [root / p for p in sys.argv[2].splitlines()]
 common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
                         capture_output=True, text=True)
+directory = None
 if common.returncode == 0:
     directory = Path(common.stdout.strip())
     if not directory.is_absolute():
         directory = root / directory
-    paths.append(directory / "info" / "exclude")
+elif (root / ".git").is_dir():
+    directory = root / ".git"
+exclude = directory / "info/exclude" if directory is not None else None
+if exclude is not None:
+    paths.append(exclude)
 try:
+    if exclude is not None and sys.argv[3] == "1":
+        for path in (*reversed(exclude.parents), exclude):
+            if path.is_symlink():
+                raise ValueError(f"symlink in exclude path: {path}")
+            if path.exists():
+                info = path.stat()
+                if path == exclude:
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise ValueError(f"unsafe exclude leaf: {path}")
+                    # Match the reconciliation awk's whole-line semantics.
+                    lines = path.read_bytes().split(b"\n")
+                    b, e = b"# BEGIN domestique (managed)", b"# END domestique"
+                    if lines.count(b) != lines.count(e) or lines.count(b) > 1 or (
+                            b in lines and lines.index(b) > lines.index(e)):
+                        raise ValueError(f"malformed exclude block: {path}; repair markers by hand")
+                elif not path.is_dir():
+                    raise ValueError(f"unsafe exclude ancestor: {path}")
     for candidate in paths:
         checked_parent = False
         for item in (candidate, *candidate.parents):
@@ -4322,12 +4426,10 @@ PY
   fi
   # Validate native syntax without a YAML dependency or any confirmation write.
   command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
-  python3 - "$native_root" <<'PY' || shared_refuse "malformed Copilot role or unsafe exclude path"
+  python3 - "$native_root" <<'PY' || shared_refuse "malformed Copilot role"
 import json
 import pathlib
 import re
-import stat
-import subprocess
 import sys
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -4403,28 +4505,6 @@ try:
                 raise ValueError("non-string model")
         if fields.get("name") != f"domestique-v2-copilot-{role}" or "effort" in fields or "model_reasoning_effort" in fields:
             raise ValueError("wrong role identity or unsupported effort")
-    common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
-                            capture_output=True, text=True)
-    if common.returncode == 0:
-        base = pathlib.Path(common.stdout.strip())
-        if not base.is_absolute():
-            base = root / base
-        exclude = (base / "info/exclude").absolute()
-        for path in (*reversed(exclude.parents), exclude):
-            if path.is_symlink():
-                raise ValueError("symlink in exclude path")
-            if path.exists():
-                info = path.stat()
-                if path == exclude:
-                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                        raise ValueError("unsafe exclude leaf")
-                    data = path.read_text()
-                    b, e = "# BEGIN domestique (managed)", "# END domestique"
-                    if data.count(b) != data.count(e) or data.count(b) > 1 or (
-                            b in data and data.index(b) > data.index(e)):
-                        raise ValueError("malformed exclude block")
-                elif not path.is_dir():
-                    raise ValueError("unsafe exclude ancestor")
 except (OSError, ValueError, TypeError) as exc:
     print(f"Copilot preflight: {exc}", file=sys.stderr)
     sys.exit(1)
@@ -4614,8 +4694,13 @@ resolve_shared_visibility() {
 }
 
 write_shared_mode() {
-  [ "$DRY_RUN" -eq 0 ] || return 0
   local marker="$TARGET_DIR/.agents/.domestique/mode"
+  if [ "$SHARED_GUEST" -eq 1 ]; then
+    if [ "$(cat "$marker" 2>/dev/null || true)" != guest ]; then guest_plan_write "$marker"; fi
+  elif [ -e "$marker" ]; then
+    guest_plan_write "$marker"
+  fi
+  [ "$DRY_RUN" -eq 0 ] || return 0
   if [ "$SHARED_GUEST" -eq 1 ]; then
     [ "$(cat "$marker" 2>/dev/null || true)" = guest ] || printf 'guest\n' > "$marker"
   else
@@ -4634,6 +4719,11 @@ install_shared() {
   done <<< "$SHARED_ENTRIES"
   write_provider_manifest
   resolve_shared_visibility
+  if [ "$SHARED_PRESENT" -eq 0 ] ||
+     { [ "$new_models" -eq 1 ] &&
+       ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$SNAPSHOT_DIR/guest-excludes" 2>/dev/null; }; then
+    guest_plan_write "$SNAPSHOT_DIR/guest-excludes"
+  fi
   if [ "$DRY_RUN" -eq 0 ]; then
     if [ "$SHARED_PRESENT" -eq 0 ]; then
       : > "$SNAPSHOT_DIR/guest-excludes"
@@ -4648,11 +4738,12 @@ install_shared() {
        ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$SNAPSHOT_DIR/guest-excludes"; then
       printf '.agents/skills/dom-models/SKILL.md\n' >> "$SNAPSHOT_DIR/guest-excludes"
     fi
-    write_shared_mode
   fi
+  write_shared_mode
   if [ "$SHARED_MIGRATE" -eq 1 ]; then
     configure_provider codex
     while IFS='|' read -r rel emitter; do
+      [ ! -e "$SNAPSHOT_BASE/$rel" ] || guest_plan_write "$SNAPSHOT_BASE/$rel"
       [ "$DRY_RUN" -eq 1 ] || rm -f "$SNAPSHOT_BASE/$rel"
     done <<< "$SHARED_ENTRIES"
     SNAPSHOT_TOUCHED=1
@@ -4913,6 +5004,7 @@ snapshot_plain() {
     return 0
   fi
   SNAPSHOT_TOUCHED=1
+  guest_plan_write "$basepath"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
     return 0
@@ -4928,6 +5020,7 @@ snapshot_plain() {
 snapshot_claude_block() {
   local content="$1" basepath="$POLICY_SNAPSHOT"
   SNAPSHOT_TOUCHED=1
+  guest_plan_write "$basepath"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
     return 0
@@ -5538,6 +5631,19 @@ try:
             if request["overrides"].get(provider):
                 raise ValueError("unconfirmed Copilot preview; migrate and review/Save before model override")
     # No selected pair is published until every provider has been planned.
+    if (scratch / "guest-write-plan").exists():
+        exec(compile((scratch / "guest-validator").read_bytes(), "<guest preflight>", "exec"))
+        writes = (scratch / "guest-write-plan").read_text().splitlines()
+        for _, pair, result in prepared:
+            _, _, contents, outputs, dependencies = pair.prepared
+            writes.extend(rel for rel, data in dependencies.items() if contents[rel] != data)
+            changed_roles = [pair.paths[r] for r, data in outputs.items()
+                             if contents[pair.paths[r]] != data]
+            writes.extend(changed_roles)
+            # Publication revokes an existing marker before a changed pair.
+            if changed_roles:
+                writes.append(pair.paths["implementer"])
+        validate_guest_writes(root, writes)
     for provider, pair, result in prepared:
         if dry == "0":
             publishing = True
@@ -5606,6 +5712,7 @@ install_plain() {
   case "$dest" in */domestique-model-setup.py) python_helper_preflight "$staged" ;; esac
 
   if [ ! -e "$dest" ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest"
     else
@@ -5632,6 +5739,7 @@ install_plain() {
 
   # Differs.
   if [ "$FORCE" -eq 1 ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "overwrite $dest (--force, no backup)"
     else
@@ -5669,6 +5777,7 @@ install_plain() {
   merge_native_plain "${dest#"$TARGET_DIR"/}" "$dest" "$basepath" "$staged" "$merged" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "merge $dest (clean)"
     else
@@ -5684,6 +5793,8 @@ install_plain() {
   # and force a non-zero exit for the whole run.
   CONFLICT_OCCURRED=1
   local newfile="$dest.new" backup="$dest.bak.$TS" kind="conflict"
+  guest_plan_write "$newfile"
+  guest_plan_write "$backup"
   if [ "$rc" -ge 128 ]; then
     kind="error"
     echo "Error: git merge-file failed unexpectedly for $dest (exit $rc)." >&2
@@ -5798,6 +5909,7 @@ install_claude_md() {
 
   # Case A: no CLAUDE.md -> create it as just the managed block.
   if [ ! -e "$dest" ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest (managed block only)"
     else
@@ -5888,6 +6000,8 @@ install_claude_md() {
             fi
 
             local backup="$dest.bak.$TS"
+            guest_plan_write "$backup"
+            guest_plan_write "$dest"
             if [ "$DRY_RUN" -eq 1 ]; then
               note_dry "backup $dest -> $backup, then merge managed block (clean)"
             else
@@ -5906,6 +6020,8 @@ install_claude_md() {
           # up the current live file, force a non-zero exit for the run.
           CONFLICT_OCCURRED=1
           local newfile="$dest.new" backup2="$dest.bak.$TS" kind="conflict"
+          guest_plan_write "$newfile"
+          guest_plan_write "$backup2"
           if [ "$rc" -ge 128 ]; then
             kind="error"
             echo "Error: git merge-file failed unexpectedly for $dest block (exit $rc)." >&2
@@ -5964,6 +6080,8 @@ install_claude_md() {
   fi
 
   local backup="$dest.bak.$TS"
+  guest_plan_write "$backup"
+  guest_plan_write "$dest"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "backup $dest -> $backup, then update managed block"
   else
@@ -5986,6 +6104,7 @@ install_claude_md() {
 install_git_exclude() {
   local target="$1" common_dir="" exclude_file
   local block="$TMPDIR_WORK/exclude_block" result="$TMPDIR_WORK/exclude_result"
+  warn_visible_guest_policies
 
   if command -v git >/dev/null 2>&1; then
     common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
@@ -6079,13 +6198,13 @@ install_git_exclude() {
   } > "$block"
 
   if [ -e "$exclude_file" ]; then
-    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" && ! grep -qF "$GITEXCLUDE_MARKER_END" "$exclude_file"; then
+    if grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" && ! grep -qxF "$GITEXCLUDE_MARKER_END" "$exclude_file"; then
       echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
       echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
       exit 1
     fi
 
-    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file"; then
+    if grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file"; then
       awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" -v blockfile="$block" '
         BEGIN { while ((getline line < blockfile) > 0) blk = blk line ORS }
         $0 == beginm && !seen { seen=1; inblock=1; printf "%s", blk; next }
@@ -6144,8 +6263,8 @@ remove_git_exclude() {
   [ -n "$common_dir" ] || return 0
   exclude_file="$common_dir/info/exclude"
   [ -e "$exclude_file" ] || return 0
-  grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null || return 0
-  if ! grep -qF "$GITEXCLUDE_MARKER_END" "$exclude_file" 2>/dev/null; then
+  grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null || return 0
+  if ! grep -qxF "$GITEXCLUDE_MARKER_END" "$exclude_file" 2>/dev/null; then
     echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
     echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
     exit 1
@@ -6172,6 +6291,9 @@ sync_guest_beads_ownership() {
   local codex_marker="$TARGET_DIR/.codex/.domestique/beads-owned"
   local copilot_marker="$TARGET_DIR/.github/.domestique/beads-owned"
   if [ ! -d "$TARGET_DIR/.beads" ]; then
+    if [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ] && [ -e "$claude_marker" ]; then guest_plan_write "$claude_marker"; fi
+    if [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ] && [ -e "$codex_marker" ]; then guest_plan_write "$codex_marker"; fi
+    [ ! -e "$copilot_marker" ] || guest_plan_write "$copilot_marker"
     if [ "$DRY_RUN" -eq 0 ]; then
       [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 1 ] || rm -f "$claude_marker"
       [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 1 ] || rm -f "$codex_marker"
@@ -6183,24 +6305,30 @@ sync_guest_beads_ownership() {
   if [ ! -e "$claude_marker" ] && [ ! -e "$codex_marker" ] && [ ! -e "$copilot_marker" ]; then
     return 0
   fi
-  if [ "$DRY_RUN" -eq 1 ]; then
-    note_dry "propagate shared .beads ownership across active guest providers"
-    return 0
-  fi
+  note_dry "propagate shared .beads ownership across active guest providers"
   # Inactive provenance remains a source for active guests, not a write target.
   if [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] &&
      [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ]; then
-    mkdir -p "$(dirname "$claude_marker")"
-    : > "$claude_marker"
+    guest_plan_write "$claude_marker"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mkdir -p "$(dirname "$claude_marker")"
+      : > "$claude_marker"
+    fi
   fi
   if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] &&
      [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ]; then
-    mkdir -p "$(dirname "$codex_marker")"
-    : > "$codex_marker"
+    guest_plan_write "$codex_marker"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mkdir -p "$(dirname "$codex_marker")"
+      : > "$codex_marker"
+    fi
   fi
   if [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ]; then
-    mkdir -p "$(dirname "$copilot_marker")"
-    : > "$copilot_marker"
+    guest_plan_write "$copilot_marker"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mkdir -p "$(dirname "$copilot_marker")"
+      : > "$copilot_marker"
+    fi
   fi
 }
 
@@ -6761,28 +6889,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   exit $?
 fi
 
-# ---------------------------------------------------------------------------
-print_install_notice
-[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
-if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
-  MUTATION_STARTED=0
-  [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] || MODEL_CODEX_IMPL_ABSENT=1
-  [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] || MODEL_CODEX_REVIEWER_ABSENT=1
-  model_rc=0
-  installer_model_pairs || model_rc=$?
-  [ ! -f "$TMPDIR_WORK/model-publication-started" ] || MUTATION_STARTED=1
-  [ "$model_rc" -eq 0 ] || exit "$model_rc"
-fi
-[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
-
-if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
-  if [ "$DRY_RUN" -eq 1 ]; then
-    note_dry "validated preview cutover: preserve source, revoke old receipt, publish five replacements and snapshots, remove only unchanged .github public aliases and their exact exclusion contribution"
-  else
-    preview_migration apply || exit $?
-  fi
-fi
-
+# The same publication branches drive the prospective guest write plan and the
+# real install. The plan runs in a dry-run subshell before any pair/mode writes.
+install_projection() {
 install_retained_policies
 
 ANY_GUEST=0
@@ -6860,6 +6969,87 @@ if [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ]; then
 fi
 
 persist_platform_set
+}
+
+# ---------------------------------------------------------------------------
+print_install_notice
+GUEST_PREFLIGHT=0
+if [ "$NO_GUEST" -eq 0 ]; then
+  for guest_provider in claude codex copilot; do
+    configure_provider "$guest_provider"
+    case "$guest_provider" in
+      claude) [ "$SELECT_CLAUDE" -eq 1 ] || continue ;;
+      codex) [ "$SELECT_CODEX" -eq 1 ] || continue ;;
+      copilot) [ "$SELECT_COPILOT" -eq 1 ] || continue ;;
+    esac
+    if [ "$REQUESTED_GUEST" -eq 1 ] ||
+       [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ] ||
+       { [ "$guest_provider" = copilot ] && [ "$PREVIEW_MIGRATE" -eq 1 ]; }; then
+      GUEST_PREFLIGHT=1
+    fi
+  done
+fi
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+  [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] || MODEL_CODEX_IMPL_ABSENT=1
+  [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] || MODEL_CODEX_REVIEWER_ABSENT=1
+fi
+if [ "$GUEST_PREFLIGHT" -eq 1 ] &&
+   git -C "$TARGET_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  emit_guest_plan_validator > "$TMPDIR_WORK/guest-validator"
+  (
+    DRY_RUN=1
+    GUEST_WRITE_PLAN="$TMPDIR_WORK/guest-write-plan"
+    : > "$GUEST_WRITE_PLAN"
+    # These manifests/helpers are published by prepared model pairs, not the
+    # shell projection. Mark exactly the same requested providers here.
+    if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+      python3 - "$MODEL_REQUEST" "$TMPDIR_WORK" "$PREVIEW_MIGRATE" <<'PY'
+import json
+from pathlib import Path
+import sys
+for provider in json.loads(sys.argv[1])["selected"]:
+    if provider != "copilot" or sys.argv[3] == "0":
+        (Path(sys.argv[2]) / ("model-selected-" + provider)).touch()
+PY
+    fi
+    install_projection
+    sync_guest_beads_ownership
+  ) >/dev/null
+  # With model pairs active the combined check runs after ALL pairs prepare,
+  # but before ANY pair applies. Non-root/non-Git model skips need no pair plan.
+  if [ "$MODEL_PAIRS_ACTIVE" -eq 0 ]; then
+    python3 - "$TARGET_DIR" "$TMPDIR_WORK" <<'PY' || exit 3
+from pathlib import Path
+import subprocess
+import sys
+root, scratch = map(Path, sys.argv[1:])
+exec(compile((scratch / "guest-validator").read_bytes(), "<guest preflight>", "exec"))
+try:
+    validate_guest_writes(root, (scratch / "guest-write-plan").read_text().splitlines())
+except (OSError, ValueError, subprocess.SubprocessError) as error:
+    print(str(error), file=sys.stderr)
+    sys.exit(3)
+PY
+  fi
+fi
+[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+  MUTATION_STARTED=0
+  model_rc=0
+  installer_model_pairs || model_rc=$?
+  [ ! -f "$TMPDIR_WORK/model-publication-started" ] || MUTATION_STARTED=1
+  [ "$model_rc" -eq 0 ] || exit "$model_rc"
+fi
+[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
+
+if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "validated preview cutover: preserve source, revoke old receipt, publish five replacements and snapshots, remove only unchanged .github public aliases and their exact exclusion contribution"
+  else
+    preview_migration apply || exit $?
+  fi
+fi
+install_projection
 
 # --- beads (opt-in) --------------------------------------------------------
 if [ "$WITH_BEADS" -eq 1 ]; then

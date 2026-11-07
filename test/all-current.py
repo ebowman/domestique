@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -2919,6 +2920,273 @@ class AllProviders(unittest.TestCase):
             ignored = subprocess.run(
                 ["git", "-C", str(root), "check-ignore", "-q", rel], env=self.env)
             self.assertEqual(ignored.returncode, 0 if guest else 1, rel)
+
+    def assert_unsafe_shared_mode_refused(self, root, *args):
+        before = snapshot(self.work)
+        with subprocess.Popen(
+                ["bash", "-s", "--", *args], cwd=root, env=self.env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True) as process:
+            try:
+                stdout, stderr = process.communicate(SCRIPT, timeout=15)
+            except subprocess.TimeoutExpired:
+                self.fail("unsafe mode preflight did not refuse within 15 seconds")
+            finally:
+                if process.poll() is None:
+                    # cat may be blocked on a FIFO in a shell command substitution.
+                    # Kill the whole private process group, then reap the child.
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+        self.assertEqual(process.returncode, 3, stdout + stderr)
+        self.assertIn("unsafe .agents/.domestique/mode", stderr)
+        self.assertIn("No project writes", stderr)
+        self.assertNotIn("\nDone.\n", stdout)
+        self.assertEqual(snapshot(self.work), before)
+
+    def test_shared_mode_fifo_refuses_promptly_without_writes(self):
+        root = self.root("shared-mode-fifo")
+        mode = root / ".agents/.domestique/mode"
+        mode.parent.mkdir(parents=True)
+        os.mkfifo(mode)
+        # Reported regression: even an unrelated non-guest Claude operation
+        # must refuse, rather than opening the shared FIFO before validation.
+        self.assert_unsafe_shared_mode_refused(root, "--platform", "claude", "--no-guest")
+
+        root = self.root("conversion-mode-fifo")
+        self.run_dom(root, "--platform", "codex")
+        os.mkfifo(root / ".agents/.domestique/mode")
+        for flags in ((), ("--force",), ("--dry-run",)):
+            with self.subTest(flags=flags):
+                self.assert_unsafe_shared_mode_refused(
+                    root, "--platform", "codex", "--guest", *flags)
+
+    def test_shared_mode_unsafe_paths_refuse_without_writes(self):
+        for kind in ("symlink", "directory", "hardlink",
+                     "ancestor-symlink", "ancestor-file", "ancestor-fifo"):
+            with self.subTest(kind=kind):
+                root = self.root("shared-mode-" + kind)
+                mode = root / ".agents/.domestique/mode"
+                if kind.startswith("ancestor-"):
+                    mode.parent.parent.mkdir()
+                    if kind == "ancestor-symlink":
+                        outside = self.work / "outside-state"
+                        outside.mkdir()
+                        os.mkfifo(outside / "mode")
+                        mode.parent.symlink_to(outside, target_is_directory=True)
+                    elif kind == "ancestor-file":
+                        mode.parent.write_text("not a directory\n")
+                    else:
+                        os.mkfifo(mode.parent)
+                else:
+                    mode.parent.mkdir(parents=True)
+                    if kind == "directory":
+                        mode.mkdir()
+                    else:
+                        outside = self.work / ("outside-" + kind)
+                        outside.write_text("guest\n")
+                        if kind == "symlink":
+                            mode.symlink_to(outside)
+                        else:
+                            os.link(outside, mode)
+                self.assert_unsafe_shared_mode_refused(
+                    root, "--platform", "claude", "--no-guest")
+
+    def test_guest_conversion_invalid_exclude_refuses_before_publication(self):
+        begin, end = "# BEGIN domestique (managed)\n", "# END domestique\n"
+        for provider in ("claude", "codex"):
+            for kind, contents in (("half", begin), ("directory", None),
+                                   ("duplicate", begin + end + begin + end),
+                                   ("inverted", end + begin)):
+                with self.subTest(provider=provider, kind=kind):
+                    root = self.root(provider + "-exclude-" + kind)
+                    self.run_dom(root, "--platform", provider)
+                    # Preserve a real index as well as untracked normal assets.
+                    (root / "host.txt").write_text("host\n")
+                    subprocess.run(["git", "add", "host.txt"], cwd=root,
+                                   env=self.env, check=True)
+                    exclude = root / ".git/info/exclude"
+                    if contents is None:
+                        exclude.unlink()
+                        exclude.mkdir()
+                    else:
+                        exclude.write_text(contents)
+                    status_args = ["git", "--no-optional-locks", "status",
+                                   "--porcelain", "--untracked-files=all"]
+                    def git_status():
+                        # Git itself refuses a directory-valued exclude; retain
+                        # that exact status/error as well as the complete tree.
+                        result = subprocess.run(status_args, cwd=root, env=self.env,
+                                                capture_output=True)
+                        return result.returncode, result.stdout, result.stderr
+                    status = git_status()
+                    before = snapshot(root)
+                    index = (root / ".git/index").read_bytes()
+                    for flags in ((), ("--force",), ("--dry-run",)):
+                        with self.subTest(flags=flags):
+                            result = self.run_dom(root, "--platform", provider,
+                                                  "--guest", *flags, ok=False)
+                            self.assertEqual(result.returncode, 3)
+                            self.assertIn("exclude", result.stderr)
+                            self.assertIn("No project writes", result.stderr)
+                            self.assertEqual(snapshot(root), before)
+                            self.assertEqual((root / ".git/index").read_bytes(), index)
+                            self.assertEqual(git_status(), status)
+
+    def test_guest_exclude_preflight_preserves_supported_targets(self):
+        for provider in ("claude", "codex"):
+            for kind in ("missing", "worktree", "nongit"):
+                with self.subTest(provider=provider, kind=kind):
+                    name = provider + "-exclude-" + kind
+                    if kind == "nongit":
+                        root = self.work / name
+                        root.mkdir()
+                        exclude = None
+                    elif kind == "worktree":
+                        main = self.root(name + "-main")
+                        git = ["git", "-C", str(main), "-c", "user.name=Fixture",
+                               "-c", "user.email=fixture@example.invalid",
+                               "-c", "core.hooksPath=/dev/null"]
+                        subprocess.run([*git, "commit", "-qm", "fixture", "--allow-empty"],
+                                       env=self.env, check=True)
+                        root = self.work / name
+                        subprocess.run([*git, "worktree", "add", "-q", str(root)],
+                                       env=self.env, check=True)
+                        exclude = main / ".git/info/exclude"
+                    else:
+                        root = self.root(name)
+                        exclude = root / ".git/info/exclude"
+                    self.run_dom(root, "--platform", provider)
+                    original = b"# Host note: # BEGIN domestique (managed) is a marker\nhost.tmp\n"
+                    if kind == "missing":
+                        exclude.unlink()
+                        original = b""
+                    elif exclude is not None:
+                        exclude.write_bytes(original)
+                    before = snapshot(self.work)
+                    self.run_dom(root, "--platform", provider, "--guest", "--dry-run")
+                    self.assertEqual(snapshot(self.work), before)
+                    result = self.run_dom(root, "--platform", provider, "--guest")
+                    if exclude is None:
+                        self.assertIn("skipping the .git/info/exclude", result.stderr)
+                        self.assertFalse((root / ".git").exists())
+                    else:
+                        self.assertTrue(exclude.read_bytes().startswith(original))
+                        self.assertIn(b"\n# END domestique\n", exclude.read_bytes())
+                    self.run_dom(root, "--platform", provider, "--no-guest")
+                    if exclude is not None:
+                        self.assertEqual(exclude.read_bytes(), original)
+
+    def test_guest_conversion_visible_owned_roots(self):
+        root = self.root("visible-roots")
+        self.run_dom(root)
+        policies = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
+        for rel in policies:
+            path = root / rel
+            path.write_bytes(b"fixture host prefix\n" + path.read_bytes() + b"fixture host suffix\n")
+        roots = {rel: (root / rel).read_bytes() for rel in policies}
+        before = snapshot(root)
+        preview = self.run_dom(root, "--guest", "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        applied = self.run_dom(root, "--guest")
+        for result in (preview, applied):
+            self.assertIn("owned root policies remain visible and untracked", result.stderr)
+            for rel in policies:
+                self.assertIn("  " + rel + "\n", result.stderr)
+            self.assertIn("--uninstall --platform all --dry-run", result.stderr)
+            self.assertIn("outside", result.stderr)
+            self.assertNotIn("fixture host", result.stderr + result.stdout)
+        self.assertEqual(roots, {rel: (root / rel).read_bytes() for rel in policies})
+        visible = subprocess.check_output(
+            ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, env=self.env, text=True)
+        self.assertEqual(set(visible.splitlines()), {"?? " + rel for rel in policies})
+
+    def test_guest_conversion_tracked_transaction_refuses_without_writes(self):
+        # Staged and committed paths are both tracked. Commit only in disposable
+        # fixtures, with command-local identity and no global configuration.
+        for selection in ("all", "claude", "codex", "copilot"):
+            with self.subTest(selection=selection):
+                root = self.root("tracked-" + selection)
+                self.run_dom(root)
+                subprocess.run(["git", "add", "."], cwd=root, env=self.env, check=True)
+                subprocess.run(["git", "-c", "user.name=Fixture", "-c",
+                                "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null",
+                                "commit", "-qm", "fixture"], cwd=root, env=self.env, check=True)
+                # All persisted providers are additive: Claude's new personal
+                # policy changes its tracked manifest even for another selector.
+                before = snapshot(root)
+                status = subprocess.check_output(
+                    ["git", "--no-optional-locks", "status", "--porcelain"],
+                    cwd=root, env=self.env)
+                for flags in ((), ("--force",), ("--dry-run",)):
+                    result = self.run_dom(root, "--platform", selection, "--guest",
+                                          *flags, ok=False)
+                    self.assertIn("tracked", result.stderr)
+                    self.assertIn("--no-guest", result.stderr)
+                    self.assertIn(".claude/.domestique/manifest", result.stderr)
+                    self.assertEqual(snapshot(root), before)
+                    self.assertEqual(subprocess.check_output(
+                        ["git", "--no-optional-locks", "status", "--porcelain"],
+                        cwd=root, env=self.env), status)
+
+    def test_guest_tracked_shared_active_and_new_pairs_preflight(self):
+        for provider, rel in (("claude", STATES["claude"] + "/manifest"),
+                              ("codex", SHARED), ("copilot", ROLES[2])):
+            with self.subTest(provider=provider):
+                root = self.root("boundary-" + provider)
+                self.run_dom(root, "--platform", provider)
+                subprocess.run(["git", "add", rel], cwd=root, env=self.env, check=True)
+                args = ["--guest"]
+                candidate = SCRIPT
+                if provider == "codex":
+                    args += ["--platform", provider]
+                    candidate = SCRIPT.replace("## Shared native routing — read-only boundary",
+                                               "## Shared native routing — updated read-only boundary")
+                elif provider == "copilot":
+                    args += ["--platform", provider]
+                    candidate = SCRIPT.replace(
+                        "Complete exactly one caller-assigned bounded Domestique task.",
+                        "Complete exactly one caller-assigned bounded Domestique task; report results.")
+                # Claude's refusal must precede publication of fresh Codex and
+                # Copilot pairs. Other cases independently exercise shared and
+                # selected-active writes with no tracked Claude manifest.
+                before = snapshot(root)
+                for flags in ((), ("--force",), ("--dry-run",)):
+                    result = self.run_dom(root, *args, *flags, script=candidate, ok=False)
+                    self.assertIn("  " + rel + "\n", result.stderr)
+                    self.assertEqual(snapshot(root), before)
+
+    def test_guest_fresh_host_text_and_tracked_personal_keep(self):
+        root = self.root("fresh-guest")
+        before = snapshot(root)
+        self.run_dom(root, "--guest", "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        self.run_dom(root, "--guest")
+        self.assertEqual(subprocess.check_output(
+            ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, env=self.env), b"")
+        root = self.root("host-guest")
+        for rel in ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md", "host.txt"):
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture host text\n")
+        subprocess.run(["git", "add", "."], cwd=root, env=self.env, check=True)
+        before = snapshot(root)
+        self.run_dom(root, "--guest", "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        result = self.run_dom(root, "--guest")
+        self.assertNotIn("owned root policies remain", result.stderr)
+        # No additional untracked/modified paths beyond the staged host files.
+        status = subprocess.check_output(
+            ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, env=self.env, text=True)
+        self.assertTrue(all(line.startswith("A  ") for line in status.splitlines()), status)
+        subprocess.run(["git", "add", "-f", "CLAUDE.local.md"], cwd=root, env=self.env, check=True)
+        policy = root / "CLAUDE.local.md"
+        original = (policy.stat().st_ino, policy.stat().st_mtime_ns, policy.read_bytes())
+        self.run_dom(root, "--guest")
+        self.assertEqual(original, (policy.stat().st_ino, policy.stat().st_mtime_ns,
+                                    policy.read_bytes()))
 
     def test_codex_copilot_mixed_sticky_transitions_and_scoped_uninstall(self):
         for normal, guest in (("codex", "copilot"), ("copilot", "codex")):

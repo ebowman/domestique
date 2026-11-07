@@ -392,6 +392,27 @@ Guest mode:
 - Shared routes are visible if any valid Codex/Copilot consumer is normal;
   they are private only if all consumers are guest. Guest mode does not promise
   to hide arbitrary host files, existing visible paths or recovery artifacts.
+- Converting an uncommitted normal install leaves its owned root policies
+  (`CLAUDE.md`, `AGENTS.md`/`AGENTS.override.md`, and
+  `.github/copilot-instructions.md`) byte-untouched. Guest install and dry-run
+  warn and list the owned untracked policies still visible to Git, including
+  mixed host/managed files; unrelated host-only policies are not remnants.
+  They may stay visible, but do not commit them unintentionally. For cleanup,
+  review `dom --uninstall --platform all --dry-run`, explicitly repeat without
+  `--dry-run` only after review, then review `dom --guest --dry-run` before
+  `dom --guest`. Uninstall removes owned blocks, not outside host text.
+  Never blindly delete whole host files or pristine base/state directories.
+- If guest installation would rewrite tracked files (including selected
+  provider state, manifests or shared routes), it refuses **before any project
+  writes**, lists the exact paths, and does so even with `--force` or
+  `--dry-run`. Use `--no-guest` to remain normal, or explicitly review/uninstall
+  the normal installation as above and review the Git changes before retrying.
+  Unrelated tracked files and genuinely unchanged tracked policies do not
+  cause refusal; exclusions still cannot hide them.
+- Shared Git-common exclude path/type and marker structure are checked before
+  any guest model, policy or state publication, even for a single provider and
+  with `--force` or `--dry-run`. Repair unsafe paths or malformed markers by hand
+  before retrying; a missing exclude is still created when needed.
 - All retained owned root policy blocks are checked, including inactive ones.
   An old unguarded owned host block refuses in guest mode; upgrade it in normal
   mode (`--no-guest`) or explicitly reconcile first. Guest mode does not rewrite
