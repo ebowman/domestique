@@ -38,13 +38,31 @@ directly by `policy_legacy_base`. There is no runtime repository, generator,
 JSON, external helper, or provenance-file dependency; stdin/curl installation
 remains self-contained.
 
-**This is a mechanical policy allowlist replacement, not new adoption.**
+**Legacy-base authority is unchanged.**
 The reserved `@legacy-policy-base/*` keys contain exactly the original 20
 provider-bound hashes. Their provider-only predicate is deliberately unchanged:
 the existing caller still supplies all path/mode routing, inventory, pristine
 base, safe-path, guard and guest-mode requirements. Neither the larger set of
 historical policies nor current guarded policies enters that legacy predicate.
-No new adoption caller consults the general provider/path/mode lookup.
+
+Pre-snapshot policy recovery now separately uses the exact provider/path/mode
+lookup on the raw live block body. With no provider snapshot state, a matching
+unguarded body can supply an ephemeral historical merge base; edited, unknown,
+guard-tampered or misrouted bodies cannot. Existing state still requires its
+authoritative base/inventory; this is not missing-base repair. Guest and safe-path
+checks remain mandatory, including for `--force` and `--dry-run`.
+
+An unselected policy receives only its harness guard, preserving outside bytes;
+its published base is guard plus proven historical body, not today's workflow.
+Its new manifest owns **only that policy**, never untouched roles, commands,
+helpers or backups. The real `e12f0fc` fixture supports initial Copilot preview
+and apply; `067569a` is the refusing negative control. Selected legacy
+role/command adoption and subsequent ownership/rerun integration remain hq-dds.6
+work. This policy half is not a standalone release or a full Claude upgrade.
+Selected pre-snapshot policy recovery requires fresh native inventory destinations:
+existing roles, commands or helpers are refused before writes in Git roots,
+subdirectories and non-Git targets, including with `--force` or `--dry-run`.
+The policy identity alone never proves ownership of those native files.
 
 Projection rules:
 

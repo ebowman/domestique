@@ -1773,6 +1773,227 @@ class AllProviders(unittest.TestCase):
             self.assertNotIn("unknown legacy policy base", result.stderr)
             self.assertEqual(before, snapshot(root))
 
+    def presnapshot_policy_fixture(self, name):
+        # Actual e12f0fc output, committed only in an isolated disposable repo.
+        # No consumer prose, reconstructed emitter, native clients or Beads.
+        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_CONFIG_SYSTEM=os.devnull)
+        old = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "e12f0fc:domestique.sh"],
+            text=True, env=self.env)
+        root = self.root(name)
+        self.run_dom(root, script=old)
+        policy = root / "CLAUDE.md"
+        original = policy.read_bytes()
+        pristine = original.split(b"<!-- BEGIN domestique (managed) -->\n", 1)[1].split(
+            b"<!-- END domestique -->", 1)[0]
+        self.assertEqual(hashlib.sha256(pristine).hexdigest(),
+                         "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d")
+        self.assertFalse((root / STATES["claude"]).exists())
+        policy.write_bytes(b"Public host prefix\r\n\n" + original +
+                           b"\nPublic host suffix without newline")
+        native = (".claude/agents/implementer.md", ".claude/agents/reviewer.md",
+                  ".claude/commands/decompose.md")
+        for rel in (*native, "CLAUDE.md"):
+            (root / (rel + ".bak.20000101000000")).write_bytes(b"Older fixture backup\n")
+        git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+               "-c", "commit.gpgsign=false"]
+        subprocess.run([*git, "add", "."], check=True, env=self.env)
+        subprocess.run([*git, "commit", "-qm", "historical fixture"],
+                       check=True, env=self.env)
+        self.assertEqual(set(subprocess.check_output(
+            [*git, "ls-files", ".claude"], text=True, env=self.env).splitlines()),
+            set(native) | {rel + ".bak.20000101000000" for rel in native})
+        return root, policy, pristine
+
+    def test_presnapshot_pristine_policy_copilot_upgrade(self):
+        root, policy, pristine = self.presnapshot_policy_fixture("pre-snapshot")
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "067569a:domestique.sh"], text=True)
+        original = policy.read_bytes()
+        before = snapshot(root)
+        for flags in ((), ("--dry-run",)):
+            result = self.run_dom(root, "--platform=copilot", *flags,
+                                  script=released, ok=False)
+            self.assertIn("unguarded owned policy CLAUDE.md lacks a safe base", result.stderr)
+            self.assertEqual(before, snapshot(root))
+        for flags in ((), ("--force",)):
+            self.run_dom(root, "--platform=copilot", "--dry-run", *flags)
+            self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=copilot")
+        guard = self.claude_policy_guard()
+        self.assertEqual(policy.read_bytes(), original.replace(pristine, guard + pristine))
+        state = root / STATES["claude"]
+        self.assertEqual((state / "base/CLAUDE.md.block").read_bytes(), guard + pristine)
+        manifest = dict(line.split("=", 1) for line in (state / "manifest").read_text().splitlines())
+        # Policy ownership only: no fictional role/command/helper bases.
+        self.assertEqual(manifest["files"], "CLAUDE.md")
+        self.assertEqual({str(p.relative_to(state / "base"))
+                          for p in (state / "base").rglob("*") if p.is_file()},
+                         {"CLAUDE.md.block"})
+        after = snapshot(root)
+        for rel, evidence in before.items():
+            if rel.startswith((".git/", ".claude/agents/", ".claude/commands/")) or ".bak." in rel:
+                self.assertEqual(after[rel], evidence, rel)
+        new_backups = [p for p in root.glob("CLAUDE.md.bak.*")
+                       if p.name not in before]
+        self.assertEqual(len(new_backups), 1)
+        self.assertEqual(new_backups[0].read_bytes(), original)
+        self.assertTrue((root / STATES["copilot"] / "manifest").is_file())
+
+    def test_presnapshot_policy_unproven_zero_writes(self):
+        for defect in ("edited", "unknown", "crlf", "tampered-guard", "removed-guard", "wrong-path",
+                       "wrong-mode", "unknown-base", "inventory", "base-symlink"):
+            with self.subTest(defect=defect):
+                root, policy, pristine = self.presnapshot_policy_fixture(defect)
+                state = root / STATES["claude"]
+                if defect == "edited":
+                    policy.write_bytes(policy.read_bytes().replace(
+                        b"## Discipline\n", b"## Local discipline\n"))
+                elif defect == "unknown":
+                    policy.write_bytes(policy.read_bytes().replace(pristine, b"Unknown policy\n"))
+                elif defect == "crlf":
+                    policy.write_bytes(policy.read_bytes().replace(pristine, pristine.replace(b"\n", b"\r\n")))
+                elif defect == "tampered-guard":
+                    tampered = self.claude_policy_guard().replace(
+                        b"Other harnesses must ignore", b"Other harnesses may apply", 1)
+                    policy.write_bytes(policy.read_bytes().replace(pristine, tampered + pristine))
+                elif defect == "removed-guard":
+                    current = self.root("current-guard")
+                    self.run_dom(current, "--platform=claude")
+                    body = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+                    policy.write_bytes(policy.read_bytes().replace(
+                        pristine, body.removeprefix(self.claude_policy_guard())))
+                elif defect in ("wrong-path", "wrong-mode"):
+                    policy.rename(root / ("AGENTS.md" if defect == "wrong-path" else "CLAUDE.local.md"))
+                elif defect == "inventory":
+                    state.mkdir()
+                    (state / "manifest").write_text("snapshot_format=1\nfiles=unrelated\n")
+                else:
+                    base = state / "base/CLAUDE.md.block"
+                    base.parent.mkdir(parents=True)
+                    (state / "manifest").write_text(
+                        "snapshot_format=1\nplatform=claude\ndomestique_version=0.1.0\n"
+                        "files=CLAUDE.md\n")
+                    if defect == "unknown-base":
+                        base.write_bytes(pristine + b"Unknown base edit\n")
+                    else:
+                        victim = self.work / "base-victim"
+                        victim.write_bytes(pristine)
+                        base.symlink_to(victim)
+                before = snapshot(self.work)
+                for flags in ((), ("--dry-run",), ("--force",), ("--force", "--dry-run")):
+                    result = self.run_dom(root, "--platform=copilot", *flags, ok=False)
+                    self.assertEqual(result.returncode, 3, result.stderr)
+                    self.assertEqual(before, snapshot(self.work))
+
+    def test_presnapshot_selected_policy_without_native_adoption(self):
+        _fixture, policy, pristine = self.presnapshot_policy_fixture("policy-source")
+        # Isolate the selected-policy half from out-of-scope legacy role adoption:
+        # real historical policy bytes, but a fresh native projection.
+        root = self.root("policy-only")
+        original = policy.read_bytes()
+        (root / "CLAUDE.md").write_bytes(original)
+        current = self.root("current-policy")
+        self.run_dom(current, "--platform=claude")
+        upstream = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+        before = snapshot(root)
+        self.run_dom(root, "--platform=claude", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=claude")
+        self.assertEqual((root / "CLAUDE.md").read_bytes(), original.replace(pristine, upstream))
+        self.assertEqual((root / STATES["claude"] / "base/CLAUDE.md.block").read_bytes(),
+                         upstream)
+        self.assertNotEqual(upstream, self.claude_policy_guard() + pristine)
+        backups = list(root.glob("CLAUDE.md.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), original)
+
+    def test_presnapshot_policy_keeps_selected_and_guest_boundaries(self):
+        root, _policy, _pristine = self.presnapshot_policy_fixture("selected-boundaries")
+        before = snapshot(root)
+        for args in (("--platform=claude",), (), ("--platform=copilot", "--guest")):
+            for flags in ((), ("--dry-run",), ("--force",)):
+                result = self.run_dom(root, *args, *flags, ok=False)
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertEqual(before, snapshot(root))
+                if "--guest" in args:
+                    self.assertIn("cannot be changed in guest mode", result.stderr)
+                else:
+                    # Policy proof is not selected roles/commands adoption (.6).
+                    self.assertIn("ownership", result.stderr)
+                    self.assertNotIn("unguarded owned policy", result.stderr)
+
+    def presnapshot_target(self, name, context):
+        if context == "nongit":
+            return self.nongit(name)
+        root = self.root(name)
+        if context == "subdir":
+            root = root / "pkg" / "app"
+            root.mkdir(parents=True)
+        return root
+
+    def test_presnapshot_selected_native_collisions_zero_writes_all_contexts(self):
+        fixture, policy, _pristine = self.presnapshot_policy_fixture("native-source")
+        for context, defect in itertools.product(
+                ("nongit", "gitroot", "subdir"),
+                ("unknown-implementer", "extra-goal", "early-inventory")):
+            with self.subTest(context=context, defect=defect):
+                root = self.presnapshot_target(f"{context}-{defect}", context)
+                (root / "CLAUDE.md").write_bytes(policy.read_bytes())
+                if defect == "early-inventory":
+                    shutil.copytree(fixture / ".claude", root / ".claude")
+                    collision = ".claude/agents/implementer.md"
+                else:
+                    # Isolate each collision: a role-only check must not miss
+                    # an extra command at a predictable installer destination.
+                    collision = (".claude/agents/implementer.md"
+                                 if defect == "unknown-implementer"
+                                 else ".claude/commands/goal.md")
+                    path = root / collision
+                    path.parent.mkdir(parents=True)
+                    path.write_bytes(b"Unknown native content; preserve exactly.\n")
+                if context != "nongit":
+                    subprocess.run(["git", "-C", str(root), "add", "."],
+                                   check=True, env=self.env)
+                # Includes directory/file modes, mtimes, backups, and the
+                # enclosing worktree's real index/exclude for subdir targets.
+                before = snapshot(self.work)
+                for flags in ((), ("--force",), ("--dry-run",),
+                              ("--force", "--dry-run")):
+                    with self.subTest(flags=flags):
+                        result = self.run_dom(root, "--platform=claude", *flags, ok=False)
+                        self.assertEqual(result.returncode, 3, result.stderr)
+                        self.assertIn("ownership", result.stderr)
+                        self.assertIn(collision, result.stderr)
+                        self.assertIn("pristine policy", result.stderr)
+                        self.assertIn("preserve", result.stderr)
+                        self.assertNotIn("unguarded owned policy", result.stderr)
+                        self.assertEqual(before, snapshot(self.work))
+
+    def test_presnapshot_selected_fresh_native_outside_gitroot(self):
+        _fixture, policy, pristine = self.presnapshot_policy_fixture("fresh-source")
+        current = self.root("fresh-current")
+        self.run_dom(current, "--platform=claude")
+        upstream = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+        for context, flags in itertools.product(("nongit", "subdir"), ((), ("--force",))):
+            with self.subTest(context=context, flags=flags):
+                root = self.presnapshot_target(f"fresh-{context}-{bool(flags)}", context)
+                original = policy.read_bytes()
+                (root / "CLAUDE.md").write_bytes(original)
+                before = snapshot(self.work)
+                self.run_dom(root, "--platform=claude", "--dry-run", *flags)
+                self.assertEqual(before, snapshot(self.work))
+                self.run_dom(root, "--platform=claude", *flags)
+                self.assertEqual((root / "CLAUDE.md").read_bytes(),
+                                 original.replace(pristine, upstream))
+                self.assertEqual((root / STATES["claude"] / "base/CLAUDE.md.block").read_bytes(),
+                                 upstream)
+                self.assertTrue((root / ROLES[0]).is_file())
+                self.assertEqual([p.read_bytes() for p in root.glob("CLAUDE.md.bak.*")],
+                                 [original])
+
     def test_historical_policy_runtime_scope_variants(self):
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show", "9841ab9:domestique.sh"], text=True)

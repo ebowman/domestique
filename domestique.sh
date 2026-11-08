@@ -5317,11 +5317,24 @@ sys.exit(not legacy_policy_identity(provider, hashlib.sha256(Path(path).read_byt
 " "$1" "$2"
 }
 
+# Missing snapshots require exact live bytes at this provider/path/mode, not
+# the provider-only legacy-base predicate and never today's emitted body.
+policy_pristine_identity() {
+  python3 -c "$(emit_historical_identity_library)
+import hashlib
+from pathlib import Path
+import sys
+
+provider, rel, mode, path = sys.argv[1:]
+sys.exit(not installer_identity(provider, rel, mode, hashlib.sha256(Path(path).read_bytes()).hexdigest()))
+" "$1" "$2" "$3" "$4"
+}
+
 # Retained roots need isolation, not an unrelated workflow upgrade. Preflight
 # stages a guard-only pristine upstream for the existing block merge/snapshot
 # pipeline; both retained and later additive-provider passes use that same plan.
 policy_preflight() {
-  local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active upstream
+  local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active upstream reference native_selected native_rel
   for provider in claude codex copilot; do
     configure_provider "$provider"
     selected=0
@@ -5330,6 +5343,7 @@ policy_preflight() {
       codex) selected="$SELECT_CODEX" ;;
       copilot) selected="$SELECT_COPILOT" ;;
     esac
+    native_selected="$selected"
     # Provider installation remains additive (roles, aliases, model setup and
     # mode handling). Only explicitly requested root workflows are upgraded.
     if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
@@ -5394,7 +5408,7 @@ policy_preflight() {
       [ "$rel" != CLAUDE.local.md ] || mode=guest
       "$emitter" "$mode" > "$TMPDIR_WORK/retained-upstream"
       if [ "$UNINSTALL" -eq 1 ]; then
-        local reference="$TARGET_DIR/$base"
+        reference="$TARGET_DIR/$base"
         [ -f "$reference" ] || reference="$TMPDIR_WORK/retained-upstream"
         cmp -s "$block" "$reference" || policy_backup_preflight "$rel"
         continue
@@ -5425,15 +5439,39 @@ policy_preflight() {
         touch "$TMPDIR_WORK/preserve-$rel"
         continue
       fi
-      shared_safe_path "$base" && [ -f "$TARGET_DIR/$base" ] ||
-        shared_refuse "unguarded owned policy $rel lacks a safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
-      snapshot_has_file "$state" "$provider" "$rel" .block ||
-        shared_refuse "unowned policy base $base; reconcile its inventory explicitly"
-      if head -c "$(wc -c < "$expected")" "$TARGET_DIR/$base" | cmp -s "$expected" -; then
+      reference="$TARGET_DIR/$base"
+      if [ ! -f "$reference" ]; then
+        # This is pre-snapshot adoption, not repair of damaged ownership state.
+        # Existing state/inventory must still satisfy the normal base checks.
+        [ ! -e "$TARGET_DIR/$state" ] &&
+          policy_pristine_identity "$provider" "$rel" "$mode" "$block" ||
+          shared_refuse "unguarded owned policy $rel lacks a proven pristine body or safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
+        # A policy identity proves no native ownership. With no provider state
+        # there is no inventory/base proof for existing native destinations.
+        # Check here even outside Git roots, where model preflight is skipped.
+        # Fresh native projections remain valid; legacy adoption is separate.
+        if [ "$native_selected" -eq 1 ]; then
+          for native_rel in ${MANAGED_PLAIN_FILES//,/ }; do
+            shared_safe_path "$native_rel" || shared_refuse "unsafe native path $native_rel"
+            [ ! -e "$TARGET_DIR/$native_rel" ] ||
+              shared_refuse "cannot establish ownership of native path $native_rel from pristine policy $rel; preserve native files and restore their original snapshot/inventory, or explicitly relocate them before a fresh native install; retry --dry-run"
+          done
+        fi
+        reference="$TMPDIR_WORK/policy-base/$rel"
+        mkdir -p "$(dirname "$reference")"
+        cp "$block" "$reference"
+        # Retaining a policy does not adopt any native roles/commands. Publish
+        # only this proven policy's ownership, not a fictional current inventory.
+        [ "$native_selected" -eq 1 ] || touch "$TMPDIR_WORK/policy-only-$provider"
+      else
+        snapshot_has_file "$state" "$provider" "$rel" .block ||
+          shared_refuse "unowned policy base $base; reconcile its inventory explicitly"
+      fi
+      if head -c "$(wc -c < "$expected")" "$reference" | cmp -s "$expected" -; then
         [ "$guarded" -eq 1 ] ||
           shared_refuse "owned policy $rel has a removed or altered harness guard; reconcile against $base explicitly"
       else
-        policy_legacy_base "$provider" "$TARGET_DIR/$base" ||
+        [ -f "$TMPDIR_WORK/policy-base/$rel" ] || policy_legacy_base "$provider" "$reference" ||
           shared_refuse "unknown legacy policy base $base; reconcile its pristine ownership explicitly"
         if [ "$guarded" -eq 0 ] && grep -qF 'Active harness boundary' "$block"; then
           shared_refuse "owned policy $rel has an altered harness guard; reconcile it explicitly"
@@ -5452,15 +5490,15 @@ policy_preflight() {
           cat "$expected"
           if [ "$provider" = codex ]; then
             # The known Codex emitter already has the title in expected.
-            tail -n +3 "$TARGET_DIR/$base"
+            tail -n +3 "$reference"
           else
-            cat "$TARGET_DIR/$base"
+            cat "$reference"
           fi
         } > "$upstream"
       fi
       merged="$TMPDIR_WORK/retained-merged"
       rc=0
-      git merge-file -p "$block" "$TARGET_DIR/$base" "$upstream" > "$merged" || rc=$?
+      git merge-file -p "$block" "$reference" "$upstream" > "$merged" || rc=$?
       [ "$rc" -eq 0 ] ||
         shared_refuse "owned policy merge conflict for $rel against $base; preserve custom text and reconcile the block explicitly before retrying"
       head -c "$(wc -c < "$expected")" "$merged" | cmp -s "$expected" - ||
@@ -5546,18 +5584,23 @@ snapshot_claude_block() {
 }
 
 # managed_files_list — provider inventory plus every sound managed policy
-# destination still on disk. The current policy destination is included under
-# dry-run even before it exists.
+# destination still on disk, or only proven policies for pre-snapshot retention
+# without native adoption. Include the current destination under dry-run.
 managed_files_list() {
   local out="$MANAGED_PLAIN_FILES" policyfile include
+  if [ -f "$TMPDIR_WORK/policy-only-$CURRENT_PROVIDER" ]; then
+    out=""
+  fi
   for policyfile in $POLICY_CANDIDATES; do
     include=0
+    if [ -f "$TMPDIR_WORK/policy-only-$CURRENT_PROVIDER" ] &&
+       [ ! -f "$TMPDIR_WORK/scope-$policyfile" ]; then continue; fi
     if [ -n "$POLICY_DEST" ] && [ "$policyfile" = "$POLICY_DEST" ]; then
       include=1
     elif [ -e "$TARGET_DIR/$policyfile" ] && grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/$policyfile" 2>/dev/null; then
       include=1
     fi
-    [ "$include" -eq 1 ] && out="$out,$policyfile"
+    [ "$include" -eq 1 ] && out="${out:+$out,}$policyfile"
   done
   printf '%s' "$out"
 }
@@ -6389,7 +6432,9 @@ splice_policy_body() {
 #     advances the snapshot; conflict/error leaves dest untouched, writes
 #     dest.new (full file, conflict-marked block spliced in) + a .bak, and
 #     does not advance the snapshot.
-#   - no base snapshot (legacy/pre-snapshot install) -> ADOPT: seed the
+#   - proven unguarded pre-snapshot policy -> merge against the ephemeral exact
+#     historical body validated by policy_preflight, then snapshot upstream.
+#   - otherwise no base snapshot (guarded legacy install) -> ADOPT: seed the
 #     block snapshot from the PRISTINE emitted policy body (not the
 #     current/edited on-disk block), leave the file unchanged (no
 #     overwrite, no .bak); re-run to merge upstream.
@@ -6497,6 +6542,9 @@ install_claude_md() {
         : # wholesale replace (already computed in $result above), no merge.
       else
         local basepath="$POLICY_SNAPSHOT"
+        if [ ! -e "$basepath" ] && [ -f "$TMPDIR_WORK/policy-base/${dest#"$TARGET_DIR"/}" ]; then
+          basepath="$TMPDIR_WORK/policy-base/${dest#"$TARGET_DIR"/}"
+        fi
         if [ -e "$basepath" ]; then
           # 3-way merge the block body: ours=$oursblock, base=$basepath,
           # theirs=$policybody.
