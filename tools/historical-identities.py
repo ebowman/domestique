@@ -104,6 +104,23 @@ def outcome(result):
 
 
 def allowlist(source):
+    if LOOKUP_BEGIN in source:
+        body = embedded_block(source).split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
+        tree = ast.parse(body)
+        table = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == "_INSTALLER_IDENTITIES"
+                             for t in node.targets))
+        known = {}
+        for key_node, value_node in zip(table.keys, table.values):
+            owner, path, mode = ast.literal_eval(key_node)
+            if path == LEGACY_PATH and mode == "*":
+                if (not isinstance(value_node, ast.Call) or
+                        not isinstance(value_node.func, ast.Name) or
+                        value_node.func.id != "frozenset" or len(value_node.args) != 1 or
+                        value_node.keywords):
+                    raise ValueError("invalid generated legacy hashes")
+                known[owner] = sorted(ast.literal_eval(value_node.args[0]))
+        return known
     body = source.split("policy_legacy_base() {", 1)[1].split("\nPY\n}", 1)[0]
     tree = ast.parse(body.split("<<'PY'\n", 1)[1])
     for node in tree.body:
@@ -220,13 +237,14 @@ def isolated(work):
     }
 
 
-def replay(script, selector, mode, timeout):
+def replay(script, selector, mode, timeout, *, pristine_roles=False):
+    """Apply timeout to the installer; setup uses run's finite 60-second default."""
     with tempfile.TemporaryDirectory(prefix="domestique-history-") as directory:
         work = Path(directory).resolve()
         env = isolated(work)
         root = work / "repo"
         init = run(["git", "init", "-q", "--template=" + str(work / "template"), "."],
-                   cwd=root, env=env, timeout=timeout)
+                   cwd=root, env=env)
         if init["returncode"] != 0:
             raise ValueError(f"isolated git init failed: {init}")
         before = snapshot(root)
@@ -257,6 +275,15 @@ def replay(script, selector, mode, timeout):
                 data, permissions = after[path]
                 owner = provider(path)
                 normalized = normalize(path, data, root, after)
+                if pristine_roles and path in MODEL_ROLES:
+                    # The installer already stores the unmarked pristine role.
+                    # Do not synthesize authority by stripping a live marker.
+                    state = {"claude": ".claude", "codex": ".codex",
+                             "copilot": ".github"}[owner]
+                    data = after[f"{state}/.domestique/base/{path}"][0]
+                    normalized = normalize(path, data, root, after)
+                    if normalized != data or b"# domestique-model-setup:" in data:
+                        raise ValueError(f"{path}: marked pristine role")
                 kind = ("policy-body" if path in POLICIES else
                         "metadata" if "/.domestique/" in path or path.startswith(".git/")
                         else "file")
@@ -359,6 +386,104 @@ def generate(ref, authority_ref, timeout):
     }
 
 
+LOOKUP_BEGIN = "# BEGIN GENERATED HISTORICAL IDENTITIES"
+LOOKUP_END = "# END GENERATED HISTORICAL IDENTITIES"
+LEGACY_PATH = "@legacy-policy-base"
+
+
+def authority_artifact(item):
+    """Finite adoption payload scope; never helper code or state metadata."""
+    path = item["path"]
+    return (item.get("normalization") is None and
+            (path in POLICIES or
+             (path.endswith((".md", ".toml", ".yaml")) and
+              any(part in path for part in ("/agents/", "/commands/", "/skills/")))))
+
+
+def historical_projection(data):
+    if data["schema"] != 1:
+        raise ValueError("unsupported history schema")
+    identities = set()
+    # Output sets are authority only through successful runs. Never project
+    # partial artifacts or trust the normalized identity grouping index.
+    for record in data["runs"]:
+        if record["status"] != "success":
+            continue
+        artifacts = data["output_sets"][record["output_set"]]
+        if sha(encoded(artifacts)) != record["output_set"]:
+            raise ValueError("output set digest mismatch")
+        for item in artifacts:
+            if item["kind"] != "metadata" and authority_artifact(item):
+                identities.add((item["provider"], item["path"], record["mode"], item["sha256"]))
+    for owner, hashes in data["allowlist"].items():
+        proven = {digest for provider_, path, mode, digest in identities
+                  if provider_ == owner and path in POLICIES}
+        missing = set(hashes) - proven
+        if missing:
+            raise ValueError(f"unreproduced legacy hashes for {owner}: {sorted(missing)}")
+        # Preserve the old provider-only predicate exactly. Path/mode and
+        # inventory/base proofs remain the responsibility of its existing caller.
+        identities.update((owner, LEGACY_PATH, "*", digest) for digest in hashes)
+    return identities
+
+
+def current_projection(source, timeout):
+    identities = set()
+    for mode in ("normal", "guest"):
+        record, artifacts = replay(source, "all", mode, timeout, pristine_roles=True)
+        if record["status"] != "success":
+            raise ValueError(f"current emission failed: {record}")
+        for item in artifacts:
+            if item["kind"] != "metadata" and authority_artifact(item):
+                identities.add((item["provider"], item["path"], mode, item["sha256"]))
+    return identities
+
+
+def lookup_block(data, current):
+    identities = historical_projection(data) | current
+    grouped = {}
+    for owner, path, mode, digest in sorted(identities):
+        if not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ValueError("invalid identity digest")
+        grouped.setdefault((owner, path, mode), []).append(digest)
+    lines = [
+        LOOKUP_BEGIN,
+        "# Format 1; raw payload/body SHA-256 only; normalized grouping hashes excluded.",
+        "# Regenerate: python3 tools/historical-identities.py --emit-lookup domestique.sh \\",
+        "#   --history-data tools/historical-identities.json --current-source domestique.sh",
+        "emit_historical_identity_library() {",
+        "  cat <<'PY'",
+        "# @legacy-policy-base/* preserves the original provider-only policy predicate.",
+        "# Other keys are provider/path/install-mode; not yet used for adoption.",
+        "_INSTALLER_IDENTITIES = {",
+    ]
+    for key, hashes in sorted(grouped.items()):
+        lines.append(f"    {key!r}: frozenset((")
+        lines.extend(f"        {digest!r}," for digest in hashes)
+        lines.append("    )),")
+    lines += [
+        "}",
+        "",
+        "def installer_identity(provider, path, mode, digest):",
+        "    return digest in _INSTALLER_IDENTITIES.get((provider, path, mode), ())",
+        "",
+        "def legacy_policy_identity(provider, digest):",
+        f"    return installer_identity(provider, {LEGACY_PATH!r}, '*', digest)",
+        "PY",
+        "}",
+        LOOKUP_END,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def embedded_block(source):
+    if source.count(LOOKUP_BEGIN) != 1 or source.count(LOOKUP_END) != 1:
+        raise ValueError("expected exactly one generated lookup block")
+    start = source.index(LOOKUP_BEGIN)
+    end = source.index(LOOKUP_END, start) + len(LOOKUP_END)
+    return source[start:end] + "\n"
+
+
 def main():
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
@@ -367,11 +492,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ref", default="main")
     parser.add_argument("--allowlist-ref", default="HEAD")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--emit-lookup", type=Path,
+                        help="replace the marked compact lookup block in this installer")
+    parser.add_argument("--history-data", type=Path)
+    parser.add_argument("--current-source", type=Path,
+                        help="explicit installer source for isolated current emissions")
     parser.add_argument("--timeout", type=int, default=60)
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if args.emit_lookup:
+        if not args.history_data or not args.current_source or args.output:
+            parser.error("--emit-lookup requires --history-data and --current-source, not --output")
+        source = args.emit_lookup.read_text()
+        old = embedded_block(source)
+        data = json.loads(args.history_data.read_text())
+        block = lookup_block(data, current_projection(args.current_source.read_text(), args.timeout))
+        args.emit_lookup.write_text(source.replace(old, block))
+        return 0
+    if not args.output or args.history_data or args.current_source:
+        parser.error("history replay requires --output; projection options require --emit-lookup")
     started = time.monotonic()
     data = generate(args.ref, args.allowlist_ref, args.timeout)
     args.output.write_bytes(encoded(data))

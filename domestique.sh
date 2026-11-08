@@ -4756,53 +4756,565 @@ install_shared() {
   [ "$DRY_RUN" -eq 1 ] || SHARED_PRESENT=1
 }
 
+# BEGIN GENERATED HISTORICAL IDENTITIES
+# Format 1; raw payload/body SHA-256 only; normalized grouping hashes excluded.
+# Regenerate: python3 tools/historical-identities.py --emit-lookup domestique.sh \
+#   --history-data tools/historical-identities.json --current-source domestique.sh
+emit_historical_identity_library() {
+  cat <<'PY'
+# @legacy-policy-base/* preserves the original provider-only policy predicate.
+# Other keys are provider/path/install-mode; not yet used for adoption.
+_INSTALLER_IDENTITIES = {
+    ('claude', '.claude/agents/implementer.md', 'guest'): frozenset((
+        '256ed147cf98f13e2c3db55aec9e73853e460616ffa6007251bb3943b05cee64',
+        '58806e3f2af19c3ddc958dd95090d78c54add644fcf991fac6ef87df5febf669',
+        'd50fdb9a7bec1d457ea21547038985a46965b02e0b71416fde6969ccfb1e9e8c',
+    )),
+    ('claude', '.claude/agents/implementer.md', 'normal'): frozenset((
+        '03676a69d19bd82a1b4d8b5c59401731683584e32ecee2651d592b618f8300f7',
+        '256ed147cf98f13e2c3db55aec9e73853e460616ffa6007251bb3943b05cee64',
+        '58806e3f2af19c3ddc958dd95090d78c54add644fcf991fac6ef87df5febf669',
+        'd50fdb9a7bec1d457ea21547038985a46965b02e0b71416fde6969ccfb1e9e8c',
+    )),
+    ('claude', '.claude/agents/reviewer.md', 'guest'): frozenset((
+        '644cace3e7478337c67660ef2f1f356dc71427e7fa8e7eac515487aeaedfd47c',
+        'ed4ed88a3d16684dc4f9733d66753af86d3d6d91349c12c34666e97acb793631',
+    )),
+    ('claude', '.claude/agents/reviewer.md', 'normal'): frozenset((
+        '644cace3e7478337c67660ef2f1f356dc71427e7fa8e7eac515487aeaedfd47c',
+        '8139f900edb8b58f4b9fd3c888021d24c4d72bba2ee9e5aec987efb0d27990a2',
+        'ed4ed88a3d16684dc4f9733d66753af86d3d6d91349c12c34666e97acb793631',
+    )),
+    ('claude', '.claude/commands/decompose.md', 'guest'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/decompose.md', 'normal'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/dom-decompose.md', 'guest'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/dom-decompose.md', 'normal'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/dom-goal.md', 'guest'): frozenset((
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '.claude/commands/dom-goal.md', 'normal'): frozenset((
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '.claude/commands/dom-models.md', 'guest'): frozenset((
+        'e4f01defd32eb0690b2d64997f7427b7b3609933fd1dd18a9b208ae1a402021b',
+    )),
+    ('claude', '.claude/commands/dom-models.md', 'normal'): frozenset((
+        'e4f01defd32eb0690b2d64997f7427b7b3609933fd1dd18a9b208ae1a402021b',
+    )),
+    ('claude', '.claude/commands/goal.md', 'guest'): frozenset((
+        '07a42818e1c2cf4e5990b622abf3501cb473943f65fe27734fe58302fa03442b',
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        '90c77aeaa5b51a07e5e5ee6bc46954e75e6dbf837ea0fb69b757dc800f507a69',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'cc2d5d82c0e34c88902a885d58e595bb473ffd87e5bcd7cbe36ca053c7cdb74c',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '.claude/commands/goal.md', 'normal'): frozenset((
+        '07a42818e1c2cf4e5990b622abf3501cb473943f65fe27734fe58302fa03442b',
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '8ea2091a11dc29d67a1abe38e6c6871e539350a743ccca0098a898c13bb8d027',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        '90c77aeaa5b51a07e5e5ee6bc46954e75e6dbf837ea0fb69b757dc800f507a69',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'cc2d5d82c0e34c88902a885d58e595bb473ffd87e5bcd7cbe36ca053c7cdb74c',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '@legacy-policy-base', '*'): frozenset((
+        '07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2',
+        '0f3d6e32816bb2786079aa2bbb8297c3d5e95183550d38f2fbe01abb1580ef11',
+        '2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e',
+        '378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c',
+        '5084bcfc8099e95720eb855eb93111be04c566eaf92561bc1a229a0377277465',
+        '5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d',
+        '7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b',
+        '86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120',
+        '951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e',
+        'a45d341faa7bd74e01b657e57c4b73a4ba5c99292302ce04f255353fb12f7070',
+        'bb94e7a0d0e0872ef01358096139eaf48f9bffd127a0310a6bb1afdce99931b5',
+        'bcbef1c12f21e380cc46181d314e05d9a36430eddc5cc1826f7775969588da22',
+        'eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94',
+        'f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b',
+    )),
+    ('claude', 'CLAUDE.local.md', 'guest'): frozenset((
+        '0f3d6e32816bb2786079aa2bbb8297c3d5e95183550d38f2fbe01abb1580ef11',
+        '119a0728ce858a0b551401f1b841058403c45dfbd5b00cd258be79f75c1a4a32',
+        '13cf237a959cc060d6e62fb426db97896e71c88368adc524319ddd251a268057',
+        '2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e',
+        '4e7e7d8bf6a9368eb57ca5051728caa9f4407b26ed4cfde9cb624b920329ab51',
+        '66de7f84ceac722ec4030e200c1343058d1554f43437e0d995ea65c55fadfa12',
+        '7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b',
+        '951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e',
+        'a45d341faa7bd74e01b657e57c4b73a4ba5c99292302ce04f255353fb12f7070',
+        'ad7516c24c77a9014656bccbe1fdf7492e8d012ac069cccf7553bd0736c6e1cd',
+        'e17286ec97132b9bfd30ae80dd018c554b6ad8d9f85b0be19b248a0e4ab1f899',
+        'eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94',
+        'f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b',
+    )),
+    ('claude', 'CLAUDE.md', 'normal'): frozenset((
+        '00ff686623938d33baf2d97f903e588b1d665c920714b8198d970890b9571761',
+        '07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2',
+        '1496c0b308110131921a2e7c7e36b10efbdcf411684106aa4d5f234bbab2071e',
+        '1f5f19d071eb8c42772883ce913986f8661c02e9dc841cec26c5661cbe0f20ad',
+        '2a1781f99faac541c2f4e45afbc1b641a6f0ac47f22188e5b9a3e34b6aec5f13',
+        '2dd0eee0a4c172f21ebed80ec75b1b8e140f2c5265012f2a3837ec9607971327',
+        '378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c',
+        '39ef749a25fd454d196206c3617e63ffd541cf313fcadaa172e7ed2b9b1e3ee1',
+        '5084bcfc8099e95720eb855eb93111be04c566eaf92561bc1a229a0377277465',
+        '5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d',
+        '6c3b1d5e880cdc39222a561b0b9f0ef2065734c02ffa263943cab8ad5da833f5',
+        '86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120',
+        '951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e',
+        'b0948834fee53236e18b5a2bb15e07cbdd77ac008da8384dc4385cefe0db037f',
+        'bb94e7a0d0e0872ef01358096139eaf48f9bffd127a0310a6bb1afdce99931b5',
+        'bcbef1c12f21e380cc46181d314e05d9a36430eddc5cc1826f7775969588da22',
+        'c2fc6788918af47745aefc92bc765f713d9dc971cdbc1a72c45d49f616ac5a5d',
+        'd5c3d7746c47199fd29e4a05e2cb4e8983dd20c4b9cca5e7e8cdc33b0d47c2e4',
+        'd6486d31a39b00f2292cc009ce0576fe5afa052ef9069bedb36daa806138a745',
+    )),
+    ('codex', '.agents/skills/domestique-decompose/SKILL.md', 'guest'): frozenset((
+        '12a52d6d51ed9be56e1d3c008b84fd5a6275b9f6cc5e84e0d0b0526fa146c3ec',
+        '1cb3c36c94bb27fd6dcbfb46ac29b22499221471ed9c76854c864e45ff1bd877',
+        '2967796a9fac2141ed608243e3764d3972bcf59ad417320e46050c23c6329e15',
+        '2d55f80688ba23d91d444702c31f7f0f984914f504a6912558b4939884b53a01',
+        '35fd58a4a682a3c0fa0bbd4f597378fcbb94069ced2c89edb7ed93c57e168380',
+        '53b34a1e0a7610c70481acc4e22b2949dc8f9f0cda8e29df585d57c212416d6b',
+        '5a9ea55cafa434e98f00cc9e0c8cfeda3d6f818ffdff32c47800256eb8da4e51',
+        '65daf9d50858407a3f74f3031a377b51da3bf3708e5c5badb2baa8ca78edccaa',
+        '67a109783704afaa097eda4f38f8fc077130a6f94046962346b724a597a94253',
+        '7190c3b61452128e2c68d1fdf07ea7de216e4b8a0cbf090ff82a0b5019d824e2',
+        '928c7b4cc0aaf3e6d7f32406d88c02ae26575c98651afb531bdf641a5f17aa32',
+        '96279690ed030b5979fa6a24f15cc11b049b2938f13bfa3175e91a4b637129f4',
+        'c45b0f0e13b167e04cd6aeb4cc4142e89d8695e1318ea442f23d51a4ad05be1d',
+        'fc2ea2896d6169b1cfda280daa98c1eb4edf6995a5b7d39a78529625f9703754',
+    )),
+    ('codex', '.agents/skills/domestique-decompose/SKILL.md', 'normal'): frozenset((
+        '12a52d6d51ed9be56e1d3c008b84fd5a6275b9f6cc5e84e0d0b0526fa146c3ec',
+        '1cb3c36c94bb27fd6dcbfb46ac29b22499221471ed9c76854c864e45ff1bd877',
+        '2967796a9fac2141ed608243e3764d3972bcf59ad417320e46050c23c6329e15',
+        '2d55f80688ba23d91d444702c31f7f0f984914f504a6912558b4939884b53a01',
+        '35fd58a4a682a3c0fa0bbd4f597378fcbb94069ced2c89edb7ed93c57e168380',
+        '53b34a1e0a7610c70481acc4e22b2949dc8f9f0cda8e29df585d57c212416d6b',
+        '5a9ea55cafa434e98f00cc9e0c8cfeda3d6f818ffdff32c47800256eb8da4e51',
+        '65daf9d50858407a3f74f3031a377b51da3bf3708e5c5badb2baa8ca78edccaa',
+        '67a109783704afaa097eda4f38f8fc077130a6f94046962346b724a597a94253',
+        '7190c3b61452128e2c68d1fdf07ea7de216e4b8a0cbf090ff82a0b5019d824e2',
+        '928c7b4cc0aaf3e6d7f32406d88c02ae26575c98651afb531bdf641a5f17aa32',
+        '96279690ed030b5979fa6a24f15cc11b049b2938f13bfa3175e91a4b637129f4',
+        'c45b0f0e13b167e04cd6aeb4cc4142e89d8695e1318ea442f23d51a4ad05be1d',
+        'fc2ea2896d6169b1cfda280daa98c1eb4edf6995a5b7d39a78529625f9703754',
+    )),
+    ('codex', '.agents/skills/domestique-goal/SKILL.md', 'guest'): frozenset((
+        '0a0e73358d06bc4fcad5155c1d963e9aaa260f715173e64723717c7530abba27',
+        '23b53d847bd5bfd9a569c562ed64765914c6a53ad964ad1b6ff3667a763559a2',
+        '3fc9d34d8744e09cdde81a4eba4b83840ccbb52487ff5d2b1c75cc06d476ae02',
+        '4c3b659d6b2fd48119fc2212c2fed64ed77dcc40d2321a31f00702b120f0dbad',
+        '5114787c27df48848fbb8d7d683b49a1c84d49065861302fe41817ebc4df4714',
+        '5794ddfca3f4052ce130274ac9300da94b1a92e8c019b9bb5cfcc97c9f4e717a',
+        '5da25da3fca6fe14c2688841a16b38c822c54836cb088e1297eba7fe525ec62b',
+        '675419abf2f3d54446ed2cda5d468c5239e9b915c8226c70751e7ea2eb5b3a19',
+        '6b155c655e0c1af902ff460ed161a4878475bca15ff8d73b919524d8df7fdd4e',
+        '9642d475f2417ebf4122d503bdd58c74e5026ac5720d83216547a222aa48e75d',
+        'b5144366d86eb7a723f63a2289c3b5fb2a769dc09ef08be684c6f216523c0dfa',
+        'bbb35a07d5c6b63be73f6ab3736c7a7d1113c63a97919428272478500788dbcb',
+        'ce8446feecc5705bd6ebbf0323608526b77b6cda952958248bb3793d31e1544a',
+        'd36fde1ebd83106047ac1ee759364a084153a46d9a932821380419d9e72414db',
+        'e6c6e675a6063821883a8ef9c6c163e3a7278b978ecd4995491560d974d781e3',
+    )),
+    ('codex', '.agents/skills/domestique-goal/SKILL.md', 'normal'): frozenset((
+        '0a0e73358d06bc4fcad5155c1d963e9aaa260f715173e64723717c7530abba27',
+        '23b53d847bd5bfd9a569c562ed64765914c6a53ad964ad1b6ff3667a763559a2',
+        '3fc9d34d8744e09cdde81a4eba4b83840ccbb52487ff5d2b1c75cc06d476ae02',
+        '4c3b659d6b2fd48119fc2212c2fed64ed77dcc40d2321a31f00702b120f0dbad',
+        '5114787c27df48848fbb8d7d683b49a1c84d49065861302fe41817ebc4df4714',
+        '5794ddfca3f4052ce130274ac9300da94b1a92e8c019b9bb5cfcc97c9f4e717a',
+        '5da25da3fca6fe14c2688841a16b38c822c54836cb088e1297eba7fe525ec62b',
+        '675419abf2f3d54446ed2cda5d468c5239e9b915c8226c70751e7ea2eb5b3a19',
+        '6b155c655e0c1af902ff460ed161a4878475bca15ff8d73b919524d8df7fdd4e',
+        '9642d475f2417ebf4122d503bdd58c74e5026ac5720d83216547a222aa48e75d',
+        'b5144366d86eb7a723f63a2289c3b5fb2a769dc09ef08be684c6f216523c0dfa',
+        'bbb35a07d5c6b63be73f6ab3736c7a7d1113c63a97919428272478500788dbcb',
+        'ce8446feecc5705bd6ebbf0323608526b77b6cda952958248bb3793d31e1544a',
+        'd36fde1ebd83106047ac1ee759364a084153a46d9a932821380419d9e72414db',
+        'e6c6e675a6063821883a8ef9c6c163e3a7278b978ecd4995491560d974d781e3',
+    )),
+    ('codex', '.agents/skills/domestique-goal/agents/openai.yaml', 'guest'): frozenset((
+        '0f41f4154500b023e670cd2f45e32a5cdf1fd6f81a1eabd91848cc3c8d2eeebf',
+        '807c52402815018755b2e3c1f915b9d362d7ce1198cba7f1e4822bb1ac5108a5',
+        'd5a21b28956531d1bd017dbe0becd31ba100139498151537b34d2bbf3f3e8bb6',
+    )),
+    ('codex', '.agents/skills/domestique-goal/agents/openai.yaml', 'normal'): frozenset((
+        '0f41f4154500b023e670cd2f45e32a5cdf1fd6f81a1eabd91848cc3c8d2eeebf',
+        '807c52402815018755b2e3c1f915b9d362d7ce1198cba7f1e4822bb1ac5108a5',
+        'd5a21b28956531d1bd017dbe0becd31ba100139498151537b34d2bbf3f3e8bb6',
+    )),
+    ('codex', '.agents/skills/domestique-models/SKILL.md', 'guest'): frozenset((
+        '3b46fb773933c74bc3497462f119db0348120b2cdcd331cc5a2e8bbfa21f40dc',
+    )),
+    ('codex', '.agents/skills/domestique-models/SKILL.md', 'normal'): frozenset((
+        '3b46fb773933c74bc3497462f119db0348120b2cdcd331cc5a2e8bbfa21f40dc',
+    )),
+    ('codex', '.agents/skills/domestique/SKILL.md', 'guest'): frozenset((
+        '0ab70d6d722b371a51ee5c7aa54a46986274552e94df252465d8046a839acebf',
+        '5819d5086b7bc95fe0a697bb57d32e7efd9742d7e68ee12172ff64961a30a584',
+        '58b43e1f2e11b955e8e1c42b6b53c6589844e223c1098d0ace7ae3903b0c57c4',
+        '690ce63a343bb047c05014284463fb9339b80552f077277b3eda32954cbe702c',
+        '916960b2e0059ca4378d7141c3091270f3dd0654c964442876d2b0a7f0931301',
+        '96ce35434222392f3ca410400aab679ab98986a49c9ef9833b9c39d036cac231',
+        'a322604806442ae4d7f27fb105aa6496a0bb95a85821f9fe0e5f6b91e8d58f61',
+        'c586b183655d2261615a89526653e689ecfcb0f76f53d277557e55e7c3a0df15',
+        'd95b39c9269266ededec16ffef0f6717c12896b292d95dc3794b23896d40b541',
+        'e0126b73ecb996a350a027e3d57d84c7530a5efe7099740461aa0b1567355dbd',
+        'e6510d908f96b28019d3a1f4157dfe57edb3186508dfed30982f3db784cc4118',
+        'e6894bfba13427e812dab1583c83daf2df2696b4e67d599db766e095ed1c72de',
+        'f572533e3ea7c36ae6c52938fb93fcd7454154518b9534a894cd37b53d3c855a',
+    )),
+    ('codex', '.agents/skills/domestique/SKILL.md', 'normal'): frozenset((
+        '0ab70d6d722b371a51ee5c7aa54a46986274552e94df252465d8046a839acebf',
+        '5819d5086b7bc95fe0a697bb57d32e7efd9742d7e68ee12172ff64961a30a584',
+        '58b43e1f2e11b955e8e1c42b6b53c6589844e223c1098d0ace7ae3903b0c57c4',
+        '690ce63a343bb047c05014284463fb9339b80552f077277b3eda32954cbe702c',
+        '916960b2e0059ca4378d7141c3091270f3dd0654c964442876d2b0a7f0931301',
+        '96ce35434222392f3ca410400aab679ab98986a49c9ef9833b9c39d036cac231',
+        'a322604806442ae4d7f27fb105aa6496a0bb95a85821f9fe0e5f6b91e8d58f61',
+        'c586b183655d2261615a89526653e689ecfcb0f76f53d277557e55e7c3a0df15',
+        'd95b39c9269266ededec16ffef0f6717c12896b292d95dc3794b23896d40b541',
+        'e0126b73ecb996a350a027e3d57d84c7530a5efe7099740461aa0b1567355dbd',
+        'e6510d908f96b28019d3a1f4157dfe57edb3186508dfed30982f3db784cc4118',
+        'e6894bfba13427e812dab1583c83daf2df2696b4e67d599db766e095ed1c72de',
+        'f572533e3ea7c36ae6c52938fb93fcd7454154518b9534a894cd37b53d3c855a',
+    )),
+    ('codex', '.codex/agents/implementer.toml', 'guest'): frozenset((
+        '6185055ecdcc38c4f834ec20cb5837c4d607e70155d4a5b6e06680f279c3d5ed',
+        '63861e15920b9a0d8b75e51f79a8e227a6d33c6ef4a8a2056147bfb7051f4f46',
+        'ad16242a1e34631e728729ad9b4a7da37f02ead712d4b989028b4ceca59332e7',
+    )),
+    ('codex', '.codex/agents/implementer.toml', 'normal'): frozenset((
+        '6185055ecdcc38c4f834ec20cb5837c4d607e70155d4a5b6e06680f279c3d5ed',
+        '63861e15920b9a0d8b75e51f79a8e227a6d33c6ef4a8a2056147bfb7051f4f46',
+        'ad16242a1e34631e728729ad9b4a7da37f02ead712d4b989028b4ceca59332e7',
+    )),
+    ('codex', '.codex/agents/reviewer.toml', 'guest'): frozenset((
+        '5893d19db083f6b2ffc00acead3242b7e14e8e37716ce2df4c50c06b55b1c2f5',
+        '8e64989adfaeaf9a1f19fd61a9d6c1fdf83f873335aed3f11b5407c9293aeb23',
+        'ed74642c206331cb930c09825088c09f6a163c37192d5d6442e711b7bc759ebe',
+        'ffb2546af12bb08a8c9d6bb5176c7ff07352855165706ca40cb6a8a042f5cb19',
+    )),
+    ('codex', '.codex/agents/reviewer.toml', 'normal'): frozenset((
+        '5893d19db083f6b2ffc00acead3242b7e14e8e37716ce2df4c50c06b55b1c2f5',
+        '8e64989adfaeaf9a1f19fd61a9d6c1fdf83f873335aed3f11b5407c9293aeb23',
+        'ed74642c206331cb930c09825088c09f6a163c37192d5d6442e711b7bc759ebe',
+        'ffb2546af12bb08a8c9d6bb5176c7ff07352855165706ca40cb6a8a042f5cb19',
+    )),
+    ('codex', '@legacy-policy-base', '*'): frozenset((
+        '032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474',
+        '44b2375b0b95a26fec0119718b3f36703c8fccbe718d4fb4edd90f6f7c181174',
+        '7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12',
+        '7e3e37e67c698f347bb21f31721af7e07c919737eeaa7a3cc4e75d918a5292db',
+        '879d49e91009d7496bf3a479b5f51be8b9de6687b5520eb86bb5f4f22ed354a4',
+        'ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb',
+    )),
+    ('codex', 'AGENTS.md', 'normal'): frozenset((
+        '032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474',
+        '26987650b09b643dce42619b64493f6529f4f97f8f900501c7d05ff9b32881f3',
+        '3796ec1f118f1f9a980f18485bc882e20a55e9a1aab72ebbf31ce6443d25bc51',
+        '44b2375b0b95a26fec0119718b3f36703c8fccbe718d4fb4edd90f6f7c181174',
+        '766257fd25de7209f0a5f11feb7e7036b9909eb6b40604bfab61020fdb7e8c17',
+        '7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12',
+        '7e3e37e67c698f347bb21f31721af7e07c919737eeaa7a3cc4e75d918a5292db',
+        '879d49e91009d7496bf3a479b5f51be8b9de6687b5520eb86bb5f4f22ed354a4',
+        '9494b6112baab2a678d5bc10f4d6b9aceb2d67ae6ada8572a3d2ad5a75dd3a90',
+        '9bf29dd4fc6cc09d0fb02a631e1dcbcd8e867c53ce8e5f0c32704bb7d54e8d84',
+        'd7c6c94b0a752e39dd48e2a5e5cce4717970b75bb055a5834ecf4b23acf59aae',
+        'e751b66f49b4ee3a5974a6a84bcc5c7ac87286bda260501ae2b993bd01864372',
+        'ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb',
+    )),
+    ('copilot', '.github/agents/domestique-implementer.agent.md', 'normal'): frozenset((
+        '75aa888490638d10c4ed482e0be6efe517c344a6a3eac296719785c179486dea',
+    )),
+    ('copilot', '.github/agents/domestique-reviewer.agent.md', 'normal'): frozenset((
+        '70c217d0ea3e382343eddb42baaf1a7e8af7d8ac15b835f30e4b0a5eceafb105',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-implementer.agent.md', 'guest'): frozenset((
+        '5bd78d23332ae765fb6376a89e1f20860aee16bc5bbed2677e15af10dabd6eca',
+        'b94322572a6367564f95694500344d0fe880c151293f20077b70ccdcc876d055',
+        'b9a4656a718b16af6fac54198c86d3d2203f1cf800d395b894f2f8e590fc9fa8',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-implementer.agent.md', 'normal'): frozenset((
+        '5bd78d23332ae765fb6376a89e1f20860aee16bc5bbed2677e15af10dabd6eca',
+        'b94322572a6367564f95694500344d0fe880c151293f20077b70ccdcc876d055',
+        'b9a4656a718b16af6fac54198c86d3d2203f1cf800d395b894f2f8e590fc9fa8',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-reviewer.agent.md', 'guest'): frozenset((
+        '120435b614c5fc8a341098f80bb13ff3fbfcc0884eee8a2fafcf81c86c0e6cf2',
+        'a093530bd450b6667988035265750b3d83b01be36656f5b85c0904f79685485a',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-reviewer.agent.md', 'normal'): frozenset((
+        '120435b614c5fc8a341098f80bb13ff3fbfcc0884eee8a2fafcf81c86c0e6cf2',
+        'a093530bd450b6667988035265750b3d83b01be36656f5b85c0904f79685485a',
+    )),
+    ('copilot', '.github/copilot-instructions.md', 'normal'): frozenset((
+        '2c4e06537ae5af365515e9c273f7afb9f5287371745486d3241d10f818b25c4b',
+        '38d1208f028aec6ff3bdf33df914a2c88f4186b09f5bbb8830568a4f21e8896b',
+        '6505bfe667699a1baea89193a4edb1ff9472d812865e297e71f3a6a5996157a6',
+        '75c69927cf2f62119ab5b4bfe6332f61f6203e1d18a83b488bef30b3aec70892',
+        '816b80370c1aaecab9b80e4f511fd4a56a26023bdcb97d18c89c72fab945ebb5',
+        'cc2974f80e4f2649021c33ff1349b868f3556032c46285cf190663dab145fbe8',
+        'd65d7523d76250b8d71c6662f08e4eeb795daced0cf25dc7b42ee4a0783f8295',
+        'f2c65bd3450c8f9d98b4443b7b7f3efba24b548b73024058fc780b14afeaa449',
+    )),
+    ('copilot', '.github/skills/domestique-decompose/SKILL.md', 'normal'): frozenset((
+        '38fc531fce7680e21b439c56ba436903d186e1bf5c19c75bb3919fd7ae6d1a34',
+    )),
+    ('copilot', '.github/skills/domestique-goal/SKILL.md', 'normal'): frozenset((
+        'b965d96a1a13b0949fbb8fd9be60ab7b6e817c290a21310cf99108c2125d2f35',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-decompose/SKILL.md', 'guest'): frozenset((
+        '1f2eac2c273ef8d08a70e9b11c677911a81f23836d7d05b057f7d6acb42e045f',
+        '2067d519fc1586d99b2b3387ac0dfd06d11232bd509628e959244652241f2eb6',
+        '4d68072465ff9622d88eda032e5e4202c3e4cce96c08a69dd67aaddb73093701',
+        'c49ed3662a25a74abd16eb12f214bb9ece6f0e571c124566dd2db84ba35acc9b',
+        'd2065555a3dd0cfc97d4e3444802712de16e664c367950b419978d7e1f8e71de',
+        'd2543e21f09da8c3efcc21b2c07b5becb1e6e4d85834c6ab3c319decf98081c2',
+        'df22f398b76ff599c4cb5358dfb1ca5a50cea42dc7ed11cef5e3760fcde57d25',
+        'f56b481fd729e0cee182501a88bb3451e037eb1bd389e48bec144db7db70a181',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-decompose/SKILL.md', 'normal'): frozenset((
+        '1f2eac2c273ef8d08a70e9b11c677911a81f23836d7d05b057f7d6acb42e045f',
+        '2067d519fc1586d99b2b3387ac0dfd06d11232bd509628e959244652241f2eb6',
+        '4d68072465ff9622d88eda032e5e4202c3e4cce96c08a69dd67aaddb73093701',
+        'c49ed3662a25a74abd16eb12f214bb9ece6f0e571c124566dd2db84ba35acc9b',
+        'd2065555a3dd0cfc97d4e3444802712de16e664c367950b419978d7e1f8e71de',
+        'd2543e21f09da8c3efcc21b2c07b5becb1e6e4d85834c6ab3c319decf98081c2',
+        'df22f398b76ff599c4cb5358dfb1ca5a50cea42dc7ed11cef5e3760fcde57d25',
+        'f56b481fd729e0cee182501a88bb3451e037eb1bd389e48bec144db7db70a181',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-goal/SKILL.md', 'guest'): frozenset((
+        '09e9184a66f01a7dd89ecf70d4c2d9adc7aaa2af916e26f9c1ceb4a779ef64ac',
+        '204f8d030d2dc93638fea0a1ee96f6263caba69abc12214d07279f959cb49cfc',
+        '3e6fc9690d95dfc3b48cc876c7344a3f9b2df3d42e5c0120b6fda623d5874a19',
+        '489760141e9badbeaeabb6620b216b8119b70705801eb6b47b11206426258b0a',
+        '4c6231a2ec3312200c23d7eeefa8f21346b9804e5449945c05f42e923aa56339',
+        '4f672c028cdbfbc8d59783823bcdb80b9795106a03c441d23d793ad705e6d118',
+        '852a958823989042ef0a23f05a75e205aa5036784fc55e877bd5901190a9f90b',
+        'a6f5a0a96b00921e495cc0a37b26f276e6d54e8e36b32fc98e58c6d65cdf0876',
+        'e53669322143517a958b578115f497eb28ec73dceecb068aeb0703577f4caa9d',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-goal/SKILL.md', 'normal'): frozenset((
+        '09e9184a66f01a7dd89ecf70d4c2d9adc7aaa2af916e26f9c1ceb4a779ef64ac',
+        '204f8d030d2dc93638fea0a1ee96f6263caba69abc12214d07279f959cb49cfc',
+        '3e6fc9690d95dfc3b48cc876c7344a3f9b2df3d42e5c0120b6fda623d5874a19',
+        '489760141e9badbeaeabb6620b216b8119b70705801eb6b47b11206426258b0a',
+        '4c6231a2ec3312200c23d7eeefa8f21346b9804e5449945c05f42e923aa56339',
+        '4f672c028cdbfbc8d59783823bcdb80b9795106a03c441d23d793ad705e6d118',
+        '852a958823989042ef0a23f05a75e205aa5036784fc55e877bd5901190a9f90b',
+        'a6f5a0a96b00921e495cc0a37b26f276e6d54e8e36b32fc98e58c6d65cdf0876',
+        'e53669322143517a958b578115f497eb28ec73dceecb068aeb0703577f4caa9d',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-models/SKILL.md', 'guest'): frozenset((
+        '53be6b259fc08ab234421a18209d1cc47e06d3a191fa390b2b93d6f0850c34c4',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-models/SKILL.md', 'normal'): frozenset((
+        '53be6b259fc08ab234421a18209d1cc47e06d3a191fa390b2b93d6f0850c34c4',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot/SKILL.md', 'guest'): frozenset((
+        '1abd6fc5b01e0592e5aa35ab6e6f8234edb6882f6921fcf3060b7ba4078f75ce',
+        '2bfb73e45a0478db14ad6f52fcc832cdc509e641857aba33eda01e0caa563a40',
+        '3ea26bfb4b8faaffc77be5006fd9befc91114646c338b548d12f53e16bb699e2',
+        '521e5b336fe556505b22dcbfc2e3705c45842dda6233620922f3ecd77ca1182c',
+        '7c989e9d755aadc5f3115b3295ccc2462c8e161b3c8f7cb8fc4267d346fb4e3c',
+        '7e80958b1dff811c3c5dc32f0628465e2f788a08c82cb1dc189951d1ca747919',
+        'd8a790382e0d9d80e3633436eb8fd6514af9bc3ab92b1db4d4da809471d7d697',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot/SKILL.md', 'normal'): frozenset((
+        '1abd6fc5b01e0592e5aa35ab6e6f8234edb6882f6921fcf3060b7ba4078f75ce',
+        '2bfb73e45a0478db14ad6f52fcc832cdc509e641857aba33eda01e0caa563a40',
+        '3ea26bfb4b8faaffc77be5006fd9befc91114646c338b548d12f53e16bb699e2',
+        '521e5b336fe556505b22dcbfc2e3705c45842dda6233620922f3ecd77ca1182c',
+        '7c989e9d755aadc5f3115b3295ccc2462c8e161b3c8f7cb8fc4267d346fb4e3c',
+        '7e80958b1dff811c3c5dc32f0628465e2f788a08c82cb1dc189951d1ca747919',
+        'd8a790382e0d9d80e3633436eb8fd6514af9bc3ab92b1db4d4da809471d7d697',
+    )),
+    ('copilot', '.github/skills/domestique/SKILL.md', 'normal'): frozenset((
+        '7239741101956794a86c1899a0028136556001b72884077adc865d87cdd0d939',
+    )),
+    ('shared', '.agents/skills/dom-decompose/SKILL.md', 'guest'): frozenset((
+        '2cc70acb4d718cbbdff5bc7f53f7b200284760ab20b25cfcc41293bc0d5310f5',
+        '42018391bebb4fe2c032b38d38e5ebd26fa8a8c6bec15e0b7e771864e66ba799',
+        '4de9ea342b80bd55c88fcec219f88f205915c5e6ea8eb3f82393691b86ee8ca4',
+        '7277b4c815b5e430785897459e3a694149bcad4c974f88c814121861757e428a',
+        '91bbe6b56ba7cd863cb61606805b2895c38565ab425ff31c733deb0a053de9dd',
+        '9b262f6ad225a52017eb322e1c3402df859ef1ddc9619737d11e2897934fab88',
+        'a19f9d3c0aff04a6744a82e241e6de86972f2644a74b166ad53465ea6c7e2d36',
+        'b73adaabbf03cfa4d001547cd7f6b545f55e738021ef14ac577a4d2ddf9de570',
+        'f4412a4d8b2a9b03852c5bb8775bf0817b954a01be6bd4354ec5694bb2c36687',
+        'f6672f14e4dbdecfae49cd935ed9c681c66cf991716a5e47df80d348aaa96895',
+    )),
+    ('shared', '.agents/skills/dom-decompose/SKILL.md', 'normal'): frozenset((
+        '2cc70acb4d718cbbdff5bc7f53f7b200284760ab20b25cfcc41293bc0d5310f5',
+        '42018391bebb4fe2c032b38d38e5ebd26fa8a8c6bec15e0b7e771864e66ba799',
+        '4de9ea342b80bd55c88fcec219f88f205915c5e6ea8eb3f82393691b86ee8ca4',
+        '7277b4c815b5e430785897459e3a694149bcad4c974f88c814121861757e428a',
+        '91bbe6b56ba7cd863cb61606805b2895c38565ab425ff31c733deb0a053de9dd',
+        '9b262f6ad225a52017eb322e1c3402df859ef1ddc9619737d11e2897934fab88',
+        'a19f9d3c0aff04a6744a82e241e6de86972f2644a74b166ad53465ea6c7e2d36',
+        'b73adaabbf03cfa4d001547cd7f6b545f55e738021ef14ac577a4d2ddf9de570',
+        'f4412a4d8b2a9b03852c5bb8775bf0817b954a01be6bd4354ec5694bb2c36687',
+        'f6672f14e4dbdecfae49cd935ed9c681c66cf991716a5e47df80d348aaa96895',
+    )),
+    ('shared', '.agents/skills/dom-goal/SKILL.md', 'guest'): frozenset((
+        '2113b86d6e6c02e9cc32312f8ecdce1ef6a7b3ff6a8a93a7142fbe787400a4b5',
+        '23d81f7b2c2e6d86c4bc2cbc949d841a50824b2270499bc6960cfea9e0f8898f',
+        '6c622bb1fc0c713f68db59ddf5b7127b50f111ad3f011269db212e77181c2e54',
+        '7accea586468009b67c2b62cd46135fcfcc4fd7b61af2376d741344b83126264',
+        '7dcb7736da3fcd1d25e2dae91e721be168159f40120ce9a09019264d01d9d857',
+        'a6b48e8492bbbe94b0ac7de38203e1a60996fe4ba9074f3feabe22b2da9b2ff5',
+        'cdc86581a92b71f4e8f2b7598a1d849434e3cefa267fbaef7d04fd14d3f74b75',
+        'db59a363601770cec52efbf2c454805d3586a273bfacfc8f0d5089074db8f4d4',
+        'e8034e6b4bd07ff48f6dc1d809dcc0a9ec0a4a193c87daa3f4ba4d898b6c3b80',
+        'f4be1a353a99601732e361521310fae3c6f9034df28b901a07a6c995cfb5796c',
+    )),
+    ('shared', '.agents/skills/dom-goal/SKILL.md', 'normal'): frozenset((
+        '2113b86d6e6c02e9cc32312f8ecdce1ef6a7b3ff6a8a93a7142fbe787400a4b5',
+        '23d81f7b2c2e6d86c4bc2cbc949d841a50824b2270499bc6960cfea9e0f8898f',
+        '6c622bb1fc0c713f68db59ddf5b7127b50f111ad3f011269db212e77181c2e54',
+        '7accea586468009b67c2b62cd46135fcfcc4fd7b61af2376d741344b83126264',
+        '7dcb7736da3fcd1d25e2dae91e721be168159f40120ce9a09019264d01d9d857',
+        'a6b48e8492bbbe94b0ac7de38203e1a60996fe4ba9074f3feabe22b2da9b2ff5',
+        'cdc86581a92b71f4e8f2b7598a1d849434e3cefa267fbaef7d04fd14d3f74b75',
+        'db59a363601770cec52efbf2c454805d3586a273bfacfc8f0d5089074db8f4d4',
+        'e8034e6b4bd07ff48f6dc1d809dcc0a9ec0a4a193c87daa3f4ba4d898b6c3b80',
+        'f4be1a353a99601732e361521310fae3c6f9034df28b901a07a6c995cfb5796c',
+    )),
+    ('shared', '.agents/skills/dom-goal/agents/openai.yaml', 'guest'): frozenset((
+        '06eb131ef17a2c0de523ce37577f0e89025e2f46b76a0d46b36f6cf1e200c243',
+        '08b3ee4969d538c22096cb71b5b39eb70abc09ecbdfc1121bf2953772bae721c',
+        '4838d781321fa7502a89671806d1b3345e63802f3c6713c25223e6861c552b6f',
+    )),
+    ('shared', '.agents/skills/dom-goal/agents/openai.yaml', 'normal'): frozenset((
+        '06eb131ef17a2c0de523ce37577f0e89025e2f46b76a0d46b36f6cf1e200c243',
+        '08b3ee4969d538c22096cb71b5b39eb70abc09ecbdfc1121bf2953772bae721c',
+        '4838d781321fa7502a89671806d1b3345e63802f3c6713c25223e6861c552b6f',
+    )),
+    ('shared', '.agents/skills/dom-models/SKILL.md', 'guest'): frozenset((
+        '88b305539652de450795f8515333f0764010313b073d53114acd4fc3f54dc63a',
+    )),
+    ('shared', '.agents/skills/dom-models/SKILL.md', 'normal'): frozenset((
+        '88b305539652de450795f8515333f0764010313b073d53114acd4fc3f54dc63a',
+    )),
+}
+
+def installer_identity(provider, path, mode, digest):
+    return digest in _INSTALLER_IDENTITIES.get((provider, path, mode), ())
+
+def legacy_policy_identity(provider, digest):
+    return installer_identity(provider, '@legacy-policy-base', '*', digest)
+PY
+}
+# END GENERATED HISTORICAL IDENTITIES
+
 # Finite public pre-boundary emitter bodies, not "anything without a guard".
 # Inventory ownership is checked separately. In particular, stripping today's
 # guard from a current base must never turn it into a legacy migration source.
 policy_legacy_base() {
-  python3 - "$1" "$2" <<'PY'
+  python3 -c "$(emit_historical_identity_library)
 import hashlib
 from pathlib import Path
 import sys
 
 provider, path = sys.argv[1:]
-known = {
-    "claude": {
-        # 858c1f3..ff41544: first snapshot body (normal only). Its older
-        # three-file role/command inventory still needs separate authorization.
-        "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d",
-        # 99e6274..21dcb26: integrated goal inventory, before bd export.
-        "378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c",
-        # 4aa67ae / v0.1.0 / 415fb69 (normal, personal)
-        "951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e",
-        "eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94",
-        # 58f4d29..58732cc: public Runtime scope variant (normal, personal).
-        # Audited snapshot-era main-line bodies through guard introduction 8cb30cb.
-        "86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120",
-        "7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b",
-        # 6158d35, 9e584a6, 3b29b26, 9f34a02 (= 64f4e09), each normal/personal
-        "07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2",
-        "f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b",
-        "bcbef1c12f21e380cc46181d314e05d9a36430eddc5cc1826f7775969588da22",
-        "a45d341faa7bd74e01b657e57c4b73a4ba5c99292302ce04f255353fb12f7070",
-        "5084bcfc8099e95720eb855eb93111be04c566eaf92561bc1a229a0377277465",
-        "0f3d6e32816bb2786079aa2bbb8297c3d5e95183550d38f2fbe01abb1580ef11",
-        "bb94e7a0d0e0872ef01358096139eaf48f9bffd127a0310a6bb1afdce99931b5",
-        "2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e",
-    },
-    "codex": {
-        # 58f4d29..58732cc: public Runtime scope variant, installed AGENTS base.
-        "7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12",
-        # 76d217f, 6158d35, c0b62ef, 3b29b26, 9f34a02 (= 64f4e09)
-        "ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb",
-        "032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474",
-        "7e3e37e67c698f347bb21f31721af7e07c919737eeaa7a3cc4e75d918a5292db",
-        "44b2375b0b95a26fec0119718b3f36703c8fccbe718d4fb4edd90f6f7c181174",
-        "879d49e91009d7496bf3a479b5f51be8b9de6687b5520eb86bb5f4f22ed354a4",
-    },
-}
-sys.exit(hashlib.sha256(Path(path).read_bytes()).hexdigest() not in known.get(provider, ()))
-PY
+sys.exit(not legacy_policy_identity(provider, hashlib.sha256(Path(path).read_bytes()).hexdigest()))
+" "$1" "$2"
 }
 
 # Retained roots need isolation, not an unrelated workflow upgrade. Preflight
@@ -5220,6 +5732,7 @@ model_pair_managed() {
 
 # Shared finite inventory authority for pair preparation and inactive retention.
 emit_installer_inventory_library() {
+  emit_historical_identity_library
   cat <<'PY'
 def installer_inventories(provider, files, policies, helper):
     import itertools

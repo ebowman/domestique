@@ -1,6 +1,7 @@
 # Historical installer identities
 
-Offline qualification data, **not yet consumed by the installer**. Uses Python's
+Offline qualification data. The installer consumes only a compact generated
+projection, not this provenance document or JSON at runtime. Uses Python's
 standard library and existing system shell/Git utilities. Run from the repository:
 
 ```sh
@@ -17,6 +18,70 @@ write a second output into a temporary directory, and compare with `cmp`.
 Progress and runtime go to stderr, never into generated JSON. Exit 1 means
 recorded historical failures or a missing required policy, **not** that failed
 cases were skipped. Unexpected generator errors abort without publishing data.
+
+## Embedded lookup (format 1)
+
+Regenerate only the compact block, without replaying historical installers:
+
+```sh
+python3 tools/historical-identities.py --emit-lookup domestique.sh \
+  --history-data tools/historical-identities.json --current-source domestique.sh
+python3 test/historical-identities.py
+```
+
+`--current-source` is required explicitly. It executes that source in fresh
+isolated `all` normal/guest installs using the same offline harness. The block
+between `BEGIN/END GENERATED HISTORICAL IDENTITIES` contains a shared Python
+payload: sorted `(provider, path, install-mode)` keys and exact SHA-256 sets.
+It is emitted into the installer's existing shared inventory library, and used
+directly by `policy_legacy_base`. There is no runtime repository, generator,
+JSON, external helper, or provenance-file dependency; stdin/curl installation
+remains self-contained.
+
+**This is a mechanical policy allowlist replacement, not new adoption.**
+The reserved `@legacy-policy-base/*` keys contain exactly the original 20
+provider-bound hashes. Their provider-only predicate is deliberately unchanged:
+the existing caller still supplies all path/mode routing, inventory, pristine
+base, safe-path, guard and guest-mode requirements. Neither the larger set of
+historical policies nor current guarded policies enters that legacy predicate.
+No new adoption caller consults the general provider/path/mode lookup.
+
+Projection rules:
+
+* Historical evidence comes only from output sets referenced by successful
+  runs, with their set hashes verified. Failed/unsupported partial artifacts,
+  orphan sets, and the normalized grouping index confer no authority.
+* Include raw policy **body** identities and raw roles, commands and skills
+  (`.md`, `.toml`, `.yaml` under `agents`, `commands`, or `skills`).
+  Retain every historical identity in that scope, including obsolete paths and
+  Codex-owned shared aliases; never reassign their provider or install mode.
+* Exclude every normalized role identity (`model_marker_project`), without
+  stripping markers or treating normalized pair/project metadata as raw bytes.
+  These identities remain in the full historical evidence unchanged.
+* Current membership covers actual fresh policy bodies and role/command/skill
+  emissions in both modes. For the three marked implementers, use the actual
+  **unmarked pristine snapshot bytes** emitted by the installer, not normalized
+  live roles or reconstructed marker-stripped content. Assert those pristine
+  files have no model marker. Other current payloads use exact installed bytes.
+  This is the existing pristine-base product contract, not authority to accept
+  arbitrary marked live files, custom models, or arbitrary role pairs.
+* Explicitly exclude model-setup Python helpers, manifest/state/receipt data,
+  Git excludes, and the installer/generated-library source itself. Helpers and
+  generated libraries may carry embedded identities; hashing those into their
+  own authority would create a self-reference. Their existing ownership proofs
+  are unchanged. No wildcard whole-tree membership assertion is used.
+* Missing original policy allowlist hashes abort projection rather than silently
+  dropping entries. Current emissions are additive and cannot remove historical
+  identities.
+
+The focused tests regenerate the exact block from checked-in history plus the
+working-tree source, and check both HEAD and working-tree current membership.
+Emitter changes in the authority scope therefore require regeneration. Tests
+also check complete raw historical retention, exact legacy predicate equality,
+unknown hashes, provider/path/mode mismatches, normalized-role refusal, failed
+partial evidence exclusion, and the shell wrapper's exact byte hashing.
+The history qualification below remains unchanged; projection does not rerun
+or claim to repair its 232 failed fixtures.
 
 ## Coverage and evidence
 

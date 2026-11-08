@@ -1,9 +1,11 @@
 """Historical inventory unit and isolated execution tests (stdlib only)."""
-import importlib.util
+import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -176,6 +178,111 @@ printf 'installed_at=2026-11-07T21:00:00Z\\n' > .claude/.domestique/manifest
                 self.assertEqual(HISTORY.sha(HISTORY.encoded(artifacts)), run["output_set"])
             else:
                 self.assertNotIn("output_set", run)
+
+
+class EmbeddedIdentities(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.data = json.loads((ROOT / "tools/historical-identities.json").read_text())
+        cls.source = (ROOT / "domestique.sh").read_text()
+        cls.block = HISTORY.embedded_block(cls.source)
+        cls.library = cls.block.split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
+        cls.namespace = {}
+        exec(compile(cls.library, "embedded-identities", "exec"), cls.namespace)
+        cls.current = HISTORY.current_projection(cls.source, 60)
+
+    def test_exact_drift_from_history_and_explicit_working_tree_source(self):
+        self.assertEqual(self.block, HISTORY.lookup_block(self.data, self.current))
+
+    def test_working_tree_and_head_current_emission_membership(self):
+        lookup = self.namespace["installer_identity"]
+        head = HISTORY.current_projection(HISTORY.git("show", "HEAD:domestique.sh"), 60)
+        for name, identities in (("HEAD", head), ("working tree", self.current)):
+            self.assertTrue(identities)
+            for identity in identities:
+                with self.subTest(source=name, identity=identity):
+                    self.assertTrue(lookup(*identity))
+            for provider in ("claude", "codex", "copilot"):
+                self.assertTrue(any(i[0] == provider and
+                                    ("/agents/implementer" in i[1] or
+                                     "copilot-implementer" in i[1])
+                                    for i in identities))
+            self.assertFalse(any("model-setup.py" in i[1] or "/.domestique/" in i[1]
+                                 for i in identities))
+
+    def test_every_proven_raw_historical_identity_retained(self):
+        lookup = self.namespace["installer_identity"]
+        for item in self.data["identities"]:
+            if HISTORY.authority_artifact(item):
+                self.assertTrue(lookup(item["provider"], item["path"],
+                                       item["mode"], item["sha256"]), item)
+
+    def test_legacy_predicate_is_exactly_the_old_allowlist(self):
+        self.assertEqual(HISTORY.allowlist(self.source), self.data["allowlist"])
+        lookup = self.namespace["legacy_policy_identity"]
+        for owner in ("claude", "codex", "copilot", "unknown"):
+            for item in self.data["identities"]:
+                self.assertEqual(lookup(owner, item["sha256"]),
+                                 item["sha256"] in self.data["allowlist"].get(owner, ()))
+            self.assertFalse(lookup(owner, "0" * 64))
+
+    def test_missing_legacy_hash_aborts_instead_of_silently_dropping(self):
+        data = copy.deepcopy(self.data)
+        data["allowlist"]["claude"].append("0" * 64)
+        with self.assertRaisesRegex(ValueError, "unreproduced legacy hashes"):
+            HISTORY.lookup_block(data, self.current)
+
+    def test_provider_path_mode_and_raw_normalized_boundaries(self):
+        lookup = self.namespace["installer_identity"]
+        identity = next(i for i in self.current if i[1] == "CLAUDE.local.md")
+        self.assertTrue(lookup(*identity))
+        owner, path, mode, digest = identity
+        for wrong in (("codex", path, mode, digest),
+                      (owner, "CLAUDE.md", mode, digest),
+                      (owner, path, "normal", digest),
+                      (owner, path, mode, "0" * 64)):
+            self.assertFalse(lookup(*wrong), wrong)
+        normalized = [i for i in self.data["identities"] if i["normalization"]]
+        self.assertTrue(normalized)
+        for item in normalized:
+            self.assertFalse(lookup(item["provider"], item["path"],
+                                    item["mode"], item["sha256"]), item)
+
+    def test_failed_partial_and_unreferenced_sets_contribute_no_authority(self):
+        data = copy.deepcopy(self.data)
+        artifact = {"provider": "claude", "path": ".claude/commands/goal.md",
+                    "kind": "file", "normalization": None, "sha256": "0" * 64}
+        set_id = HISTORY.sha(HISTORY.encoded([artifact]))
+        data["output_sets"][set_id] = [artifact]
+        for status in ("failure", "unsupported"):
+            data["runs"].append({"status": status, "mode": "normal",
+                                 "partial_artifacts": [artifact], "output_set": set_id})
+        data["identities"].append(artifact)
+        self.assertEqual(HISTORY.historical_projection(data),
+                         HISTORY.historical_projection(self.data))
+
+    def test_policy_wrapper_hashes_exact_file_bytes(self):
+        # Exercise the actual shell wrapper with a tiny injected shared library:
+        # no text decoding, trimming, marker stripping or newline normalization.
+        raw = b"raw policy\r\n\n"
+        function = "policy_legacy_base() {" + self.source.split(
+            "policy_legacy_base() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        library = ("emit_historical_identity_library() { cat <<'PY'\n"
+                   "def legacy_policy_identity(provider, digest):\n"
+                   f"    return provider == 'claude' and digest == '{HISTORY.sha(raw)}'\n"
+                   "PY\n}\n")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "base"
+            for content, owner, accepted in ((raw, "claude", True),
+                                             (raw, "codex", False),
+                                             (raw.rstrip(), "claude", False),
+                                             (raw.replace(b"\r", b""), "claude", False)):
+                path.write_bytes(content)
+                result = subprocess.run(
+                    ["bash", "-s", "--", owner, str(path)],
+                    input=library + function + 'policy_legacy_base "$1" "$2"\n',
+                    text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr)
 
 
 if __name__ == "__main__":
