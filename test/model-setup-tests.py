@@ -1274,7 +1274,7 @@ class ModelSetup(unittest.TestCase):
             files = ",".join(p for p in files.split(",") if p not in policies)
             recognized = namespace["installer_inventories"](provider, files, policies, helper)
             observed = set()
-            refs = ("v0.1.0", "76d217f", "6158d35", "8cb30cb", "4dc26fd",
+            refs = ("ff41544", "v0.1.0", "76d217f", "6158d35", "8cb30cb", "4dc26fd",
                     "9f33930", "v0.2.0", "v0.2.1", "v0.2.2")
             for ref in refs:
                 source = subprocess.check_output(
@@ -1282,9 +1282,10 @@ class ModelSetup(unittest.TestCase):
                     text=True)
                 version = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', source, re.M)[1]
                 inventories = re.findall(r'^\s*MANAGED_PLAIN_FILES="([^"$]+)"', source, re.M)
-                if provider == "claude" and ref == "v0.1.0":
+                if provider == "claude" and ref in ("ff41544", "v0.1.0"):
                     inventory = re.search(r'^MANAGED_FILES="([^"]+)"', source, re.M)[1]
                     self.assertIn((version, inventory), recognized)
+                    observed.add((version, inventory))
                     continue
                 if provider == "copilot":
                     if "COPILOT_ENTRIES='" not in source:

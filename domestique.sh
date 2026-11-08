@@ -1070,9 +1070,13 @@ class InstallerPair(Pair):
     policy is inferred here. Pristine inputs must NEVER be seeded from custom live
     bytes. Recognized inventory signatures come from reviewed installer versions,
     not from the target's own manifest. No persistent second registry is created.
+    Optional adopted inputs are exact raw native files independently qualified
+    by the installer's provider/path/mode identities and missing-state or
+    policy-only preflight. They bind actual inputs (including absent bases),
+    not reconstructed snapshots, normalized identities, or arbitrary role pairs.
     """
 
-    def __init__(self, pristine, recognized, merge, validate):
+    def __init__(self, pristine, recognized, merge, validate, *, adopted=None):
         super().__init__(installed=False)
         need(type(pristine) is dict and set(pristine) == set(self.files) and
              all(type(v) is bytes and len(v) <= LIMIT for v in pristine.values()),
@@ -1087,6 +1091,16 @@ class InstallerPair(Pair):
                  "install role must be actual pristine emitter output")
             self.guard(role, pristine[rel], pristine[rel], pristine[rel])
         self.prepared = None
+        # Installer-only, independently proven pre-snapshot inputs. Keep the
+        # actual absent bases in snapshots/publication; never fabricate on-disk
+        # authority or use custom live bytes as a historical merge anchor.
+        self.adopted = None if adopted is None else dict(adopted)
+        if self.adopted is not None:
+            need(set(self.adopted) == set(self.files) and
+                 self.adopted[self.helper] is None and
+                 all(self.adopted[f"{self.state}/base/{p}"] is None
+                     for p in (*self.paths.values(), self.helper)),
+                 "adoption cannot replace existing native authority")
 
     def snapshot(self):
         return self.read_snapshot(absent=True)
@@ -1103,6 +1117,9 @@ class InstallerPair(Pair):
                      f"not writable: {path.parent}")
 
     def classify(self, contents, snapshot):
+        if self.adopted is not None:
+            need(contents == self.adopted, "changed pristine adoption evidence")
+            return "legacy"
         if all(v is None for v in contents.values()):
             need(snapshot["parents"].get(str(self.root / self.state)) is None,
                  "unknown existing provider authority")
@@ -1151,6 +1168,8 @@ class InstallerPair(Pair):
             rel = self.paths[role]
             local, upstream = contents[rel], self.pristine[rel]
             base = contents[f"{self.state}/base/{rel}"]
+            if self.adopted is not None:
+                base = local  # Exact raw historical proof supplied by installer.
             if local is None:
                 selected = overrides.get(role, model)
                 outputs[role] = patch(upstream, role, {
@@ -4147,7 +4166,10 @@ lifecycle_preflight() {
       case "$rel" in
         .claude/commands/dom-models.md|.agents/skills/domestique-models/SKILL.md|.github/skills/domestique-v2-copilot-models/SKILL.md)
           if [ -e "$TARGET_DIR/$rel" ] || [ -e "$TARGET_DIR/$state/base/$rel" ]; then
-            snapshot_has_file "$state" "$provider" "$rel" ||
+            { [ "$UNINSTALL" -eq 0 ] &&
+              { [ ! -e "$TARGET_DIR/$state" ] ||
+                [ -f "$TMPDIR_WORK/policy-only-existing-$provider" ]; }; } ||
+              snapshot_has_file "$state" "$provider" "$rel" ||
               shared_refuse "unowned model command $rel; no adoption"
           fi
           ;;
@@ -4349,6 +4371,11 @@ copilot_preflight() {
       shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.uninstalled.$TS" ||
       shared_refuse "unsafe Copilot path $rel"
     base="$native_root/$state/base/$rel"
+    if [ ! -e "$base" ] && [ -f "$TMPDIR_WORK/native-adopt/$rel" ]; then
+      cmp -s "$native_root/$rel" "$TMPDIR_WORK/native-adopt/$rel" ||
+        shared_refuse "changed pristine native adoption $rel"
+      base="$TMPDIR_WORK/native-adopt/$rel"
+    fi
     if [ -e "$native_root/$rel" ] && [ ! -f "$base" ]; then
       shared_refuse "unowned Copilot path $rel; no silent preview adoption"
     fi
@@ -4535,10 +4562,17 @@ PY
     "$emitter" > "$TMPDIR_WORK/legacy-upstream"
     cp "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate"
     if [ -f "$TARGET_DIR/$rel" ]; then
-      [ -f "$TARGET_DIR/$base" ] || shared_refuse "unknown retained ownership $rel"
-      rc=0
-      merge_native_plain "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate" || rc=$?
-      [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base"
+      if [ -f "$TMPDIR_WORK/native-adopt/$rel" ]; then
+        cmp -s "$TARGET_DIR/$rel" "$TMPDIR_WORK/native-adopt/$rel" ||
+          shared_refuse "changed pristine native adoption $rel"
+        [ ! -f "$TMPDIR_WORK/native-candidate/$rel" ] ||
+          cp "$TMPDIR_WORK/native-candidate/$rel" "$TMPDIR_WORK/legacy-candidate"
+      else
+        [ -f "$TARGET_DIR/$base" ] || shared_refuse "unknown retained ownership $rel"
+        rc=0
+        merge_native_plain "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate" || rc=$?
+        [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base"
+      fi
     fi
     case "$rel" in
       *.yaml) continue ;;
@@ -5446,14 +5480,14 @@ policy_preflight() {
         [ ! -e "$TARGET_DIR/$state" ] &&
           policy_pristine_identity "$provider" "$rel" "$mode" "$block" ||
           shared_refuse "unguarded owned policy $rel lacks a proven pristine body or safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
-        # A policy identity proves no native ownership. With no provider state
-        # there is no inventory/base proof for existing native destinations.
-        # Check here even outside Git roots, where model preflight is skipped.
-        # Fresh native projections remain valid; legacy adoption is separate.
+        # Native adoption was independently proven per path/provider/mode,
+        # including outside Git roots. A policy hash grants no native authority.
         if [ "$native_selected" -eq 1 ]; then
           for native_rel in ${MANAGED_PLAIN_FILES//,/ }; do
             shared_safe_path "$native_rel" || shared_refuse "unsafe native path $native_rel"
             [ ! -e "$TARGET_DIR/$native_rel" ] ||
+              { [ -f "$TMPDIR_WORK/native-adopt/$native_rel" ] &&
+                cmp -s "$TARGET_DIR/$native_rel" "$TMPDIR_WORK/native-adopt/$native_rel"; } ||
               shared_refuse "cannot establish ownership of native path $native_rel from pristine policy $rel; preserve native files and restore their original snapshot/inventory, or explicitly relocate them before a fresh native install; retry --dry-run"
           done
         fi
@@ -5780,6 +5814,7 @@ emit_installer_inventory_library() {
 def installer_inventories(provider, files, policies, helper):
     import itertools
     # Finite source-backed inventories, NOT today's inventory minus a helper.
+    # ff41544: three Claude files (independent exact-pristine preflight);
     # v0.1.0 / 76d217f: four Claude files; 6158d35: Claude aliases and
     # Codex-owned shared aliases; 8cb30cb: shared aliases leave Codex;
     # 4dc26fd: five Copilot files; 9f33930: helpers for all three.
@@ -5802,6 +5837,8 @@ def installer_inventories(provider, files, policies, helper):
     }
     old_files = historical[provider]
     recognized = set()
+    if provider == "claude":
+        recognized.add(("0.1.0", ",".join(old_files.split(",")[:3]) + ",CLAUDE.md"))
     for count in range(len(policies) + 1):
         for subset in itertools.combinations(policies, count):
             suffix = "".join("," + p for p in subset)
@@ -5821,12 +5858,187 @@ def installer_inventories(provider, files, policies, helper):
 PY
 }
 
+# Qualify raw native adoption before any publication, also where model setup is
+# unavailable. Policy-only ownership is a separate, bounded state shape: it
+# never selects/resurrects native projections during an unrelated operation.
+native_ownership_preflight() {
+  local provider selected requested rc phase="$1"
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    selected=0
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE" ;;
+      codex) selected="$SELECT_CODEX" ;;
+      copilot) selected="$SELECT_COPILOT" ;;
+    esac
+    emit_installer_model_library > "$TMPDIR_WORK/native-library"
+    emit_installer_inventory_library >> "$TMPDIR_WORK/native-library"
+    case "$provider" in
+      claude) emit_implementer > "$TMPDIR_WORK/native-implementer"; emit_reviewer > "$TMPDIR_WORK/native-reviewer" ;;
+      codex) emit_codex_implementer > "$TMPDIR_WORK/native-implementer"; emit_codex_reviewer > "$TMPDIR_WORK/native-reviewer" ;;
+      copilot) emit_copilot_implementer > "$TMPDIR_WORK/native-implementer"; emit_copilot_reviewer > "$TMPDIR_WORK/native-reviewer" ;;
+    esac
+    {
+      [ "$provider" != codex ] || printf '# Domestique orchestration policy (Codex)\n\n'
+      emit_harness_guard "$provider" policy
+    } > "$TMPDIR_WORK/native-policy-guard"
+    requested="$REQUESTED_GUEST"
+    if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
+       [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ]; then requested=1; fi
+    rc=0
+    python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$provider" "$selected" \
+      "$MANAGED_PLAIN_FILES" "$POLICY_CANDIDATES" "$requested" \
+      "$PLATFORM_EXPLICIT" "$PLATFORM_ARG" "$UNINSTALL" "$phase" <<'PY' || rc=$?
+import os
+from pathlib import Path
+import sys
+
+root, scratch, provider, selected, files, policies, guest, explicit, platform, uninstall, phase = sys.argv[1:]
+os.chdir(root)
+scratch = Path(scratch)
+lib = {"__name__": "trusted_installer"}
+exec(compile((scratch / "native-library").read_bytes(), "<installer emitter>", "exec"), lib)
+need, identity, sha = lib["need"], lib["installer_identity"], lib["sha"]
+
+class Inventory(lib["Pair"]):
+    def check_root(self):
+        need(self.root.resolve() == self.root, "unsafe physical root")
+
+try:
+    pair = Inventory(installed=False)
+    pair.files = [pair.manifest]
+    _, contents = pair.read_snapshot(absent=True)
+    manifest = pair.inventory(contents[pair.manifest]) if contents[pair.manifest] is not None else None
+    inventory = manifest["files"].split(",") if manifest else []
+    policies = policies.split()
+    requested = explicit == "0" or platform in ("all", provider) or (
+        platform == "both" and provider in ("claude", "codex"))
+    policy_only = bool(inventory) and set(inventory) <= set(policies)
+    early = (provider == "claude" and manifest is not None and
+             manifest.get("domestique_version") == "0.1.0" and
+             inventory == files.split(",")[:3] + ["CLAUDE.md"])
+    if not policy_only and (phase == "selection" or selected != "1" or uninstall == "1"):
+        sys.exit(0)
+    if policy_only or early:
+        if policy_only:
+            need(manifest.get("domestique_version") == "0.4.3" and
+                 set(manifest) == {"snapshot_format", "platform", "domestique_version",
+                                   "installed_ref", "installed_at", "script_sha256", "files"},
+                 "unknown policy-only manifest generation")
+        # No missing/extra/tampered state may be reinterpreted as unowned.
+        bases = [f"{pair.state}/base/{p}" + (".block" if p in policies else "")
+                 for p in inventory]
+        allowed = {pair.manifest, *bases}
+        if early:
+            allowed.update(f"{pair.state}/{p}" for p in
+                           ("mode", "platforms", "guest-excludes", "beads-owned"))
+        directories = {str(parent) for p in allowed for parent in Path(p).parents
+                       if str(parent).startswith(pair.state)}
+        for directory, dirs, leaves in os.walk(pair.state, followlinks=False):
+            for name in dirs:
+                path = Path(directory) / name
+                need(not path.is_symlink() and str(path) in directories,
+                     "unknown policy-only/early state directory: " + str(path))
+            for name in leaves:
+                need(str(Path(directory) / name) in allowed,
+                     "unknown policy-only/early state path: " + str(Path(directory) / name))
+        pair.files = list(allowed) + inventory
+        _, evidence = pair.read_snapshot(absent=True)
+        guard = (scratch / "native-policy-guard").read_bytes()
+        for rel, base in zip(inventory, bases):
+            raw = evidence[base]
+            need(raw is not None, "missing pristine base: " + base)
+            mode = "guest" if rel == "CLAUDE.local.md" or rel not in policies and guest == "1" else "normal"
+            if policy_only:
+                need(raw.startswith(guard), "invalid policy-only pristine guard: " + base)
+                historical = raw[len(guard):]
+                if provider == "codex":
+                    historical = b"# Domestique orchestration policy (Codex)\n\n" + historical
+                need(identity(provider, rel, mode, sha(historical)),
+                     "unknown policy-only pristine body: " + base)
+            else:
+                need(identity(provider, rel, mode, sha(raw)), "unknown early pristine base: " + base)
+                live = evidence[rel]
+                if rel in policies and live is not None:
+                    begin, end = b"<!-- BEGIN domestique (managed) -->\n", b"<!-- END domestique -->"
+                    need(live.count(begin) == 1 and live.count(end) == 1, "invalid early policy markers")
+                    live = live.split(begin, 1)[1].split(end, 1)[0]
+                need(live == raw, "edited/missing early ownership: " + rel + "; preserve and reconcile explicitly")
+        if policy_only:
+            (scratch / ("policy-only-existing-" + provider)).touch()
+            if not requested or uninstall == "1":
+                sys.exit(10)
+    if uninstall == "1" or phase == "selection":
+        sys.exit(0)
+    if selected != "1":
+        sys.exit(0)
+    absent_state = not os.path.lexists(pair.state)
+    native = files.split(",")
+    pair.files = native + [f"{pair.state}/base/{p}" for p in native]
+    _, evidence = pair.read_snapshot(absent=True)
+    if not absent_state and not policy_only and not early:
+        need(manifest is not None, "missing native inventory; not an unowned adoption")
+        for rel in native:
+            if evidence[rel] is not None:
+                need(rel in inventory and evidence[f"{pair.state}/base/{rel}"] is not None,
+                     "incomplete native ownership: " + rel + "; restore its pristine base/inventory")
+        sys.exit(0)  # Existing authority stays on the ordinary preserving path.
+    mode = "guest" if guest == "1" else "normal"
+    if not early and any(evidence[p] is not None for p in native):
+        need(requested, "pristine native adoption requires selecting " + provider +
+             " explicitly; retained platform hints do not authorize a new native pair")
+    for rel in native:
+        raw, base = evidence[rel], evidence[f"{pair.state}/base/{rel}"]
+        if early and rel in inventory:
+            continue
+        need(base is None, "unowned native base: " + rel)
+        if raw is None:
+            continue
+        need(identity(provider, rel, mode, sha(raw)),
+             "cannot establish ownership of native path " + rel +
+             "; pristine policy does not prove native ownership; preserve and reconcile explicitly")
+        destination = scratch / "native-adopt" / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw)
+        if rel in pair.paths.values():
+            role = next(r for r, p in pair.paths.items() if p == rel)
+            upstream = (scratch / ("native-" + role)).read_bytes()
+            candidate = lib["restore_settings"](raw, lib["project_settings"](upstream, role), role)
+            destination = scratch / "native-candidate" / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(candidate)
+    if not early and (policy_only or any(evidence[p] is not None for p in native)):
+        if policy_only:
+            (scratch / ("native-adopt-manifest-" + provider)).write_bytes(contents[pair.manifest])
+        (scratch / ("native-adopt-" + provider)).touch()
+except (OSError, ValueError) as error:
+    print(f"Native ownership refused ({provider}): {error}. No project writes.", file=sys.stderr)
+    sys.exit(3)
+PY
+    case "$rc" in
+      0) : ;;
+      10)
+        # A retained policy isn't a request to install its native provider.
+        if [ "$UNINSTALL" -eq 0 ]; then
+          case "$provider" in
+            claude) SELECT_CLAUDE=0; PERSISTED_CLAUDE=0 ;;
+            codex) SELECT_CODEX=0; PERSISTED_CODEX=0 ;;
+            copilot) SELECT_COPILOT=0; PERSISTED_COPILOT=0 ;;
+          esac
+        fi ;;
+      *) shared_refuse "native ownership preflight failed for $provider" ;;
+    esac
+  done
+  platform_set
+}
+
 # Only wholly absent, unrequested native projections may become inactive.
 # This is not pair repair: validate and retain every byte of ownership history.
 retain_inactive_providers() {
   [ "$PLATFORM_EXPLICIT" -eq 1 ] || return 0
   local provider rc
   for provider in claude codex; do
+    [ ! -f "$TMPDIR_WORK/policy-only-existing-$provider" ] || continue
     case "$PLATFORM_ARG:$provider" in
       all:*|both:*|claude:claude|codex:codex) continue ;;
     esac
@@ -6134,9 +6346,25 @@ def prepare(provider):
                  "start of the role body in ./" + layout.paths[role] + " (as emitted by this installer), " +
                  "reconcile the role by hand and retry. --force cannot authorize guard repair.")
 
-    pair = lib["InstallerPair"](pristine, recognized, merge, validate)
-    before, contents = pair.snapshot()
-    if contents[layout.manifest] is not None:
+    before, contents = layout.read_snapshot(absent=True)
+    adopting = (scratch / ("native-adopt-" + provider)).exists()
+    if adopting:
+        authority = scratch / ("native-adopt-manifest-" + provider)
+        need(contents[layout.manifest] == (authority.read_bytes() if authority.exists() else None),
+             "changed pristine adoption inventory")
+        if not authority.exists():
+            need(before["parents"].get(str(root / layout.state)) is None,
+                 "new provider authority cannot become pristine adoption")
+        for rel in (*layout.paths.values(), layout.helper):
+            need(contents[f"{layout.state}/base/{rel}"] is None,
+                 "existing native base cannot become pristine adoption: " + rel)
+            if contents[rel] is not None:
+                proof = scratch / "native-adopt" / rel
+                need(proof.is_file() and contents[rel] == proof.read_bytes(),
+                     "changed pristine native adoption: " + rel)
+    pair = lib["InstallerPair"](pristine, recognized, merge, validate,
+                                adopted=contents if adopting else None)
+    if contents[layout.manifest] is not None and not adopting:
         old = pair.inventory(contents[layout.manifest])
         need((old.get("domestique_version"), old["files"]) in recognized,
              "unknown inventory generation")
@@ -6160,15 +6388,27 @@ def prepare(provider):
             continue
         live, base = root / rel, root / layout.state / "base" / rel
         if live.exists():
+            if (scratch / "native-adopt" / rel).is_file():
+                need(live.read_bytes() == (scratch / "native-adopt" / rel).read_bytes(),
+                     "changed pristine native adoption: " + rel)
+                continue
             need(base.is_file(), "unknown provider ownership: " + rel)
             merge_for(rel, live.read_bytes(), base.read_bytes(), (directory / rel).read_bytes())
     overrides = request["overrides"].get(provider, {})
     result = pair.prepare(overrides, force=force == "1" and provider in request["selected"])
     if provider not in request["selected"]:
         return
-    current = (None if result["plan"]["eligibility"] == "fresh" else
+    current = (None if result["plan"]["eligibility"] == "fresh" or adopting else
                lib["verify"](pair, contents)["selected"])
     selection = lib["installer_model_plan"](overrides, current)
+    if adopting:
+        for role, rel in layout.paths.items():
+            if contents[rel] is not None:
+                fields = parse(contents[rel], role)[1]
+                old = {"model": fields.get("model"),
+                       "effort": fields.get("model_reasoning_effort" if provider == "codex" else "effort")}
+                selection["roles"][role] = lib["installer_model_plan"](
+                    overrides, {r: old for r in layout.paths})["roles"][role]
     for role, value in selection["roles"].items():
         print("  [model selection] " + provider + ":" + role + ": " +
               display(value["current"]) + " -> " + display(value["requested"]) +
@@ -6270,6 +6510,21 @@ install_plain() {
   staged="$TMPDIR_WORK/staged"
   "$emitter" > "$staged"
   case "$dest" in */domestique-model-setup.py) python_helper_preflight "$staged" ;; esac
+  local proof="$TMPDIR_WORK/native-adopt/${dest#"$TARGET_DIR"/}" candidate
+  if [ -f "$proof" ]; then
+    cmp -s "$proof" "$dest" || shared_refuse "changed pristine native adoption $dest"
+    candidate="$TMPDIR_WORK/native-candidate/${dest#"$TARGET_DIR"/}"
+    [ -f "$candidate" ] || candidate="$staged"
+    guest_plan_write "$dest"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "upgrade proven pristine native $dest"
+    else
+      cp "$candidate" "$dest"
+    fi
+    snapshot_plain "$dest" "$staged"
+    SUM_ADOPTED+=("$dest (proven pristine historical bytes)")
+    return 0
+  fi
 
   if [ ! -e "$dest" ]; then
     guest_plan_write "$dest"
@@ -7009,6 +7264,7 @@ do_uninstall() {
     [ "$provider" = "copilot" ] && { [ "$UNINSTALL_COPILOT" -eq 0 ] || [ "$SHARED_COPILOT" -eq 0 ]; } && continue
     [ "$provider" = "claude" ] && [ "$claude_evidence" -eq 0 ] && continue
     [ "$provider" = "codex" ] && [ "$codex_evidence" -eq 0 ] && continue
+    [ ! -f "$TMPDIR_WORK/policy-only-existing-$provider" ] || continue
     dest="$target/$rel"
     [ -e "$dest" ] || continue
     if [ "$provider" != "claude" ] && [ -e "$ownership" ] &&
@@ -7426,8 +7682,10 @@ if [ "$UNINSTALL" -eq 0 ]; then
     CONFLICT_OCCURRED=1
   fi
 fi
+native_ownership_preflight selection
 retain_inactive_providers
 lifecycle_preflight
+native_ownership_preflight native
 preview_preflight
 copilot_preflight
 shared_preflight

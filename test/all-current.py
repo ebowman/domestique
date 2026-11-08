@@ -1750,15 +1750,14 @@ class AllProviders(unittest.TestCase):
                 self.assertEqual(len(backups), 1)
                 self.assertEqual(backups[0].read_bytes(), original)
 
-    def test_historical_claude_early_inventory_still_refused(self):
+    def test_historical_claude_early_inventory_pristine_adopts(self):
         root, _policy, _base, _pristine = self.historical_policy_fixture(
             "first-snapshots", "ff41544",
             "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d")
         manifest = (root / STATES["claude"] / "manifest").read_text()
         self.assertIn("files=.claude/agents/implementer.md,.claude/agents/reviewer.md,"
                       ".claude/commands/decompose.md,CLAUDE.md\n", manifest)
-        # A proven pristine policy is not permission to invent missing goal
-        # inventory. This generation independently fails unchanged authority.
+        # Actual first-snapshot generation, not a live-file-as-base fixture.
         before = snapshot(root)
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show", "9841ab9:domestique.sh"], text=True)
@@ -1766,12 +1765,37 @@ class AllProviders(unittest.TestCase):
                               script=released, ok=False)
         self.assertIn("unknown legacy policy base", result.stderr)
         self.assertEqual(before, snapshot(root))
-        for flags in ((), ("--force",), ("--force", "--dry-run")):
-            result = self.run_dom(root, "--platform=claude", *flags, ok=False)
-            self.assertEqual(result.returncode, 3)
-            self.assertIn("unknown inventory generation", result.stderr)
-            self.assertNotIn("unknown legacy policy base", result.stderr)
-            self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=claude", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=claude")
+        after = byte_snapshot(root)
+        self.run_dom(root, "--platform=claude")
+        self.assertEqual(after, byte_snapshot(root))
+
+    def test_historical_claude_early_inventory_still_refused(self):
+        for defect in ("edited-role", "edited-block", "unknown-command", "tampered-base",
+                       "missing-base"):
+            with self.subTest(defect=defect):
+                root, policy, base, _ = self.historical_policy_fixture(
+                    "early-" + defect, "ff41544",
+                    "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d")
+                path = root / ROLES[0]
+                if defect == "edited-block":
+                    path = policy
+                elif defect == "unknown-command":
+                    path = root / ".claude/commands/goal.md"
+                elif defect in ("tampered-base", "missing-base"):
+                    path = base
+                if defect == "missing-base":
+                    path.unlink()
+                elif defect == "edited-block":
+                    path.write_bytes(path.read_bytes().replace(b"## Discipline", b"## Local discipline"))
+                else:
+                    path.write_bytes((path.read_bytes() if path.exists() else b"") + b"\nUnknown edit\n")
+                before = snapshot(root)
+                for flags in ((), ("--force",), ("--dry-run",), ("--force", "--dry-run")):
+                    self.run_dom(root, "--platform=claude", *flags, ok=False)
+                    self.assertEqual(before, snapshot(root))
 
     def presnapshot_policy_fixture(self, name):
         # Actual e12f0fc output, committed only in an isolated disposable repo.
@@ -1841,6 +1865,137 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(len(new_backups), 1)
         self.assertEqual(new_backups[0].read_bytes(), original)
         self.assertTrue((root / STATES["copilot"] / "manifest").is_file())
+        stable = snapshot(root)
+        self.run_dom(root, "--platform=copilot", "--dry-run")
+        self.assertEqual(stable, snapshot(root))
+        self.run_dom(root, "--platform=copilot")
+        self.assertEqual(stable, snapshot(root))
+
+    def test_presnapshot_full_native_upgrade_and_handoff(self):
+        for selection in (("--platform=claude",), (), ("--platform=copilot",)):
+            with self.subTest(selection=selection):
+                root, policy, pristine = self.presnapshot_policy_fixture(
+                    "full-" + (selection[0].split("=")[1] if selection else "default"))
+                if selection == ("--platform=copilot",):
+                    # State produced by the actual previous policy-only release.
+                    previous = subprocess.check_output(
+                        ["git", "-C", str(SOURCE.parent), "show", "ff41fda:domestique.sh"], text=True)
+                    self.run_dom(root, *selection, script=previous)
+                    retained = snapshot(root / STATES["claude"])
+                    before = snapshot(root)
+                    self.run_dom(root, *selection, "--dry-run")
+                    self.assertEqual(before, snapshot(root))
+                    self.run_dom(root, *selection)
+                    self.assertEqual(retained, snapshot(root / STATES["claude"]))
+                    self.assertFalse((root / ".claude/commands/goal.md").exists())
+                    selection = ("--platform=claude",)  # Explicitly complete native ownership.
+                original = policy.read_bytes()
+                before = snapshot(root)
+                self.run_dom(root, *selection, "--dry-run")
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, *selection)
+                base = root / STATES["claude"] / "base/CLAUDE.md.block"
+                self.assertTrue(base.read_bytes().startswith(self.claude_policy_guard()))
+                old_body = original.split(b"<!-- BEGIN domestique (managed) -->\n", 1)[1].split(
+                    b"<!-- END domestique -->", 1)[0]
+                self.assertEqual(policy.read_bytes(), original.replace(old_body, base.read_bytes()))
+                expected = set(STATES) if not selection else {"claude"}
+                if (root / STATES["copilot"]).exists():
+                    expected.add("copilot")
+                self.assertEqual(self.installed(root), expected)
+                for rel, evidence in before.items():
+                    if ".bak." in rel:
+                        self.assertEqual(snapshot(root)[rel], evidence, rel)
+                state = root / STATES["claude"]
+                inventory = dict(line.split("=", 1) for line in
+                                 (state / "manifest").read_text().splitlines())["files"].split(",")
+                for rel in inventory:
+                    suffix = ".block" if rel.startswith("CLAUDE") else ""
+                    self.assertTrue((state / "base" / (rel + suffix)).is_file(), rel)
+                lib = self.model_library("claude")
+                for role, rel, model in zip(("implementer", "reviewer"),
+                                           (ROLES[0], ".claude/agents/reviewer.md"), ("sonnet", "opus")):
+                    self.assertEqual(lib["parse"]((root / rel).read_bytes(), role)[1]["model"], model)
+                    self.assertNotIn(b"# domestique-model-setup:", (state / "base" / rel).read_bytes())
+                stable = snapshot(root)
+                self.run_dom(root, *selection, "--dry-run")
+                self.assertEqual(stable, snapshot(root))
+                self.run_dom(root, *selection)
+                self.assertEqual(stable, snapshot(root))
+
+    def test_presnapshot_native_upgrade_outside_gitroot(self):
+        fixture, policy, _ = self.presnapshot_policy_fixture("outside-source")
+        for context in ("nongit", "subdir"):
+            with self.subTest(context=context):
+                root = self.presnapshot_target("native-" + context, context)
+                shutil.copytree(fixture / ".claude", root / ".claude")
+                (root / "CLAUDE.md").write_bytes(policy.read_bytes())
+                before = snapshot(self.work)
+                self.run_dom(root, "--platform=claude", "--dry-run")
+                self.assertEqual(before, snapshot(self.work))
+                self.run_dom(root, "--platform=claude")
+                for rel, evidence in before.items():
+                    if ".bak." in rel:
+                        self.assertEqual(snapshot(self.work)[rel], evidence, rel)
+                after = byte_snapshot(root)
+                self.run_dom(root, "--platform=claude")
+                self.assertEqual(after, byte_snapshot(root))
+                self.assertNotIn(b"# domestique-model-setup:", (root / ROLES[0]).read_bytes())
+
+    def test_presnapshot_native_unproven_and_partial_state_zero_writes(self):
+        for defect in ("wrong-path", "role-symlink", "role-hardlink", "orphan-base",
+                       "partial-manifest", "normalized-marker"):
+            with self.subTest(defect=defect):
+                root, _, _ = self.presnapshot_policy_fixture("unsafe-" + defect)
+                role = root / ROLES[0]
+                if defect == "wrong-path":
+                    role.write_bytes((root / ".claude/agents/reviewer.md").read_bytes())
+                elif defect in ("role-symlink", "role-hardlink"):
+                    victim = root / "public-victim"
+                    role.rename(victim)
+                    if defect == "role-symlink":
+                        role.symlink_to(victim)
+                    else:
+                        os.link(victim, role)
+                elif defect == "normalized-marker":
+                    role.write_bytes(role.read_bytes().replace(
+                        b"---\n", b'---\n# domestique-model-setup: {"project":"<PHYSICAL-PROJECT-ROOT>"}\n', 1))
+                else:
+                    state = root / STATES["claude"]
+                    state.mkdir()
+                    if defect == "orphan-base":
+                        base = state / "base" / ROLES[0]
+                        base.parent.mkdir(parents=True)
+                        base.write_bytes(role.read_bytes())
+                    else:
+                        (state / "manifest").write_text(
+                            "snapshot_format=1\nplatform=claude\ndomestique_version=0.4.3\n"
+                            "files=" + ROLES[0] + "\n")
+                before = snapshot(root)
+                for flags in ((), ("--force",), ("--dry-run",)):
+                    self.run_dom(root, "--platform=claude", *flags, ok=False)
+                    self.assertEqual(before, snapshot(root))
+
+    def test_policy_only_no_resurrection_and_uninstall_owns_only_policy(self):
+        root, policy, _ = self.presnapshot_policy_fixture("policy-only-removal")
+        self.run_dom(root, "--platform=copilot")
+        (root / ROLES[0]).unlink()
+        retained = snapshot(root / ".claude")
+        before = snapshot(root)
+        self.run_dom(root, "--platform=copilot", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=copilot")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--uninstall", "--platform=claude", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--uninstall", "--platform=claude")
+        for rel, evidence in retained.items():
+            if rel.startswith(("agents/", "commands/")):
+                self.assertEqual(snapshot(root / ".claude")[rel], evidence, rel)
+        self.assertFalse((root / STATES["claude"]).exists())
+        self.assertIn(b"Public host prefix\r\n", policy.read_bytes())
+        self.assertIn(b"Public host suffix without newline", policy.read_bytes())
+        self.assertNotIn(b"<!-- BEGIN domestique", policy.read_bytes())
 
     def test_presnapshot_policy_unproven_zero_writes(self):
         for defect in ("edited", "unknown", "crlf", "tampered-guard", "removed-guard", "wrong-path",
@@ -1913,17 +2068,12 @@ class AllProviders(unittest.TestCase):
     def test_presnapshot_policy_keeps_selected_and_guest_boundaries(self):
         root, _policy, _pristine = self.presnapshot_policy_fixture("selected-boundaries")
         before = snapshot(root)
-        for args in (("--platform=claude",), (), ("--platform=copilot", "--guest")):
+        for args in (("--platform=copilot", "--guest"), ("--platform=claude", "--guest")):
             for flags in ((), ("--dry-run",), ("--force",)):
                 result = self.run_dom(root, *args, *flags, ok=False)
                 self.assertEqual(result.returncode, 3, result.stderr)
                 self.assertEqual(before, snapshot(root))
-                if "--guest" in args:
-                    self.assertIn("cannot be changed in guest mode", result.stderr)
-                else:
-                    # Policy proof is not selected roles/commands adoption (.6).
-                    self.assertIn("ownership", result.stderr)
-                    self.assertNotIn("unguarded owned policy", result.stderr)
+                self.assertRegex(result.stderr, "cannot be changed in guest mode|cannot establish ownership")
 
     def presnapshot_target(self, name, context):
         if context == "nongit":
@@ -1938,13 +2088,15 @@ class AllProviders(unittest.TestCase):
         fixture, policy, _pristine = self.presnapshot_policy_fixture("native-source")
         for context, defect in itertools.product(
                 ("nongit", "gitroot", "subdir"),
-                ("unknown-implementer", "extra-goal", "early-inventory")):
+                ("unknown-implementer", "extra-goal", "edited-early-inventory")):
             with self.subTest(context=context, defect=defect):
                 root = self.presnapshot_target(f"{context}-{defect}", context)
                 (root / "CLAUDE.md").write_bytes(policy.read_bytes())
-                if defect == "early-inventory":
+                if defect == "edited-early-inventory":
                     shutil.copytree(fixture / ".claude", root / ".claude")
                     collision = ".claude/agents/implementer.md"
+                    path = root / collision
+                    path.write_bytes(path.read_bytes() + b"\nUnknown local edit\n")
                 else:
                     # Isolate each collision: a role-only check must not miss
                     # an extra command at a predictable installer destination.

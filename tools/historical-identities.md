@@ -55,14 +55,24 @@ checks remain mandatory, including for `--force` and `--dry-run`.
 An unselected policy receives only its harness guard, preserving outside bytes;
 its published base is guard plus proven historical body, not today's workflow.
 Its new manifest owns **only that policy**, never untouched roles, commands,
-helpers or backups. The real `e12f0fc` fixture supports initial Copilot preview
-and apply; `067569a` is the refusing negative control. Selected legacy
-role/command adoption and subsequent ownership/rerun integration remain hq-dds.6
-work. This policy half is not a standalone release or a full Claude upgrade.
-Selected pre-snapshot policy recovery requires fresh native inventory destinations:
-existing roles, commands or helpers are refused before writes in Git roots,
-subdirectories and non-Git targets, including with `--force` or `--dry-run`.
-The policy identity alone never proves ownership of those native files.
+helpers or backups. Policy-only state is validated and retained without selecting
+or resurrecting that provider's native files on an unrelated explicit install.
+An explicit selection can complete it using independent native ownership proof;
+uninstall removes only the owned policy, not the untouched native files.
+
+Selected manifest-less roles/commands now require exact raw-byte identities for
+**each** provider/path/install-mode before any writes, in Git roots, subdirectories
+and non-Git targets. The policy identity alone never proves native ownership.
+Unknown/edited files, normalized role identities, unowned helpers, unsafe objects
+and partial state cannot take this adoption path, even with `--force`.
+The real `e12f0fc` committed fixture exercises Claude, Copilot and default
+selection, zero-write previews and no-op reruns; `067569a` remains the released
+negative control. The finite first-snapshot `ff41544` inventory additionally
+requires exact original native/policy bases and pristine live content; it is not
+missing-base repair. Adoption publishes ordinary manifests and current pristine
+bases, preserves model/effort selections and outside-policy bytes, and never
+claims `.bak.*` siblings. Custom owned pairs retain their existing preserving
+merge/review-and-Save requirements.
 
 Projection rules:
 
