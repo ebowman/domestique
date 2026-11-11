@@ -504,8 +504,9 @@ cannot reverse migrated ownership/workflows. See the concise
 
 ### Offline baseline release gate
 
-The hq-dds.3 baseline targets installer revision
-`7abd9b72338f72485bb573ce8f9e3f5d902a24d0`. Run the following complete suites
+The historical hq-dds.3 baseline, recorded on **2026-11-07**, targets installer
+revision `7abd9b72338f72485bb573ce8f9e3f5d902a24d0`; it was not rerun by the
+bounded published-upgrade gate below. Its reproduction commands are the following complete suites
 from that full-history, tag-enabled checkout, without changing installer or test
 bytes between runs. Use disposable fixtures, a fresh temporary `HOME` and
 `TMPDIR` per suite, no consumer configuration, and a tool-only `PATH` containing
@@ -676,6 +677,127 @@ explicitly accepted for 0.2.0 preparation, **not fixed**:
 
 Retain diagnostics on a new occurrence; no blind repeat loops. Configuration
 installation, helper checks and offline tests do not attest native readiness.
+
+### Bounded published-upgrade gate
+
+`test/published-upgrades.py` is an opt-in, stdlib-only offline gate, not a
+universal every-commit upgrade guarantee. This is candidate evidence for the
+**v0.4.4 safe-upgrade scope with explicit preserving recovery**, not a version
+bump or a promise of universal automatic migration. Its exact published set is
+`v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.3.0`, `v0.3.1`, `v0.4.0`,
+`v0.4.1`, `v0.4.2`, `v0.4.3`. Local tag objects and historical support files
+are required; it never fetches missing history or substitutes a newer core.
+
+The finite plan has **74 cases**: v0.1.0's Claude-only normal installation
+upgraded to Claude or all; for each later tag, Claude, Codex and Copilot
+same-provider upgrades plus default-to-all, each in normal and guest mode.
+Equivalent default/all aliases are not multiplied, and combined-provider
+permutations and arbitrary ancestry commits are not exhaustively qualified.
+
+```sh
+python3 test/published-upgrades.py --list --revision HEAD
+python3 test/published-upgrades-tests.py -v
+python3 test/published-upgrades.py --revision FULL_CANDIDATE_SHA --workers 2 \
+  --output /tmp/published-upgrades-unique-run
+# Narrow reproduction, always to a NEW output directory:
+python3 test/published-upgrades.py --revision FULL_CANDIDATE_SHA \
+  --filter v0.2.0-guest-codex --output /tmp/published-upgrades-repro
+```
+
+The plan/count and resolved revisions are emitted before execution. Per-attempt
+commands, return codes, expected outcomes, stdout/stderr and timings, source
+archive hashes, tree fingerprints and retained isolated fixtures are evidence;
+existing output directories are refused. Default budgets are 900 seconds per
+installer attempt and 120 seconds for Git setup, with at most two workers.
+Timeouts and any unexpected exit (including exit 3) fail; failed published
+installs are never relabelled unsupported. Full runs may take hours under load.
+
+Each release case checks preview bytes/modes/mtimes (including Git index and
+excludes), applies, then checks byte/mode/status-stable rerun with no new backups.
+It preserves policy host text, existing backups and model/effort selections;
+selected native bodies, pristine bases and manifest inventories must match the
+current contract. Comparison omits only validated installation timestamps and,
+for role-body comparison, separately checked model/effort lines and a marker
+whose **raw** root and both live hashes have first been validated. Normalized
+bytes never confer ownership. Guest ownership ledgers are not fresh-equality
+objects: historical `.beads` provenance is legitimate, and retired provider
+copies of shared bases need not survive when the current shared base exists.
+Unknown old files, including unclassified metadata, must remain byte/mode exact;
+unknown new files are rejected, not normalized away. Active guest projections must remain
+Git-excluded; unrelated host exclusions remain intact.
+An untouched snapshot may retain its **exact original** manifest provenance
+because manifests are written only when their snapshots change; its inventory
+and pristine bases must still match current upstream. Arbitrary stale or altered
+manifest metadata is not accepted. Repeated `--filter` selects the union of
+impacted cases without rerunning the whole gate.
+
+`python3 test/published-upgrades-tests.py --reported` separately selects seven
+reported-risk checks using existing current-test helpers: retained custom Claude
+under Copilot-only selection, known-old-base proof, removed-provider projections,
+tracked guest publication, staged pre-snapshot adoption, tracked old policy
+refusal plus `--no-guest` recovery, and custom unowned converted-role refusal
+plus an explicitly backed-up fresh installation. These are not added Cartesian
+provider permutations. The staged pre-snapshot fixture avoids commits; it does
+not claim the committed/worktree variants of the broader existing suite.
+The reported checks run serially, each with a separate 7,200-second test budget
+and 1,800-second piped-installer budget. They retain the reviewed real-pipe
+`run_stdin` helper (independent feeder and owned-group cleanup), not file-route
+substitution. A test deadline unwinds that cleanup; the outer process has a
+further 60-second safety margin. Every completed case records command, source
+hashes, stdout/stderr, exit and duration before the next case starts. A failure
+stops the batch for diagnosis; timeout is never PASS. For a selected case:
+
+```sh
+python3 -B -Werror test/published-upgrades-tests.py --reported \
+  --case test_historical_claude_retained_guard_only \
+  --timeout 7200 --installer-timeout 1800 \
+  --output /tmp/published-reported-unique-run
+```
+
+Omit `--case` for all seven; repeat it for a selected subset. Omit `--output`
+for a new temporary evidence directory; an existing output directory is refused.
+
+Recovery checks require specific diagnostics and zero writes, not arbitrary
+exit-3 acceptance. Guest mode cannot rewrite tracked host policies to create
+privacy. `--no-guest` exercises normal-mode recovery, not a guarantee of later
+guest conversion. Unknown/tampered/custom unowned roles are never overwritten
+or assigned fabricated pristine bases: the fixture owner explicitly moves its
+pair to a separate backup before fresh installation. That is not automatic
+migration or proof that arbitrary custom prompts have been reconciled.
+Retained unselected workflows are checked for preservation by the reported
+regressions, not against fresh defaults.
+
+These are local configuration tests only: no accounts, native clients, catalogs
+or real consumer projects. They do not establish native loading/model readiness,
+replace the final post-version-bump baseline, or supersede deferred exhaustive
+mutation/ancestry qualification.
+
+**Bounded qualification completed 2026-11-11 at `463dc94`: 74 published cases
+and seven reported risks have PASS evidence.** The 74 file-execution results
+remain the **2026-11-10** run at `202bfe9`: 48 initial passes plus 26 targeted
+replays after correcting unchanged-manifest comparison. They were digest-checked,
+not rerun. The installer remains SHA-256
+`ee3efc9dccecbc81d429216e731412f9515a051567b9709f90cd01f248f67324`.
+The original digest index is `/tmp/dds28-final-evidence/evidence.json`; its
+historical BLOCKED status is superseded only for these reported checks.
+
+All seven were executed once serially with the hq-dds.29 helper at `463dc94`,
+exiting zero without skips: retained custom policy (170s), known old base
+(149s), removed provider (207s), tracked guest writes (451s), pre-snapshot
+adoption (85s), tracked old-policy recovery (71s), and unowned converted-role
+refusal/explicit-backup recovery (110s). Per-case commands, source hashes and
+logs are under `/tmp/dds28-reported-463dc94-final/`; `summary.json` indexes them.
+Executed harness bytes are retained there under `executed-sources/`. Subsequent
+comparator-only unknown-file controls do not change these reported checks.
+
+The original 3,600-second suite timeout (first case incomplete, six unrun) and
+900-second stdin probe remain historical failures, not successes. hq-dds.29
+addressed the intermittent host subprocess input/output stall in the test
+transport; no installer product change or deterministic root-cause claim is
+implied. The completed checks above use actual piped stdin. This bounded result
+does not qualify network delivery, native clients/accounts, consumer projects,
+all guest conversions or exhaustive ancestry. Parent independent review and
+the final post-version-bump baseline are still required.
 
 ### Historical 0.2.0 release selection and fixture portability
 
