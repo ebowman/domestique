@@ -2,15 +2,19 @@
 import itertools
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest.mock import patch
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "domestique.sh"
@@ -31,6 +35,294 @@ VERSION = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', SCRIPT, re.M).group(1)
 GUIDE = ("https://github.com/ebowman/domestique/blob/main/"
          "docs/install-upgrade-design.md#remote-install-and-upgrade")
 LABELS = {"claude": "Claude Code", "codex": "Codex", "copilot": "GitHub Copilot"}
+
+
+def run_stdin(args, *, input, **kwargs):
+    """Private POSIX run helper; stdin and process-group ownership are reserved."""
+    # Keep Bash's input a real pipe, but feed it independently of the output
+    # reader. The retained-policy probe stalled for 900s with communicate(input),
+    # while its file control completed in 66s (zero writes in both). Artifacts:
+    # /tmp/dds28-retained-{stdin,file}-probe/result.json. The small transport
+    # probe also passed with raw subprocess.run in review (5/5): the stall is
+    # intermittent, not proof of a deterministic macOS poll()/write() defect.
+    # /tmp/bash_2026-11-10_233623_wV52.sample.txt shows Bash in
+    # __write_nocancel; that stack alone does not establish the parent's state.
+    # Spooling only the transport bytes does not give Bash a script filename.
+    for reserved in ("stdin", "start_new_session", "process_group", "preexec_fn"):
+        if reserved in kwargs:
+            raise ValueError(f"run_stdin reserves {reserved}")
+    timeout = kwargs.pop("timeout", None)
+    check = kwargs.pop("check", False)
+    if kwargs.pop("capture_output", False):
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr may not be used with capture_output")
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    with tempfile.TemporaryFile() as source:
+        with subprocess.Popen(args, stdin=subprocess.PIPE, start_new_session=True,
+                              **kwargs) as process:
+            feeder = None
+            try:
+                # Let Popen choose text mode, locale encoding and errors exactly
+                # as for communicate(input); binary input is never re-encoded.
+                data = input
+                if data is not None:
+                    if process.text_mode:
+                        data = data.encode(process.stdin.encoding, process.stdin.errors)
+                    source.write(data)
+                source.seek(0)
+                feeder = subprocess.Popen(
+                    ["cat"], stdin=source, stdout=process.stdin)
+                process.stdin.close()
+                process.stdin = None
+                stdout, stderr = process.communicate(timeout=timeout)
+                status = feeder.wait(timeout=5)
+                # Help/refusals can exit before consuming the whole script.
+                if status not in (0, -signal.SIGPIPE):
+                    raise subprocess.CalledProcessError(status, feeder.args)
+                result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+                if check:
+                    result.check_returncode()
+                return result
+            except BaseException:
+                # This private harness is the sole waiter (default SIGCHLD).
+                # POSIX Popen records returncode when it reaps, including waits
+                # inside communicate(). Until then even an exited leader pins
+                # its PID, so pre-reap failures can kill the owned group safely.
+                # Do not poll here: that could reap and release the identity.
+                # After reaping, only feeder/FD cleanup remains ours; surviving
+                # descendants no longer justify signaling the old group ID.
+                if process.returncode is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                # Do not communicate() again: inherited output descriptors can
+                # keep a drain blocked. Popen's context closes them after wait.
+                process.wait()
+                raise
+            finally:
+                if feeder is not None:
+                    if feeder.poll() is None:
+                        feeder.kill()
+                    feeder.wait()
+
+
+class StdinTransport(unittest.TestCase):
+    def test_output_backpressure_while_script_is_still_being_fed(self):
+        # Bounded concurrent feed/drain contract, NOT a deterministic failure
+        # control for the intermittent original stall. Output precedes input
+        # consumption and exceeds pipe capacity in both directions.
+        child = (
+            "import hashlib, sys\n"
+            "sys.stdout.buffer.write(b'o' * 262144); sys.stdout.buffer.flush()\n"
+            "sys.stderr.buffer.write(b'e' * 262144); sys.stderr.buffer.flush()\n"
+            "print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())\n"
+        )
+        data = b"x" * 1048576
+        result = run_stdin([sys.executable, "-c", child], input=data,
+                           capture_output=True, timeout=10, check=True)
+        self.assertEqual(result.stdout, b"o" * 262144 +
+                         hashlib.sha256(data).hexdigest().encode() + b"\n")
+        self.assertEqual(result.stderr, b"e" * 262144)
+
+    def test_text_binary_empty_and_encoding_errors(self):
+        for data, options, expected in (
+                ("caf\u00e9", {"text": True, "encoding": "latin-1"}, "caf\u00e9"),
+                ("caf\u00e9", {"encoding": "latin-1"}, "caf\u00e9"),
+                ("caf\u00e9", {"encoding": "ascii", "errors": "replace"}, "caf?"),
+                (b"\x00\xff\r\n", {}, b"\x00\xff\r\n"),
+                ("", {"text": True}, ""),
+                (b"", {}, b"")):
+            with self.subTest(data=data, options=options):
+                result = run_stdin(["cat"], input=data, capture_output=True,
+                                   timeout=5, check=True, **options)
+                self.assertEqual(result.stdout, expected)
+        with self.assertRaises(UnicodeEncodeError):
+            run_stdin(["cat"], input="\u00e9", encoding="ascii", timeout=5)
+        decoded = run_stdin(
+            [sys.executable, "-c", "import os; os.write(1, b'\\xff')"],
+            input="", encoding="ascii", errors="replace", capture_output=True,
+            timeout=5, check=True)
+        self.assertEqual(decoded.stdout, "\ufffd")
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            run_stdin(["bash", "-c", "printf failure; exit 7"], input=b"",
+                      capture_output=True, check=True, timeout=5)
+        self.assertEqual((caught.exception.returncode, caught.exception.stdout),
+                         (7, b"failure"))
+
+    def assert_process_gone(self, pid):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)  # Allow the OS to reap an orphan after group kill.
+        self.fail(f"owned process {pid} survived cleanup")
+
+    def test_timeout_and_error_cleanup_forked_descendants(self):
+        real_popen = subprocess.Popen
+        # A separate session must remain untouched by the helper's cleanup.
+        with real_popen([sys.executable, "-c", "import signal; signal.pause()"],
+                        start_new_session=True) as unrelated:
+            try:
+                for failure in ("timeout", "exited-leader", "error"):
+                    with self.subTest(failure=failure):
+                        owned = []
+                        ready = []
+
+                        def spawn(*args, **kwargs):
+                            process = real_popen(*args, **kwargs)
+                            owned.append(process)
+                            return process
+
+                        def fail_communicate(process, **_kwargs):
+                            ready.append(process.stdout.readline())
+                            raise RuntimeError("injected drain error")
+
+                        code = (
+                            "import os, signal\n"
+                            "pid = os.fork()\n"
+                            "if pid == 0:\n"
+                            "    print(os.getpid(), flush=True)\n"
+                            "    signal.pause()\n"
+                            f"elif {failure == 'exited-leader'}:\n"
+                            "    os._exit(0)\n"
+                            "else:\n"
+                            "    signal.pause()\n"
+                        )
+                        with patch.object(subprocess, "Popen", side_effect=spawn):
+                            if failure == "error":
+                                with patch.object(real_popen, "communicate", fail_communicate):
+                                    with self.assertRaisesRegex(RuntimeError, "injected"):
+                                        run_stdin([sys.executable, "-c", code],
+                                                  input=b"x" * 1048576,
+                                                  capture_output=True, timeout=1)
+                                child_pid = int(ready[0])
+                            else:
+                                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                                    run_stdin([sys.executable, "-c", code],
+                                              input=b"x" * 1048576,
+                                              capture_output=True, timeout=1)
+                                child_pid = int(caught.exception.output)
+                        self.assert_process_gone(child_pid)
+                        for process in owned:
+                            self.assertIsNotNone(process.returncode)
+                            for stream in (process.stdin, process.stdout, process.stderr):
+                                if stream is not None:
+                                    self.assertTrue(stream.closed)
+                        self.assertIsNone(unrelated.poll())
+            finally:
+                unrelated.kill()
+                unrelated.wait()
+
+    def test_unexpected_feeder_failure_is_reported(self):
+        real_popen = subprocess.Popen
+
+        def spawn(args, **kwargs):
+            if args == ["cat"]:
+                args = [sys.executable, "-c", "raise SystemExit(42)"]
+            return real_popen(args, **kwargs)
+
+        with patch.object(subprocess, "Popen", side_effect=spawn):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                run_stdin(["bash", "-s"], input="exit\n", text=True,
+                          capture_output=True, timeout=5)
+        self.assertEqual(caught.exception.returncode, 42)
+
+    def test_post_reap_errors_never_signal_group(self):
+        real_popen = subprocess.Popen
+        real_communicate = real_popen.communicate
+        real_wait = real_popen.wait
+        for failure in ("check", "feeder-status", "feeder-wait"):
+            with self.subTest(failure=failure):
+                owned = []
+                completed = []
+                wait_failed = []
+
+                def spawn(args, **kwargs):
+                    if args == ["cat"] and failure == "feeder-status":
+                        args = [sys.executable, "-c", "raise SystemExit(42)"]
+                    process = real_popen(args, **kwargs)
+                    owned.append(process)
+                    return process
+
+                def communicate(process, **kwargs):
+                    output = real_communicate(process, **kwargs)
+                    self.assertIsNotNone(process.returncode)
+                    # Confirm actual reaping, not merely an exited leader.
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(process.pid, os.WNOHANG)
+                    completed.append(process)
+                    return output
+
+                def wait(process, *args, **kwargs):
+                    if (failure == "feeder-wait" and completed
+                            and process is owned[1] and not wait_failed):
+                        wait_failed.append(True)
+                        raise RuntimeError("injected post-completion feeder wait error")
+                    return real_wait(process, *args, **kwargs)
+
+                error = RuntimeError if failure == "feeder-wait" else subprocess.CalledProcessError
+                with patch.object(subprocess, "Popen", side_effect=spawn), \
+                        patch.object(real_popen, "communicate", communicate), \
+                        patch.object(real_popen, "wait", wait), \
+                        patch.object(os, "killpg") as group_signal:
+                    with self.assertRaises(error) as caught:
+                        run_stdin(["bash", "-c", "printf failure; exit 7"
+                                   if failure == "check" else "exit 0"],
+                                  input=b"", capture_output=True, check=True, timeout=5)
+                self.assertEqual(completed, [owned[0]])
+                # Intercept rather than send a potentially stale PGID signal.
+                # This detects the unsafe attempt; it does not simulate PID reuse.
+                group_signal.assert_not_called()
+                if failure == "check":
+                    self.assertEqual((caught.exception.returncode, caught.exception.stdout),
+                                     (7, b"failure"))
+                elif failure == "feeder-status":
+                    self.assertEqual(caught.exception.returncode, 42)
+                else:
+                    self.assertTrue(wait_failed)
+                for process in owned:
+                    self.assertIsNotNone(process.returncode)
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            self.assertTrue(stream.closed)
+
+    def test_pipe_transport_early_exit_and_timeout(self):
+        result = run_stdin(
+            ["bash", "-s"], input="test -p /dev/stdin || exit 9\n"
+            "printf 'out\\n'; printf 'err\\n' >&2; exit 7\n" + "# padding\n" * 5000,
+            text=True, capture_output=True, timeout=5)
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (7, "out\n", "err\n"))
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_stdin(["bash", "-s"], input="exec sleep 10\n" + "# padding\n" * 5000,
+                      text=True, capture_output=True, timeout=0.1)
+
+
+def notice_timeout():
+    """Per-subprocess deadline for the two bounded notice tests, in seconds."""
+    message = "TEST_TIMEOUT must be a positive finite number of seconds"
+    try:
+        seconds = float(os.environ.get("TEST_TIMEOUT", "300"))
+    except ValueError:
+        raise ValueError(message) from None
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(message)
+    return seconds
+
+
+class NoticeTimeoutConfig(unittest.TestCase):
+    def test_numeric_boundaries(self):
+        for value in ("0.01", "1", "1e2"):
+            with self.subTest(value=value), patch.dict(os.environ, TEST_TIMEOUT=value):
+                self.assertEqual(notice_timeout(), float(value))
+        for value in ("", "invalid", "NaN", "inf", "-inf", "0", "-1", "1e999", "1e-999"):
+            with self.subTest(value=value), patch.dict(os.environ, TEST_TIMEOUT=value):
+                with self.assertRaisesRegex(ValueError, "positive finite"):
+                    notice_timeout()
 
 
 def snapshot(root):
@@ -73,9 +365,9 @@ class AllProviders(unittest.TestCase):
     def run_dom(self, root, *args, ok=True, script=SCRIPT, env=None):
         # No path to the source, launcher or even a target argument: cwd is an
         # independent temp project. All installed bytes must come from stdin.
-        result = subprocess.run(["bash", "-s", "--", *args], cwd=root,
-                                input=script, text=True, capture_output=True,
-                                env=env or self.env)
+        result = run_stdin(["bash", "-s", "--", *args], cwd=root,
+                           input=script, text=True, capture_output=True,
+                           env=env or self.env)
         if ok:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         else:
@@ -905,13 +1197,26 @@ class AllProviders(unittest.TestCase):
             roles = {rel.replace("implementer", role):
                      (root / rel.replace("implementer", role)).read_bytes()
                      for rel in ROLES for role in ("implementer", "reviewer")}
-            # Explicit installs retain additive Claude/Codex selection and
-            # upgrade retained root policies, but not unrelated Copilot skills.
+            # ae02624: unselected root policies retain their workflow, even
+            # when additive installation updates other provider projections.
+            codex_policy = root / "AGENTS.md"
+            retained = codex_policy.read_bytes() if codex_policy.exists() else None
+            if retained is not None:
+                self.assertIn(b"## Active harness boundary (codex only)", retained)
+                self.assertNotIn(b"## Direct parent Git requests", retained)
             copilot_skills = snapshot(root / ".github/skills")
             self.run_dom(root, "--platform", "claude")
             self.assertEqual(snapshot(root / ".github/skills"), copilot_skills)
+            self.assertEqual(codex_policy.read_bytes() if codex_policy.exists() else None,
+                             retained)
+            self.assertIn("## Direct parent Git requests", policy.read_text())
             self.run_dom(root, "--platform", "copilot")
-            self.assert_parent_git_instructions(root, guest=mode == "guest")
+            self.assertEqual(codex_policy.read_bytes() if codex_policy.exists() else None,
+                             retained)
+            for selected in (policy, root / ".github/skills/domestique-v2-copilot/SKILL.md",
+                             *(() if mode == "guest" else
+                               (root / ".github/copilot-instructions.md",))):
+                self.assertIn("## Direct parent Git requests", selected.read_text())
             self.assertTrue(policy.read_text().endswith("\nHost-owned policy tail.\n"))
             for provider, impl in zip(STATES, ROLES):
                 module = self.model_library(provider)
@@ -941,6 +1246,7 @@ class AllProviders(unittest.TestCase):
                                             "effort": fields.get("model_reasoning_effort")})
                 self.assertEqual(module["split_marker"](
                     (root / rel).read_bytes(), role)[0].encode(), expected)
+            self.assert_parent_git_instructions(root, guest=mode == "guest")
             self.assert_parent_child_ownership(root, guest=mode == "guest")
             before = byte_snapshot(root)
             self.run_dom(root)
@@ -1710,15 +2016,14 @@ class AllProviders(unittest.TestCase):
                 self.assertEqual(len(backups), 1)
                 self.assertEqual(backups[0].read_bytes(), original)
 
-    def test_historical_claude_early_inventory_still_refused(self):
+    def test_historical_claude_early_inventory_pristine_adopts(self):
         root, _policy, _base, _pristine = self.historical_policy_fixture(
             "first-snapshots", "ff41544",
             "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d")
         manifest = (root / STATES["claude"] / "manifest").read_text()
         self.assertIn("files=.claude/agents/implementer.md,.claude/agents/reviewer.md,"
                       ".claude/commands/decompose.md,CLAUDE.md\n", manifest)
-        # A proven pristine policy is not permission to invent missing goal
-        # inventory. This generation independently fails unchanged authority.
+        # Actual first-snapshot generation, not a live-file-as-base fixture.
         before = snapshot(root)
         released = subprocess.check_output(
             ["git", "-C", str(SOURCE.parent), "show", "9841ab9:domestique.sh"], text=True)
@@ -1726,12 +2031,386 @@ class AllProviders(unittest.TestCase):
                               script=released, ok=False)
         self.assertIn("unknown legacy policy base", result.stderr)
         self.assertEqual(before, snapshot(root))
-        for flags in ((), ("--force",), ("--force", "--dry-run")):
-            result = self.run_dom(root, "--platform=claude", *flags, ok=False)
-            self.assertEqual(result.returncode, 3)
-            self.assertIn("unknown inventory generation", result.stderr)
-            self.assertNotIn("unknown legacy policy base", result.stderr)
+        self.run_dom(root, "--platform=claude", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=claude")
+        after = byte_snapshot(root)
+        self.run_dom(root, "--platform=claude")
+        self.assertEqual(after, byte_snapshot(root))
+
+    def test_historical_claude_early_inventory_still_refused(self):
+        for defect in ("edited-role", "edited-block", "unknown-command", "tampered-base",
+                       "missing-base"):
+            with self.subTest(defect=defect):
+                root, policy, base, _ = self.historical_policy_fixture(
+                    "early-" + defect, "ff41544",
+                    "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d")
+                path = root / ROLES[0]
+                if defect == "edited-block":
+                    path = policy
+                elif defect == "unknown-command":
+                    path = root / ".claude/commands/goal.md"
+                elif defect in ("tampered-base", "missing-base"):
+                    path = base
+                if defect == "missing-base":
+                    path.unlink()
+                elif defect == "edited-block":
+                    path.write_bytes(path.read_bytes().replace(b"## Discipline", b"## Local discipline"))
+                else:
+                    path.write_bytes((path.read_bytes() if path.exists() else b"") + b"\nUnknown edit\n")
+                before = snapshot(root)
+                for flags in ((), ("--force",), ("--dry-run",), ("--force", "--dry-run")):
+                    self.run_dom(root, "--platform=claude", *flags, ok=False)
+                    self.assertEqual(before, snapshot(root))
+
+    def presnapshot_policy_fixture(self, name):
+        # Actual e12f0fc output, committed only in an isolated disposable repo.
+        # No consumer prose, reconstructed emitter, native clients or Beads.
+        self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_CONFIG_SYSTEM=os.devnull)
+        old = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "e12f0fc:domestique.sh"],
+            text=True, env=self.env)
+        root = self.root(name)
+        self.run_dom(root, script=old)
+        policy = root / "CLAUDE.md"
+        original = policy.read_bytes()
+        pristine = original.split(b"<!-- BEGIN domestique (managed) -->\n", 1)[1].split(
+            b"<!-- END domestique -->", 1)[0]
+        self.assertEqual(hashlib.sha256(pristine).hexdigest(),
+                         "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d")
+        self.assertFalse((root / STATES["claude"]).exists())
+        policy.write_bytes(b"Public host prefix\r\n\n" + original +
+                           b"\nPublic host suffix without newline")
+        native = (".claude/agents/implementer.md", ".claude/agents/reviewer.md",
+                  ".claude/commands/decompose.md")
+        for rel in (*native, "CLAUDE.md"):
+            (root / (rel + ".bak.20000101000000")).write_bytes(b"Older fixture backup\n")
+        git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+               "-c", "commit.gpgsign=false"]
+        subprocess.run([*git, "add", "."], check=True, env=self.env)
+        subprocess.run([*git, "commit", "-qm", "historical fixture"],
+                       check=True, env=self.env)
+        self.assertEqual(set(subprocess.check_output(
+            [*git, "ls-files", ".claude"], text=True, env=self.env).splitlines()),
+            set(native) | {rel + ".bak.20000101000000" for rel in native})
+        return root, policy, pristine
+
+    def test_presnapshot_pristine_policy_copilot_upgrade(self):
+        root, policy, pristine = self.presnapshot_policy_fixture("pre-snapshot")
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show", "067569a:domestique.sh"], text=True)
+        original = policy.read_bytes()
+        before = snapshot(root)
+        for flags in ((), ("--dry-run",)):
+            result = self.run_dom(root, "--platform=copilot", *flags,
+                                  script=released, ok=False)
+            self.assertIn("unguarded owned policy CLAUDE.md lacks a safe base", result.stderr)
             self.assertEqual(before, snapshot(root))
+        for flags in ((), ("--force",)):
+            self.run_dom(root, "--platform=copilot", "--dry-run", *flags)
+            self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=copilot")
+        guard = self.claude_policy_guard()
+        self.assertEqual(policy.read_bytes(), original.replace(pristine, guard + pristine))
+        state = root / STATES["claude"]
+        self.assertEqual((state / "base/CLAUDE.md.block").read_bytes(), guard + pristine)
+        manifest = dict(line.split("=", 1) for line in (state / "manifest").read_text().splitlines())
+        # Policy ownership only: no fictional role/command/helper bases.
+        self.assertEqual(manifest["files"], "CLAUDE.md")
+        self.assertEqual({str(p.relative_to(state / "base"))
+                          for p in (state / "base").rglob("*") if p.is_file()},
+                         {"CLAUDE.md.block"})
+        after = snapshot(root)
+        for rel, evidence in before.items():
+            if rel.startswith((".git/", ".claude/agents/", ".claude/commands/")) or ".bak." in rel:
+                self.assertEqual(after[rel], evidence, rel)
+        new_backups = [p for p in root.glob("CLAUDE.md.bak.*")
+                       if p.name not in before]
+        self.assertEqual(len(new_backups), 1)
+        self.assertEqual(new_backups[0].read_bytes(), original)
+        self.assertTrue((root / STATES["copilot"] / "manifest").is_file())
+        stable = snapshot(root)
+        self.run_dom(root, "--platform=copilot", "--dry-run")
+        self.assertEqual(stable, snapshot(root))
+        self.run_dom(root, "--platform=copilot")
+        self.assertEqual(stable, snapshot(root))
+
+    def test_presnapshot_full_native_upgrade_and_handoff(self):
+        for selection in (("--platform=claude",), (), ("--platform=copilot",)):
+            with self.subTest(selection=selection):
+                root, policy, pristine = self.presnapshot_policy_fixture(
+                    "full-" + (selection[0].split("=")[1] if selection else "default"))
+                if selection == ("--platform=copilot",):
+                    # State produced by the actual previous policy-only release.
+                    previous = subprocess.check_output(
+                        ["git", "-C", str(SOURCE.parent), "show", "ff41fda:domestique.sh"], text=True)
+                    self.run_dom(root, *selection, script=previous)
+                    retained = snapshot(root / STATES["claude"])
+                    before = snapshot(root)
+                    self.run_dom(root, *selection, "--dry-run")
+                    self.assertEqual(before, snapshot(root))
+                    self.run_dom(root, *selection)
+                    self.assertEqual(retained, snapshot(root / STATES["claude"]))
+                    self.assertFalse((root / ".claude/commands/goal.md").exists())
+                    selection = ("--platform=claude",)  # Explicitly complete native ownership.
+                original = policy.read_bytes()
+                before = snapshot(root)
+                self.run_dom(root, *selection, "--dry-run")
+                self.assertEqual(before, snapshot(root))
+                self.run_dom(root, *selection)
+                base = root / STATES["claude"] / "base/CLAUDE.md.block"
+                self.assertTrue(base.read_bytes().startswith(self.claude_policy_guard()))
+                old_body = original.split(b"<!-- BEGIN domestique (managed) -->\n", 1)[1].split(
+                    b"<!-- END domestique -->", 1)[0]
+                self.assertEqual(policy.read_bytes(), original.replace(old_body, base.read_bytes()))
+                expected = set(STATES) if not selection else {"claude"}
+                if (root / STATES["copilot"]).exists():
+                    expected.add("copilot")
+                self.assertEqual(self.installed(root), expected)
+                for rel, evidence in before.items():
+                    if ".bak." in rel:
+                        self.assertEqual(snapshot(root)[rel], evidence, rel)
+                state = root / STATES["claude"]
+                inventory = dict(line.split("=", 1) for line in
+                                 (state / "manifest").read_text().splitlines())["files"].split(",")
+                for rel in inventory:
+                    suffix = ".block" if rel.startswith("CLAUDE") else ""
+                    self.assertTrue((state / "base" / (rel + suffix)).is_file(), rel)
+                lib = self.model_library("claude")
+                for role, rel, model in zip(("implementer", "reviewer"),
+                                           (ROLES[0], ".claude/agents/reviewer.md"), ("sonnet", "opus")):
+                    self.assertEqual(lib["parse"]((root / rel).read_bytes(), role)[1]["model"], model)
+                    self.assertNotIn(b"# domestique-model-setup:", (state / "base" / rel).read_bytes())
+                stable = snapshot(root)
+                self.run_dom(root, *selection, "--dry-run")
+                self.assertEqual(stable, snapshot(root))
+                self.run_dom(root, *selection)
+                self.assertEqual(stable, snapshot(root))
+
+    def test_presnapshot_native_upgrade_outside_gitroot(self):
+        fixture, policy, _ = self.presnapshot_policy_fixture("outside-source")
+        for context in ("nongit", "subdir"):
+            with self.subTest(context=context):
+                root = self.presnapshot_target("native-" + context, context)
+                shutil.copytree(fixture / ".claude", root / ".claude")
+                (root / "CLAUDE.md").write_bytes(policy.read_bytes())
+                before = snapshot(self.work)
+                self.run_dom(root, "--platform=claude", "--dry-run")
+                self.assertEqual(before, snapshot(self.work))
+                self.run_dom(root, "--platform=claude")
+                for rel, evidence in before.items():
+                    if ".bak." in rel:
+                        self.assertEqual(snapshot(self.work)[rel], evidence, rel)
+                after = byte_snapshot(root)
+                self.run_dom(root, "--platform=claude")
+                self.assertEqual(after, byte_snapshot(root))
+                self.assertNotIn(b"# domestique-model-setup:", (root / ROLES[0]).read_bytes())
+
+    def test_presnapshot_native_unproven_and_partial_state_zero_writes(self):
+        for defect in ("wrong-path", "role-symlink", "role-hardlink", "orphan-base",
+                       "partial-manifest", "normalized-marker"):
+            with self.subTest(defect=defect):
+                root, _, _ = self.presnapshot_policy_fixture("unsafe-" + defect)
+                role = root / ROLES[0]
+                if defect == "wrong-path":
+                    role.write_bytes((root / ".claude/agents/reviewer.md").read_bytes())
+                elif defect in ("role-symlink", "role-hardlink"):
+                    victim = root / "public-victim"
+                    role.rename(victim)
+                    if defect == "role-symlink":
+                        role.symlink_to(victim)
+                    else:
+                        os.link(victim, role)
+                elif defect == "normalized-marker":
+                    role.write_bytes(role.read_bytes().replace(
+                        b"---\n", b'---\n# domestique-model-setup: {"project":"<PHYSICAL-PROJECT-ROOT>"}\n', 1))
+                else:
+                    state = root / STATES["claude"]
+                    state.mkdir()
+                    if defect == "orphan-base":
+                        base = state / "base" / ROLES[0]
+                        base.parent.mkdir(parents=True)
+                        base.write_bytes(role.read_bytes())
+                    else:
+                        (state / "manifest").write_text(
+                            "snapshot_format=1\nplatform=claude\ndomestique_version=0.4.3\n"
+                            "files=" + ROLES[0] + "\n")
+                before = snapshot(root)
+                for flags in ((), ("--force",), ("--dry-run",)):
+                    self.run_dom(root, "--platform=claude", *flags, ok=False)
+                    self.assertEqual(before, snapshot(root))
+
+    def test_policy_only_no_resurrection_and_uninstall_owns_only_policy(self):
+        root, policy, _ = self.presnapshot_policy_fixture("policy-only-removal")
+        self.run_dom(root, "--platform=copilot")
+        (root / ROLES[0]).unlink()
+        retained = snapshot(root / ".claude")
+        before = snapshot(root)
+        self.run_dom(root, "--platform=copilot", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=copilot")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--uninstall", "--platform=claude", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--uninstall", "--platform=claude")
+        for rel, evidence in retained.items():
+            if rel.startswith(("agents/", "commands/")):
+                self.assertEqual(snapshot(root / ".claude")[rel], evidence, rel)
+        self.assertFalse((root / STATES["claude"]).exists())
+        self.assertIn(b"Public host prefix\r\n", policy.read_bytes())
+        self.assertIn(b"Public host suffix without newline", policy.read_bytes())
+        self.assertNotIn(b"<!-- BEGIN domestique", policy.read_bytes())
+
+    def test_presnapshot_policy_unproven_zero_writes(self):
+        for defect in ("edited", "unknown", "crlf", "tampered-guard", "removed-guard", "wrong-path",
+                       "wrong-mode", "unknown-base", "inventory", "base-symlink"):
+            with self.subTest(defect=defect):
+                root, policy, pristine = self.presnapshot_policy_fixture(defect)
+                state = root / STATES["claude"]
+                if defect == "edited":
+                    policy.write_bytes(policy.read_bytes().replace(
+                        b"## Discipline\n", b"## Local discipline\n"))
+                elif defect == "unknown":
+                    policy.write_bytes(policy.read_bytes().replace(pristine, b"Unknown policy\n"))
+                elif defect == "crlf":
+                    policy.write_bytes(policy.read_bytes().replace(pristine, pristine.replace(b"\n", b"\r\n")))
+                elif defect == "tampered-guard":
+                    tampered = self.claude_policy_guard().replace(
+                        b"Other harnesses must ignore", b"Other harnesses may apply", 1)
+                    policy.write_bytes(policy.read_bytes().replace(pristine, tampered + pristine))
+                elif defect == "removed-guard":
+                    current = self.root("current-guard")
+                    self.run_dom(current, "--platform=claude")
+                    body = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+                    policy.write_bytes(policy.read_bytes().replace(
+                        pristine, body.removeprefix(self.claude_policy_guard())))
+                elif defect in ("wrong-path", "wrong-mode"):
+                    policy.rename(root / ("AGENTS.md" if defect == "wrong-path" else "CLAUDE.local.md"))
+                elif defect == "inventory":
+                    state.mkdir()
+                    (state / "manifest").write_text("snapshot_format=1\nfiles=unrelated\n")
+                else:
+                    base = state / "base/CLAUDE.md.block"
+                    base.parent.mkdir(parents=True)
+                    (state / "manifest").write_text(
+                        "snapshot_format=1\nplatform=claude\ndomestique_version=0.1.0\n"
+                        "files=CLAUDE.md\n")
+                    if defect == "unknown-base":
+                        base.write_bytes(pristine + b"Unknown base edit\n")
+                    else:
+                        victim = self.work / "base-victim"
+                        victim.write_bytes(pristine)
+                        base.symlink_to(victim)
+                before = snapshot(self.work)
+                for flags in ((), ("--dry-run",), ("--force",), ("--force", "--dry-run")):
+                    result = self.run_dom(root, "--platform=copilot", *flags, ok=False)
+                    self.assertEqual(result.returncode, 3, result.stderr)
+                    self.assertEqual(before, snapshot(self.work))
+
+    def test_presnapshot_selected_policy_without_native_adoption(self):
+        _fixture, policy, pristine = self.presnapshot_policy_fixture("policy-source")
+        # Isolate the selected-policy half from out-of-scope legacy role adoption:
+        # real historical policy bytes, but a fresh native projection.
+        root = self.root("policy-only")
+        original = policy.read_bytes()
+        (root / "CLAUDE.md").write_bytes(original)
+        current = self.root("current-policy")
+        self.run_dom(current, "--platform=claude")
+        upstream = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+        before = snapshot(root)
+        self.run_dom(root, "--platform=claude", "--dry-run")
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=claude")
+        self.assertEqual((root / "CLAUDE.md").read_bytes(), original.replace(pristine, upstream))
+        self.assertEqual((root / STATES["claude"] / "base/CLAUDE.md.block").read_bytes(),
+                         upstream)
+        self.assertNotEqual(upstream, self.claude_policy_guard() + pristine)
+        backups = list(root.glob("CLAUDE.md.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), original)
+
+    def test_presnapshot_policy_keeps_selected_and_guest_boundaries(self):
+        root, _policy, _pristine = self.presnapshot_policy_fixture("selected-boundaries")
+        before = snapshot(root)
+        for args in (("--platform=copilot", "--guest"), ("--platform=claude", "--guest")):
+            for flags in ((), ("--dry-run",), ("--force",)):
+                result = self.run_dom(root, *args, *flags, ok=False)
+                self.assertEqual(result.returncode, 3, result.stderr)
+                self.assertEqual(before, snapshot(root))
+                self.assertRegex(result.stderr, "cannot be changed in guest mode|cannot establish ownership")
+
+    def presnapshot_target(self, name, context):
+        if context == "nongit":
+            return self.nongit(name)
+        root = self.root(name)
+        if context == "subdir":
+            root = root / "pkg" / "app"
+            root.mkdir(parents=True)
+        return root
+
+    def test_presnapshot_selected_native_collisions_zero_writes_all_contexts(self):
+        fixture, policy, _pristine = self.presnapshot_policy_fixture("native-source")
+        for context, defect in itertools.product(
+                ("nongit", "gitroot", "subdir"),
+                ("unknown-implementer", "extra-goal", "edited-early-inventory")):
+            with self.subTest(context=context, defect=defect):
+                root = self.presnapshot_target(f"{context}-{defect}", context)
+                (root / "CLAUDE.md").write_bytes(policy.read_bytes())
+                if defect == "edited-early-inventory":
+                    shutil.copytree(fixture / ".claude", root / ".claude")
+                    collision = ".claude/agents/implementer.md"
+                    path = root / collision
+                    path.write_bytes(path.read_bytes() + b"\nUnknown local edit\n")
+                else:
+                    # Isolate each collision: a role-only check must not miss
+                    # an extra command at a predictable installer destination.
+                    collision = (".claude/agents/implementer.md"
+                                 if defect == "unknown-implementer"
+                                 else ".claude/commands/goal.md")
+                    path = root / collision
+                    path.parent.mkdir(parents=True)
+                    path.write_bytes(b"Unknown native content; preserve exactly.\n")
+                if context != "nongit":
+                    subprocess.run(["git", "-C", str(root), "add", "."],
+                                   check=True, env=self.env)
+                # Includes directory/file modes, mtimes, backups, and the
+                # enclosing worktree's real index/exclude for subdir targets.
+                before = snapshot(self.work)
+                for flags in ((), ("--force",), ("--dry-run",),
+                              ("--force", "--dry-run")):
+                    with self.subTest(flags=flags):
+                        result = self.run_dom(root, "--platform=claude", *flags, ok=False)
+                        self.assertEqual(result.returncode, 3, result.stderr)
+                        self.assertIn("ownership", result.stderr)
+                        self.assertIn(collision, result.stderr)
+                        self.assertIn("pristine policy", result.stderr)
+                        self.assertIn("preserve", result.stderr)
+                        self.assertNotIn("unguarded owned policy", result.stderr)
+                        self.assertEqual(before, snapshot(self.work))
+
+    def test_presnapshot_selected_fresh_native_outside_gitroot(self):
+        _fixture, policy, pristine = self.presnapshot_policy_fixture("fresh-source")
+        current = self.root("fresh-current")
+        self.run_dom(current, "--platform=claude")
+        upstream = (current / STATES["claude"] / "base/CLAUDE.md.block").read_bytes()
+        for context, flags in itertools.product(("nongit", "subdir"), ((), ("--force",))):
+            with self.subTest(context=context, flags=flags):
+                root = self.presnapshot_target(f"fresh-{context}-{bool(flags)}", context)
+                original = policy.read_bytes()
+                (root / "CLAUDE.md").write_bytes(original)
+                before = snapshot(self.work)
+                self.run_dom(root, "--platform=claude", "--dry-run", *flags)
+                self.assertEqual(before, snapshot(self.work))
+                self.run_dom(root, "--platform=claude", *flags)
+                self.assertEqual((root / "CLAUDE.md").read_bytes(),
+                                 original.replace(pristine, upstream))
+                self.assertEqual((root / STATES["claude"] / "base/CLAUDE.md.block").read_bytes(),
+                                 upstream)
+                self.assertTrue((root / ROLES[0]).is_file())
+                self.assertEqual([p.read_bytes() for p in root.glob("CLAUDE.md.bak.*")],
+                                 [original])
 
     def test_historical_policy_runtime_scope_variants(self):
         released = subprocess.check_output(
@@ -1788,9 +2467,22 @@ class AllProviders(unittest.TestCase):
                     modes = {p: p.stat().st_mode for p in private}
                     old_backups = {p: p.read_bytes() for p in root.glob(f"{rel}.bak.*")}
                     before = snapshot(root)
-                    self.run_dom(root, "--dry-run")
-                    self.assertEqual(before, snapshot(root))
-                    self.run_dom(root)
+                    # The fixture customizes both role models, so the legacy pair
+                    # is custom-unconfirmed (3d1a3d3, hq-c6o.4): policy recovery
+                    # proceeds but both runs exit 3 until dom-models --confirm.
+                    for flags in (("--dry-run",), ()):
+                        incomplete = self.run_dom(root, *flags, ok=False)
+                        self.assertEqual(incomplete.returncode, 3)
+                        self.assertIn("claude: custom-unconfirmed -> reconfirmation-required"
+                                      if flags else "Configuration incomplete",
+                                      incomplete.stdout if flags else incomplete.stderr)
+                        self.assertIn("dom-models --confirm", incomplete.stderr)
+                        if flags:
+                            self.assertEqual(before, snapshot(root))
+                        else:
+                            # Exit 3 must come only from reconfirmation, not a real conflict.
+                            self.assertIn("[historical migration completed] claude:", incomplete.stdout)
+                            self.assertNotIn("Conflicted:", incomplete.stdout)
                     self.assertEqual(self.installed(root), set(STATES))
                     self.assertEqual(modes, {p: p.stat().st_mode for p in private})
                     if not missing:
@@ -1856,6 +2548,10 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(migrated.returncode, 3)
         self.assertIn("[historical migration completed] claude:", migrated.stdout)
         self.assertIn("dom-models --confirm", migrated.stderr)
+        for result in (planned, migrated):
+            for misleading in ("conflict/error", "Conflicted", ".new/.bak",
+                               "lifecycle interrupted", "partial results may remain"):
+                self.assertNotIn(misleading, result.stdout + result.stderr)
         for rel, data in expected.items():
             path = root / rel
             header, body = data.split(b"\n---\n", 1)
@@ -1864,7 +2560,13 @@ class AllProviders(unittest.TestCase):
                 if not line.startswith(b"description:"):
                     self.assertIn(line + b"\n", actual_header + b"\n")
             self.assertIn(b"description: Claude Code only;", actual_header)
-            self.assertTrue(actual_body.endswith(body))
+            # The fixture's appended user bytes must survive at the end; the
+            # upstream body above them legitimately moves (2264890, hq-xc2.3
+            # changed the role body), so compare only the anchored user suffix.
+            fixture = b"\nFixture body bytes: \xc3\xa9\t \n"
+            self.assertTrue(body.endswith(fixture))
+            anchor = body[:-len(fixture)].rstrip(b"\n").splitlines()[-1]
+            self.assertTrue(actual_body.endswith(anchor + b"\n" + fixture))
             self.assertIn(b"## Active harness boundary (claude only)", actual_body)
             base = (root / STATES["claude"] / "base" / rel).read_bytes()
             self.assertEqual(base, bases[rel])
@@ -1993,34 +2695,118 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), saved)
 
     def test_native_metadata_copilot_preflight_matches_apply(self):
+        # Actual published v0.4.3 output supplies inventory and original bases.
+        # Never turn a confirmed live role into pristine merge authority.
+        released = subprocess.check_output(
+            ["git", "-C", str(SOURCE.parent), "show",
+             "067569a331539883c326a5d221e0e5837efefddd:domestique.sh"])
+        self.assertEqual(hashlib.sha256(released).hexdigest(),
+                         "2c2c48b5914d48b5e366034095c87b708979a83c0d2f210efd814605b82e1451")
         root = self.root("metadata-copilot")
-        self.run_dom(root, "--platform", "copilot")
+        self.run_dom(root, "--platform", "copilot", script=released.decode())
+        bases = snapshot(root / STATES["copilot"] / "base")
+        module = self.model_library("copilot")
         expected = {}
+        upstream = SCRIPT
         for role in ("implementer", "reviewer"):
             rel = f".github/agents/domestique-v2-copilot-{role}.agent.md"
             path = root / rel
-            pristine = path.read_bytes()
-            prefix = b"Copilot only; never match in Claude, Codex or an unknown harness. "
-            old = pristine.replace(prefix, b"")
-            (root / STATES["copilot"] / "base" / rel).write_bytes(old)
-            custom = old.replace(b'"search"', b'"search", "mcp__example__search"')
+            pristine = (root / STATES["copilot"] / "base" / rel).read_bytes()
+            self.assertNotIn(b"# domestique-model-setup:", pristine)
+            self.assertEqual(module["split_marker"](path.read_bytes(), role)[0].encode(),
+                             pristine)
+            description = next(line for line in pristine.splitlines()
+                               if line.startswith(b"description:"))
+            revised = description + b" Updated upstream discovery."
+            self.assertEqual(upstream.count(description.decode()), 1)
+            upstream = upstream.replace(description.decode(), revised.decode())
+            custom = pristine.replace(b'"search"', b'"search", "mcp__example__search"')
             custom = custom.replace(b"\n---\n", b'\nmodel: "example-native" # exact\n---\n', 1)
             custom += b"\nUnrelated fixture body.\n"
             path.write_bytes(custom)
-            expected[rel] = custom.replace(
-                b"description: ", b"description: " + prefix, 1)
+            expected[rel] = custom.replace(description, revised, 1)
+            # Adjacent independent description/tools edits really conflict in
+            # ordinary Git; success must exercise the native-field fallback.
+            with tempfile.TemporaryDirectory(dir=self.work) as temporary:
+                paths = [Path(temporary) / name for name in ("local", "base", "upstream")]
+                for target, data in zip(paths, (
+                        custom, pristine, pristine.replace(description, revised, 1))):
+                    target.write_bytes(data)
+                conflict = subprocess.run(["git", "merge-file", "-p", *map(str, paths)],
+                                          env=self.env, capture_output=True)
+                self.assertEqual(conflict.returncode, 1)
+                self.assertIn(b"<<<<<<<", conflict.stdout)
+
+        # Class E: custom-unconfirmed roles do not merge on rerun. Explicit
+        # current-pair review/Save establishes eligibility (hq-g14 precedent).
+        models = root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+        bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+        def helper(*args, plan=None):
+            result = subprocess.run(
+                [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                input=json.dumps(plan) if plan is not None else None,
+                cwd=root, env=self.env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
         before = snapshot(root)
-        self.run_dom(root, "--platform", "copilot", "--dry-run")
+        review = helper("request", "--confirm")
+        self.assertFalse(review["configured"])
+        self.assertEqual(review["chosen"], review["current"])
         self.assertEqual(snapshot(root), before)
-        self.run_dom(root, "--platform", "copilot")
+        self.assertTrue(helper("apply", review["digest"], plan=review["plan"])["confirmed"])
+        self.assertTrue(helper("verify")["confirmed"])
+        self.assertEqual(snapshot(root / STATES["copilot"] / "base"), bases)
+
+        # A genuinely competing tools edit must still refuse atomically.
+        tools = 'tools: ["read", "edit", "search", "execute"]'
+        self.assertEqual(upstream.count(tools), 1)
+        competing = upstream.replace(tools, tools.replace('"search"', '"upstream-search"'), 1)
+        before = snapshot(root)
+        for flags in (("--dry-run",), ()):
+            refused = self.run_dom(root, "--platform", "copilot", *flags,
+                                   script=competing, ok=False)
+            self.assertEqual(refused.returncode, 3)
+            self.assertIn("Native role fallback refused: competing metadata field", refused.stderr)
+            self.assertIn(".github/agents/domestique-v2-copilot-implementer.agent.md", refused.stderr)
+            self.assertIn("Publication not started; no project writes.", refused.stderr)
+            self.assertEqual(snapshot(root), before)
+        self.run_dom(root, "--platform", "copilot", "--dry-run", script=upstream)
+        self.assertEqual(snapshot(root), before)
+        self.run_dom(root, "--platform", "copilot", script=upstream)
         for rel, data in expected.items():
-            self.assertEqual((root / rel).read_bytes(), data)
-            self.assertNotIn(b"example-native", (root / STATES["copilot"] / "base" / rel).read_bytes())
+            role = "implementer" if "implementer" in rel else "reviewer"
+            self.assertEqual(module["split_marker"]((root / rel).read_bytes(), role)[0].encode(),
+                             data)
+            base = (root / STATES["copilot"] / "base" / rel).read_bytes()
+            for custom in (b"example-native", b"mcp__example__search",
+                           b"Unrelated fixture body.", b"# domestique-model-setup:"):
+                self.assertNotIn(custom, base)
+        self.assertTrue(helper("verify")["confirmed"])
         before = byte_snapshot(root)
-        self.run_dom(root, "--platform", "copilot")
+        self.run_dom(root, "--platform", "copilot", script=upstream)
         self.assertEqual(byte_snapshot(root), before)
 
     def test_platformless_legacy_claude_invalid_ownership_zero_writes(self):
+        # Native preflight validates authority and deduplicated safe inventory
+        # before policy_preflight can diagnose an unowned policy base.
+        reasons = {
+            "foreign": "wrong snapshot authority",
+            "empty": "wrong snapshot authority",
+            "duplicate-platform": "ambiguous manifest",
+            "ambiguous-platform": "ambiguous manifest",
+            "unsupported-schema": "wrong snapshot authority",
+            "missing-schema": "wrong snapshot authority",
+            "duplicate-schema": "ambiguous manifest",
+            "malformed": "ambiguous manifest",
+            "extra-equals": "wrong snapshot authority",
+            "duplicate-inventory": "ambiguous manifest",
+            "duplicate-file": "incomplete/unsafe inventory; preserving installer upgrade required",
+            # The implementer remains owned; the next live role does not.
+            "unowned-base": "incomplete native ownership: .claude/agents/reviewer.md; "
+                            "restore its pristine base/inventory",
+        }
         for guest in (False, True):
             root, rel = self.legacy_claude(f"invalid-{guest}", guest=guest)
             (root / rel).write_text("# Host policy without managed markers\n")
@@ -2042,18 +2828,24 @@ class AllProviders(unittest.TestCase):
                                        original),
             }
             for kind, body in invalid.items():
-                with self.subTest(guest=guest, kind=kind):
-                    manifest.write_text(body)
-                    before = snapshot(root)
-                    for flags in (("--dry-run",), (), ("--force",)):
+                manifest.write_text(body)
+                before = snapshot(root)
+                for flags in (("--dry-run",), (), ("--force",)):
+                    with self.subTest(guest=guest, kind=kind, flags=flags):
                         result = self.run_dom(root, *flags, ok=False)
-                        self.assertIn("unowned policy base collision", result.stderr)
-                        self.assertIn("No project writes", result.stderr)
                         self.assertEqual(before, snapshot(root))
+                        self.assertEqual(result.returncode, 3)
+                        self.assertIn(
+                            f"Native ownership refused (claude): {reasons[kind]}. No project writes.",
+                            result.stderr.splitlines())
+                        self.assertIn("No project writes", result.stderr)
             manifest.unlink()
             before = snapshot(root)
-            self.run_dom(root, ok=False)
-            self.assertEqual(before, snapshot(root))
+            with self.subTest(guest=guest, kind="missing-manifest", flags=()):
+                result = self.run_dom(root, ok=False)
+                self.assertEqual(before, snapshot(root))
+                self.assertEqual(result.returncode, 3)
+                self.assertIn("No project writes", result.stderr)
 
     def test_platformless_legacy_claude_unsafe_evidence_zero_writes(self):
         for evidence in ("manifest", "base/CLAUDE.md.block"):
@@ -2229,10 +3021,10 @@ class AllProviders(unittest.TestCase):
                 elif scenario == "dry-run":
                     args = ["--dry-run"]
                 before = snapshot(root)
-                result = subprocess.run(
+                result = run_stdin(
                     ["bash", "-x", "-s", "--", str(root), *args], cwd=root, input=SCRIPT,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    env=self.env, timeout=60)
+                    env=self.env, timeout=notice_timeout())
                 self.assertEqual(result.returncode, 0, result.stdout)
                 lines = result.stdout.splitlines()
                 notice_end = next(i for i, line in enumerate(lines)
@@ -2275,7 +3067,7 @@ class AllProviders(unittest.TestCase):
                  'printf "UNCONSUMED:%s\\n" "$remaining"\n',
                  "stdin-check", str(SOURCE), *args],
                 cwd=root, input="caller-owned stdin\n", text=True, capture_output=True,
-                env=self.env, timeout=60)
+                env=self.env, timeout=notice_timeout())
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(result.stdout.endswith("UNCONSUMED:caller-owned stdin\n"))
 
@@ -2796,6 +3588,273 @@ class AllProviders(unittest.TestCase):
                 ["git", "-C", str(root), "check-ignore", "-q", rel], env=self.env)
             self.assertEqual(ignored.returncode, 0 if guest else 1, rel)
 
+    def assert_unsafe_shared_mode_refused(self, root, *args):
+        before = snapshot(self.work)
+        with subprocess.Popen(
+                ["bash", "-s", "--", *args], cwd=root, env=self.env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True) as process:
+            try:
+                stdout, stderr = process.communicate(SCRIPT, timeout=15)
+            except subprocess.TimeoutExpired:
+                self.fail("unsafe mode preflight did not refuse within 15 seconds")
+            finally:
+                if process.poll() is None:
+                    # cat may be blocked on a FIFO in a shell command substitution.
+                    # Kill the whole private process group, then reap the child.
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+        self.assertEqual(process.returncode, 3, stdout + stderr)
+        self.assertIn("unsafe .agents/.domestique/mode", stderr)
+        self.assertIn("No project writes", stderr)
+        self.assertNotIn("\nDone.\n", stdout)
+        self.assertEqual(snapshot(self.work), before)
+
+    def test_shared_mode_fifo_refuses_promptly_without_writes(self):
+        root = self.root("shared-mode-fifo")
+        mode = root / ".agents/.domestique/mode"
+        mode.parent.mkdir(parents=True)
+        os.mkfifo(mode)
+        # Reported regression: even an unrelated non-guest Claude operation
+        # must refuse, rather than opening the shared FIFO before validation.
+        self.assert_unsafe_shared_mode_refused(root, "--platform", "claude", "--no-guest")
+
+        root = self.root("conversion-mode-fifo")
+        self.run_dom(root, "--platform", "codex")
+        os.mkfifo(root / ".agents/.domestique/mode")
+        for flags in ((), ("--force",), ("--dry-run",)):
+            with self.subTest(flags=flags):
+                self.assert_unsafe_shared_mode_refused(
+                    root, "--platform", "codex", "--guest", *flags)
+
+    def test_shared_mode_unsafe_paths_refuse_without_writes(self):
+        for kind in ("symlink", "directory", "hardlink",
+                     "ancestor-symlink", "ancestor-file", "ancestor-fifo"):
+            with self.subTest(kind=kind):
+                root = self.root("shared-mode-" + kind)
+                mode = root / ".agents/.domestique/mode"
+                if kind.startswith("ancestor-"):
+                    mode.parent.parent.mkdir()
+                    if kind == "ancestor-symlink":
+                        outside = self.work / "outside-state"
+                        outside.mkdir()
+                        os.mkfifo(outside / "mode")
+                        mode.parent.symlink_to(outside, target_is_directory=True)
+                    elif kind == "ancestor-file":
+                        mode.parent.write_text("not a directory\n")
+                    else:
+                        os.mkfifo(mode.parent)
+                else:
+                    mode.parent.mkdir(parents=True)
+                    if kind == "directory":
+                        mode.mkdir()
+                    else:
+                        outside = self.work / ("outside-" + kind)
+                        outside.write_text("guest\n")
+                        if kind == "symlink":
+                            mode.symlink_to(outside)
+                        else:
+                            os.link(outside, mode)
+                self.assert_unsafe_shared_mode_refused(
+                    root, "--platform", "claude", "--no-guest")
+
+    def test_guest_conversion_invalid_exclude_refuses_before_publication(self):
+        begin, end = "# BEGIN domestique (managed)\n", "# END domestique\n"
+        for provider in ("claude", "codex"):
+            for kind, contents in (("half", begin), ("directory", None),
+                                   ("duplicate", begin + end + begin + end),
+                                   ("inverted", end + begin)):
+                with self.subTest(provider=provider, kind=kind):
+                    root = self.root(provider + "-exclude-" + kind)
+                    self.run_dom(root, "--platform", provider)
+                    # Preserve a real index as well as untracked normal assets.
+                    (root / "host.txt").write_text("host\n")
+                    subprocess.run(["git", "add", "host.txt"], cwd=root,
+                                   env=self.env, check=True)
+                    exclude = root / ".git/info/exclude"
+                    if contents is None:
+                        exclude.unlink()
+                        exclude.mkdir()
+                    else:
+                        exclude.write_text(contents)
+                    status_args = ["git", "--no-optional-locks", "status",
+                                   "--porcelain", "--untracked-files=all"]
+                    def git_status():
+                        # Git itself refuses a directory-valued exclude; retain
+                        # that exact status/error as well as the complete tree.
+                        result = subprocess.run(status_args, cwd=root, env=self.env,
+                                                capture_output=True)
+                        return result.returncode, result.stdout, result.stderr
+                    status = git_status()
+                    before = snapshot(root)
+                    index = (root / ".git/index").read_bytes()
+                    for flags in ((), ("--force",), ("--dry-run",)):
+                        with self.subTest(flags=flags):
+                            result = self.run_dom(root, "--platform", provider,
+                                                  "--guest", *flags, ok=False)
+                            self.assertEqual(result.returncode, 3)
+                            self.assertIn("exclude", result.stderr)
+                            self.assertIn("No project writes", result.stderr)
+                            self.assertEqual(snapshot(root), before)
+                            self.assertEqual((root / ".git/index").read_bytes(), index)
+                            self.assertEqual(git_status(), status)
+
+    def test_guest_exclude_preflight_preserves_supported_targets(self):
+        for provider in ("claude", "codex"):
+            for kind in ("missing", "worktree", "nongit"):
+                with self.subTest(provider=provider, kind=kind):
+                    name = provider + "-exclude-" + kind
+                    if kind == "nongit":
+                        root = self.work / name
+                        root.mkdir()
+                        exclude = None
+                    elif kind == "worktree":
+                        main = self.root(name + "-main")
+                        git = ["git", "-C", str(main), "-c", "user.name=Fixture",
+                               "-c", "user.email=fixture@example.invalid",
+                               "-c", "core.hooksPath=/dev/null"]
+                        subprocess.run([*git, "commit", "-qm", "fixture", "--allow-empty"],
+                                       env=self.env, check=True)
+                        root = self.work / name
+                        subprocess.run([*git, "worktree", "add", "-q", str(root)],
+                                       env=self.env, check=True)
+                        exclude = main / ".git/info/exclude"
+                    else:
+                        root = self.root(name)
+                        exclude = root / ".git/info/exclude"
+                    self.run_dom(root, "--platform", provider)
+                    original = b"# Host note: # BEGIN domestique (managed) is a marker\nhost.tmp\n"
+                    if kind == "missing":
+                        exclude.unlink()
+                        original = b""
+                    elif exclude is not None:
+                        exclude.write_bytes(original)
+                    before = snapshot(self.work)
+                    self.run_dom(root, "--platform", provider, "--guest", "--dry-run")
+                    self.assertEqual(snapshot(self.work), before)
+                    result = self.run_dom(root, "--platform", provider, "--guest")
+                    if exclude is None:
+                        self.assertIn("skipping the .git/info/exclude", result.stderr)
+                        self.assertFalse((root / ".git").exists())
+                    else:
+                        self.assertTrue(exclude.read_bytes().startswith(original))
+                        self.assertIn(b"\n# END domestique\n", exclude.read_bytes())
+                    self.run_dom(root, "--platform", provider, "--no-guest")
+                    if exclude is not None:
+                        self.assertEqual(exclude.read_bytes(), original)
+
+    def test_guest_conversion_visible_owned_roots(self):
+        root = self.root("visible-roots")
+        self.run_dom(root)
+        policies = ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md")
+        for rel in policies:
+            path = root / rel
+            path.write_bytes(b"fixture host prefix\n" + path.read_bytes() + b"fixture host suffix\n")
+        roots = {rel: (root / rel).read_bytes() for rel in policies}
+        before = snapshot(root)
+        preview = self.run_dom(root, "--guest", "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        applied = self.run_dom(root, "--guest")
+        for result in (preview, applied):
+            self.assertIn("owned root policies remain visible and untracked", result.stderr)
+            for rel in policies:
+                self.assertIn("  " + rel + "\n", result.stderr)
+            self.assertIn("--uninstall --platform all --dry-run", result.stderr)
+            self.assertIn("outside", result.stderr)
+            self.assertNotIn("fixture host", result.stderr + result.stdout)
+        self.assertEqual(roots, {rel: (root / rel).read_bytes() for rel in policies})
+        visible = subprocess.check_output(
+            ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, env=self.env, text=True)
+        self.assertEqual(set(visible.splitlines()), {"?? " + rel for rel in policies})
+
+    def test_guest_conversion_tracked_transaction_refuses_without_writes(self):
+        # Staged and committed paths are both tracked. Commit only in disposable
+        # fixtures, with command-local identity and no global configuration.
+        for selection in ("all", "claude", "codex", "copilot"):
+            with self.subTest(selection=selection):
+                root = self.root("tracked-" + selection)
+                self.run_dom(root)
+                subprocess.run(["git", "add", "."], cwd=root, env=self.env, check=True)
+                subprocess.run(["git", "-c", "user.name=Fixture", "-c",
+                                "user.email=fixture@example.invalid", "-c", "core.hooksPath=/dev/null",
+                                "commit", "-qm", "fixture"], cwd=root, env=self.env, check=True)
+                # All persisted providers are additive: Claude's new personal
+                # policy changes its tracked manifest even for another selector.
+                before = snapshot(root)
+                status = subprocess.check_output(
+                    ["git", "--no-optional-locks", "status", "--porcelain"],
+                    cwd=root, env=self.env)
+                for flags in ((), ("--force",), ("--dry-run",)):
+                    result = self.run_dom(root, "--platform", selection, "--guest",
+                                          *flags, ok=False)
+                    self.assertIn("tracked", result.stderr)
+                    self.assertIn("--no-guest", result.stderr)
+                    self.assertIn(".claude/.domestique/manifest", result.stderr)
+                    self.assertEqual(snapshot(root), before)
+                    self.assertEqual(subprocess.check_output(
+                        ["git", "--no-optional-locks", "status", "--porcelain"],
+                        cwd=root, env=self.env), status)
+
+    def test_guest_tracked_shared_active_and_new_pairs_preflight(self):
+        for provider, rel in (("claude", STATES["claude"] + "/manifest"),
+                              ("codex", SHARED), ("copilot", ROLES[2])):
+            with self.subTest(provider=provider):
+                root = self.root("boundary-" + provider)
+                self.run_dom(root, "--platform", provider)
+                subprocess.run(["git", "add", rel], cwd=root, env=self.env, check=True)
+                args = ["--guest"]
+                candidate = SCRIPT
+                if provider == "codex":
+                    args += ["--platform", provider]
+                    candidate = SCRIPT.replace("## Shared native routing — read-only boundary",
+                                               "## Shared native routing — updated read-only boundary")
+                elif provider == "copilot":
+                    args += ["--platform", provider]
+                    candidate = SCRIPT.replace(
+                        "Complete exactly one caller-assigned bounded Domestique task.",
+                        "Complete exactly one caller-assigned bounded Domestique task; report results.")
+                # Claude's refusal must precede publication of fresh Codex and
+                # Copilot pairs. Other cases independently exercise shared and
+                # selected-active writes with no tracked Claude manifest.
+                before = snapshot(root)
+                for flags in ((), ("--force",), ("--dry-run",)):
+                    result = self.run_dom(root, *args, *flags, script=candidate, ok=False)
+                    self.assertIn("  " + rel + "\n", result.stderr)
+                    self.assertEqual(snapshot(root), before)
+
+    def test_guest_fresh_host_text_and_tracked_personal_keep(self):
+        root = self.root("fresh-guest")
+        before = snapshot(root)
+        self.run_dom(root, "--guest", "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        self.run_dom(root, "--guest")
+        self.assertEqual(subprocess.check_output(
+            ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, env=self.env), b"")
+        root = self.root("host-guest")
+        for rel in ("CLAUDE.md", "AGENTS.md", ".github/copilot-instructions.md", "host.txt"):
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture host text\n")
+        subprocess.run(["git", "add", "."], cwd=root, env=self.env, check=True)
+        before = snapshot(root)
+        self.run_dom(root, "--guest", "--dry-run")
+        self.assertEqual(snapshot(root), before)
+        result = self.run_dom(root, "--guest")
+        self.assertNotIn("owned root policies remain", result.stderr)
+        # No additional untracked/modified paths beyond the staged host files.
+        status = subprocess.check_output(
+            ["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+            cwd=root, env=self.env, text=True)
+        self.assertTrue(all(line.startswith("A  ") for line in status.splitlines()), status)
+        subprocess.run(["git", "add", "-f", "CLAUDE.local.md"], cwd=root, env=self.env, check=True)
+        policy = root / "CLAUDE.local.md"
+        original = (policy.stat().st_ino, policy.stat().st_mtime_ns, policy.read_bytes())
+        self.run_dom(root, "--guest")
+        self.assertEqual(original, (policy.stat().st_ino, policy.stat().st_mtime_ns,
+                                    policy.read_bytes()))
+
     def test_codex_copilot_mixed_sticky_transitions_and_scoped_uninstall(self):
         for normal, guest in (("codex", "copilot"), ("copilot", "codex")):
             for removed in (normal, guest):
@@ -2928,9 +3987,31 @@ class AllProviders(unittest.TestCase):
         before_roles = {str(p.relative_to(root)): p.read_bytes()
                         for provider in ROLES for p in
                         (root / provider, root / provider.replace("implementer", "reviewer"))}
+        current = self.root("models-current-emitter")
+        self.run_dom(current)
         self.run_dom(root)
-        for rel, data in before_roles.items():
-            self.assertEqual((root / rel).read_bytes(), data)
+        # 2264890 (hq-xc2.3) intentionally updates implementer instructions.
+        # Require the entire current emitter body and retained model/effort,
+        # rather than freezing old upstream bytes (including marker hashes).
+        for provider, impl in zip(STATES, ROLES):
+            lib = self.model_library(provider)
+            for role in ("implementer", "reviewer"):
+                rel = impl.replace("implementer", role)
+                data = (root / rel).read_bytes()
+                clean = lib["split_marker"](data, role)[0].encode()
+                emitted = (current / STATES[provider] / "base" / rel).read_bytes()
+                self.assertEqual(clean, emitted)
+                self.assertEqual((root / STATES[provider] / "base" / rel).read_bytes(), emitted)
+                old_fields = lib["parse"](before_roles[rel], role)[1]
+                fields = lib["parse"](data, role)[1]
+                for key in ("model", "effort", "model_reasoning_effort"):
+                    self.assertEqual(fields.get(key), old_fields.get(key))
+                if role == "implementer":
+                    self.assertIn(b"## Child bead ownership handoff\n", clean)
+                    marker = lib["parse"](data, role)[2]
+                    self.assertEqual(marker["project"], str(root.resolve()))
+                    self.assertEqual(marker["harness"], provider)
+                self.assertEqual(marker[role + "_sha256"], hashlib.sha256(clean).hexdigest())
         for provider, rel in native.items():
             self.assertIn(rel, (root / STATES[provider] / "manifest").read_text())
             self.assertEqual((root / rel).read_bytes(),
@@ -3001,6 +4082,171 @@ class AllProviders(unittest.TestCase):
         for flags in ((), ("--force",), ("--dry-run",)):
             self.run_dom(root, *flags, ok=False)
             self.assertEqual(before, snapshot(self.work))
+
+
+    def nongit(self, name):
+        root = self.work / name
+        root.mkdir()
+        return root
+
+    def test_nongit_target_skips_model_setup_and_exits_zero(self):
+        info = "Model setup skipped: requires a Git repository"
+        root = self.nongit("nongit-fresh")
+        result = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(result.stdout.count(info), 1, result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertNotIn("unconfirmed", result.stderr)
+        self.assertTrue((root / ".claude/agents/implementer.md").is_file())
+        self.assertFalse((root / ".git").exists())
+        # (b) rerun is idempotent and still exits 0.
+        before = byte_snapshot(root)
+        rerun = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(rerun.stdout.count(info), 1, rerun.stdout)
+        self.assertEqual(before, byte_snapshot(root))
+        # (g) uninstall is not affected.
+        self.run_dom(root, "--uninstall")
+        self.assertFalse((root / STATES["claude"]).exists())
+
+    def test_nongit_target_with_prior_model_state_not_corrupted(self):
+        # (c) A confirmed pair from a Git install, copied without .git.
+        git_root = self.root("nongit-prior-src")
+        self.run_dom(git_root, "--platform", "claude")
+        root = self.work / "nongit-prior"
+        shutil.copytree(git_root, root, ignore=shutil.ignore_patterns(".git"))
+        before = byte_snapshot(root)
+        result = self.run_dom(root, "--platform", "claude")
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertEqual(before, byte_snapshot(root))
+
+    def test_nongit_dry_run_writes_nothing_and_exits_zero(self):
+        root = self.nongit("nongit-dry")
+        before = snapshot(self.work)
+        result = self.run_dom(root, "--platform", "claude", "--dry-run")
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertEqual(before, snapshot(self.work))
+
+    def test_nongit_refusals_still_exit_nonzero(self):
+        # (e) Conflicting unowned snapshot path, and --model without a Git root.
+        root = self.nongit("nongit-refuse")
+        base = root / STATES["codex"] / "base/AGENTS.md.block"
+        base.parent.mkdir(parents=True)
+        base.write_bytes(b"unrelated file at predictable snapshot path")
+        before = snapshot(self.work)
+        self.run_dom(root, "--platform", "codex", ok=False)
+        self.assertEqual(before, snapshot(self.work))
+        clean = self.nongit("nongit-model-flag")
+        before = snapshot(self.work)
+        self.run_dom(clean, "--platform", "claude",
+                     "--model", "claude:reviewer=inherit", ok=False)
+        self.assertEqual(before, snapshot(self.work))
+
+    def test_real_merge_conflict_keeps_summary_warning(self):
+        # Non-Git installs use the ordinary three-way merge path rather than
+        # the model-pair preflight, so a real conflict reaches the summary.
+        root = self.nongit("summary-conflict")
+        self.run_dom(root, "--platform", "claude")
+        role = root / ROLES[0]
+        anchor = "Keep the return small."
+        self.assertIn(anchor, role.read_text())
+        role.write_text(role.read_text().replace(anchor, "Keep my custom return format."))
+        upstream = SCRIPT.replace(anchor, "Keep the upstream return format.")
+        original = role.read_bytes()
+        base = root / STATES["claude"] / "base" / ROLES[0]
+        pristine = base.read_bytes()
+        for flags in (("--dry-run",), ()):
+            before = snapshot(root)
+            result = self.run_dom(root, "--platform", "claude", *flags,
+                                  script=upstream, ok=False)
+            self.assertEqual(result.returncode, 3)
+            self.assertIn("Conflicted", result.stdout)
+            self.assertIn("One or more files ended in conflict/error", result.stderr)
+            self.assertNotIn("dom-models --confirm", result.stderr)
+            self.assertEqual(role.read_bytes(), original)
+            self.assertEqual(base.read_bytes(), pristine)
+            if flags:
+                self.assertEqual(snapshot(root), before)
+            else:
+                self.assertIn(b"<<<<<<<", Path(str(role) + ".new").read_bytes())
+                self.assertEqual([p.read_bytes() for p in role.parent.glob(role.name + ".bak.*")],
+                                 [original])
+
+    def test_subdir_target_skips_model_setup_and_exits_zero(self):
+        info = "Model setup skipped: run dom at the repository root ("
+        top = self.root("subdir-fresh")
+        root = top / "pkg" / "app"
+        root.mkdir(parents=True)
+        result = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(result.stdout.count("Model setup skipped"), 1, result.stdout)
+        self.assertEqual(result.stdout.count(info), 1, result.stdout)
+        self.assertIn(str(top), result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertNotIn("unconfirmed", result.stderr)
+        self.assertTrue((root / ".claude/agents/implementer.md").is_file())
+        before = byte_snapshot(root)
+        rerun = self.run_dom(root, "--platform", "claude")
+        self.assertEqual(rerun.stdout.count("Model setup skipped"), 1, rerun.stdout)
+        self.assertEqual(before, byte_snapshot(root))
+        self.run_dom(root, "--uninstall")
+        self.assertFalse((root / STATES["claude"]).exists())
+
+    def test_subdir_dry_run_writes_nothing_and_exits_zero(self):
+        top = self.root("subdir-dry")
+        root = top / "sub"
+        root.mkdir()
+        before = snapshot(self.work)
+        result = self.run_dom(root, "--platform", "claude", "--dry-run")
+        self.assertEqual(result.stdout.count("Model setup skipped"), 1, result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertEqual(before, snapshot(self.work))
+
+    def test_subdir_model_flag_still_refuses(self):
+        top = self.root("subdir-model-flag")
+        root = top / "sub"
+        root.mkdir()
+        before = snapshot(self.work)
+        self.run_dom(root, "--platform", "claude",
+                     "--model", "claude:reviewer=inherit", ok=False)
+        self.assertEqual(before, snapshot(self.work))
+
+    def test_subdir_linked_worktree_root_unchanged(self):
+        main = self.root("subdir-wt-main")
+        git = ["git", "-C", str(main), "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "i"],
+                       check=True, env=self.env)
+        linked = self.work / "subdir-wt-linked"
+        subprocess.run([*git, "worktree", "add", "-q", str(linked)],
+                       check=True, env=self.env)
+        result = self.run_dom(linked, "--platform", "claude")
+        self.assertNotIn("Model setup skipped", result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertTrue((linked / ".claude/agents/implementer.md").is_file())
+
+    def test_subdir_dubious_ownership_does_not_skip_silently(self):
+        top = self.root("subdir-dubious")
+        sub = top / "sub"
+        sub.mkdir()
+        env = dict(self.env, GIT_TEST_ASSUME_DIFFERENT_OWNER="1")
+        for target in (top, sub):
+            result = self.run_dom(target, "--platform", "claude", env=env, ok=False)
+            self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+            self.assertNotIn("Model setup skipped", result.stdout)
+            self.assertIn("dubious ownership", result.stderr)
+            self.assertRegex(result.stderr, r"(?m)^git: .*dubious ownership")
+            self.assertIn("unconfirmed", result.stderr)
+            self.assertIn("conflict/error", result.stderr)
+            self.assertIn("partial results may remain", result.stderr)
+            # The install itself proceeds; only the model pair is unconfirmed.
+            self.assertTrue((target / ".claude/agents/implementer.md").is_file())
+
+    def test_subdir_root_via_case_variant_path_is_root(self):
+        top = self.root("subdir-case")
+        variant = Path(str(top).swapcase())
+        if not variant.exists() or not variant.samefile(top):
+            self.skipTest("case-sensitive filesystem")
+        result = self.run_dom(variant, "--platform", "claude")
+        self.assertNotIn("Model setup skipped", result.stdout)
+        self.assertNotIn("Configuration incomplete", result.stderr)
+        self.assertTrue((top / ".claude/agents/implementer.md").is_file())
 
 
 if __name__ == "__main__":

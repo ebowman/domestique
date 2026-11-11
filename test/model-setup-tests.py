@@ -337,8 +337,11 @@ class ModelSetup(unittest.TestCase):
                     pristine[rel] = upgrade(module, role, pristine[rel])
                     pristine[f"{layout.state}/base/{rel}"] = pristine[rel]
 
-            def merge(local, base, upstream):
+            def merge(role, local, base, upstream):
                 # Exercise real preserving diff3 in external operation scratch.
+                self.assertIn(role, layout.paths)
+                for data in (local, base, upstream):
+                    module["parse"](data, role)
                 with tempfile.TemporaryDirectory(dir=self.area) as scratch:
                     paths = [Path(scratch) / name for name in ("local", "base", "upstream")]
                     for path, data in zip(paths, (local, base, upstream)):
@@ -1109,21 +1112,73 @@ class ModelSetup(unittest.TestCase):
                     self.helper(root, "codex").unlink()
                     (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").unlink()
                 before = CURRENT.snapshot(root)
-                for dry in (("--dry-run",), ()):
-                    result = self.fixture.run_dom(root, *dry, "--model=codex:implementer=new", ok=False)
-                    if kind in ("unknown", "custom-inventory", "current-without-helper-inventory"):
-                        self.assertIn("unknown inventory generation", result.stderr)
-                    elif kind == "missing-helper":
-                        self.assertIn("missing claimed helper", result.stderr)
-                    self.assertEqual(before, CURRENT.snapshot(root))
-                if kind in ("stale", "custom"):
-                    old = {p: p.read_bytes() for p in roles.values()}
-                    self.fixture.run_dom(root, "--platform", "codex", ok=False)
-                    self.assertEqual(old, {p: p.read_bytes() for p in roles.values()})
-                    self.assertFalse(self.call(root, "codex", "verify")["confirmed"])
-                else:
-                    self.fixture.run_dom(root, ok=False)
-                    self.assertEqual(before, CURRENT.snapshot(root))
+                for flags in (("--dry-run",), ()):
+                    with self.subTest(flags=(*flags, "--model=codex:implementer=new")):
+                        result = self.fixture.run_dom(
+                            root, *flags, "--model=codex:implementer=new", ok=False)
+                        self.assertEqual(before, CURRENT.snapshot(root))
+                        self.assertEqual(result.returncode, 3)
+                        if kind == "custom-inventory":
+                            # Native ownership is validated before inventory generation.
+                            self.assertIn(
+                                "Native ownership refused (codex): incomplete native ownership: "
+                                ".agents/skills/domestique/SKILL.md; restore its pristine "
+                                "base/inventory. No project writes.", result.stderr)
+                        elif kind in ("unknown", "current-without-helper-inventory"):
+                            self.assertIn("unknown inventory generation", result.stderr)
+                        elif kind == "missing-helper":
+                            self.assertIn("missing claimed helper", result.stderr)
+                flags = ("--platform", "codex") if kind in ("stale", "custom") else ()
+                with self.subTest(flags=flags):
+                    if kind in ("stale", "custom"):
+                        old = {p: p.read_bytes() for p in roles.values()}
+                        result = self.fixture.run_dom(root, *flags, ok=False)
+                        self.assertEqual(old, {p: p.read_bytes() for p in roles.values()})
+                        self.assertEqual(result.returncode, 3)
+                        self.assertFalse(self.call(root, "codex", "verify")["confirmed"])
+                    else:
+                        result = self.fixture.run_dom(root, *flags, ok=False)
+                        self.assertEqual(before, CURRENT.snapshot(root))
+                        self.assertEqual(result.returncode, 3)
+
+    def test_actual_installer_reconfirmation_only_summary(self):
+        for provider in PROVIDERS:
+            with self.subTest(provider=provider):
+                root = self.project()
+                # Use real helper publication for valid custom model selections,
+                # then a manual role edit/removal of the receipt requires review.
+                self.apply(root, provider, self.prepare(root, provider))
+                roles = self.roles(root, provider)
+                lib = self.namespace(root, provider)
+                impl = roles["implementer"]
+                impl.write_bytes(lib["split_marker"](impl.read_bytes(), "implementer")[0].encode())
+                reviewer = roles["reviewer"]
+                reviewer.write_bytes(reviewer.read_bytes() + b"\n# Custom role instructions.\n")
+                bases = CURRENT.snapshot(root / CURRENT.STATES[provider] / "base")
+                selected = self.call(root, provider, "verify")["selected"]
+                for flags in (("--dry-run",), (), ()):
+                    before = CURRENT.snapshot(root)
+                    result = self.fixture.run_dom(root, "--platform", provider, *flags, ok=False)
+                    self.assertEqual(result.returncode, 3)
+                    self.assertIn("custom-unconfirmed -> reconfirmation-required", result.stdout)
+                    self.assertIn("dom-models --confirm", result.stderr)
+                    self.assertIn("Configuration incomplete", result.stderr)
+                    for misleading in ("conflict/error", "Conflicted", ".new/.bak",
+                                       "lifecycle interrupted", "partial results may remain"):
+                        self.assertNotIn(misleading, result.stdout + result.stderr)
+                    self.assertEqual(CURRENT.snapshot(root / CURRENT.STATES[provider] / "base"), bases)
+                    if flags:
+                        self.assertEqual(CURRENT.snapshot(root), before)
+                    self.assertFalse(self.call(root, provider, "verify")["confirmed"])
+                # The advertised native command really prepares current-pair
+                # review, and only explicit Save clears the nonzero outcome.
+                before = CURRENT.snapshot(root)
+                review = self.native(root, provider, "--confirm")
+                self.assertEqual(review["chosen"], selected)
+                self.assertEqual(CURRENT.snapshot(root), before)
+                self.apply(root, provider, review)
+                self.fixture.run_dom(root, "--platform", provider)
+                self.assertTrue(self.call(root, provider, "verify")["confirmed"])
 
     def test_actual_installer_partial_publication_never_marks_failed_pair(self):
         root = self.area / "failure"
@@ -1139,6 +1194,7 @@ class ModelSetup(unittest.TestCase):
         self.assertIn("injected reviewer publication failure", result.stderr)
         self.assertIn("claude:configured", result.stderr)
         self.assertIn('"partial": true', result.stderr)
+        self.assertIn("partial results may remain", result.stderr)
         state = subprocess.run([sys.executable, "-I", "-B", str(self.helper(root, "claude")), "verify"],
                                cwd=root, env=self.env, capture_output=True, text=True, check=True)
         self.assertTrue(json.loads(state.stdout)["confirmed"])
@@ -1188,7 +1244,14 @@ class ModelSetup(unittest.TestCase):
             self.assertEqual(state["selected"][role]["model"], lib["parse"](old[role], role)[1]["model"])
             base = root / ".claude/.domestique/base" / path.relative_to(root)
             self.assertEqual(base.read_bytes(), old[role])
-            self.assertTrue(path.read_bytes().endswith(old[role].split(b"\n---\n", 1)[1]))
+            # 2264890 (hq-xc2.3) intentionally changes the upstream body.
+            # Preserve the exact tool delta, not the whole historical body.
+            expected = lib["split_marker"](
+                self.roles(self.seed, "claude")[role].read_bytes(), role)[0].encode()
+            if role == "implementer":
+                expected = expected.replace(b"tools: ", b"tools: mcp__example__search, ", 1)
+                self.assertIn(b"## Child bead ownership handoff\n", path.read_bytes())
+            self.assertEqual(path.read_bytes(), expected)
         self.assertIn(b"tools: mcp__example__search, ", roles["implementer"].read_bytes())
         self.assertNotIn(b"mcp__example__search", roles["reviewer"].read_bytes())
         migrated = {r: p.read_bytes() for r, p in roles.items()}
@@ -1224,7 +1287,7 @@ class ModelSetup(unittest.TestCase):
             files = ",".join(p for p in files.split(",") if p not in policies)
             recognized = namespace["installer_inventories"](provider, files, policies, helper)
             observed = set()
-            refs = ("v0.1.0", "76d217f", "6158d35", "8cb30cb", "4dc26fd",
+            refs = ("ff41544", "v0.1.0", "76d217f", "6158d35", "8cb30cb", "4dc26fd",
                     "9f33930", "v0.2.0", "v0.2.1", "v0.2.2")
             for ref in refs:
                 source = subprocess.check_output(
@@ -1232,9 +1295,10 @@ class ModelSetup(unittest.TestCase):
                     text=True)
                 version = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', source, re.M)[1]
                 inventories = re.findall(r'^\s*MANAGED_PLAIN_FILES="([^"$]+)"', source, re.M)
-                if provider == "claude" and ref == "v0.1.0":
+                if provider == "claude" and ref in ("ff41544", "v0.1.0"):
                     inventory = re.search(r'^MANAGED_FILES="([^"]+)"', source, re.M)[1]
                     self.assertIn((version, inventory), recognized)
+                    observed.add((version, inventory))
                     continue
                 if provider == "copilot":
                     if "COPILOT_ENTRIES='" not in source:
@@ -1253,7 +1317,7 @@ class ModelSetup(unittest.TestCase):
                         observed.add((version, inventory + "".join("," + p for p in subset)))
             for count in range(len(policies) + 1):
                 for subset in itertools.combinations(policies, count):
-                    for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", CURRENT.VERSION):
+                    for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3", CURRENT.VERSION):
                         observed.add((version, files + "".join("," + p for p in subset)))
             self.assertEqual(recognized, observed)
 
@@ -1279,6 +1343,8 @@ class ModelSetup(unittest.TestCase):
                 self.assertEqual(result.returncode, 3)
                 self.assertIn("Final model verification: claude: state changed after pair publication",
                               result.stderr)
+                self.assertIn("conflict/error", result.stderr)
+                self.assertIn("partial results may remain", result.stderr)
                 # The v1 marker binds roles, not dependencies. Its continuing
                 # validity must NOT be mistaken for lifecycle success.
                 state = self.call(root, "claude", "verify")

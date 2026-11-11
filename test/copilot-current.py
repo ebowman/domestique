@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 
@@ -35,7 +36,9 @@ def snapshot(root):
 
 class Copilot(unittest.TestCase):
     def setUp(self):
-        self.root = WORK / self._testMethodName
+        # Retain prior runs for diagnosis; never reuse or clean caller-owned paths.
+        self.work = Path(tempfile.mkdtemp(prefix=self._testMethodName + "-", dir=WORK)).resolve()
+        self.root = self.work / "project"
         self.root.mkdir()
         self.git("init", "-q")
 
@@ -52,19 +55,55 @@ class Copilot(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
 
+    def run_dom_unconfirmed(self, *flags, dom=DOM):
+        # Custom native model fields make the pair custom-unconfirmed/stale, so
+        # since 3d1a3d3 (hq-c6o.4) a run exits 3 until dom-models --confirm
+        # (README, install-upgrade-design). Exit 3 must come only from that
+        # reconfirmation, never from a real file conflict or refusal.
+        result = self.run_dom(*flags, dom=dom, ok=False)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("reconfirmation-required", result.stdout)
+        self.assertIn("dom-models --confirm", result.stdout + result.stderr)
+        self.assertNotIn("Conflicted:", result.stdout)
+        return result
+
     def install(self, *flags, **kwargs):
         return self.run_dom("--platform", "copilot", *flags, **kwargs)
 
     def hidden(self, path):
         return self.git("check-ignore", "-q", path).returncode == 0
 
+    def test_setup_reused_workroot_preserves_prior_results(self):
+        self.install("--guest")
+        (self.root / "prior-result").write_text("keep prior project\n")
+        for name in ("outside-role", "conflict-dom.sh"):
+            (self.work / name).write_text("keep prior fixture\n")
+        before = snapshot(self.work)
+
+        repeated = type(self)(self._testMethodName)
+        repeated.setUp()
+        self.assertEqual(repeated.work.parent, WORK.resolve())
+        self.assertNotEqual(repeated.work, self.work)
+        self.assertFalse((repeated.root / "prior-result").exists())
+        self.assertFalse((repeated.root / STATE).exists())
+        for name in ("outside-role", "conflict-dom.sh"):
+            self.assertFalse((repeated.work / name).exists())
+            (repeated.work / name).write_text("independent new fixture\n")
+        repeated.install("--guest")
+        for case in (self, repeated):
+            marker = json.loads(next(
+                line[len(MARKER):] for line in
+                (case.root / ROLES["implementer"]).read_text().splitlines()
+                if line.startswith(MARKER)))
+            self.assertEqual(marker["project"], str(case.root.resolve()))
+        self.assertEqual(snapshot(self.work), before)
+
     def test_install_native_contents_and_routing(self):
         # A restricted PATH proves missing Copilot does not block installation.
-        bindir = WORK / "bin"
-        bindir.mkdir(exist_ok=True)
+        bindir = self.work / "bin"
+        bindir.mkdir()
         python = bindir / "python3"
-        if not python.exists():
-            python.symlink_to(sys.executable)
+        python.symlink_to(sys.executable)
         env = dict(os.environ, PATH=f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin")
         self.assertIsNone(shutil.which("copilot", path=env["PATH"]))
         result = self.install(env=env)
@@ -131,7 +170,7 @@ class Copilot(unittest.TestCase):
     def test_old_role_guard_upgrade_preserves_custom_pair(self):
         # Bounded pristine role bytes from 9f339305a4f900176b647248f68907499dcc0620.
         # Seed only the two owned role snapshots, as in old-inventory helper tests.
-        # Synthetic confirmation tests hash invalidation, NOT native consent.
+        # Installed helper review/Save confirms filesystem bytes, NOT native consent.
         parent = self.root
         for mode in ("normal", "guest"):
             for custom in (False, True):
@@ -153,15 +192,48 @@ class Copilot(unittest.TestCase):
                             old = old.replace("an unknown harness.", "an unknown harness. Custom discovery.", 1)
                             old += "\nUser-owned instructions.\n"
                         pair[role] = old
-                    marker = dict(v=1, project=str(self.root.resolve()), harness="copilot")
-                    marker.update({r + "_sha256": hashlib.sha256(text.encode()).hexdigest()
-                                   for r, text in pair.items()})
-                    marker_line = MARKER + json.dumps(marker) + "\n"
                     for role, rel in ROLES.items():
-                        text = pair[role]
-                        if role == "implementer":
-                            text = text[:4] + marker_line + text[4:]
-                        (self.root / rel).write_text(text)
+                        (self.root / rel).write_text(pair[role])
+                    models = self.root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                    bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                    def helper(*args, plan=None):
+                        result = subprocess.run(
+                            [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                            input=json.dumps(plan) if plan is not None else None,
+                            cwd=self.root, text=True, capture_output=True)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        return json.loads(result.stdout)
+
+                    before = snapshot(self.root)
+                    if custom:
+                        # Current-inventory custom roles must await Save unchanged;
+                        # legacy guard migration is a separate, qualified step.
+                        self.run_dom_unconfirmed("--platform", "copilot", "--dry-run")
+                        self.assertEqual(snapshot(self.root), before)
+                        self.run_dom_unconfirmed("--platform", "copilot")
+                        self.assertEqual(snapshot(self.root), before)
+                    review = helper("request", "--confirm")
+                    self.assertFalse(review["configured"])
+                    selected = {r: {"model": "custom-native-id" if custom else None,
+                                    "effort": None} for r in ROLES}
+                    self.assertEqual(review["chosen"], selected)
+                    self.assertEqual(review["current"], selected)
+                    self.assertEqual(snapshot(self.root), before)
+                    self.assertTrue(helper(
+                        "apply", review["digest"], plan=review["plan"])["confirmed"])
+                    marker = json.loads(next(
+                        line[len(MARKER):] for line in
+                        (self.root / ROLES["implementer"]).read_text().splitlines()
+                        if line.startswith(MARKER)))
+                    for role, rel in ROLES.items():
+                        clean = "".join(line for line in (self.root / rel).read_text().splitlines(True)
+                                        if not line.startswith(MARKER))
+                        self.assertEqual(clean, pair[role])
+                        self.assertEqual(marker[role + "_sha256"],
+                                         hashlib.sha256(clean.encode()).hexdigest())
+                        self.assertEqual((self.root / STATE / "base" / rel).read_text(),
+                                         (OLD_ROLES / f"{role}.agent.md").read_text())
                     before = snapshot(self.root)
                     self.install("--dry-run")
                     self.assertEqual(snapshot(self.root), before)
@@ -171,15 +243,26 @@ class Copilot(unittest.TestCase):
                         text = path.read_text()
                         self.assertIn(DELEGATED, text)
                         self.assertNotIn("Before applying ANY instructions below", text)
-                        old_body = pair[role].split("Delegated role only:", 1)[1]
-                        self.assertEqual(text.split("Delegated role only:", 1)[1], old_body)
+                        # 2264890 (hq-xc2.3) adds ownership handoff and revises
+                        # the delegated task. Compare current emitter + ALL edits.
+                        expected = current[role]
                         if custom:
+                            expected = expected.replace(
+                                "\n---\n", '\nmodel: "custom-native-id"\n'
+                                'custom: "retained"\n---\n', 1)
+                            expected = expected.replace('"search", "execute"', '"search"')
+                            expected = expected.replace(
+                                "an unknown harness.", "an unknown harness. Custom discovery.", 1)
+                            expected += "\nUser-owned instructions.\n"
                             self.assertIn('model: "custom-native-id"', text)
                             self.assertIn('custom: "retained"', text)
                             self.assertIn("Custom discovery.", text)
                             self.assertNotIn('"execute"', text)
                         clean = "".join(line for line in text.splitlines(keepends=True)
                                         if not line.startswith(MARKER))
+                        self.assertEqual(clean, expected)
+                        if role == "implementer":
+                            self.assertIn("## Child bead ownership handoff\n", clean)
                         self.assertNotEqual(hashlib.sha256(clean.encode()).hexdigest(),
                                             marker[role + "_sha256"])
                         self.assertEqual((self.root / STATE / "base" / rel).read_text(),
@@ -194,56 +277,288 @@ class Copilot(unittest.TestCase):
                         self.assertEqual(saved[role + "_sha256"],
                                          hashlib.sha256(clean.encode()).hexdigest())
                     upgraded = snapshot(self.root)
+                    self.assertTrue(helper("verify")["confirmed"])
+                    self.assertEqual(helper("verify")["selected"], selected)
                     self.install()
                     self.assertEqual(snapshot(self.root), upgraded)
 
     def test_role_guard_migration_and_current_tampering_refuse_atomically(self):
         parent = self.root
         for mode in ("normal", "guest"):
-            self.root = parent / mode
-            self.root.mkdir()
-            self.git("init", "-q")
-            self.install(*(["--guest"] if mode == "guest" else []))
             for role, rel in ROLES.items():
-                path = self.root / rel
-                base = self.root / STATE / "base" / rel
-                current = path.read_text()
-                legacy = (OLD_ROLES / f"{role}.agent.md").read_text()
-                for generation, source in (("old", legacy), ("current", current)):
-                    base.write_text(source)
-                    prefix, task = source.split("Delegated role only:", 1)
-                    front, guard = prefix.split("\n## Active harness boundary", 1)
-                    guard = "\n## Active harness boundary" + guard
-                    mutations = {
-                        "removed": front + "Delegated role only:" + task,
-                        "tampered": source.replace("STOP", "CONTINUE", 1),
-                        "quoted": front + "Delegated role only:" + task + "\n```text\n" + guard + "```\n",
-                        "wrong-surface": legacy if generation == "current" else current,
-                        "malformed": source.replace("---\n", "BROKEN\n", 1),
-                        "unowned": source,
-                        "tampered-base": source,
-                    }
-                    for kind, changed in mutations.items():
-                        with self.subTest(mode=mode, role=role, generation=generation, kind=kind):
-                            path.write_text(changed)
-                            base.write_text(source)
-                            if kind == "unowned":
-                                base.unlink()
-                            elif kind == "tampered-base":
-                                base.write_text(source.replace("STOP", "CONTINUE", 1))
-                            before = snapshot(self.root)
-                            directories = {p.relative_to(self.root) for p in self.root.rglob("*")
-                                           if p.is_dir()}
-                            for flags in ((), ("--force", "--dry-run")):
+                for generation in ("old", "current"):
+                    kinds = ("removed", "tampered", "quoted", "malformed",
+                             "unowned", "tampered-base")
+                    if generation == "current":
+                        kinds += ("legacy-live-on-delegated-base",)
+                    for kind in kinds:
+                        for flags in ((), ("--force", "--dry-run")):
+                            with self.subTest(mode=mode, role=role, generation=generation,
+                                              kind=kind, flags=flags):
+                                # Each invocation gets its own real installation:
+                                # even an unexpected successful write cannot seed
+                                # another role, mutation or flags variant.
+                                variant = "force-dry-run" if flags else "normal"
+                                self.root = parent / f"{mode}-{role}-{generation}-{kind}-{variant}"
+                                self.root.mkdir()
+                                self.git("init", "-q")
+                                self.install(*(["--guest"] if mode == "guest" else []))
+                                path = self.root / rel
+                                base = self.root / STATE / "base" / rel
+                                current = path.read_text()
+                                pristine = base.read_text()
+                                self.assertNotIn(MARKER, pristine)
+                                legacy = (OLD_ROLES / f"{role}.agent.md").read_text()
+                                source = legacy if generation == "old" else current
+                                baseline = legacy if generation == "old" else pristine
+                                prefix, task = source.split("Delegated role only:", 1)
+                                front, guard = prefix.split("\n## Active harness boundary", 1)
+                                guard = "\n## Active harness boundary" + guard
+                                mutations = {
+                                    "removed": front + "Delegated role only:" + task,
+                                    "tampered": source.replace("STOP", "CONTINUE", 1),
+                                    "quoted": front + "Delegated role only:" + task + "\n```text\n" + guard + "```\n",
+                                    "legacy-live-on-delegated-base": legacy,
+                                    "malformed": source.replace("---\n", "BROKEN\n", 1),
+                                    "unowned": source,
+                                    "tampered-base": source,
+                                }
+                                path.write_text(mutations[kind])
+                                # Pristine authority comes only from the actual
+                                # installation or the historical fixture, never
+                                # from the live implementer's confirmed bytes.
+                                base.write_text(baseline)
+                                if kind == "unowned":
+                                    base.unlink()
+                                elif kind == "tampered-base":
+                                    base.write_text(baseline.replace("STOP", "CONTINUE", 1))
+                                before = snapshot(self.root)
+                                directories = {p.relative_to(self.root) for p in self.root.rglob("*")
+                                               if p.is_dir()}
                                 result = self.install(*flags, ok=False)
-                                self.assertEqual(result.returncode, 3)
-                                self.assertIn("No project writes", result.stderr)
+                                self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                                self.assertIn("no project writes", result.stderr.lower())
+                                lowered = result.stderr.lower()
+                                # Every refusal carries some repair guidance;
+                                # the lifecycle preflight must say what is
+                                # wrong, what to restore, and which file.
+                                self.assertTrue(
+                                    any(w in lowered for w in ("repair", "restore", "reconcile")),
+                                    result.stderr)
+                                if "Model lifecycle refused" in result.stderr:
+                                    self.assertIn("missing native body guard", result.stderr)
+                                    self.assertIn("restore", lowered)
+                                    self.assertIn("reconcile", lowered)
+                                    self.assertIn(rel, result.stderr)
+                                    if kind == "tampered-base":
+                                        self.assertIn(f"./{STATE}/base/{rel}", result.stderr)
+                                        self.assertIn("original pristine snapshot", result.stderr)
+                                        self.assertIn("not current upstream", result.stderr)
+                                        self.assertIn("historical base is merge authority", result.stderr)
+                                    else:
+                                        self.assertIn("## Active harness boundary (copilot only)", result.stderr)
+                                        self.assertIn("start of the role body", result.stderr)
                                 self.assertEqual(snapshot(self.root), before)
                                 self.assertEqual(directories, {
                                     p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
-                            base.write_text(source)
-                path.write_text(current)
-                base.write_text(current)
+
+    def test_entry_base_with_confirmed_delegated_live_preserves_pair(self):
+        # 75b0de3 introduced entry -> delegated migration; da7f4be explicitly
+        # accepts delegated live roles over retained entry-era bases after Save.
+        # This is not the reverse (legacy live over delegated base) refusal above.
+        parent = self.root
+
+        def tree():
+            return {
+                str(p.relative_to(self.root)): (
+                    p.lstat().st_mode, p.lstat().st_mtime_ns, p.lstat().st_ino,
+                    os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file() else None)
+                for p in self.root.rglob("*")
+            }
+
+        for mode in ("normal", "guest"):
+            for role, rel in ROLES.items():
+                for custom in (False, True):
+                    for flags in ((), ("--force", "--dry-run")):
+                        with self.subTest(mode=mode, role=role, custom=custom, flags=flags):
+                            variant = "force-dry-run" if flags else "normal"
+                            self.root = parent / f"{mode}-{role}-{custom}-{variant}"
+                            self.root.mkdir()
+                            self.git("init", "-q")
+                            self.install(*(["--guest"] if mode == "guest" else []))
+                            pristine = {r: (self.root / STATE / "base" / p).read_bytes()
+                                        for r, p in ROLES.items()}
+                            models = self.root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                            bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                            def helper(*args, plan=None):
+                                result = subprocess.run(
+                                    [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                                    input=json.dumps(plan) if plan is not None else None,
+                                    cwd=self.root, text=True, capture_output=True)
+                                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                                return json.loads(result.stdout)
+
+                            if custom:
+                                path = self.root / rel
+                                # Keep the scalar at an unchanged header boundary;
+                                # force need not guess its position beside removed metadata.
+                                text = path.read_text().replace(
+                                    "\nname:", f'\nmodel: "fixture-{role}"\nname:', 1)
+                                text = text.replace("\n---\n", '\ncustom: "retained"\n---\n', 1)
+                                text = text.replace('"search", "execute"', '"search"')
+                                text = text.replace("an unknown harness.",
+                                                    "an unknown harness. Local discovery.", 1)
+                                path.write_text(text + "\nLocal role instructions.\n")
+                                self.assertFalse(helper("verify")["confirmed"])
+                                before = tree()
+                                review = helper("request", "--confirm")
+                                self.assertFalse(review["configured"])
+                                self.assertEqual(tree(), before)
+                                self.assertTrue(helper(
+                                    "apply", review["digest"], plan=review["plan"])["confirmed"])
+                            selected = {r: {"model": f"fixture-{r}" if custom and r == role else None,
+                                            "effort": None} for r in ROLES}
+                            live = {p: (self.root / p).read_bytes() for p in ROLES.values()}
+                            base = self.root / STATE / "base" / rel
+                            legacy = (OLD_ROLES / f"{role}.agent.md").read_bytes()
+                            self.assertIn(b"Before applying ANY instructions below", legacy)
+                            self.assertNotIn(MARKER.encode(), legacy)
+                            base.write_bytes(legacy)
+                            for data in live.values():
+                                self.assertIn(DELEGATED.encode(), data)
+                                self.assertNotIn(b"Before applying ANY instructions below", data)
+                            verified = helper("verify")
+                            self.assertTrue(verified["confirmed"])
+                            self.assertEqual(verified["selected"], selected)
+
+                            before = tree()
+                            result = self.install(*(flags or ("--dry-run",)))
+                            self.assertIn("[model pair] copilot: confirmed -> configured locally", result.stdout)
+                            for r, choice in selected.items():
+                                model = json.dumps(choice["model"]) if choice["model"] else "native inheritance"
+                                display = model + "; effort inherited/omitted"
+                                self.assertIn(
+                                    f"[model selection] copilot:{r}: {display} -> {display} [preserved-existing]",
+                                    result.stdout)
+                            self.assertNotIn("[model publication]", result.stdout)
+                            self.assertEqual(tree(), before)
+                            self.assertEqual(helper("verify"), verified)
+                            expected = snapshot(self.root)
+                            expected[str(base.relative_to(self.root))] = (
+                                base.lstat().st_mode, pristine[role])
+                            # Publish without force even after a force preview: local
+                            # bodies/settings survive, only pristine authority advances.
+                            result = self.install()
+                            self.assertIn("[model pair] copilot: confirmed -> configured locally", result.stdout)
+                            self.assertIn("[model publication] copilot:configured", result.stdout)
+                            self.assertEqual(snapshot(self.root), expected)
+                            self.assertEqual(live, {p: (self.root / p).read_bytes() for p in ROLES.values()})
+                            self.assertEqual(helper("verify"), verified)
+                            for r, p in ROLES.items():
+                                self.assertEqual((self.root / STATE / "base" / p).read_bytes(), pristine[r])
+                            stable = tree()
+                            self.install()
+                            self.assertEqual(tree(), stable)
+                            self.assertEqual(helper("verify"), verified)
+
+    def test_invalid_pristine_role_guard_with_confirmed_current_live(self):
+        parent = self.root
+        for role, rel in ROLES.items():
+            for kind in ("tampered-entry", "missing-delegated"):
+                for flags in ((), ("--force", "--dry-run")):
+                    with self.subTest(role=role, kind=kind, flags=flags):
+                        variant = "force-dry-run" if flags else "normal"
+                        self.root = parent / f"{role}-{kind}-{variant}"
+                        self.root.mkdir()
+                        self.git("init", "-q")
+                        self.install()
+                        base = self.root / STATE / "base" / rel
+                        if kind == "tampered-entry":
+                            original = (OLD_ROLES / f"{role}.agent.md").read_text()
+                            base.write_text(original.replace("STOP", "CONTINUE", 1))
+                        else:
+                            original = base.read_text()
+                            front = original.split("\n## Active harness boundary", 1)[0]
+                            task = original.split("Delegated role only:", 1)[1]
+                            base.write_text(front + "\nDelegated role only:" + task)
+                        # The live pair still has its valid installed confirmation
+                        # and delegated guard; neither authorizes a damaged base.
+                        before = snapshot(self.root)
+                        directories = {p.relative_to(self.root) for p in self.root.rglob("*")
+                                       if p.is_dir()}
+                        result = self.install(*flags, ok=False)
+                        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                        self.assertIn("pristine base", result.stderr)
+                        self.assertIn(f"{STATE}/base/{rel}", result.stderr)
+                        self.assertIn("original pristine snapshot", result.stderr)
+                        self.assertIn("no project writes", result.stderr.lower())
+                        self.assertEqual(snapshot(self.root), before)
+                        self.assertEqual(directories, {
+                            p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()})
+
+    def test_known_entry_role_base_preserves_confirmation_contract(self):
+        parent = self.root
+        for mode in ("normal", "guest"):
+            for custom in (False, True):
+                with self.subTest(mode=mode, custom=custom):
+                    self.root = parent / f"{mode}-{custom}"
+                    self.root.mkdir()
+                    self.git("init", "-q")
+                    self.install(*(["--guest"] if mode == "guest" else []))
+                    bases = {}
+                    for role, rel in ROLES.items():
+                        old = (OLD_ROLES / f"{role}.agent.md").read_bytes()
+                        bases[role] = old
+                        (self.root / STATE / "base" / rel).write_bytes(old)
+                        local = old + (b"\nUser-owned instructions.\n" if custom else b"")
+                        (self.root / rel).write_bytes(local)
+                    before = snapshot(self.root)
+                    if custom:
+                        self.run_dom_unconfirmed("--platform", "copilot", "--dry-run")
+                        self.assertEqual(snapshot(self.root), before)
+                        self.run_dom_unconfirmed("--platform", "copilot")
+                        # A current-inventory custom pair awaits explicit Save,
+                        # rather than gaining confirmation through guard migration.
+                        self.assertEqual(snapshot(self.root), before)
+                        models = self.root / ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                        bootstrap = models.read_text().split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                        def helper(*args, plan=None):
+                            result = subprocess.run(
+                                [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                                input=json.dumps(plan) if plan is not None else None,
+                                cwd=self.root, text=True, capture_output=True)
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            return json.loads(result.stdout)
+
+                        review = helper("request", "--confirm")
+                        self.assertFalse(review["configured"])
+                        self.assertEqual(snapshot(self.root), before)
+                        self.assertTrue(helper(
+                            "apply", review["digest"], plan=review["plan"])["confirmed"])
+                        for role, rel in ROLES.items():
+                            self.assertEqual((self.root / STATE / "base" / rel).read_bytes(), bases[role])
+                    before = snapshot(self.root)
+                    self.install("--dry-run")
+                    self.assertEqual(snapshot(self.root), before)
+                    self.install()
+                    for role, rel in ROLES.items():
+                        text = (self.root / rel).read_text()
+                        self.assertIn(DELEGATED, text)
+                        self.assertNotIn("Before applying ANY instructions below", text)
+                        self.assertEqual("User-owned instructions." in text, custom)
+                    if custom:
+                        self.assertTrue(helper("verify")["confirmed"])
+                        # A retained, intact entry-era base is also legitimate
+                        # after migration/Save when the live role is delegated.
+                        live = {rel: (self.root / rel).read_bytes() for rel in ROLES.values()}
+                        for role, rel in ROLES.items():
+                            (self.root / STATE / "base" / rel).write_bytes(bases[role])
+                        self.install()
+                        self.assertEqual(live, {
+                            rel: (self.root / rel).read_bytes() for rel in ROLES.values()})
+                        self.assertTrue(helper("verify")["confirmed"])
 
     def test_rerun_merge_marker_and_modified_removal(self):
         self.install()
@@ -270,7 +585,7 @@ class Copilot(unittest.TestCase):
         for role, rel in ROLES.items():
             self.assertEqual((self.root / rel).read_bytes(), before[role])
         # A qualified pair's preserving upgrade renews its final-byte marker.
-        revised = WORK / "revised-dom.sh"
+        revised = self.work / "revised-dom.sh"
         revised.write_text(DOM.read_text().replace(
             "Return a terse summary: files changed, actual validation/results, discovered",
             "Return a brief summary: files changed, actual validation/results, discovered"))
@@ -333,7 +648,7 @@ class Copilot(unittest.TestCase):
         for old, new in changes.items():
             self.assertEqual(upstream.count(old), 1)
             upstream = upstream.replace(old, new)
-        revised = WORK / "custom-descriptions-upgrade.sh"
+        revised = self.work / "custom-descriptions-upgrade.sh"
         revised.write_text(upstream)
         parent = self.root
         for mode in ("normal", "guest"):
@@ -368,14 +683,21 @@ class Copilot(unittest.TestCase):
                             self.assertEqual(tomllib.loads(text)["description"], description)
                         path.write_text(text)
                         expected[rel] = text
-                self.run_dom()
+                self.run_dom_unconfirmed()
                 for rel, text in expected.items():
                     self.assertEqual((self.root / rel).read_text(), text)
-                self.run_dom(dom=revised)
+                # Customized roles are custom-unconfirmed: model plans only merge
+                # qualified/historical pairs (domestique.sh Model setup prepare,
+                # 3d1a3d3 hq-c6o.4; install-upgrade-design "Preserving upgrades"),
+                # so an upstream body revision must leave every custom byte
+                # untouched until dom-models --confirm, not merge or conflict.
+                before_revised = snapshot(self.root)
+                self.run_dom_unconfirmed(dom=revised)
+                self.assertEqual(snapshot(self.root), before_revised)
                 for rel, text in expected.items():
-                    for old, new in changes.items():
-                        text = text.replace(old, new)
                     self.assertEqual((self.root / rel).read_text(), text)
+                    for new in changes.values():
+                        self.assertNotIn(new, text)
                 # Even with a customized description, removing the body boundary
                 # must refuse before changing any file/mode/base/exclusion.
                 for rel, guard in (
@@ -388,7 +710,11 @@ class Copilot(unittest.TestCase):
                     self.assertIn(guard, original)
                     path.write_text(original.replace(guard, "REMOVED CALLER BOUNDARY"))
                     before = snapshot(self.root)
-                    self.run_dom(dom=revised, ok=False)
+                    refused = self.run_dom(dom=revised, ok=False)
+                    # Not the generic reconfirmation exit: the missing caller
+                    # boundary itself must be named as the refusal.
+                    self.assertIn("Model lifecycle refused", refused.stderr)
+                    self.assertIn("body guard", refused.stderr)
                     self.assertEqual(snapshot(self.root), before)
                     path.write_text(original)
 
@@ -433,7 +759,10 @@ class Copilot(unittest.TestCase):
                                 self.assertIn("discovery description", result.stderr)
                                 self.assertIn(DESCRIPTION_GUARDS[harness], result.stderr)
                                 self.assertIn(rel, result.stderr)
-                                self.assertIn("No project writes", result.stderr)
+                                self.assertIn("no project writes", result.stderr.lower())
+                                self.assertRegex(result.stderr, r"must start with|starts with")
+                                self.assertIn("restore", result.stderr.lower())
+                                self.assertIn("reconcile", result.stderr.lower())
                                 self.assertEqual(snapshot(self.root), before)
                                 self.assertEqual(
                                     {p.relative_to(self.root) for p in self.root.rglob("*") if p.is_dir()},
@@ -441,39 +770,92 @@ class Copilot(unittest.TestCase):
                         path.write_text(original)
 
     def test_guarded_description_merge_conflicts_refuse_without_writes(self):
-        self.run_dom("--platform", "codex", "--guest")
-        self.install("--guest")
+        parent = self.root
         for harness in ("codex", "copilot"):
             for role in ("implementer", "reviewer"):
                 rel = ROLES[role] if harness == "copilot" else f".codex/agents/{role}.toml"
-                path = self.root / rel
-                original = path.read_text()
-                line = next(s for s in original.splitlines() if s.startswith("description"))
-                field = "description: " if harness == "copilot" else "description = "
-                local = field + json.dumps(DESCRIPTION_GUARDS[harness] + " Custom local remainder.")
-                upstream = field + json.dumps(DESCRIPTION_GUARDS[harness] + " New upstream remainder.")
-                path.write_text(original.replace(line, local))
-                source = DOM.read_text()
-                self.assertEqual(source.count(line), 1)
-                revised = WORK / f"conflict-{harness}-{role}.sh"
-                revised.write_text(source.replace(line, upstream))
-                before = snapshot(self.root)
-                for flags in ((), ("--force",), ("--dry-run",), ("--no-guest",)):
-                    with self.subTest(harness=harness, role=role, flags=flags):
-                        result = self.run_dom(*flags, dom=revised, ok=False)
-                        self.assertEqual(result.returncode, 3)
-                        self.assertIn("conflict", result.stderr)
-                        self.assertIn(rel, result.stderr)
-                        self.assertEqual(snapshot(self.root), before)
-                # Also validate the *merged* description, not merely the live
-                # role: an upstream edit cannot drop the discovery boundary.
-                path.write_text(original)
-                revised.write_text(source.replace(line, field + '"Use only in Claude"'))
-                before = snapshot(self.root)
-                for flags in ((), ("--force",), ("--dry-run",)):
-                    result = self.run_dom(*flags, dom=revised, ok=False)
-                    self.assertIn("discovery description", result.stderr)
-                    self.assertEqual(snapshot(self.root), before)
+                for kind in ("conflict", "invalid-upstream"):
+                    variants = ((), ("--force",), ("--dry-run",))
+                    if kind == "conflict":
+                        variants += (("--no-guest",),)
+                    for index, flags in enumerate(variants):
+                        with self.subTest(harness=harness, role=role, kind=kind, flags=flags):
+                            # Real independent installations prevent unexpected
+                            # publication from contaminating subsequent cases.
+                            name = f"{harness}-{role}-{kind}-{index}"
+                            self.root = parent / name
+                            self.root.mkdir()
+                            self.git("init", "-q")
+                            self.run_dom("--platform", "codex", "--guest")
+                            self.install("--guest")
+                            path = self.root / rel
+                            original = path.read_text()
+                            line = next(s for s in original.splitlines() if s.startswith("description"))
+                            field = "description: " if harness == "copilot" else "description = "
+                            if kind == "conflict":
+                                local = field + json.dumps(
+                                    DESCRIPTION_GUARDS[harness] + " Custom local remainder.")
+                                upstream = field + json.dumps(
+                                    DESCRIPTION_GUARDS[harness] + " New upstream remainder.")
+                                path.write_text(original.replace(line, local))
+                                # Customization invalidates pair confirmation.
+                                # Review/Save through the installed authority
+                                # bootstrap, never synthesize marker hashes or
+                                # replace pristine bases with customized bytes.
+                                models = (
+                                    ".github/skills/domestique-v2-copilot-models/SKILL.md"
+                                    if harness == "copilot"
+                                    else ".agents/skills/domestique-models/SKILL.md")
+                                bootstrap = (self.root / models).read_text()
+                                bootstrap = bootstrap.split("```python\n", 1)[1].split("\n```", 1)[0]
+
+                                def helper(*args, plan=None):
+                                    result = subprocess.run(
+                                        [sys.executable, "-I", "-B", "-Werror", "-c", bootstrap, *args],
+                                        input=json.dumps(plan) if plan is not None else None,
+                                        cwd=self.root, text=True, capture_output=True)
+                                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                                    return json.loads(result.stdout)
+
+                                state = STATE if harness == "copilot" else ".codex/.domestique"
+                                bases = snapshot(self.root / state / "base")
+                                before_review = snapshot(self.root)
+                                review = helper("request", "--confirm")
+                                self.assertFalse(review["configured"])
+                                self.assertEqual(review["chosen"], review["current"])
+                                self.assertEqual(snapshot(self.root), before_review)
+                                self.assertTrue(helper(
+                                    "apply", review["digest"], plan=review["plan"])["confirmed"])
+                                self.assertTrue(helper("verify")["confirmed"])
+                                self.assertEqual(snapshot(self.root / state / "base"), bases)
+                                self.assertIn(local, path.read_text())
+                                self.assertIn(line, (self.root / state / "base" / rel).read_text())
+                            else:
+                                # Also validate the merged description: an
+                                # upstream edit cannot drop the boundary.
+                                upstream = field + '"Use only in Claude"'
+                            source = DOM.read_text()
+                            self.assertEqual(source.count(line), 1)
+                            revised = self.work / f"{name}.sh"
+                            revised.write_text(source.replace(line, upstream))
+                            before = snapshot(self.root)
+                            result = self.run_dom(*flags, dom=revised, ok=False)
+                            self.assertEqual(result.returncode, 3)
+                            self.assertIn("no project writes", result.stderr.lower())
+                            self.assertIn("reconcile", result.stderr.lower())
+                            if kind == "conflict":
+                                self.assertIn("conflict", result.stderr)
+                                self.assertIn(rel, result.stderr)
+                                self.assertIn(f"./{state}/base/{rel}", result.stderr)
+                                self.assertIn("keep the pristine base unchanged", result.stderr)
+                                self.assertIn("retry --dry-run", result.stderr)
+                            else:
+                                self.assertIn("discovery description", result.stderr)
+                                self.assertIn(DESCRIPTION_GUARDS[harness], result.stderr)
+                                self.assertIn("must start with", result.stderr)
+                                self.assertIn("restore", result.stderr.lower())
+                                self.assertIn(rel, result.stderr)
+                            self.assertEqual(snapshot(self.root), before)
 
     def test_shared_consumers_and_scoped_removal(self):
         for provider in ("codex", "claude"):
@@ -494,7 +876,7 @@ class Copilot(unittest.TestCase):
     def test_source_free_stdin_normal_repeat_and_isolation(self):
         result = subprocess.run(["bash", "-s", "--", str(self.root),
                                  "--platform", "copilot"], input=DOM.read_text(),
-                                capture_output=True, text=True, cwd=WORK)
+                                capture_output=True, text=True, cwd=self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.install()
         before = snapshot(self.root)
@@ -561,27 +943,64 @@ class Copilot(unittest.TestCase):
         path = self.root / ROLES["implementer"]
         original = path.read_bytes()
         path.unlink()
-        outside = WORK / "outside-role"
+        outside = self.work / "outside-role"
         outside.write_bytes(original)
         path.symlink_to(outside)
         tree = snapshot(self.root)
-        self.install("--no-guest", ok=False)
+        result = self.install("--no-guest", ok=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("unsafe", result.stderr)
+        self.assertIn(ROLES["implementer"], result.stderr)
+        self.assertIn("no project writes", result.stderr.lower())
+        self.assertNotIn("reconfirmation-required", result.stdout)
         self.assertEqual(snapshot(self.root), tree)
+        self.assertEqual(path.readlink(), outside)
         self.assertEqual(outside.read_bytes(), original)
         path.unlink()
         path.write_bytes(original)
         (self.root / STATE / "unknown-authority").write_text("unknown\n")
         tree = snapshot(self.root)
-        self.install("--force", ok=False)
+        result = self.install("--force", ok=False)
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("unknown state file unknown-authority", result.stderr)
+        self.assertIn("no project writes", result.stderr.lower())
+        self.assertNotIn("reconfirmation-required", result.stdout)
         self.assertEqual(snapshot(self.root), tree)
         (self.root / STATE / "unknown-authority").unlink()
-        # User and upstream change the same owned line: refuse before mode writes.
-        path.write_bytes(original.replace(b"Return a terse summary:", b"Return my special summary:"))
-        revised = WORK / "conflict-dom.sh"
+        # An edited pair is stale/unconfirmed, not eligible for a merge conflict.
+        # Preserve every role/base byte until review/Save, even when upstream
+        # changes the same line. Genuine confirmed conflicts are tested above.
+        pair = {}
+        for role, rel in ROLES.items():
+            path = self.root / rel
+            text = path.read_bytes().replace(
+                b"\n---\n", b'\nmodel: "custom-native-id"\ncustom: "retained"\n---\n', 1)
+            text = text.replace(b"Return a terse summary:", b"Return my special summary:")
+            text += b"\nUser-owned instructions.\n"
+            path.write_bytes(text)
+            pair[role] = text
+        revised = self.work / "conflict-dom.sh"
         revised.write_text(DOM.read_text().replace("Return a terse summary:", "Return a brief summary:"))
         tree = snapshot(self.root)
-        self.install("--no-guest", dom=revised, ok=False)
-        self.assertEqual(snapshot(self.root), tree)
+        # Actual --no-guest may publish mode changes despite exit 3; preview it
+        # without writes, then rerun in the retained guest mode for preservation.
+        for flags in (("--no-guest", "--dry-run"), ()):
+            with self.subTest(unconfirmed_flags=flags):
+                result = self.run_dom_unconfirmed("--platform", "copilot", *flags, dom=revised)
+                self.assertNotIn("Model lifecycle refused", result.stderr)
+                self.assertEqual(snapshot(self.root), tree)
+                for role, rel in ROLES.items():
+                    text = (self.root / rel).read_bytes()
+                    self.assertEqual(text, pair[role])
+                    self.assertIn(b'model: "custom-native-id"', text)
+                    self.assertIn(b'custom: "retained"', text)
+                    self.assertIn(b"User-owned instructions.", text)
+                    # Copilot has no supported effort field; do not introduce one.
+                    self.assertNotIn(b"\neffort:", text)
+                    self.assertNotIn(b"\nmodel_reasoning_effort:", text)
+                    self.assertNotIn(b"Return a brief summary:", text)
+                self.assertIn(b"Return my special summary:",
+                              (self.root / ROLES["implementer"]).read_bytes())
 
     def test_preview_competing_authority_is_not_adopted(self):
         receipt = self.root / ".domestique-private/copilot-preview.json"

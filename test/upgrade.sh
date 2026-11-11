@@ -82,9 +82,24 @@ treehash() {
   ( cd "$dir" && find . -type f | sort | xargs shasum -a 256 2>/dev/null ) | shasum -a 256 | awk '{print $1}'
 }
 
+# Fail loudly if an emitter edit becomes stale or ambiguous.
+replace_fixture_text() {
+  python3 - "$@" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+old, new = sys.argv[2:]
+text = path.read_text()
+assert old != new and text.count(old) == 1, f"{path}: expected one fixture target: {old}"
+changed = text.replace(old, new, 1)
+assert changed != text and changed.count(new) == 1
+path.write_text(changed)
+PY
+}
+
 # ---------------------------------------------------------------------------
 # v2.sh — a modified copy of domestique.sh simulating an upstream change,
-# per the brief's suggested technique: copy the real script, then sed-edit
+# per the brief's suggested technique: copy the real script, then edit
 # ONE line inside an emitter body (not the emitter machinery itself). We
 # change two independent lines so both the plain-file merge path
 # (emit_implementer) and the CLAUDE.md block merge path (emit_policy) can be
@@ -96,15 +111,20 @@ V2="$WORKROOT/v2.sh"
 cp "$DOM" "$V2"
 # emit_implementer: change the "Blockers or decisions..." line (plain-file
 # upgrade target).
-sed -i.orig \
-  's/Blockers or decisions the orchestrator should know about/Blockers or decisions the orchestrator should know about (v2)/' \
-  "$V2"
-# emit_policy: change the "Do not drain the queue..." line (CLAUDE.md
-# managed-block upgrade target).
-sed -i.orig \
-  "s/Do not drain the queue unattended unless explicitly told to\\./Do not drain the queue unattended unless explicitly told to (v2-policy)./" \
-  "$V2"
-rm -f "$V2.orig"
+replace_fixture_text "$V2" \
+  'Blockers or decisions the orchestrator should know about' \
+  'Blockers or decisions the orchestrator should know about (v2)' || exit 1
+# Keep the frozen historical policy target; current policy has a new stop rule.
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  POLICY_OLD='5. For an ordinary single assignment, **stop and report to the human before dispatching the next task.** Authorized named goals use the native goal body'\''s loop and bounds instead.'
+  POLICY_NEW="$POLICY_OLD (v2-policy)"
+  POLICY_CONFLICT="$POLICY_OLD (conflicting-edit)"
+else
+  POLICY_OLD='Do not drain the queue unattended unless explicitly told to.'
+  POLICY_NEW='Do not drain the queue unattended unless explicitly told to (v2-policy).'
+  POLICY_CONFLICT='Do not drain the queue unattended unless explicitly told to (conflicting-edit).'
+fi
+replace_fixture_text "$V2" "$POLICY_OLD" "$POLICY_NEW" || exit 1
 chmod +x "$V2"
 
 # ---------------------------------------------------------------------------
@@ -112,14 +132,13 @@ chmod +x "$V2"
 # version than the one under test, used only to construct a "predates the
 # emitter change" legacy install: a file whose pristine content differs from
 # the CURRENT script's pristine emit at the same spot v2.sh changes further
-# still. Same sed-one-line technique as v2.sh.
+# still. Same one-line technique as v2.sh.
 # ---------------------------------------------------------------------------
 V0="$WORKROOT/v0.sh"
 cp "$DOM" "$V0"
-sed -i.orig \
-  's/Blockers or decisions the orchestrator should know about/Old-style blockers wording (predates-emitter-change)/' \
-  "$V0"
-rm -f "$V0.orig"
+replace_fixture_text "$V0" \
+  'Blockers or decisions the orchestrator should know about' \
+  'Old-style blockers wording (predates-emitter-change)' || exit 1
 chmod +x "$V0"
 
 IMPL_REL=".claude/agents/implementer.md"
@@ -127,6 +146,23 @@ CLAUDE_REL="CLAUDE.md"
 BASE_IMPL_REL=".claude/.domestique/base/.claude/agents/implementer.md"
 BASE_CLAUDE_BLOCK_REL=".claude/.domestique/base/CLAUDE.md.block"
 MANIFEST_REL=".claude/.domestique/manifest"
+
+# Current native adoption requires proven raw bytes, not just a managed policy.
+# These fixtures deliberately removed all ownership and customized a native role.
+assert_unproven_native_refusal() {
+  local installer="$1" t="$2" before flag out rc
+  before="$(treehash "$t")"
+  for flag in "" --dry-run --force; do
+    out="$(claude_install "$installer" "$t" ${flag:+"$flag"} 2>&1)"; rc=$?
+    check "${flag:-ordinary}: entire project unchanged" test "$before" = "$(treehash "$t")"
+    check "${flag:-ordinary}: exit 3" test "$rc" -eq 3
+    check "${flag:-ordinary}: exact native ownership refusal" grep -qxF \
+      "Native ownership refused (claude): cannot establish ownership of native path $IMPL_REL; pristine policy does not prove native ownership; preserve and reconcile explicitly. No project writes." <<< "$out"
+    check "${flag:-ordinary}: no .new or backup files" bash -c \
+      '! find "$1" \( -name "*.new" -o -name "*.bak.*" \) | grep -q .' _ "$t"
+    check "${flag:-ordinary}: no manifest or base state recreated" test ! -e "$t/.claude/.domestique"
+  done
+}
 
 # ---------------------------------------------------------------------------
 # Scenario 1: fresh install
@@ -182,6 +218,8 @@ scenario_upgrade_no_local_edits() {
 
   check "exit 0" test "$rc" -eq 0
   check "implementer.md picked up upstream change" grep -q "(v2)" "$t/$IMPL_REL"
+  check "CLAUDE.md picked up upstream policy change" grep -qF "$POLICY_NEW" "$t/$CLAUDE_REL"
+  check "base block advanced to changed policy emission" grep -qF "$POLICY_NEW" "$t/$BASE_CLAUDE_BLOCK_REL"
   check "no .new written" test ! -e "$t/$IMPL_REL.new"
   check "base snapshot advanced to v2 content" grep -q "(v2)" "$t/$BASE_IMPL_REL"
 }
@@ -266,10 +304,8 @@ scenario_claude_md_conflict() {
   claude_install "$DOM" "$t" >/dev/null 2>&1
 
   # Edit the SAME in-block line v2's emit_policy change touches.
-  sed -i.orig \
-    "s/Do not drain the queue unattended unless explicitly told to\\./Do not drain the queue unattended unless explicitly told to (conflicting-edit)./" \
-    "$t/$CLAUDE_REL"
-  rm -f "$t/$CLAUDE_REL.orig"
+  check "colliding policy fixture changed the installed line" \
+    replace_fixture_text "$t/$CLAUDE_REL" "$POLICY_OLD" "$POLICY_CONFLICT" || return
 
   local before="$WORKROOT/s7.before" out rc tree_before
   cp "$t/$CLAUDE_REL" "$before"
@@ -290,19 +326,25 @@ scenario_claude_md_conflict() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 8: legacy adopt — no snapshot present, differing file is adopted
-# (local edit preserved, no clobber) rather than backed up + overwritten.
+# Scenario 8: current refuses an unproven customized native role without writes.
+# Frozen history adopts the differing file (local edit preserved, no clobber).
 # ---------------------------------------------------------------------------
 scenario_legacy_fallback() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  # A real pre-helper legacy install has no executable to silently adopt.
-  rm -f "$t/.claude/domestique-model-setup.py"
+  # A pre-model-setup install has neither helper nor model command. Leaving
+  # either behind without snapshots correctly triggers an ownership refusal.
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   sed -i.orig 's/^tools:/tools: EDITED/' "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
   local before; before="$(cat "$t/$IMPL_REL")"
+
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    assert_unproven_native_refusal "$DOM" "$t"
+    return
+  fi
 
   local out rc
   out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
@@ -311,7 +353,7 @@ scenario_legacy_fallback() {
   check "no backup written" bash -c '! find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
   check "live file unchanged (local edit preserved)" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$IMPL_REL"
   check "edit still present" grep -q "tools: EDITED" "$t/$IMPL_REL"
-  check "base snapshot seeded from pristine emit (no edit)" bash -c '! grep -q "tools: EDITED" "$1"' _ "$t/$BASE_IMPL_REL"
+  check "base snapshot seeded from pristine emit (no edit)" bash -c 'test -f "$1" && ! grep -q "tools: EDITED" "$1"' _ "$t/$BASE_IMPL_REL"
   check "fresh manifest recreated" test -f "$t/$MANIFEST_REL"
   check "reported as adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out"
 }
@@ -336,15 +378,14 @@ scenario_dry_run_no_writes() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 10: adopt then upgrade merges (plain file) — a legacy install with
-# a local edit gets adopted (no clobber), and the NEXT run 3-way-merges in
-# the upstream change while keeping the local edit.
+# Scenario 10: current and successor both refuse the unproven customized role.
+# Frozen history adopts the local edit, then 3-way-merges the upstream change.
 # ---------------------------------------------------------------------------
 scenario_adopt_then_upgrade_merges_plain() {
   local t="$WORKROOT/s10"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  rm -f "$t/.claude/domestique-model-setup.py"
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   # Local edit: append an mcp__ tool to the tools: line.
   sed -i.orig \
@@ -353,6 +394,12 @@ scenario_adopt_then_upgrade_merges_plain() {
   rm -f "$t/$IMPL_REL.orig"
   local before; before="$(cat "$t/$IMPL_REL")"
 
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    assert_unproven_native_refusal "$DOM" "$t"
+    assert_unproven_native_refusal "$V2" "$t"
+    return
+  fi
+
   local out1 rc1
   out1="$(claude_install "$DOM" "$t" 2>&1)"; rc1=$?
 
@@ -360,7 +407,7 @@ scenario_adopt_then_upgrade_merges_plain() {
   check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
   check "adopt: live file byte-unchanged" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$IMPL_REL"
   check "adopt: no .bak written" bash -c '! find "$1" -maxdepth 1 -name "implementer.md.bak.*" | grep -q .' _ "$(dirname "$t/$IMPL_REL")"
-  check "adopt: base snapshot seeded (pristine, no local edit)" bash -c '! grep -q "mcp__filesystem" "$1"' _ "$t/$BASE_IMPL_REL"
+  check "adopt: base snapshot seeded (pristine, no local edit)" bash -c 'test -f "$1" && ! grep -q "mcp__filesystem" "$1"' _ "$t/$BASE_IMPL_REL"
 
   local out2 rc2
   # shellcheck disable=SC2034 # Historical fixture output retained for diagnosis.
@@ -382,7 +429,7 @@ scenario_adopt_then_upgrade_merges_claude_md() {
   local t="$WORKROOT/s11"; mkdir -p "$t"
   claude_install "$DOM" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  rm -f "$t/.claude/domestique-model-setup.py"
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   # Local edit inside the block, on a DIFFERENT line than v2's emit_policy change.
   sed -i.orig \
@@ -400,7 +447,7 @@ scenario_adopt_then_upgrade_merges_claude_md() {
   check "adopt: reported as Adopted" bash -c 'printf "%s" "$1" | grep -q "Adopted"' _ "$out1"
   check "adopt: CLAUDE.md byte-unchanged" bash -c '[ "$1" = "$(cat "$2")" ]' _ "$before" "$t/$CLAUDE_REL"
   check "adopt: no .bak written" bash -c '! find "$1" -maxdepth 1 -name "CLAUDE.md.bak.*" | grep -q .' _ "$t"
-  check "adopt: base block snapshot seeded (pristine, no local edit)" bash -c '! grep -q "user-edit-block2" "$1"' _ "$t/$BASE_CLAUDE_BLOCK_REL"
+  check "adopt: base block snapshot seeded (pristine, no local edit)" bash -c 'test -f "$1" && ! grep -q "user-edit-block2" "$1"' _ "$t/$BASE_CLAUDE_BLOCK_REL"
 
   local out2 rc2
   out2="$(claude_install "$V2" "$t" 2>&1)"; rc2=$?
@@ -421,12 +468,14 @@ scenario_adopt_then_upgrade_merges_claude_md() {
 # again. Assert the local edit is never silently dropped: it must survive in
 # the live file (clean merge or untouched-on-conflict) and/or be visible in a
 # surfaced .new conflict, with a non-zero-but-known (3) exit on conflict.
+# That adoption behavior is frozen history only. Current refuses both attempts:
+# synthetic V0 is not a published identity, and no ownership survives here.
 # ---------------------------------------------------------------------------
 scenario_predates_emitter_change_conflict() {
   local t="$WORKROOT/s12"; mkdir -p "$t"
   claude_install "$V0" "$t" >/dev/null 2>&1
   rm -rf "$t/.claude/.domestique"
-  rm -f "$t/.claude/domestique-model-setup.py"
+  rm -f "$t/.claude/domestique-model-setup.py" "$t/.claude/commands/dom-models.md"
 
   # Unrelated local edit (legacy user edit), on a different line than the
   # Blockers region v0/v2 touch.
@@ -435,6 +484,12 @@ scenario_predates_emitter_change_conflict() {
     "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
   local before1; before1="$(cat "$t/$IMPL_REL")"
+
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    assert_unproven_native_refusal "$DOM" "$t"
+    assert_unproven_native_refusal "$V2" "$t"
+    return
+  fi
 
   # Adopt with the CURRENT script: seeds base from current-pristine, which
   # differs from ours at the Blockers line (ours still has v0's old wording).
@@ -515,11 +570,23 @@ run_scenario "upgrade preserves a local edit (plain file)"      scenario_upgrade
 run_scenario "conflict (plain file)"                            scenario_conflict_plain
 run_scenario "CLAUDE.md in-block edit preserved"                scenario_claude_md_inblock_preserved
 run_scenario "CLAUDE.md conflict"                               scenario_claude_md_conflict
-run_scenario "legacy fallback (no snapshot)"                    scenario_legacy_fallback
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  run_scenario "unproven native role refuses (no snapshot)"      scenario_legacy_fallback
+else
+  run_scenario "legacy fallback (no snapshot)"                  scenario_legacy_fallback
+fi
 run_scenario "--dry-run makes no writes"                        scenario_dry_run_no_writes
-run_scenario "adopt then upgrade merges (plain)"                scenario_adopt_then_upgrade_merges_plain
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  run_scenario "unproven native role refuses current and successor" scenario_adopt_then_upgrade_merges_plain
+else
+  run_scenario "adopt then upgrade merges (plain)"              scenario_adopt_then_upgrade_merges_plain
+fi
 run_scenario "adopt then upgrade merges (CLAUDE.md block)"      scenario_adopt_then_upgrade_merges_claude_md
-run_scenario "predates-emitter-change conflict"                 scenario_predates_emitter_change_conflict
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  run_scenario "unproven synthetic V0 refuses current and successor" scenario_predates_emitter_change_conflict
+else
+  run_scenario "predates-emitter-change conflict"               scenario_predates_emitter_change_conflict
+fi
 if [ "${1:-}" = "--current" ]; then
   run_scenario "configured role pair three-way preservation (real installer)" scenario_configured_pair_upgrade
 fi

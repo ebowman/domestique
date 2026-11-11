@@ -1,6 +1,13 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.4.3 release guide**: explicit unrelated-provider installs retain
+This is the **v0.4.4 release guide**: finite historical ownership proof and
+pristine manifestless adoption support bounded preserving upgrades. Unknown
+converted roles require explicit backup migration, not fabricated pristine
+bases or automatic overwrite. Tracked guest policy writes refuse with recovery
+guidance; unconfirmed model pairs receive actionable reconfirmation instructions.
+Retained custom policies keep their workflows.
+
+The v0.4.3 behavior remains: explicit unrelated-provider installs retain
 completely removed Claude/Codex projections as inactive when actual safe absence
 is established, rather than reactivating them from leftover owned metadata.
 Metadata, pristine bases, host policy bytes and inactive guest Beads markers are
@@ -24,18 +31,18 @@ Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
 Validation is instruction-level/filesystem-only, not new native UX qualification.
-Historical evidence below does not qualify v0.3.1, v0.4.0, v0.4.1, v0.4.2 or v0.4.3.
+Historical native evidence below does not qualify v0.3.1–v0.4.4.
 hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
-See [v0.4.3 evidence and limits](#v043-release-status-and-limits) for this fix.
+See [v0.4.4 evidence and limits](#v044-release-status-and-limits) for this release.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.4.3 is published to `main`, existing `dom` aliases that fetch
-`main/domestique.sh` receive its removed-provider fix on their next invocation,
+After v0.4.4 is published to `main`, existing `dom` aliases that fetch
+`main/domestique.sh` receive its safe-upgrade changes on their next invocation,
 without an alias change.
 For the covered completely removed Claude/Codex case, optionally preview with
 `dom --platform copilot --dry-run`, then run `dom --platform copilot`.
@@ -68,7 +75,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.4.3's removed-provider fix is included in remote
+A source checkout is optional; v0.4.4's safe-upgrade changes are included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -150,8 +157,16 @@ uses a fresh independent context. No installer catalog/auth lookup is required.
 Valid installer-configured defaults and saved custom/inherited pairs need
 **no questionnaire, Save or restart merely because fresh**. Configuration is
 per physical Git worktree root and per harness; there is no global model registry.
-Non-Git/subdirectory installs retain compatibility behavior but cannot claim
-helper-configured status outside that root.
+Targets outside any Git worktree, and targets inside a worktree but not at
+its root, skip model-pair setup entirely: roles and policy install as before,
+exactly one informational line is printed ("Model setup skipped: requires a Git
+repository" or "Model setup skipped: run dom at the repository root (<root>)
+to configure role models"), and the install exits 0 with no unconfirmed-pair
+state (`--model` there still refuses with exit 3). Only git's "not a git
+repository" error (matched under `LC_ALL=C`) counts as non-Git; any other git
+failure (dubious ownership / `safe.directory`, git missing, permission errors)
+is not skipped silently: the install stays unconfirmed (exit 3) and git's own
+error text is shown.
 
 | Harness | Implementer / reviewer paths | Deterministic helper |
 | --- | --- | --- |
@@ -384,6 +399,33 @@ Guest mode:
 - Shared routes are visible if any valid Codex/Copilot consumer is normal;
   they are private only if all consumers are guest. Guest mode does not promise
   to hide arbitrary host files, existing visible paths or recovery artifacts.
+- Converting an uncommitted normal install leaves its owned root policies
+  (`CLAUDE.md`, `AGENTS.md`/`AGENTS.override.md`, and
+  `.github/copilot-instructions.md`) byte-untouched. Guest install and dry-run
+  warn and list the owned untracked policies still visible to Git, including
+  mixed host/managed files; unrelated host-only policies are not remnants.
+  They may stay visible, but do not commit them unintentionally. For cleanup,
+  review `dom --uninstall --platform all --dry-run`, explicitly repeat without
+  `--dry-run` only after review, then review `dom --guest --dry-run` before
+  `dom --guest`. Uninstall removes owned blocks, not outside host text.
+  Never blindly delete whole host files or pristine base/state directories.
+- If guest installation would rewrite tracked files (including selected
+  provider state, manifests or shared routes), it refuses **before any project
+  writes**, lists the exact paths, and does so even with `--force` or
+  `--dry-run`. Use `--no-guest` to remain normal, or explicitly review/uninstall
+  the normal installation as above and review the Git changes before retrying.
+  Unrelated tracked files and genuinely unchanged tracked policies do not
+  cause refusal; exclusions still cannot hide them.
+  In particular, tracked `CLAUDE.local.md` containing only personal notes
+  refuses: appending the managed block would rewrite a tracked file. An
+  already-owned, valid guarded guest policy can instead be retained unchanged,
+  with an `already tracked` warning. `test/guest.sh --current` checks both
+  cases; the no-argument suite runs frozen `b60feef`, whose warning-only
+  personal-notes behavior is historical coverage, not the current contract.
+- Shared Git-common exclude path/type and marker structure are checked before
+  any guest model, policy or state publication, even for a single provider and
+  with `--force` or `--dry-run`. Repair unsafe paths or malformed markers by hand
+  before retrying; a missing exclude is still created when needed.
 - All retained owned root policy blocks are checked, including inactive ones.
   An old unguarded owned host block refuses in guest mode; upgrade it in normal
   mode (`--no-guest`) or explicitly reconcile first. Guest mode does not rewrite
@@ -466,6 +508,136 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.4.4 release status and limits
+
+- **Offline qualification and independent final release review passed.**
+  Qualification completed on 2026-11-12 using a working-tree candidate based on `0574c0c`,
+  installer SHA-256
+  `12374816427c11db455d52b1b6b767d8f14d3d803c2aab8b6101b78f598d99f1`.
+  Complete required coverage is **359/359 baseline checks across 13 groups**:
+  **205 unittest methods and 154 shell scenarios**, with no skips, unknown
+  inventory entries or unresolved failures. This is a **composite** of completed
+  methods/scenarios and independently reviewed focused fixes, not one
+  uninterrupted baseline or thirteen newly successful full-suite invocations.
+  Source hashes and exact method/scenario inventories establish which earlier
+  passes remain applicable; focused duplicates are not counted twice.
+- The final group counts and provenance are:
+
+  | Group | Covered | Evidence composition |
+  | --- | ---: | --- |
+  | All-current | 111/111 | 100 completed methods + 11 fresh shards |
+  | Copilot-current | 21/21 | 14 completed methods + 7 fresh shards |
+  | Model setup | 41/41 | 40 completed methods + reviewed changed-method pass |
+  | Upgrade current | 13/13 | 10 completed scenarios + 3 reviewed replacements |
+  | Uninstall current | 29/29 | Completed full command |
+  | Guest current | 17/17 | Completed full command |
+  | Codex current | 30/30 | 28 completed scenarios + 2 reviewed replacements |
+  | Upgrade historical | 12/12 | Full command; 3 affected scenarios rechecked |
+  | Uninstall historical | 23/23 | Completed full command |
+  | Guest historical | 14/14 | Completed full command |
+  | Codex historical | 16/16 | Full command; affected visibility scenario rechecked |
+  | Historical identities | 19/19 | Retained completed command |
+  | Published-gate units | 13/13 | Completed full command |
+
+  Shell coverage is **89/89 current + 65/65 frozen historical = 154/154**.
+  Frozen `b60feef` fixtures preserve historical adoption behavior; they are not
+  current-candidate CLI acceptance. The reviewed shell corrections verify
+  **17 exit-3 zero-write refusals** for unproven native files, with exact
+  diagnostics and snapshots checked first. They do not restore automatic
+  adoption of edited roles or weaken ownership checks.
+- Original identity failures, the 28,800-second all-current/Copilot
+  interruptions, model/shell assertion failures and the interrupted initial
+  focused selector remain immutable non-PASS attempts. Identity coverage
+  completed 19/19 in 307.800 seconds after fresh-emission fixture budgets changed
+  from 60 to a finite 300 seconds; production logic and the intentional
+  one-second timeout negative control were unchanged. A timeout is never PASS.
+- **3/3 focused published-upgrade smoke cases** passed against the actual
+  working installer above: v0.1.0 normal default/all, and v0.4.3 normal and guest
+  default/all, in 649.128 seconds. A session-only source adapter supplied the
+  working bytes to the existing harness, retaining its assertions and isolation;
+  it did not pretend that `--revision HEAD` selected the uncommitted candidate.
+  These three cases are separate from the 359 baseline checks.
+- The final session evidence is indexed by
+  `release044-final-qualified-coverage.json` (exact names, source hashes,
+  commands, durations, logs and scenario renames) and
+  `release044-final-review-manifest.json` (final five-file hashes and scoped
+  diff). It references the unchanged original attempts and the reviewed
+  `hq-dds30-review.json` / `hq-dds30-artifacts.json` focused evidence.
+  Recorded Bash syntax, warning-level ShellCheck, Python AST and diff checks
+  passed. Final documentation completion checks consistency and diff only;
+  it does not rerun qualification suites or change installer/test code.
+- The [bounded published-upgrade gate](#bounded-published-upgrade-gate)
+  qualifies **74 published-tag cases plus seven reported checks**, with the
+  exact earlier revisions, installer fingerprint and evidence recorded below.
+  These are not new executions of the release candidate.
+  **Exhaustive intermediate-history/mutation coverage remains deferred**;
+  there is no universal automatic-migration guarantee.
+- Ownership requires finite historical byte proof and safe inventories.
+  Exact pristine manifestless policies/native roles and the early Claude
+  inventory have bounded adoption paths. Unproven native files, including
+  edited or unknown converted roles without ownership evidence, require
+  explicit backup/reconciliation; do not delete evidence or use `--force`
+  to manufacture ownership.
+- Retained custom policies and removed-provider metadata remain preserved.
+  Guest writes to tracked policies refuse with recovery guidance; review
+  `--no-guest` or explicit uninstall/backup recovery rather than expecting
+  exclusions to hide tracked files. Unconfirmed pairs require review and Save.
+- **No native paid/account/readiness qualification:** offline configuration
+  evidence does not establish client loading, model availability or native
+  dispatch. Network delivery and consumer projects were not tested.
+  Historical unresolved investigations remain recorded below.
+
+### Offline baseline release gate
+
+The historical hq-dds.3 baseline, recorded on **2026-11-07**, targets installer
+revision `7abd9b72338f72485bb573ce8f9e3f5d902a24d0`; it was not rerun by the
+bounded published-upgrade gate below. Its reproduction commands are the following complete suites
+from that full-history, tag-enabled checkout, without changing installer or test
+bytes between runs. Use disposable fixtures, a fresh temporary `HOME` and
+`TMPDIR` per suite, no consumer configuration, and a tool-only `PATH` containing
+Python 3.11+, Bash and Git but no native clients or real Beads executable.
+Disable inherited Git configuration with `GIT_CONFIG_NOSYSTEM=1` and
+`GIT_CONFIG_GLOBAL=/dev/null`; do not change global configuration.
+`COPILOT_WORKROOT` must name a newly created empty temporary directory.
+
+```sh
+python3 -B -Werror test/all-current.py
+python3 -B -Werror test/copilot-current.py ./domestique.sh "$COPILOT_WORKROOT"
+python3 -B -Werror test/model-setup-tests.py
+bash test/upgrade.sh --current
+bash test/uninstall.sh --current
+bash test/guest.sh --current
+bash test/codex.sh --current
+bash test/upgrade.sh
+bash test/uninstall.sh
+bash test/guest.sh
+bash test/codex.sh
+```
+
+Copilot's installer and workroot arguments precede any optional unittest
+selectors; the baseline uses no selectors. Shell `--current` runs exercise the
+candidate; the four unflagged runs exercise frozen `b60feef` fixtures, not the
+candidate CLI. Keep at most two suite processes concurrent. The baseline uses
+finite outer deadlines of 24 hours per Python suite and 4 hours per shell suite;
+the notice tests retain their default 300-second subprocess deadline.
+Preserve separate stdout/stderr and command, revision, exit, duration, count,
+skip and failure evidence. A timeout/interruption is incomplete, never PASS;
+nonzero results require individually tracked release blockers, not silent
+acceptance. This command list alone is not a green qualification claim.
+
+At the recorded revision, all eleven runs completed without test skips or
+interruptions; ten exited zero. Current guest completed **15/16**, failing
+`tracked CLAUDE.local.md warning` (expected zero exit and warning assertions).
+Its captured installer diagnostics were not emitted by the harness; cause and
+regression status remain unknown. The baseline is **not green**; release
+acceptance requires the parent to track this failure as a blocker.
+
+These are offline filesystem, generated-instruction and helper checks only.
+They do not qualify native clients, model/account availability, consumer
+repositories, or comprehensive ancestor upgrades. The generated ancestor matrix
+is a separate future gate; neither historical passes nor this baseline replace
+it or the native qualification gaps below.
 
 ### v0.4.3 release status and limits
 
@@ -591,6 +763,129 @@ explicitly accepted for 0.2.0 preparation, **not fixed**:
 
 Retain diagnostics on a new occurrence; no blind repeat loops. Configuration
 installation, helper checks and offline tests do not attest native readiness.
+
+### Bounded published-upgrade gate
+
+`test/published-upgrades.py` is an opt-in, stdlib-only offline gate, not a
+universal every-commit upgrade guarantee. This is candidate evidence for the
+**v0.4.4 safe-upgrade scope with explicit preserving recovery**, not a promise
+of universal automatic migration. Its exact published set is
+`v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.3.0`, `v0.3.1`, `v0.4.0`,
+`v0.4.1`, `v0.4.2`, `v0.4.3`. Local tag objects and historical support files
+are required; it never fetches missing history or substitutes a newer core.
+
+The finite plan has **74 cases**: v0.1.0's Claude-only normal installation
+upgraded to Claude or all; for each later tag, Claude, Codex and Copilot
+same-provider upgrades plus default-to-all, each in normal and guest mode.
+Equivalent default/all aliases are not multiplied, and combined-provider
+permutations and arbitrary ancestry commits are not exhaustively qualified.
+
+```sh
+python3 test/published-upgrades.py --list --revision HEAD
+python3 test/published-upgrades-tests.py -v
+python3 test/published-upgrades.py --revision FULL_CANDIDATE_SHA --workers 2 \
+  --output /tmp/published-upgrades-unique-run
+# Narrow reproduction, always to a NEW output directory:
+python3 test/published-upgrades.py --revision FULL_CANDIDATE_SHA \
+  --filter v0.2.0-guest-codex --output /tmp/published-upgrades-repro
+```
+
+The plan/count and resolved revisions are emitted before execution. Per-attempt
+commands, return codes, expected outcomes, stdout/stderr and timings, source
+archive hashes, tree fingerprints and retained isolated fixtures are evidence;
+existing output directories are refused. Default budgets are 900 seconds per
+installer attempt and 120 seconds for Git setup, with at most two workers.
+Timeouts and any unexpected exit (including exit 3) fail; failed published
+installs are never relabelled unsupported. Full runs may take hours under load.
+
+Each release case checks preview bytes/modes/mtimes (including Git index and
+excludes), applies, then checks byte/mode/status-stable rerun with no new backups.
+It preserves policy host text, existing backups and model/effort selections;
+selected native bodies, pristine bases and manifest inventories must match the
+current contract. Comparison omits only validated installation timestamps and,
+for role-body comparison, separately checked model/effort lines and a marker
+whose **raw** root and both live hashes have first been validated. Normalized
+bytes never confer ownership. Guest ownership ledgers are not fresh-equality
+objects: historical `.beads` provenance is legitimate, and retired provider
+copies of shared bases need not survive when the current shared base exists.
+Unknown old files, including unclassified metadata, must remain byte/mode exact;
+unknown new files are rejected, not normalized away. Active guest projections must remain
+Git-excluded; unrelated host exclusions remain intact.
+An untouched snapshot may retain its **exact original** manifest provenance
+because manifests are written only when their snapshots change; its inventory
+and pristine bases must still match current upstream. Arbitrary stale or altered
+manifest metadata is not accepted. Repeated `--filter` selects the union of
+impacted cases without rerunning the whole gate.
+
+`python3 test/published-upgrades-tests.py --reported` separately selects seven
+reported-risk checks using existing current-test helpers: retained custom Claude
+under Copilot-only selection, known-old-base proof, removed-provider projections,
+tracked guest publication, staged pre-snapshot adoption, tracked old policy
+refusal plus `--no-guest` recovery, and custom unowned converted-role refusal
+plus an explicitly backed-up fresh installation. These are not added Cartesian
+provider permutations. The staged pre-snapshot fixture avoids commits; it does
+not claim the committed/worktree variants of the broader existing suite.
+The reported checks run serially, each with a separate 7,200-second test budget
+and 1,800-second piped-installer budget. They retain the reviewed real-pipe
+`run_stdin` helper (independent feeder and owned-group cleanup), not file-route
+substitution. A test deadline unwinds that cleanup; the outer process has a
+further 60-second safety margin. Every completed case records command, source
+hashes, stdout/stderr, exit and duration before the next case starts. A failure
+stops the batch for diagnosis; timeout is never PASS. For a selected case:
+
+```sh
+python3 -B -Werror test/published-upgrades-tests.py --reported \
+  --case test_historical_claude_retained_guard_only \
+  --timeout 7200 --installer-timeout 1800 \
+  --output /tmp/published-reported-unique-run
+```
+
+Omit `--case` for all seven; repeat it for a selected subset. Omit `--output`
+for a new temporary evidence directory; an existing output directory is refused.
+
+Recovery checks require specific diagnostics and zero writes, not arbitrary
+exit-3 acceptance. Guest mode cannot rewrite tracked host policies to create
+privacy. `--no-guest` exercises normal-mode recovery, not a guarantee of later
+guest conversion. Unknown/tampered/custom unowned roles are never overwritten
+or assigned fabricated pristine bases: the fixture owner explicitly moves its
+pair to a separate backup before fresh installation. That is not automatic
+migration or proof that arbitrary custom prompts have been reconciled.
+Retained unselected workflows are checked for preservation by the reported
+regressions, not against fresh defaults.
+
+These are local configuration tests only: no accounts, native clients, catalogs
+or real consumer projects. They do not establish native loading/model readiness,
+replace the final post-version-bump baseline, or supersede deferred exhaustive
+mutation/ancestry qualification.
+
+**Bounded qualification completed 2026-11-11 at `463dc94`: 74 published cases
+and seven reported risks have PASS evidence.** The 74 file-execution results
+remain the **2026-11-10** run at `202bfe9`: 48 initial passes plus 26 targeted
+replays after correcting unchanged-manifest comparison. They were digest-checked,
+not rerun. That earlier gate used installer SHA-256
+`ee3efc9dccecbc81d429216e731412f9515a051567b9709f90cd01f248f67324`.
+The original digest index is `/tmp/dds28-final-evidence/evidence.json`; its
+historical BLOCKED status is superseded only for these reported checks.
+
+All seven were executed once serially with the hq-dds.29 helper at `463dc94`,
+exiting zero without skips: retained custom policy (170s), known old base
+(149s), removed provider (207s), tracked guest writes (451s), pre-snapshot
+adoption (85s), tracked old-policy recovery (71s), and unowned converted-role
+refusal/explicit-backup recovery (110s). Per-case commands, source hashes and
+logs are under `/tmp/dds28-reported-463dc94-final/`; `summary.json` indexes them.
+Executed harness bytes are retained there under `executed-sources/`. Subsequent
+comparator-only unknown-file controls do not change these reported checks.
+
+The original 3,600-second suite timeout (first case incomplete, six unrun) and
+900-second stdin probe remain historical failures, not successes. hq-dds.29
+addressed the intermittent host subprocess input/output stall in the test
+transport; no installer product change or deterministic root-cause claim is
+implied. The completed checks above use actual piped stdin. This bounded result
+does not qualify network delivery, native clients/accounts, consumer projects,
+all guest conversions or exhaustive ancestry. At that checkpoint, parent review
+and the final post-version-bump baseline were still required. The later
+[v0.4.4 composite baseline](#v044-release-status-and-limits) records completed
+offline coverage and passed independent final release review.
 
 ### Historical 0.2.0 release selection and fixture portability
 

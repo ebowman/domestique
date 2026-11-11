@@ -387,8 +387,32 @@ scenario_no_guest_dry_run_keeps_marker() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 9: tracked-path warning — CLAUDE.local.md already committed to the
-# repo triggers a warning (a git-exclude entry cannot hide a tracked path).
+# Snapshot the entire fixture, including hidden state and Git metadata. Include
+# directory metadata to catch temporary writes/deletions and file identity/times
+# to catch same-byte rewrites. Read-only Git probes must not refresh the index.
+tracked_snapshot() {
+  python3 -B - "$1" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+result = {}
+for path in [root, *sorted(root.rglob("*"))]:
+    st = path.lstat()
+    data = (os.readlink(path) if path.is_symlink() else
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None)
+    result[str(path.relative_to(root))] = (
+        st.st_mode, st.st_ino, st.st_nlink, st.st_mtime_ns, st.st_ctime_ns, data)
+print(json.dumps(result, sort_keys=True))
+PY
+}
+
+# Scenario 9: current installs refuse to append policy to tracked personal
+# notes, before ANY project writes (hq-dds.23). The frozen b60feef fixture
+# predates that contract and intentionally retains its warning/success check.
 # ---------------------------------------------------------------------------
 scenario_tracked_path_warning() {
   local t="$WORKROOT/s9"; mkdir -p "$t"
@@ -398,10 +422,75 @@ scenario_tracked_path_warning() {
   git -C "$t" commit -q -m "accidentally tracked CLAUDE.local.md"
 
   local out rc
-  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    local before after status_before tree_before index_before exclude_before flag refusal
+    refusal=$'guest install would rewrite tracked paths:\n  CLAUDE.local.md\nNo project writes. --force cannot bypass this check.'
+    before="$(tracked_snapshot "$t")" || { check "snapshot succeeded" false; return; }
+    status_before="$(git --no-optional-locks -C "$t" status --porcelain --untracked-files=all)"
+    tree_before="$(git -C "$t" ls-tree -r HEAD)"
+    index_before="$(git -C "$t" ls-files --stage)"
+    exclude_before="$(filehash "$t/.git/info/exclude")"
+    for flag in ordinary --force --dry-run; do
+      if [ "$flag" = ordinary ]; then
+        out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
+      else
+        out="$(claude_install "$DOM" "$t" --guest "$flag" 2>&1)"; rc=$?
+      fi
+      after="$(tracked_snapshot "$t")" || { check "snapshot succeeded" false; return; }
+      check "$flag: exit 3" test "$rc" -eq 3
+      check "$flag: exact tracked policy refusal" bash -c '[[ "$1" == *"$2"* ]]' _ "$out" "$refusal"
+      check "$flag: refused before any pair publication" bash -c '
+        [[ "$1" == *"Completed pairs: none. Publication not started; no project writes."* ]]
+      ' _ "$out"
+      check "$flag: full tree bytes/metadata unchanged (including index/exclude)" test "$before" = "$after"
+      check "$flag: committed tree unchanged" test "$tree_before" = "$(git -C "$t" ls-tree -r HEAD)"
+      check "$flag: index entries unchanged" test "$index_before" = "$(git -C "$t" ls-files --stage)"
+      check "$flag: exclude unchanged" test "$exclude_before" = "$(filehash "$t/.git/info/exclude")"
+      check "$flag: status unchanged" test "$status_before" = "$(git --no-optional-locks -C "$t" status --porcelain --untracked-files=all)"
+      if [ "$SCEN_OK" -eq 0 ]; then
+        printf 'Tracked personal notes (%s): actual exit %s; stdout/stderr:\n%s\n' "$flag" "$rc" "$out"
+      fi
+    done
+    return
+  fi
 
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
   check "exit 0" test "$rc" -eq 0
   check "warning about already-tracked path printed" bash -c 'printf "%s" "$1" | grep -q "already tracked"' _ "$out"
+  if [ "$SCEN_OK" -eq 0 ]; then
+    printf 'Historical tracked personal notes: actual exit %s; stdout/stderr:\n%s\n' "$rc" "$out"
+  fi
+}
+
+# Current supported case: a tracked, owned guarded guest policy is retained,
+# not rewritten. Exclusions cannot hide it, so success still warns.
+scenario_tracked_owned_policy_warning() {
+  local t="$WORKROOT/s9-owned"; mkdir -p "$t"
+  git_init "$t"
+  local out rc before index_before exclude_before status_before
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
+  if ! check "setup guest install succeeds" test "$rc" -eq 0; then
+    printf 'Tracked owned policy setup: actual exit %s; stdout/stderr:\n%s\n' "$rc" "$out"
+    return
+  fi
+  check "stage owned policy" git -C "$t" add -f CLAUDE.local.md
+  check "commit owned policy" git -C "$t" commit -q -m "tracked owned guest policy"
+  before="$(tracked_snapshot "$t/CLAUDE.local.md")" || { check "snapshot succeeded" false; return; }
+  index_before="$(filehash "$t/.git/index")"
+  exclude_before="$(filehash "$t/.git/info/exclude")"
+  status_before="$(git --no-optional-locks -C "$t" status --porcelain --untracked-files=all)"
+  out="$(claude_install "$DOM" "$t" --guest 2>&1)"; rc=$?
+  check "exit 0" test "$rc" -eq 0
+  check "tracked owned policy warning" bash -c '
+    [[ "$1" == *"Warning: CLAUDE.local.md is already tracked in "* ]]
+  ' _ "$out"
+  check "owned policy retained without writes" test "$before" = "$(tracked_snapshot "$t/CLAUDE.local.md")"
+  check "index byte-identical" test "$index_before" = "$(filehash "$t/.git/index")"
+  check "exclude byte-identical" test "$exclude_before" = "$(filehash "$t/.git/info/exclude")"
+  check "status unchanged" test "$status_before" = "$(git --no-optional-locks -C "$t" status --porcelain --untracked-files=all)"
+  if [ "$SCEN_OK" -eq 0 ]; then
+    printf 'Tracked owned policy: actual exit %s; stdout/stderr:\n%s\n' "$rc" "$out"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -576,7 +665,12 @@ run_scenario "--guest --no-guest is a usage error (exit 2)"     scenario_guest_a
 run_scenario "corrupt marker warns, normal mode"                scenario_corrupt_marker
 run_scenario "sticky mode under --dry-run"                      scenario_sticky_dry_run
 run_scenario "--no-guest --dry-run keeps the marker"            scenario_no_guest_dry_run_keeps_marker
-run_scenario "tracked CLAUDE.local.md warning"                  scenario_tracked_path_warning
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  run_scenario "tracked personal notes refuse before writes"   scenario_tracked_path_warning
+  run_scenario "tracked owned policy retained with warning"    scenario_tracked_owned_policy_warning
+else
+  run_scenario "historical tracked CLAUDE.local.md warning"     scenario_tracked_path_warning
+fi
 run_scenario "upstream merge (guest, CLAUDE.local.md)"          scenario_guest_upstream_merge
 run_scenario "mixed-dir: plain merge unaffected by guest"       scenario_mixed_dir_plain_merge
 if [ "${1:-}" = "--current" ]; then

@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.4.3"
+DOMESTIQUE_VERSION="0.4.4"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -636,7 +636,16 @@ class Pair:
             base = contents[f"{self.state}/base/{self.paths[role]}"]
             need(base is not None, "missing required role base")
             _, _, marker = parse(base, role)
-            need(marker is None, "pristine base must not confirm a pair")
+            need(marker is None, self.pristine_base_guidance(role))
+
+    def pristine_base_guidance(self, role):
+        base = f"{self.state}/base/{self.paths[role]}"
+        return ("pristine base must not confirm a pair: ./" + base + " carries a "
+                "'# domestique-model-setup:' marker. Keep copies of the local role and base; "
+                "restore the original pristine snapshot for that installed generation, without "
+                "the marker line. Do not replace it with current upstream text: the historical "
+                "base is merge authority. Reconcile the role ./" +
+                self.paths[role] + " by hand and retry. --force cannot authorize repair.")
 
     def validate_helper(self, contents):
         need(contents[self.helper] == contents[f"{self.state}/base/{self.helper}"],
@@ -723,6 +732,19 @@ def scalar_span(raw, toml=False):
     return value, end
 
 
+def description_guidance(role):
+    rel = (f"{DIRECTORY}/agents/{role}.toml" if HARNESS == "codex" else
+           f"{DIRECTORY}/agents/domestique-v2-copilot-{role}.agent.md"
+           if HARNESS == "copilot" else f"{DIRECTORY}/agents/{role}.md")
+    prefix = {"claude": "Claude Code only; never match in another harness.",
+              "codex": "Codex only; never match in another harness.",
+              "copilot": "Copilot only; never match in Claude, Codex or an unknown harness."}[HARNESS]
+    return ("missing/invalid native description: ./" + rel + ". The discovery description "
+            "must be a non-empty string that starts with " + repr(prefix) + "; restore that prefix "
+            "(custom text may follow it), reconcile the role by hand and retry. --force cannot "
+            "authorize guard repair.")
+
+
 def parse(data, role):
     text, marker = split_marker(data, role)
     need(not any(unicodedata.category(c) == "Cc" and c not in "\r\n\t" for c in text),
@@ -779,7 +801,13 @@ def parse(data, role):
                      (not raw[stop:].strip() or re.fullmatch(r"[ \t]+#.*", raw[stop:])),
                      "unsupported tools")
             else:
-                value, stop = scalar_span(raw)
+                try:
+                    value, stop = scalar_span(raw)
+                except ValueError as exc:
+                    # An empty/ambiguous description is a discovery-boundary
+                    # refusal, not a generic selection error.
+                    need(key != "description", description_guidance(role) + " Cause: " + str(exc))
+                    raise
             fields[key] = value
             if key in ("model", effort):
                 spans[key] = (i, len(key + match[2]), stop)
@@ -790,7 +818,7 @@ def parse(data, role):
     need(type(fields.get("name")) is str and fields["name"] == native_name,
          "wrong/missing native role name")
     need(type(fields.get("description")) is str and fields["description"].strip(),
-         "missing/invalid native description")
+         description_guidance(role))
     return (lines, newline, insertion, spans), fields, marker
 
 
@@ -1022,7 +1050,7 @@ class InstallerPair(Pair):
     Load the installer's own emitted helper (not an unvalidated live helper),
     authorize the requested provider/overrides and preflight the WHOLE lifecycle.
     Supply seven pristine emitter outputs, recognized (version, files) inventory
-    signatures, the existing preserving merge(local, base, upstream) callback,
+    signatures, the existing preserving merge(role, local, base, upstream) callback,
     and native guard validation(role, base, live, candidate). Callbacks must raise
     on conflicts/unsafe guards; no runtime plan supplies code or replacement bodies.
 
@@ -1042,9 +1070,13 @@ class InstallerPair(Pair):
     policy is inferred here. Pristine inputs must NEVER be seeded from custom live
     bytes. Recognized inventory signatures come from reviewed installer versions,
     not from the target's own manifest. No persistent second registry is created.
+    Optional adopted inputs are exact raw native files independently qualified
+    by the installer's provider/path/mode identities and missing-state or
+    policy-only preflight. They bind actual inputs (including absent bases),
+    not reconstructed snapshots, normalized identities, or arbitrary role pairs.
     """
 
-    def __init__(self, pristine, recognized, merge, validate):
+    def __init__(self, pristine, recognized, merge, validate, *, adopted=None):
         super().__init__(installed=False)
         need(type(pristine) is dict and set(pristine) == set(self.files) and
              all(type(v) is bytes and len(v) <= LIMIT for v in pristine.values()),
@@ -1059,6 +1091,16 @@ class InstallerPair(Pair):
                  "install role must be actual pristine emitter output")
             self.guard(role, pristine[rel], pristine[rel], pristine[rel])
         self.prepared = None
+        # Installer-only, independently proven pre-snapshot inputs. Keep the
+        # actual absent bases in snapshots/publication; never fabricate on-disk
+        # authority or use custom live bytes as a historical merge anchor.
+        self.adopted = None if adopted is None else dict(adopted)
+        if self.adopted is not None:
+            need(set(self.adopted) == set(self.files) and
+                 self.adopted[self.helper] is None and
+                 all(self.adopted[f"{self.state}/base/{p}"] is None
+                     for p in (*self.paths.values(), self.helper)),
+                 "adoption cannot replace existing native authority")
 
     def snapshot(self):
         return self.read_snapshot(absent=True)
@@ -1075,6 +1117,9 @@ class InstallerPair(Pair):
                      f"not writable: {path.parent}")
 
     def classify(self, contents, snapshot):
+        if self.adopted is not None:
+            need(contents == self.adopted, "changed pristine adoption evidence")
+            return "legacy"
         if all(v is None for v in contents.values()):
             need(snapshot["parents"].get(str(self.root / self.state)) is None,
                  "unknown existing provider authority")
@@ -1123,6 +1168,8 @@ class InstallerPair(Pair):
             rel = self.paths[role]
             local, upstream = contents[rel], self.pristine[rel]
             base = contents[f"{self.state}/base/{rel}"]
+            if self.adopted is not None:
+                base = local  # Exact raw historical proof supplied by installer.
             if local is None:
                 selected = overrides.get(role, model)
                 outputs[role] = patch(upstream, role, {
@@ -1130,7 +1177,7 @@ class InstallerPair(Pair):
             elif qualified or historical:
                 # No generic merge may decide that local==base unpins a scalar.
                 projected = [project_settings(data, role) for data in (local, base, upstream)]
-                merged = projected[0] if projected[1] == projected[2] else self.merge(*projected)
+                merged = projected[0] if projected[1] == projected[2] else self.merge(role, *projected)
                 need(type(merged) is bytes and len(merged) <= LIMIT, "invalid preserving merge output")
                 if force and qualified:
                     self.guard(role, base, local, restore_settings(local, merged, role))
@@ -2632,8 +2679,11 @@ Behavior:
     and state. `.beads/` is added only when domestique's safe guest
     initialization created it; broad backup and `.new` suffix patterns
     are never added. Pre-existing visible Codex paths remain visible across
-    reruns and scoped uninstall. If an owned path is already tracked, a
-    warning is printed (an exclude can't hide it). `.gitignore` itself
+    reruns and scoped uninstall. Guest writes to tracked paths refuse before
+    any project publication, even with --force or --dry-run. An already-owned,
+    guarded tracked CLAUDE.local.md can be retained unchanged, with a warning
+    (an exclude can't hide it); tracked personal notes needing a managed block
+    refuse instead. Unrelated tracked files do not cause refusal. `.gitignore` itself
     is never read, written, or otherwise touched by guest mode. A non-git target
     directory prints a warning and skips the exclude step entirely (guest
     install of the rest still proceeds). Net effect: a --guest install
@@ -2890,6 +2940,7 @@ resolve_provider_mode() {
     case "$marker_content" in
       guest)
         if [ "$NO_GUEST" -eq 1 ]; then
+          guest_plan_write "$MODE_MARKER"
           if [ "$DRY_RUN" -eq 1 ]; then
             note_dry "remove mode marker $MODE_MARKER (--no-guest)"
           else
@@ -2921,9 +2972,6 @@ resolve_provider_mode() {
     claude:1)
       POLICY_DEST="CLAUDE.local.md"
       POLICY_LABEL="$POLICY_DEST"
-      if [ -e "$TARGET_DIR/CLAUDE.md" ] && grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/CLAUDE.md" 2>/dev/null; then
-        echo "Warning: a normal domestique install exists in $TARGET_DIR/CLAUDE.md — left untouched; guest policy goes to $TARGET_DIR/$POLICY_DEST." >&2
-      fi
       ;;
     claude:0)
       POLICY_DEST="CLAUDE.md"
@@ -3004,6 +3052,7 @@ write_codex_guest_ownership() {
     [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
     [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
   } > "$staged"
+  if ! cmp -s "$staged" "$ownership"; then guest_plan_write "$ownership"; fi
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "record exact Codex guest ownership -> $ownership"
   else
@@ -3015,6 +3064,7 @@ write_codex_guest_ownership() {
 write_provider_manifest() {
   if model_pair_managed && [ -f "$TMPDIR_WORK/model-selected-$CURRENT_PROVIDER" ]; then return 0; fi
   [ "$SNAPSHOT_TOUCHED" -eq 1 ] || return 0
+  guest_plan_write "$SNAPSHOT_DIR/manifest"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
   else
@@ -3058,6 +3108,9 @@ install_current_provider() {
       while IFS='|' read -r rel emitter; do
         install_plain "$TARGET_DIR/$rel" "$emitter"
       done <<< "$COPILOT_ENTRIES"
+      if ! cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"; then
+        guest_plan_write "$SNAPSHOT_DIR/guest-excludes"
+      fi
       if [ "$DRY_RUN" -eq 0 ]; then
         cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes" ||
           cp "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"
@@ -3067,6 +3120,9 @@ install_current_provider() {
   esac
 
   if [ "$GUEST" -eq 1 ]; then
+    if [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" != guest ]; then
+      guest_plan_write "$MODE_MARKER"
+    fi
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "write mode marker -> $MODE_MARKER (guest)"
     else
@@ -3092,6 +3148,7 @@ persist_platform_set() {
     state_file="$state_dir/platforms"
     old="$(cat "$state_file" 2>/dev/null || true)"
     [ "$old" = "$PLATFORM_SET" ] && continue
+    guest_plan_write "$state_file"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "persist platform set '$PLATFORM_SET' -> $state_file"
     else
@@ -3217,7 +3274,8 @@ REQUESTED_GUEST="$GUEST"
 TS="$(date +%Y%m%d%H%M%S)"
 TMPDIR_WORK="$(mktemp -d)"
 MUTATION_STARTED=0
-trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ]; then echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2; fi; rm -rf "$TMPDIR_WORK"; exit "$rc"' EXIT
+LIFECYCLE_COMPLETED=0
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ] && [ "$LIFECYCLE_COMPLETED" -eq 0 ]; then echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2; fi; rm -rf "$TMPDIR_WORK"; exit "$rc"' EXIT
 
 # Summary accumulators.
 SUM_CREATED=()
@@ -3805,6 +3863,67 @@ shared_refuse() {
   exit 3
 }
 
+# Collect publication intents by exercising the real installers read-only, not
+# by treating every owned (or every tracked) path as a write. Pair publication
+# adds its prepared byte deltas before this plan is checked, across providers.
+GUEST_WRITE_PLAN=""
+guest_plan_write() {
+  [ -n "${GUEST_WRITE_PLAN:-}" ] || return 0
+  printf '%s\n' "${1#"$TARGET_DIR"/}" >> "$GUEST_WRITE_PLAN"
+}
+
+emit_guest_plan_validator() {
+  cat <<'PY'
+def validate_guest_writes(root, paths):
+    import os
+    tracked = subprocess.check_output(
+        ["git", "-C", str(root), "ls-files", "-z"]).decode("utf-8", "surrogateescape").split("\0")
+    paths = set(paths)
+    blocked = paths.intersection(tracked)
+    # Respect physical aliases on case-insensitive worktrees without refusing
+    # unrelated tracked files or treating case-distinct Linux files as aliases.
+    for indexed in tracked:
+        for planned in paths:
+            if indexed != planned and indexed.casefold() == planned.casefold():
+                try:
+                    if os.path.samefile(root / indexed, root / planned):
+                        blocked.add(indexed)
+                except FileNotFoundError:
+                    pass
+    blocked = sorted(blocked)
+    if blocked:
+        raise ValueError(
+            "guest install would rewrite tracked paths:\n" +
+            "".join("  " + p + "\n" for p in blocked) +
+            "No project writes. --force cannot bypass this check. Use --no-guest "
+            "to remain normal. To convert, review the normal installation first: "
+            "dom --uninstall --platform all --dry-run; after reviewing the exact "
+            "removal/backup plan, explicitly run dom --uninstall --platform all, "
+            "review the Git changes, then retry dom --guest --dry-run. "
+            "Do not blindly delete base/state files or whole host policy files.")
+PY
+}
+
+warn_visible_guest_policies() (
+  [ "$UNINSTALL" -eq 0 ] || return 0
+  local provider rel visible="" listed
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    for rel in $POLICY_CANDIDATES; do
+      [ "$rel" != CLAUDE.local.md ] || continue
+      [ -f "$TARGET_DIR/$rel" ] &&
+        grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/$rel" || continue
+      listed="$(git -C "$TARGET_DIR" ls-files --others --exclude-standard -- "$rel" 2>/dev/null)" || listed="$rel"
+      [ "$listed" = "$rel" ] || continue
+      visible="$visible  $rel"$'\n'
+    done
+  done
+  [ -n "$visible" ] || return 0
+  printf 'Warning: Domestique owned root policies remain visible and untracked (not hidden by --guest):\n%s' "$visible" >&2
+  echo "They can stay visible; do not commit them unintentionally. Guest mode preserves every byte, including host text outside the owned block." >&2
+  echo "For cleanup, review: dom --uninstall --platform all --dry-run. After reviewing its removal/backup plan, explicitly run dom --uninstall --platform all, then dom --guest --dry-run and dom --guest. Uninstall removes only the owned policy block, preserving outside host text; never delete a whole host policy file or blindly delete base/state files." >&2
+)
+
 # Fixed, project-relative paths only. Do not follow symlinks or hardlinks when
 # reading management evidence. Missing leaf paths are allowed for creation.
 shared_safe_path() {
@@ -4047,7 +4166,10 @@ lifecycle_preflight() {
       case "$rel" in
         .claude/commands/dom-models.md|.agents/skills/domestique-models/SKILL.md|.github/skills/domestique-v2-copilot-models/SKILL.md)
           if [ -e "$TARGET_DIR/$rel" ] || [ -e "$TARGET_DIR/$state/base/$rel" ]; then
-            snapshot_has_file "$state" "$provider" "$rel" ||
+            { [ "$UNINSTALL" -eq 0 ] &&
+              { [ ! -e "$TARGET_DIR/$state" ] ||
+                [ -f "$TMPDIR_WORK/policy-only-existing-$provider" ]; }; } ||
+              snapshot_has_file "$state" "$provider" "$rel" ||
               shared_refuse "unowned model command $rel; no adoption"
           fi
           ;;
@@ -4094,9 +4216,23 @@ lifecycle_preflight() {
       esac
     done
   fi
+  # Validate the shared exclude against the original state, before even model
+  # pairs publish. A selected/sticky guest (including a retained provider), or
+  # conversion out of guest mode, will reconcile it later. Keep Copilot's
+  # existing unconditional exclude preflight, but do not gate other guests on it.
+  local check_exclude=0
+  # This read precedes shared_preflight: validate the leaf and its ancestors
+  # first, even for a Claude-only operation with no shared consumer selected.
+  shared_safe_path ".agents/.domestique/mode" || shared_refuse "unsafe .agents/.domestique/mode"
+  if [ "$REQUESTED_GUEST" -eq 1 ] || [ "$guests" -gt 0 ] ||
+     [ "$(cat "$TARGET_DIR/.agents/.domestique/mode" 2>/dev/null || true)" = guest ] ||
+     [ "$SELECT_COPILOT" -eq 1 ] || [ -e "$TARGET_DIR/.github/.domestique" ]; then
+    check_exclude=1
+  fi
   # Writable ancestors and the Git-common exclude need checking together with
-  # prospective leaves. This is a read-only check, not a write probe.
-  python3 - "$TARGET_DIR" "$paths" <<'PY' ||
+  # prospective leaves. This common read-only check also owns exclude type and
+  # marker validation for every provider; no post-publication state is needed.
+  python3 - "$TARGET_DIR" "$paths" "$check_exclude" <<'PY' ||
 import os
 from pathlib import Path
 import stat
@@ -4107,12 +4243,34 @@ root = Path(sys.argv[1]).resolve()
 paths = [root / p for p in sys.argv[2].splitlines()]
 common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
                         capture_output=True, text=True)
+directory = None
 if common.returncode == 0:
     directory = Path(common.stdout.strip())
     if not directory.is_absolute():
         directory = root / directory
-    paths.append(directory / "info" / "exclude")
+elif (root / ".git").is_dir():
+    directory = root / ".git"
+exclude = directory / "info/exclude" if directory is not None else None
+if exclude is not None:
+    paths.append(exclude)
 try:
+    if exclude is not None and sys.argv[3] == "1":
+        for path in (*reversed(exclude.parents), exclude):
+            if path.is_symlink():
+                raise ValueError(f"symlink in exclude path: {path}")
+            if path.exists():
+                info = path.stat()
+                if path == exclude:
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        raise ValueError(f"unsafe exclude leaf: {path}")
+                    # Match the reconciliation awk's whole-line semantics.
+                    lines = path.read_bytes().split(b"\n")
+                    b, e = b"# BEGIN domestique (managed)", b"# END domestique"
+                    if lines.count(b) != lines.count(e) or lines.count(b) > 1 or (
+                            b in lines and lines.index(b) > lines.index(e)):
+                        raise ValueError(f"malformed exclude block: {path}; repair markers by hand")
+                elif not path.is_dir():
+                    raise ValueError(f"unsafe exclude ancestor: {path}")
     for candidate in paths:
         checked_parent = False
         for item in (candidate, *candidate.parents):
@@ -4213,6 +4371,11 @@ copilot_preflight() {
       shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.uninstalled.$TS" ||
       shared_refuse "unsafe Copilot path $rel"
     base="$native_root/$state/base/$rel"
+    if [ ! -e "$base" ] && [ -f "$TMPDIR_WORK/native-adopt/$rel" ]; then
+      cmp -s "$native_root/$rel" "$TMPDIR_WORK/native-adopt/$rel" ||
+        shared_refuse "changed pristine native adoption $rel"
+      base="$TMPDIR_WORK/native-adopt/$rel"
+    fi
     if [ -e "$native_root/$rel" ] && [ ! -f "$base" ]; then
       shared_refuse "unowned Copilot path $rel; no silent preview adoption"
     fi
@@ -4294,12 +4457,10 @@ PY
   fi
   # Validate native syntax without a YAML dependency or any confirmation write.
   command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
-  python3 - "$native_root" <<'PY' || shared_refuse "malformed Copilot role or unsafe exclude path"
+  python3 - "$native_root" <<'PY' || shared_refuse "malformed Copilot role"
 import json
 import pathlib
 import re
-import stat
-import subprocess
 import sys
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -4375,28 +4536,6 @@ try:
                 raise ValueError("non-string model")
         if fields.get("name") != f"domestique-v2-copilot-{role}" or "effort" in fields or "model_reasoning_effort" in fields:
             raise ValueError("wrong role identity or unsupported effort")
-    common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
-                            capture_output=True, text=True)
-    if common.returncode == 0:
-        base = pathlib.Path(common.stdout.strip())
-        if not base.is_absolute():
-            base = root / base
-        exclude = (base / "info/exclude").absolute()
-        for path in (*reversed(exclude.parents), exclude):
-            if path.is_symlink():
-                raise ValueError("symlink in exclude path")
-            if path.exists():
-                info = path.stat()
-                if path == exclude:
-                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                        raise ValueError("unsafe exclude leaf")
-                    data = path.read_text()
-                    b, e = "# BEGIN domestique (managed)", "# END domestique"
-                    if data.count(b) != data.count(e) or data.count(b) > 1 or (
-                            b in data and data.index(b) > data.index(e)):
-                        raise ValueError("malformed exclude block")
-                elif not path.is_dir():
-                    raise ValueError("unsafe exclude ancestor")
 except (OSError, ValueError, TypeError) as exc:
     print(f"Copilot preflight: {exc}", file=sys.stderr)
     sys.exit(1)
@@ -4423,10 +4562,17 @@ PY
     "$emitter" > "$TMPDIR_WORK/legacy-upstream"
     cp "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate"
     if [ -f "$TARGET_DIR/$rel" ]; then
-      [ -f "$TARGET_DIR/$base" ] || shared_refuse "unknown retained ownership $rel"
-      rc=0
-      merge_native_plain "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate" || rc=$?
-      [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base"
+      if [ -f "$TMPDIR_WORK/native-adopt/$rel" ]; then
+        cmp -s "$TARGET_DIR/$rel" "$TMPDIR_WORK/native-adopt/$rel" ||
+          shared_refuse "changed pristine native adoption $rel"
+        [ ! -f "$TMPDIR_WORK/native-candidate/$rel" ] ||
+          cp "$TMPDIR_WORK/native-candidate/$rel" "$TMPDIR_WORK/legacy-candidate"
+      else
+        [ -f "$TARGET_DIR/$base" ] || shared_refuse "unknown retained ownership $rel"
+        rc=0
+        merge_native_plain "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate" || rc=$?
+        [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base"
+      fi
     fi
     case "$rel" in
       *.yaml) continue ;;
@@ -4586,8 +4732,13 @@ resolve_shared_visibility() {
 }
 
 write_shared_mode() {
-  [ "$DRY_RUN" -eq 0 ] || return 0
   local marker="$TARGET_DIR/.agents/.domestique/mode"
+  if [ "$SHARED_GUEST" -eq 1 ]; then
+    if [ "$(cat "$marker" 2>/dev/null || true)" != guest ]; then guest_plan_write "$marker"; fi
+  elif [ -e "$marker" ]; then
+    guest_plan_write "$marker"
+  fi
+  [ "$DRY_RUN" -eq 0 ] || return 0
   if [ "$SHARED_GUEST" -eq 1 ]; then
     [ "$(cat "$marker" 2>/dev/null || true)" = guest ] || printf 'guest\n' > "$marker"
   else
@@ -4606,6 +4757,11 @@ install_shared() {
   done <<< "$SHARED_ENTRIES"
   write_provider_manifest
   resolve_shared_visibility
+  if [ "$SHARED_PRESENT" -eq 0 ] ||
+     { [ "$new_models" -eq 1 ] &&
+       ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$SNAPSHOT_DIR/guest-excludes" 2>/dev/null; }; then
+    guest_plan_write "$SNAPSHOT_DIR/guest-excludes"
+  fi
   if [ "$DRY_RUN" -eq 0 ]; then
     if [ "$SHARED_PRESENT" -eq 0 ]; then
       : > "$SNAPSHOT_DIR/guest-excludes"
@@ -4620,11 +4776,12 @@ install_shared() {
        ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$SNAPSHOT_DIR/guest-excludes"; then
       printf '.agents/skills/dom-models/SKILL.md\n' >> "$SNAPSHOT_DIR/guest-excludes"
     fi
-    write_shared_mode
   fi
+  write_shared_mode
   if [ "$SHARED_MIGRATE" -eq 1 ]; then
     configure_provider codex
     while IFS='|' read -r rel emitter; do
+      [ ! -e "$SNAPSHOT_BASE/$rel" ] || guest_plan_write "$SNAPSHOT_BASE/$rel"
       [ "$DRY_RUN" -eq 1 ] || rm -f "$SNAPSHOT_BASE/$rel"
     done <<< "$SHARED_ENTRIES"
     SNAPSHOT_TOUCHED=1
@@ -4633,60 +4790,585 @@ install_shared() {
   [ "$DRY_RUN" -eq 1 ] || SHARED_PRESENT=1
 }
 
+# BEGIN GENERATED HISTORICAL IDENTITIES
+# Format 1; raw payload/body SHA-256 only; normalized grouping hashes excluded.
+# Regenerate: python3 tools/historical-identities.py --emit-lookup domestique.sh \
+#   --history-data tools/historical-identities.json --current-source domestique.sh
+emit_historical_identity_library() {
+  cat <<'PY'
+# @legacy-policy-base/* preserves the original provider-only policy predicate.
+# Other keys are provider/path/install-mode; not yet used for adoption.
+_INSTALLER_IDENTITIES = {
+    ('claude', '.claude/agents/implementer.md', 'guest'): frozenset((
+        '256ed147cf98f13e2c3db55aec9e73853e460616ffa6007251bb3943b05cee64',
+        '58806e3f2af19c3ddc958dd95090d78c54add644fcf991fac6ef87df5febf669',
+        'd50fdb9a7bec1d457ea21547038985a46965b02e0b71416fde6969ccfb1e9e8c',
+    )),
+    ('claude', '.claude/agents/implementer.md', 'normal'): frozenset((
+        '03676a69d19bd82a1b4d8b5c59401731683584e32ecee2651d592b618f8300f7',
+        '256ed147cf98f13e2c3db55aec9e73853e460616ffa6007251bb3943b05cee64',
+        '58806e3f2af19c3ddc958dd95090d78c54add644fcf991fac6ef87df5febf669',
+        'd50fdb9a7bec1d457ea21547038985a46965b02e0b71416fde6969ccfb1e9e8c',
+    )),
+    ('claude', '.claude/agents/reviewer.md', 'guest'): frozenset((
+        '644cace3e7478337c67660ef2f1f356dc71427e7fa8e7eac515487aeaedfd47c',
+        'ed4ed88a3d16684dc4f9733d66753af86d3d6d91349c12c34666e97acb793631',
+    )),
+    ('claude', '.claude/agents/reviewer.md', 'normal'): frozenset((
+        '644cace3e7478337c67660ef2f1f356dc71427e7fa8e7eac515487aeaedfd47c',
+        '8139f900edb8b58f4b9fd3c888021d24c4d72bba2ee9e5aec987efb0d27990a2',
+        'ed4ed88a3d16684dc4f9733d66753af86d3d6d91349c12c34666e97acb793631',
+    )),
+    ('claude', '.claude/commands/decompose.md', 'guest'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/decompose.md', 'normal'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/dom-decompose.md', 'guest'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/dom-decompose.md', 'normal'): frozenset((
+        '01f1dcfedd02ec2d5b876636972e463a2a563ff89b683df3e563ac037fe3f794',
+        '06b002ab995a76d3acd4195b1125e3127de65ac60fa3993a74f55d02845fc53b',
+        '3160002319c36f1e815ea55684b11407b646c4b494b1856db3eb4ff1f01ff847',
+        '336961362e46ba65529044c795d3f2c880a510a795a69b2dd6144ea521452c1e',
+        '660107b994ca9c1ab585c48284d767276aade1a2ca14332aa31ab8d510b3d37f',
+        '701f2d8df6cafe3caea4acca45c20eb486a96c89eae8f9e061468a9ca73e7ea4',
+        '7fad97d3bfef4725377279fddbc56b7f4ce9eb3d03cbc41f3bc5d4d711d13732',
+        'a6dbde31f2d6c135d2534b4dd5b27924db37e785445b887c184966e436c82d59',
+        'd3016e8641400b58d08ba01017f7b4310d441733368210e39692c02bc0828a43',
+        'd63b28f3400a2f6da7c9b6477f89775e6d8e8afcd95bc95af682363609ee79c6',
+        'e29261dc3eb4674af94f0de26f9c71e0c2123bc7d301428fbf9f885f1b7b88ee',
+        'f8d0497f2086e8b5e3501783afd2c6d707e7ddf62d17864ded6bdf2c87787ec9',
+    )),
+    ('claude', '.claude/commands/dom-goal.md', 'guest'): frozenset((
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '.claude/commands/dom-goal.md', 'normal'): frozenset((
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '.claude/commands/dom-models.md', 'guest'): frozenset((
+        'e4f01defd32eb0690b2d64997f7427b7b3609933fd1dd18a9b208ae1a402021b',
+    )),
+    ('claude', '.claude/commands/dom-models.md', 'normal'): frozenset((
+        'e4f01defd32eb0690b2d64997f7427b7b3609933fd1dd18a9b208ae1a402021b',
+    )),
+    ('claude', '.claude/commands/goal.md', 'guest'): frozenset((
+        '07a42818e1c2cf4e5990b622abf3501cb473943f65fe27734fe58302fa03442b',
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        '90c77aeaa5b51a07e5e5ee6bc46954e75e6dbf837ea0fb69b757dc800f507a69',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'cc2d5d82c0e34c88902a885d58e595bb473ffd87e5bcd7cbe36ca053c7cdb74c',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '.claude/commands/goal.md', 'normal'): frozenset((
+        '07a42818e1c2cf4e5990b622abf3501cb473943f65fe27734fe58302fa03442b',
+        '14808ce40d28af1c6d407e01d5a7048ad0e9ecf3631c79e7a8c8bb858e65fa8d',
+        '2c2920587d295ff20bac02d3087fbcfc6ed0e55a9ab3de110cf3ab707202f4fb',
+        '4d9af6bc1aec5376ad8de0a4fb643f2ca1f9238ae06044a8185b69fc39e34e58',
+        '7a7da3ae4ae8cbfd67da6b7bb6f9e86349b80ce29e46a897bc4eda293a5f403e',
+        '7f784ed8308498ab4ccab4725ac86f88177ee819f8a50611aa58f9dc66ac869e',
+        '84ac48d1d956e90940d63b3670eb19b879fb02cae2c87e69b27dbb6066678811',
+        '8ea2091a11dc29d67a1abe38e6c6871e539350a743ccca0098a898c13bb8d027',
+        '906c9e71fde310b0ded629565c0cd79d29a77c1314d770f55228d933bc46185d',
+        '90c77aeaa5b51a07e5e5ee6bc46954e75e6dbf837ea0fb69b757dc800f507a69',
+        'b117bfed4c9448fdf5dacd2ceb96d175616448544054db8264027e0a672042ac',
+        'cbd1890cadcea47b7379fdac829d9b397d8fa0e35561f9a662afa924a6ed3178',
+        'cc2d5d82c0e34c88902a885d58e595bb473ffd87e5bcd7cbe36ca053c7cdb74c',
+        'd20611d42bcd766e91e401adb230568267eafad7cbbe5f733ebdd2df7aad049f',
+        'e3c585d1bed03b25b3c895474b1d6219debab080c656301477d8b21d517e0983',
+        'f3d1d9d6fac7154c357029f976ae42b6e0808590a6051bc2c23fcbee997aa332',
+    )),
+    ('claude', '@legacy-policy-base', '*'): frozenset((
+        '07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2',
+        '0f3d6e32816bb2786079aa2bbb8297c3d5e95183550d38f2fbe01abb1580ef11',
+        '2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e',
+        '378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c',
+        '5084bcfc8099e95720eb855eb93111be04c566eaf92561bc1a229a0377277465',
+        '5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d',
+        '7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b',
+        '86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120',
+        '951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e',
+        'a45d341faa7bd74e01b657e57c4b73a4ba5c99292302ce04f255353fb12f7070',
+        'bb94e7a0d0e0872ef01358096139eaf48f9bffd127a0310a6bb1afdce99931b5',
+        'bcbef1c12f21e380cc46181d314e05d9a36430eddc5cc1826f7775969588da22',
+        'eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94',
+        'f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b',
+    )),
+    ('claude', 'CLAUDE.local.md', 'guest'): frozenset((
+        '0f3d6e32816bb2786079aa2bbb8297c3d5e95183550d38f2fbe01abb1580ef11',
+        '119a0728ce858a0b551401f1b841058403c45dfbd5b00cd258be79f75c1a4a32',
+        '13cf237a959cc060d6e62fb426db97896e71c88368adc524319ddd251a268057',
+        '2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e',
+        '4e7e7d8bf6a9368eb57ca5051728caa9f4407b26ed4cfde9cb624b920329ab51',
+        '66de7f84ceac722ec4030e200c1343058d1554f43437e0d995ea65c55fadfa12',
+        '7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b',
+        '951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e',
+        'a45d341faa7bd74e01b657e57c4b73a4ba5c99292302ce04f255353fb12f7070',
+        'ad7516c24c77a9014656bccbe1fdf7492e8d012ac069cccf7553bd0736c6e1cd',
+        'e17286ec97132b9bfd30ae80dd018c554b6ad8d9f85b0be19b248a0e4ab1f899',
+        'eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94',
+        'f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b',
+    )),
+    ('claude', 'CLAUDE.md', 'normal'): frozenset((
+        '00ff686623938d33baf2d97f903e588b1d665c920714b8198d970890b9571761',
+        '07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2',
+        '1496c0b308110131921a2e7c7e36b10efbdcf411684106aa4d5f234bbab2071e',
+        '1f5f19d071eb8c42772883ce913986f8661c02e9dc841cec26c5661cbe0f20ad',
+        '2a1781f99faac541c2f4e45afbc1b641a6f0ac47f22188e5b9a3e34b6aec5f13',
+        '2dd0eee0a4c172f21ebed80ec75b1b8e140f2c5265012f2a3837ec9607971327',
+        '378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c',
+        '39ef749a25fd454d196206c3617e63ffd541cf313fcadaa172e7ed2b9b1e3ee1',
+        '5084bcfc8099e95720eb855eb93111be04c566eaf92561bc1a229a0377277465',
+        '5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d',
+        '6c3b1d5e880cdc39222a561b0b9f0ef2065734c02ffa263943cab8ad5da833f5',
+        '86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120',
+        '951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e',
+        'b0948834fee53236e18b5a2bb15e07cbdd77ac008da8384dc4385cefe0db037f',
+        'bb94e7a0d0e0872ef01358096139eaf48f9bffd127a0310a6bb1afdce99931b5',
+        'bcbef1c12f21e380cc46181d314e05d9a36430eddc5cc1826f7775969588da22',
+        'c2fc6788918af47745aefc92bc765f713d9dc971cdbc1a72c45d49f616ac5a5d',
+        'd5c3d7746c47199fd29e4a05e2cb4e8983dd20c4b9cca5e7e8cdc33b0d47c2e4',
+        'd6486d31a39b00f2292cc009ce0576fe5afa052ef9069bedb36daa806138a745',
+    )),
+    ('codex', '.agents/skills/domestique-decompose/SKILL.md', 'guest'): frozenset((
+        '12a52d6d51ed9be56e1d3c008b84fd5a6275b9f6cc5e84e0d0b0526fa146c3ec',
+        '1cb3c36c94bb27fd6dcbfb46ac29b22499221471ed9c76854c864e45ff1bd877',
+        '2967796a9fac2141ed608243e3764d3972bcf59ad417320e46050c23c6329e15',
+        '2d55f80688ba23d91d444702c31f7f0f984914f504a6912558b4939884b53a01',
+        '35fd58a4a682a3c0fa0bbd4f597378fcbb94069ced2c89edb7ed93c57e168380',
+        '53b34a1e0a7610c70481acc4e22b2949dc8f9f0cda8e29df585d57c212416d6b',
+        '5a9ea55cafa434e98f00cc9e0c8cfeda3d6f818ffdff32c47800256eb8da4e51',
+        '65daf9d50858407a3f74f3031a377b51da3bf3708e5c5badb2baa8ca78edccaa',
+        '67a109783704afaa097eda4f38f8fc077130a6f94046962346b724a597a94253',
+        '7190c3b61452128e2c68d1fdf07ea7de216e4b8a0cbf090ff82a0b5019d824e2',
+        '928c7b4cc0aaf3e6d7f32406d88c02ae26575c98651afb531bdf641a5f17aa32',
+        '96279690ed030b5979fa6a24f15cc11b049b2938f13bfa3175e91a4b637129f4',
+        'c45b0f0e13b167e04cd6aeb4cc4142e89d8695e1318ea442f23d51a4ad05be1d',
+        'fc2ea2896d6169b1cfda280daa98c1eb4edf6995a5b7d39a78529625f9703754',
+    )),
+    ('codex', '.agents/skills/domestique-decompose/SKILL.md', 'normal'): frozenset((
+        '12a52d6d51ed9be56e1d3c008b84fd5a6275b9f6cc5e84e0d0b0526fa146c3ec',
+        '1cb3c36c94bb27fd6dcbfb46ac29b22499221471ed9c76854c864e45ff1bd877',
+        '2967796a9fac2141ed608243e3764d3972bcf59ad417320e46050c23c6329e15',
+        '2d55f80688ba23d91d444702c31f7f0f984914f504a6912558b4939884b53a01',
+        '35fd58a4a682a3c0fa0bbd4f597378fcbb94069ced2c89edb7ed93c57e168380',
+        '53b34a1e0a7610c70481acc4e22b2949dc8f9f0cda8e29df585d57c212416d6b',
+        '5a9ea55cafa434e98f00cc9e0c8cfeda3d6f818ffdff32c47800256eb8da4e51',
+        '65daf9d50858407a3f74f3031a377b51da3bf3708e5c5badb2baa8ca78edccaa',
+        '67a109783704afaa097eda4f38f8fc077130a6f94046962346b724a597a94253',
+        '7190c3b61452128e2c68d1fdf07ea7de216e4b8a0cbf090ff82a0b5019d824e2',
+        '928c7b4cc0aaf3e6d7f32406d88c02ae26575c98651afb531bdf641a5f17aa32',
+        '96279690ed030b5979fa6a24f15cc11b049b2938f13bfa3175e91a4b637129f4',
+        'c45b0f0e13b167e04cd6aeb4cc4142e89d8695e1318ea442f23d51a4ad05be1d',
+        'fc2ea2896d6169b1cfda280daa98c1eb4edf6995a5b7d39a78529625f9703754',
+    )),
+    ('codex', '.agents/skills/domestique-goal/SKILL.md', 'guest'): frozenset((
+        '0a0e73358d06bc4fcad5155c1d963e9aaa260f715173e64723717c7530abba27',
+        '23b53d847bd5bfd9a569c562ed64765914c6a53ad964ad1b6ff3667a763559a2',
+        '3fc9d34d8744e09cdde81a4eba4b83840ccbb52487ff5d2b1c75cc06d476ae02',
+        '4c3b659d6b2fd48119fc2212c2fed64ed77dcc40d2321a31f00702b120f0dbad',
+        '5114787c27df48848fbb8d7d683b49a1c84d49065861302fe41817ebc4df4714',
+        '5794ddfca3f4052ce130274ac9300da94b1a92e8c019b9bb5cfcc97c9f4e717a',
+        '5da25da3fca6fe14c2688841a16b38c822c54836cb088e1297eba7fe525ec62b',
+        '675419abf2f3d54446ed2cda5d468c5239e9b915c8226c70751e7ea2eb5b3a19',
+        '6b155c655e0c1af902ff460ed161a4878475bca15ff8d73b919524d8df7fdd4e',
+        '9642d475f2417ebf4122d503bdd58c74e5026ac5720d83216547a222aa48e75d',
+        'b5144366d86eb7a723f63a2289c3b5fb2a769dc09ef08be684c6f216523c0dfa',
+        'bbb35a07d5c6b63be73f6ab3736c7a7d1113c63a97919428272478500788dbcb',
+        'ce8446feecc5705bd6ebbf0323608526b77b6cda952958248bb3793d31e1544a',
+        'd36fde1ebd83106047ac1ee759364a084153a46d9a932821380419d9e72414db',
+        'e6c6e675a6063821883a8ef9c6c163e3a7278b978ecd4995491560d974d781e3',
+    )),
+    ('codex', '.agents/skills/domestique-goal/SKILL.md', 'normal'): frozenset((
+        '0a0e73358d06bc4fcad5155c1d963e9aaa260f715173e64723717c7530abba27',
+        '23b53d847bd5bfd9a569c562ed64765914c6a53ad964ad1b6ff3667a763559a2',
+        '3fc9d34d8744e09cdde81a4eba4b83840ccbb52487ff5d2b1c75cc06d476ae02',
+        '4c3b659d6b2fd48119fc2212c2fed64ed77dcc40d2321a31f00702b120f0dbad',
+        '5114787c27df48848fbb8d7d683b49a1c84d49065861302fe41817ebc4df4714',
+        '5794ddfca3f4052ce130274ac9300da94b1a92e8c019b9bb5cfcc97c9f4e717a',
+        '5da25da3fca6fe14c2688841a16b38c822c54836cb088e1297eba7fe525ec62b',
+        '675419abf2f3d54446ed2cda5d468c5239e9b915c8226c70751e7ea2eb5b3a19',
+        '6b155c655e0c1af902ff460ed161a4878475bca15ff8d73b919524d8df7fdd4e',
+        '9642d475f2417ebf4122d503bdd58c74e5026ac5720d83216547a222aa48e75d',
+        'b5144366d86eb7a723f63a2289c3b5fb2a769dc09ef08be684c6f216523c0dfa',
+        'bbb35a07d5c6b63be73f6ab3736c7a7d1113c63a97919428272478500788dbcb',
+        'ce8446feecc5705bd6ebbf0323608526b77b6cda952958248bb3793d31e1544a',
+        'd36fde1ebd83106047ac1ee759364a084153a46d9a932821380419d9e72414db',
+        'e6c6e675a6063821883a8ef9c6c163e3a7278b978ecd4995491560d974d781e3',
+    )),
+    ('codex', '.agents/skills/domestique-goal/agents/openai.yaml', 'guest'): frozenset((
+        '0f41f4154500b023e670cd2f45e32a5cdf1fd6f81a1eabd91848cc3c8d2eeebf',
+        '807c52402815018755b2e3c1f915b9d362d7ce1198cba7f1e4822bb1ac5108a5',
+        'd5a21b28956531d1bd017dbe0becd31ba100139498151537b34d2bbf3f3e8bb6',
+    )),
+    ('codex', '.agents/skills/domestique-goal/agents/openai.yaml', 'normal'): frozenset((
+        '0f41f4154500b023e670cd2f45e32a5cdf1fd6f81a1eabd91848cc3c8d2eeebf',
+        '807c52402815018755b2e3c1f915b9d362d7ce1198cba7f1e4822bb1ac5108a5',
+        'd5a21b28956531d1bd017dbe0becd31ba100139498151537b34d2bbf3f3e8bb6',
+    )),
+    ('codex', '.agents/skills/domestique-models/SKILL.md', 'guest'): frozenset((
+        '3b46fb773933c74bc3497462f119db0348120b2cdcd331cc5a2e8bbfa21f40dc',
+    )),
+    ('codex', '.agents/skills/domestique-models/SKILL.md', 'normal'): frozenset((
+        '3b46fb773933c74bc3497462f119db0348120b2cdcd331cc5a2e8bbfa21f40dc',
+    )),
+    ('codex', '.agents/skills/domestique/SKILL.md', 'guest'): frozenset((
+        '0ab70d6d722b371a51ee5c7aa54a46986274552e94df252465d8046a839acebf',
+        '5819d5086b7bc95fe0a697bb57d32e7efd9742d7e68ee12172ff64961a30a584',
+        '58b43e1f2e11b955e8e1c42b6b53c6589844e223c1098d0ace7ae3903b0c57c4',
+        '690ce63a343bb047c05014284463fb9339b80552f077277b3eda32954cbe702c',
+        '916960b2e0059ca4378d7141c3091270f3dd0654c964442876d2b0a7f0931301',
+        '96ce35434222392f3ca410400aab679ab98986a49c9ef9833b9c39d036cac231',
+        'a322604806442ae4d7f27fb105aa6496a0bb95a85821f9fe0e5f6b91e8d58f61',
+        'c586b183655d2261615a89526653e689ecfcb0f76f53d277557e55e7c3a0df15',
+        'd95b39c9269266ededec16ffef0f6717c12896b292d95dc3794b23896d40b541',
+        'e0126b73ecb996a350a027e3d57d84c7530a5efe7099740461aa0b1567355dbd',
+        'e6510d908f96b28019d3a1f4157dfe57edb3186508dfed30982f3db784cc4118',
+        'e6894bfba13427e812dab1583c83daf2df2696b4e67d599db766e095ed1c72de',
+        'f572533e3ea7c36ae6c52938fb93fcd7454154518b9534a894cd37b53d3c855a',
+    )),
+    ('codex', '.agents/skills/domestique/SKILL.md', 'normal'): frozenset((
+        '0ab70d6d722b371a51ee5c7aa54a46986274552e94df252465d8046a839acebf',
+        '5819d5086b7bc95fe0a697bb57d32e7efd9742d7e68ee12172ff64961a30a584',
+        '58b43e1f2e11b955e8e1c42b6b53c6589844e223c1098d0ace7ae3903b0c57c4',
+        '690ce63a343bb047c05014284463fb9339b80552f077277b3eda32954cbe702c',
+        '916960b2e0059ca4378d7141c3091270f3dd0654c964442876d2b0a7f0931301',
+        '96ce35434222392f3ca410400aab679ab98986a49c9ef9833b9c39d036cac231',
+        'a322604806442ae4d7f27fb105aa6496a0bb95a85821f9fe0e5f6b91e8d58f61',
+        'c586b183655d2261615a89526653e689ecfcb0f76f53d277557e55e7c3a0df15',
+        'd95b39c9269266ededec16ffef0f6717c12896b292d95dc3794b23896d40b541',
+        'e0126b73ecb996a350a027e3d57d84c7530a5efe7099740461aa0b1567355dbd',
+        'e6510d908f96b28019d3a1f4157dfe57edb3186508dfed30982f3db784cc4118',
+        'e6894bfba13427e812dab1583c83daf2df2696b4e67d599db766e095ed1c72de',
+        'f572533e3ea7c36ae6c52938fb93fcd7454154518b9534a894cd37b53d3c855a',
+    )),
+    ('codex', '.codex/agents/implementer.toml', 'guest'): frozenset((
+        '6185055ecdcc38c4f834ec20cb5837c4d607e70155d4a5b6e06680f279c3d5ed',
+        '63861e15920b9a0d8b75e51f79a8e227a6d33c6ef4a8a2056147bfb7051f4f46',
+        'ad16242a1e34631e728729ad9b4a7da37f02ead712d4b989028b4ceca59332e7',
+    )),
+    ('codex', '.codex/agents/implementer.toml', 'normal'): frozenset((
+        '6185055ecdcc38c4f834ec20cb5837c4d607e70155d4a5b6e06680f279c3d5ed',
+        '63861e15920b9a0d8b75e51f79a8e227a6d33c6ef4a8a2056147bfb7051f4f46',
+        'ad16242a1e34631e728729ad9b4a7da37f02ead712d4b989028b4ceca59332e7',
+    )),
+    ('codex', '.codex/agents/reviewer.toml', 'guest'): frozenset((
+        '5893d19db083f6b2ffc00acead3242b7e14e8e37716ce2df4c50c06b55b1c2f5',
+        '8e64989adfaeaf9a1f19fd61a9d6c1fdf83f873335aed3f11b5407c9293aeb23',
+        'ed74642c206331cb930c09825088c09f6a163c37192d5d6442e711b7bc759ebe',
+        'ffb2546af12bb08a8c9d6bb5176c7ff07352855165706ca40cb6a8a042f5cb19',
+    )),
+    ('codex', '.codex/agents/reviewer.toml', 'normal'): frozenset((
+        '5893d19db083f6b2ffc00acead3242b7e14e8e37716ce2df4c50c06b55b1c2f5',
+        '8e64989adfaeaf9a1f19fd61a9d6c1fdf83f873335aed3f11b5407c9293aeb23',
+        'ed74642c206331cb930c09825088c09f6a163c37192d5d6442e711b7bc759ebe',
+        'ffb2546af12bb08a8c9d6bb5176c7ff07352855165706ca40cb6a8a042f5cb19',
+    )),
+    ('codex', '@legacy-policy-base', '*'): frozenset((
+        '032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474',
+        '44b2375b0b95a26fec0119718b3f36703c8fccbe718d4fb4edd90f6f7c181174',
+        '7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12',
+        '7e3e37e67c698f347bb21f31721af7e07c919737eeaa7a3cc4e75d918a5292db',
+        '879d49e91009d7496bf3a479b5f51be8b9de6687b5520eb86bb5f4f22ed354a4',
+        'ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb',
+    )),
+    ('codex', 'AGENTS.md', 'normal'): frozenset((
+        '032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474',
+        '26987650b09b643dce42619b64493f6529f4f97f8f900501c7d05ff9b32881f3',
+        '3796ec1f118f1f9a980f18485bc882e20a55e9a1aab72ebbf31ce6443d25bc51',
+        '44b2375b0b95a26fec0119718b3f36703c8fccbe718d4fb4edd90f6f7c181174',
+        '766257fd25de7209f0a5f11feb7e7036b9909eb6b40604bfab61020fdb7e8c17',
+        '7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12',
+        '7e3e37e67c698f347bb21f31721af7e07c919737eeaa7a3cc4e75d918a5292db',
+        '879d49e91009d7496bf3a479b5f51be8b9de6687b5520eb86bb5f4f22ed354a4',
+        '9494b6112baab2a678d5bc10f4d6b9aceb2d67ae6ada8572a3d2ad5a75dd3a90',
+        '9bf29dd4fc6cc09d0fb02a631e1dcbcd8e867c53ce8e5f0c32704bb7d54e8d84',
+        'd7c6c94b0a752e39dd48e2a5e5cce4717970b75bb055a5834ecf4b23acf59aae',
+        'e751b66f49b4ee3a5974a6a84bcc5c7ac87286bda260501ae2b993bd01864372',
+        'ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb',
+    )),
+    ('copilot', '.github/agents/domestique-implementer.agent.md', 'normal'): frozenset((
+        '75aa888490638d10c4ed482e0be6efe517c344a6a3eac296719785c179486dea',
+    )),
+    ('copilot', '.github/agents/domestique-reviewer.agent.md', 'normal'): frozenset((
+        '70c217d0ea3e382343eddb42baaf1a7e8af7d8ac15b835f30e4b0a5eceafb105',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-implementer.agent.md', 'guest'): frozenset((
+        '5bd78d23332ae765fb6376a89e1f20860aee16bc5bbed2677e15af10dabd6eca',
+        'b94322572a6367564f95694500344d0fe880c151293f20077b70ccdcc876d055',
+        'b9a4656a718b16af6fac54198c86d3d2203f1cf800d395b894f2f8e590fc9fa8',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-implementer.agent.md', 'normal'): frozenset((
+        '5bd78d23332ae765fb6376a89e1f20860aee16bc5bbed2677e15af10dabd6eca',
+        'b94322572a6367564f95694500344d0fe880c151293f20077b70ccdcc876d055',
+        'b9a4656a718b16af6fac54198c86d3d2203f1cf800d395b894f2f8e590fc9fa8',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-reviewer.agent.md', 'guest'): frozenset((
+        '120435b614c5fc8a341098f80bb13ff3fbfcc0884eee8a2fafcf81c86c0e6cf2',
+        'a093530bd450b6667988035265750b3d83b01be36656f5b85c0904f79685485a',
+    )),
+    ('copilot', '.github/agents/domestique-v2-copilot-reviewer.agent.md', 'normal'): frozenset((
+        '120435b614c5fc8a341098f80bb13ff3fbfcc0884eee8a2fafcf81c86c0e6cf2',
+        'a093530bd450b6667988035265750b3d83b01be36656f5b85c0904f79685485a',
+    )),
+    ('copilot', '.github/copilot-instructions.md', 'normal'): frozenset((
+        '2c4e06537ae5af365515e9c273f7afb9f5287371745486d3241d10f818b25c4b',
+        '38d1208f028aec6ff3bdf33df914a2c88f4186b09f5bbb8830568a4f21e8896b',
+        '6505bfe667699a1baea89193a4edb1ff9472d812865e297e71f3a6a5996157a6',
+        '75c69927cf2f62119ab5b4bfe6332f61f6203e1d18a83b488bef30b3aec70892',
+        '816b80370c1aaecab9b80e4f511fd4a56a26023bdcb97d18c89c72fab945ebb5',
+        'cc2974f80e4f2649021c33ff1349b868f3556032c46285cf190663dab145fbe8',
+        'd65d7523d76250b8d71c6662f08e4eeb795daced0cf25dc7b42ee4a0783f8295',
+        'f2c65bd3450c8f9d98b4443b7b7f3efba24b548b73024058fc780b14afeaa449',
+    )),
+    ('copilot', '.github/skills/domestique-decompose/SKILL.md', 'normal'): frozenset((
+        '38fc531fce7680e21b439c56ba436903d186e1bf5c19c75bb3919fd7ae6d1a34',
+    )),
+    ('copilot', '.github/skills/domestique-goal/SKILL.md', 'normal'): frozenset((
+        'b965d96a1a13b0949fbb8fd9be60ab7b6e817c290a21310cf99108c2125d2f35',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-decompose/SKILL.md', 'guest'): frozenset((
+        '1f2eac2c273ef8d08a70e9b11c677911a81f23836d7d05b057f7d6acb42e045f',
+        '2067d519fc1586d99b2b3387ac0dfd06d11232bd509628e959244652241f2eb6',
+        '4d68072465ff9622d88eda032e5e4202c3e4cce96c08a69dd67aaddb73093701',
+        'c49ed3662a25a74abd16eb12f214bb9ece6f0e571c124566dd2db84ba35acc9b',
+        'd2065555a3dd0cfc97d4e3444802712de16e664c367950b419978d7e1f8e71de',
+        'd2543e21f09da8c3efcc21b2c07b5becb1e6e4d85834c6ab3c319decf98081c2',
+        'df22f398b76ff599c4cb5358dfb1ca5a50cea42dc7ed11cef5e3760fcde57d25',
+        'f56b481fd729e0cee182501a88bb3451e037eb1bd389e48bec144db7db70a181',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-decompose/SKILL.md', 'normal'): frozenset((
+        '1f2eac2c273ef8d08a70e9b11c677911a81f23836d7d05b057f7d6acb42e045f',
+        '2067d519fc1586d99b2b3387ac0dfd06d11232bd509628e959244652241f2eb6',
+        '4d68072465ff9622d88eda032e5e4202c3e4cce96c08a69dd67aaddb73093701',
+        'c49ed3662a25a74abd16eb12f214bb9ece6f0e571c124566dd2db84ba35acc9b',
+        'd2065555a3dd0cfc97d4e3444802712de16e664c367950b419978d7e1f8e71de',
+        'd2543e21f09da8c3efcc21b2c07b5becb1e6e4d85834c6ab3c319decf98081c2',
+        'df22f398b76ff599c4cb5358dfb1ca5a50cea42dc7ed11cef5e3760fcde57d25',
+        'f56b481fd729e0cee182501a88bb3451e037eb1bd389e48bec144db7db70a181',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-goal/SKILL.md', 'guest'): frozenset((
+        '09e9184a66f01a7dd89ecf70d4c2d9adc7aaa2af916e26f9c1ceb4a779ef64ac',
+        '204f8d030d2dc93638fea0a1ee96f6263caba69abc12214d07279f959cb49cfc',
+        '3e6fc9690d95dfc3b48cc876c7344a3f9b2df3d42e5c0120b6fda623d5874a19',
+        '489760141e9badbeaeabb6620b216b8119b70705801eb6b47b11206426258b0a',
+        '4c6231a2ec3312200c23d7eeefa8f21346b9804e5449945c05f42e923aa56339',
+        '4f672c028cdbfbc8d59783823bcdb80b9795106a03c441d23d793ad705e6d118',
+        '852a958823989042ef0a23f05a75e205aa5036784fc55e877bd5901190a9f90b',
+        'a6f5a0a96b00921e495cc0a37b26f276e6d54e8e36b32fc98e58c6d65cdf0876',
+        'e53669322143517a958b578115f497eb28ec73dceecb068aeb0703577f4caa9d',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-goal/SKILL.md', 'normal'): frozenset((
+        '09e9184a66f01a7dd89ecf70d4c2d9adc7aaa2af916e26f9c1ceb4a779ef64ac',
+        '204f8d030d2dc93638fea0a1ee96f6263caba69abc12214d07279f959cb49cfc',
+        '3e6fc9690d95dfc3b48cc876c7344a3f9b2df3d42e5c0120b6fda623d5874a19',
+        '489760141e9badbeaeabb6620b216b8119b70705801eb6b47b11206426258b0a',
+        '4c6231a2ec3312200c23d7eeefa8f21346b9804e5449945c05f42e923aa56339',
+        '4f672c028cdbfbc8d59783823bcdb80b9795106a03c441d23d793ad705e6d118',
+        '852a958823989042ef0a23f05a75e205aa5036784fc55e877bd5901190a9f90b',
+        'a6f5a0a96b00921e495cc0a37b26f276e6d54e8e36b32fc98e58c6d65cdf0876',
+        'e53669322143517a958b578115f497eb28ec73dceecb068aeb0703577f4caa9d',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-models/SKILL.md', 'guest'): frozenset((
+        '53be6b259fc08ab234421a18209d1cc47e06d3a191fa390b2b93d6f0850c34c4',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot-models/SKILL.md', 'normal'): frozenset((
+        '53be6b259fc08ab234421a18209d1cc47e06d3a191fa390b2b93d6f0850c34c4',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot/SKILL.md', 'guest'): frozenset((
+        '1abd6fc5b01e0592e5aa35ab6e6f8234edb6882f6921fcf3060b7ba4078f75ce',
+        '2bfb73e45a0478db14ad6f52fcc832cdc509e641857aba33eda01e0caa563a40',
+        '3ea26bfb4b8faaffc77be5006fd9befc91114646c338b548d12f53e16bb699e2',
+        '521e5b336fe556505b22dcbfc2e3705c45842dda6233620922f3ecd77ca1182c',
+        '7c989e9d755aadc5f3115b3295ccc2462c8e161b3c8f7cb8fc4267d346fb4e3c',
+        '7e80958b1dff811c3c5dc32f0628465e2f788a08c82cb1dc189951d1ca747919',
+        'd8a790382e0d9d80e3633436eb8fd6514af9bc3ab92b1db4d4da809471d7d697',
+    )),
+    ('copilot', '.github/skills/domestique-v2-copilot/SKILL.md', 'normal'): frozenset((
+        '1abd6fc5b01e0592e5aa35ab6e6f8234edb6882f6921fcf3060b7ba4078f75ce',
+        '2bfb73e45a0478db14ad6f52fcc832cdc509e641857aba33eda01e0caa563a40',
+        '3ea26bfb4b8faaffc77be5006fd9befc91114646c338b548d12f53e16bb699e2',
+        '521e5b336fe556505b22dcbfc2e3705c45842dda6233620922f3ecd77ca1182c',
+        '7c989e9d755aadc5f3115b3295ccc2462c8e161b3c8f7cb8fc4267d346fb4e3c',
+        '7e80958b1dff811c3c5dc32f0628465e2f788a08c82cb1dc189951d1ca747919',
+        'd8a790382e0d9d80e3633436eb8fd6514af9bc3ab92b1db4d4da809471d7d697',
+    )),
+    ('copilot', '.github/skills/domestique/SKILL.md', 'normal'): frozenset((
+        '7239741101956794a86c1899a0028136556001b72884077adc865d87cdd0d939',
+    )),
+    ('shared', '.agents/skills/dom-decompose/SKILL.md', 'guest'): frozenset((
+        '2cc70acb4d718cbbdff5bc7f53f7b200284760ab20b25cfcc41293bc0d5310f5',
+        '42018391bebb4fe2c032b38d38e5ebd26fa8a8c6bec15e0b7e771864e66ba799',
+        '4de9ea342b80bd55c88fcec219f88f205915c5e6ea8eb3f82393691b86ee8ca4',
+        '7277b4c815b5e430785897459e3a694149bcad4c974f88c814121861757e428a',
+        '91bbe6b56ba7cd863cb61606805b2895c38565ab425ff31c733deb0a053de9dd',
+        '9b262f6ad225a52017eb322e1c3402df859ef1ddc9619737d11e2897934fab88',
+        'a19f9d3c0aff04a6744a82e241e6de86972f2644a74b166ad53465ea6c7e2d36',
+        'b73adaabbf03cfa4d001547cd7f6b545f55e738021ef14ac577a4d2ddf9de570',
+        'f4412a4d8b2a9b03852c5bb8775bf0817b954a01be6bd4354ec5694bb2c36687',
+        'f6672f14e4dbdecfae49cd935ed9c681c66cf991716a5e47df80d348aaa96895',
+    )),
+    ('shared', '.agents/skills/dom-decompose/SKILL.md', 'normal'): frozenset((
+        '2cc70acb4d718cbbdff5bc7f53f7b200284760ab20b25cfcc41293bc0d5310f5',
+        '42018391bebb4fe2c032b38d38e5ebd26fa8a8c6bec15e0b7e771864e66ba799',
+        '4de9ea342b80bd55c88fcec219f88f205915c5e6ea8eb3f82393691b86ee8ca4',
+        '7277b4c815b5e430785897459e3a694149bcad4c974f88c814121861757e428a',
+        '91bbe6b56ba7cd863cb61606805b2895c38565ab425ff31c733deb0a053de9dd',
+        '9b262f6ad225a52017eb322e1c3402df859ef1ddc9619737d11e2897934fab88',
+        'a19f9d3c0aff04a6744a82e241e6de86972f2644a74b166ad53465ea6c7e2d36',
+        'b73adaabbf03cfa4d001547cd7f6b545f55e738021ef14ac577a4d2ddf9de570',
+        'f4412a4d8b2a9b03852c5bb8775bf0817b954a01be6bd4354ec5694bb2c36687',
+        'f6672f14e4dbdecfae49cd935ed9c681c66cf991716a5e47df80d348aaa96895',
+    )),
+    ('shared', '.agents/skills/dom-goal/SKILL.md', 'guest'): frozenset((
+        '2113b86d6e6c02e9cc32312f8ecdce1ef6a7b3ff6a8a93a7142fbe787400a4b5',
+        '23d81f7b2c2e6d86c4bc2cbc949d841a50824b2270499bc6960cfea9e0f8898f',
+        '6c622bb1fc0c713f68db59ddf5b7127b50f111ad3f011269db212e77181c2e54',
+        '7accea586468009b67c2b62cd46135fcfcc4fd7b61af2376d741344b83126264',
+        '7dcb7736da3fcd1d25e2dae91e721be168159f40120ce9a09019264d01d9d857',
+        'a6b48e8492bbbe94b0ac7de38203e1a60996fe4ba9074f3feabe22b2da9b2ff5',
+        'cdc86581a92b71f4e8f2b7598a1d849434e3cefa267fbaef7d04fd14d3f74b75',
+        'db59a363601770cec52efbf2c454805d3586a273bfacfc8f0d5089074db8f4d4',
+        'e8034e6b4bd07ff48f6dc1d809dcc0a9ec0a4a193c87daa3f4ba4d898b6c3b80',
+        'f4be1a353a99601732e361521310fae3c6f9034df28b901a07a6c995cfb5796c',
+    )),
+    ('shared', '.agents/skills/dom-goal/SKILL.md', 'normal'): frozenset((
+        '2113b86d6e6c02e9cc32312f8ecdce1ef6a7b3ff6a8a93a7142fbe787400a4b5',
+        '23d81f7b2c2e6d86c4bc2cbc949d841a50824b2270499bc6960cfea9e0f8898f',
+        '6c622bb1fc0c713f68db59ddf5b7127b50f111ad3f011269db212e77181c2e54',
+        '7accea586468009b67c2b62cd46135fcfcc4fd7b61af2376d741344b83126264',
+        '7dcb7736da3fcd1d25e2dae91e721be168159f40120ce9a09019264d01d9d857',
+        'a6b48e8492bbbe94b0ac7de38203e1a60996fe4ba9074f3feabe22b2da9b2ff5',
+        'cdc86581a92b71f4e8f2b7598a1d849434e3cefa267fbaef7d04fd14d3f74b75',
+        'db59a363601770cec52efbf2c454805d3586a273bfacfc8f0d5089074db8f4d4',
+        'e8034e6b4bd07ff48f6dc1d809dcc0a9ec0a4a193c87daa3f4ba4d898b6c3b80',
+        'f4be1a353a99601732e361521310fae3c6f9034df28b901a07a6c995cfb5796c',
+    )),
+    ('shared', '.agents/skills/dom-goal/agents/openai.yaml', 'guest'): frozenset((
+        '06eb131ef17a2c0de523ce37577f0e89025e2f46b76a0d46b36f6cf1e200c243',
+        '08b3ee4969d538c22096cb71b5b39eb70abc09ecbdfc1121bf2953772bae721c',
+        '4838d781321fa7502a89671806d1b3345e63802f3c6713c25223e6861c552b6f',
+    )),
+    ('shared', '.agents/skills/dom-goal/agents/openai.yaml', 'normal'): frozenset((
+        '06eb131ef17a2c0de523ce37577f0e89025e2f46b76a0d46b36f6cf1e200c243',
+        '08b3ee4969d538c22096cb71b5b39eb70abc09ecbdfc1121bf2953772bae721c',
+        '4838d781321fa7502a89671806d1b3345e63802f3c6713c25223e6861c552b6f',
+    )),
+    ('shared', '.agents/skills/dom-models/SKILL.md', 'guest'): frozenset((
+        '88b305539652de450795f8515333f0764010313b073d53114acd4fc3f54dc63a',
+    )),
+    ('shared', '.agents/skills/dom-models/SKILL.md', 'normal'): frozenset((
+        '88b305539652de450795f8515333f0764010313b073d53114acd4fc3f54dc63a',
+    )),
+}
+
+def installer_identity(provider, path, mode, digest):
+    return digest in _INSTALLER_IDENTITIES.get((provider, path, mode), ())
+
+def legacy_policy_identity(provider, digest):
+    return installer_identity(provider, '@legacy-policy-base', '*', digest)
+PY
+}
+# END GENERATED HISTORICAL IDENTITIES
+
 # Finite public pre-boundary emitter bodies, not "anything without a guard".
 # Inventory ownership is checked separately. In particular, stripping today's
 # guard from a current base must never turn it into a legacy migration source.
 policy_legacy_base() {
-  python3 - "$1" "$2" <<'PY'
+  python3 -c "$(emit_historical_identity_library)
 import hashlib
 from pathlib import Path
 import sys
 
 provider, path = sys.argv[1:]
-known = {
-    "claude": {
-        # 858c1f3..ff41544: first snapshot body (normal only). Its older
-        # three-file role/command inventory still needs separate authorization.
-        "5211df2a6c2c03d7ec6d385a0c204ea2e79fc9aaa2855406ec8bd0cf791bac5d",
-        # 99e6274..21dcb26: integrated goal inventory, before bd export.
-        "378081109234078c13371c06ffd3d7e787d7d325fc384abb30b25721b9faee7c",
-        # 4aa67ae / v0.1.0 / 415fb69 (normal, personal)
-        "951792f635e5249fd0f1c28c92e6e740c9dfda8c4402c19465bfa7fea5e2a51e",
-        "eee2a2fdea6f32ee50b75b428e5f0df71ca6c86638a188ada854d4215340ad94",
-        # 58f4d29..58732cc: public Runtime scope variant (normal, personal).
-        # Audited snapshot-era main-line bodies through guard introduction 8cb30cb.
-        "86a12823f8f46176d99196080fe624d42ba1dc30852db7cebda5cafcf027d120",
-        "7d10f5e491ad6c9a62d734bec1cb8a334078acc4fe2fcdc6620436285bc4432b",
-        # 6158d35, 9e584a6, 3b29b26, 9f34a02 (= 64f4e09), each normal/personal
-        "07210e96fdfe5358f99a0e5936a0a4a99ffee0b6a681832201dabda1e8eebff2",
-        "f3d4a3255a5e9397070840f76d8111fdf0ea94a6df8209e4fd4cdce58c77a88b",
-        "bcbef1c12f21e380cc46181d314e05d9a36430eddc5cc1826f7775969588da22",
-        "a45d341faa7bd74e01b657e57c4b73a4ba5c99292302ce04f255353fb12f7070",
-        "5084bcfc8099e95720eb855eb93111be04c566eaf92561bc1a229a0377277465",
-        "0f3d6e32816bb2786079aa2bbb8297c3d5e95183550d38f2fbe01abb1580ef11",
-        "bb94e7a0d0e0872ef01358096139eaf48f9bffd127a0310a6bb1afdce99931b5",
-        "2dbd19a7ebce92cf87f1126f1c90c120afc0fae24deeccccf417fdf10ab9e39e",
-    },
-    "codex": {
-        # 58f4d29..58732cc: public Runtime scope variant, installed AGENTS base.
-        "7ac9b7f8bfbcfb2e474d2c3ffb8b2650612bf6ec0bd1bb5a96e6e422e2ec0f12",
-        # 76d217f, 6158d35, c0b62ef, 3b29b26, 9f34a02 (= 64f4e09)
-        "ff2a43a0abfad662b181265f6c47692019228646e87468443cfe7175630eacdb",
-        "032049ac9304a15bc618210e10c1584d90897d18dbd2143f1976db6129ca3474",
-        "7e3e37e67c698f347bb21f31721af7e07c919737eeaa7a3cc4e75d918a5292db",
-        "44b2375b0b95a26fec0119718b3f36703c8fccbe718d4fb4edd90f6f7c181174",
-        "879d49e91009d7496bf3a479b5f51be8b9de6687b5520eb86bb5f4f22ed354a4",
-    },
+sys.exit(not legacy_policy_identity(provider, hashlib.sha256(Path(path).read_bytes()).hexdigest()))
+" "$1" "$2"
 }
-sys.exit(hashlib.sha256(Path(path).read_bytes()).hexdigest() not in known.get(provider, ()))
-PY
+
+# Missing snapshots require exact live bytes at this provider/path/mode, not
+# the provider-only legacy-base predicate and never today's emitted body.
+policy_pristine_identity() {
+  python3 -c "$(emit_historical_identity_library)
+import hashlib
+from pathlib import Path
+import sys
+
+provider, rel, mode, path = sys.argv[1:]
+sys.exit(not installer_identity(provider, rel, mode, hashlib.sha256(Path(path).read_bytes()).hexdigest()))
+" "$1" "$2" "$3" "$4"
 }
 
 # Retained roots need isolation, not an unrelated workflow upgrade. Preflight
 # stages a guard-only pristine upstream for the existing block merge/snapshot
 # pipeline; both retained and later additive-provider passes use that same plan.
 policy_preflight() {
-  local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active upstream
+  local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active upstream reference native_selected native_rel
   for provider in claude codex copilot; do
     configure_provider "$provider"
     selected=0
@@ -4695,6 +5377,7 @@ policy_preflight() {
       codex) selected="$SELECT_CODEX" ;;
       copilot) selected="$SELECT_COPILOT" ;;
     esac
+    native_selected="$selected"
     # Provider installation remains additive (roles, aliases, model setup and
     # mode handling). Only explicitly requested root workflows are upgraded.
     if [ "$PLATFORM_EXPLICIT" -eq 1 ]; then
@@ -4759,7 +5442,7 @@ policy_preflight() {
       [ "$rel" != CLAUDE.local.md ] || mode=guest
       "$emitter" "$mode" > "$TMPDIR_WORK/retained-upstream"
       if [ "$UNINSTALL" -eq 1 ]; then
-        local reference="$TARGET_DIR/$base"
+        reference="$TARGET_DIR/$base"
         [ -f "$reference" ] || reference="$TMPDIR_WORK/retained-upstream"
         cmp -s "$block" "$reference" || policy_backup_preflight "$rel"
         continue
@@ -4790,15 +5473,39 @@ policy_preflight() {
         touch "$TMPDIR_WORK/preserve-$rel"
         continue
       fi
-      shared_safe_path "$base" && [ -f "$TARGET_DIR/$base" ] ||
-        shared_refuse "unguarded owned policy $rel lacks a safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
-      snapshot_has_file "$state" "$provider" "$rel" .block ||
-        shared_refuse "unowned policy base $base; reconcile its inventory explicitly"
-      if head -c "$(wc -c < "$expected")" "$TARGET_DIR/$base" | cmp -s "$expected" -; then
+      reference="$TARGET_DIR/$base"
+      if [ ! -f "$reference" ]; then
+        # This is pre-snapshot adoption, not repair of damaged ownership state.
+        # Existing state/inventory must still satisfy the normal base checks.
+        [ ! -e "$TARGET_DIR/$state" ] &&
+          policy_pristine_identity "$provider" "$rel" "$mode" "$block" ||
+          shared_refuse "unguarded owned policy $rel lacks a proven pristine body or safe base $base; restore its last pristine snapshot or explicitly reconcile its owned harness guard without discarding custom text"
+        # Native adoption was independently proven per path/provider/mode,
+        # including outside Git roots. A policy hash grants no native authority.
+        if [ "$native_selected" -eq 1 ]; then
+          for native_rel in ${MANAGED_PLAIN_FILES//,/ }; do
+            shared_safe_path "$native_rel" || shared_refuse "unsafe native path $native_rel"
+            [ ! -e "$TARGET_DIR/$native_rel" ] ||
+              { [ -f "$TMPDIR_WORK/native-adopt/$native_rel" ] &&
+                cmp -s "$TARGET_DIR/$native_rel" "$TMPDIR_WORK/native-adopt/$native_rel"; } ||
+              shared_refuse "cannot establish ownership of native path $native_rel from pristine policy $rel; preserve native files and restore their original snapshot/inventory, or explicitly relocate them before a fresh native install; retry --dry-run"
+          done
+        fi
+        reference="$TMPDIR_WORK/policy-base/$rel"
+        mkdir -p "$(dirname "$reference")"
+        cp "$block" "$reference"
+        # Retaining a policy does not adopt any native roles/commands. Publish
+        # only this proven policy's ownership, not a fictional current inventory.
+        [ "$native_selected" -eq 1 ] || touch "$TMPDIR_WORK/policy-only-$provider"
+      else
+        snapshot_has_file "$state" "$provider" "$rel" .block ||
+          shared_refuse "unowned policy base $base; reconcile its inventory explicitly"
+      fi
+      if head -c "$(wc -c < "$expected")" "$reference" | cmp -s "$expected" -; then
         [ "$guarded" -eq 1 ] ||
           shared_refuse "owned policy $rel has a removed or altered harness guard; reconcile against $base explicitly"
       else
-        policy_legacy_base "$provider" "$TARGET_DIR/$base" ||
+        [ -f "$TMPDIR_WORK/policy-base/$rel" ] || policy_legacy_base "$provider" "$reference" ||
           shared_refuse "unknown legacy policy base $base; reconcile its pristine ownership explicitly"
         if [ "$guarded" -eq 0 ] && grep -qF 'Active harness boundary' "$block"; then
           shared_refuse "owned policy $rel has an altered harness guard; reconcile it explicitly"
@@ -4817,15 +5524,15 @@ policy_preflight() {
           cat "$expected"
           if [ "$provider" = codex ]; then
             # The known Codex emitter already has the title in expected.
-            tail -n +3 "$TARGET_DIR/$base"
+            tail -n +3 "$reference"
           else
-            cat "$TARGET_DIR/$base"
+            cat "$reference"
           fi
         } > "$upstream"
       fi
       merged="$TMPDIR_WORK/retained-merged"
       rc=0
-      git merge-file -p "$block" "$TARGET_DIR/$base" "$upstream" > "$merged" || rc=$?
+      git merge-file -p "$block" "$reference" "$upstream" > "$merged" || rc=$?
       [ "$rc" -eq 0 ] ||
         shared_refuse "owned policy merge conflict for $rel against $base; preserve custom text and reconcile the block explicitly before retrying"
       head -c "$(wc -c < "$expected")" "$merged" | cmp -s "$expected" - ||
@@ -4885,6 +5592,7 @@ snapshot_plain() {
     return 0
   fi
   SNAPSHOT_TOUCHED=1
+  guest_plan_write "$basepath"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
     return 0
@@ -4900,6 +5608,7 @@ snapshot_plain() {
 snapshot_claude_block() {
   local content="$1" basepath="$POLICY_SNAPSHOT"
   SNAPSHOT_TOUCHED=1
+  guest_plan_write "$basepath"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
     return 0
@@ -4909,18 +5618,23 @@ snapshot_claude_block() {
 }
 
 # managed_files_list — provider inventory plus every sound managed policy
-# destination still on disk. The current policy destination is included under
-# dry-run even before it exists.
+# destination still on disk, or only proven policies for pre-snapshot retention
+# without native adoption. Include the current destination under dry-run.
 managed_files_list() {
   local out="$MANAGED_PLAIN_FILES" policyfile include
+  if [ -f "$TMPDIR_WORK/policy-only-$CURRENT_PROVIDER" ]; then
+    out=""
+  fi
   for policyfile in $POLICY_CANDIDATES; do
     include=0
+    if [ -f "$TMPDIR_WORK/policy-only-$CURRENT_PROVIDER" ] &&
+       [ ! -f "$TMPDIR_WORK/scope-$policyfile" ]; then continue; fi
     if [ -n "$POLICY_DEST" ] && [ "$policyfile" = "$POLICY_DEST" ]; then
       include=1
     elif [ -e "$TARGET_DIR/$policyfile" ] && grep -qxF "$MARKER_BEGIN" "$TARGET_DIR/$policyfile" 2>/dev/null; then
       include=1
     fi
-    [ "$include" -eq 1 ] && out="$out,$policyfile"
+    [ "$include" -eq 1 ] && out="${out:+$out,}$policyfile"
   done
   printf '%s' "$out"
 }
@@ -5095,10 +5809,12 @@ model_pair_managed() {
 
 # Shared finite inventory authority for pair preparation and inactive retention.
 emit_installer_inventory_library() {
+  emit_historical_identity_library
   cat <<'PY'
 def installer_inventories(provider, files, policies, helper):
     import itertools
     # Finite source-backed inventories, NOT today's inventory minus a helper.
+    # ff41544: three Claude files (independent exact-pristine preflight);
     # v0.1.0 / 76d217f: four Claude files; 6158d35: Claude aliases and
     # Codex-owned shared aliases; 8cb30cb: shared aliases leave Codex;
     # 4dc26fd: five Copilot files; 9f33930: helpers for all three.
@@ -5121,6 +5837,8 @@ def installer_inventories(provider, files, policies, helper):
     }
     old_files = historical[provider]
     recognized = set()
+    if provider == "claude":
+        recognized.add(("0.1.0", ",".join(old_files.split(",")[:3]) + ",CLAUDE.md"))
     for count in range(len(policies) + 1):
         for subset in itertools.combinations(policies, count):
             suffix = "".join("," + p for p in subset)
@@ -5134,10 +5852,184 @@ def installer_inventories(provider, files, policies, helper):
                                 ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
             for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
                 recognized.add((version, old_files + "," + helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3"):
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3", "0.4.4"):
                 recognized.add((version, files + suffix))
     return recognized
 PY
+}
+
+# Qualify raw native adoption before any publication, also where model setup is
+# unavailable. Policy-only ownership is a separate, bounded state shape: it
+# never selects/resurrects native projections during an unrelated operation.
+native_ownership_preflight() {
+  local provider selected requested rc phase="$1"
+  for provider in claude codex copilot; do
+    configure_provider "$provider"
+    selected=0
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE" ;;
+      codex) selected="$SELECT_CODEX" ;;
+      copilot) selected="$SELECT_COPILOT" ;;
+    esac
+    emit_installer_model_library > "$TMPDIR_WORK/native-library"
+    emit_installer_inventory_library >> "$TMPDIR_WORK/native-library"
+    case "$provider" in
+      claude) emit_implementer > "$TMPDIR_WORK/native-implementer"; emit_reviewer > "$TMPDIR_WORK/native-reviewer" ;;
+      codex) emit_codex_implementer > "$TMPDIR_WORK/native-implementer"; emit_codex_reviewer > "$TMPDIR_WORK/native-reviewer" ;;
+      copilot) emit_copilot_implementer > "$TMPDIR_WORK/native-implementer"; emit_copilot_reviewer > "$TMPDIR_WORK/native-reviewer" ;;
+    esac
+    {
+      [ "$provider" != codex ] || printf '# Domestique orchestration policy (Codex)\n\n'
+      emit_harness_guard "$provider" policy
+    } > "$TMPDIR_WORK/native-policy-guard"
+    requested="$REQUESTED_GUEST"
+    if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
+       [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ]; then requested=1; fi
+    rc=0
+    python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$provider" "$selected" \
+      "$MANAGED_PLAIN_FILES" "$POLICY_CANDIDATES" "$requested" \
+      "$PLATFORM_EXPLICIT" "$PLATFORM_ARG" "$UNINSTALL" "$phase" <<'PY' || rc=$?
+import os
+from pathlib import Path
+import sys
+
+root, scratch, provider, selected, files, policies, guest, explicit, platform, uninstall, phase = sys.argv[1:]
+os.chdir(root)
+scratch = Path(scratch)
+lib = {"__name__": "trusted_installer"}
+exec(compile((scratch / "native-library").read_bytes(), "<installer emitter>", "exec"), lib)
+need, identity, sha = lib["need"], lib["installer_identity"], lib["sha"]
+
+class Inventory(lib["Pair"]):
+    def check_root(self):
+        need(self.root.resolve() == self.root, "unsafe physical root")
+
+try:
+    pair = Inventory(installed=False)
+    pair.files = [pair.manifest]
+    _, contents = pair.read_snapshot(absent=True)
+    manifest = pair.inventory(contents[pair.manifest]) if contents[pair.manifest] is not None else None
+    inventory = manifest["files"].split(",") if manifest else []
+    policies = policies.split()
+    requested = explicit == "0" or platform in ("all", provider) or (
+        platform == "both" and provider in ("claude", "codex"))
+    policy_only = bool(inventory) and set(inventory) <= set(policies)
+    early = (provider == "claude" and manifest is not None and
+             manifest.get("domestique_version") == "0.1.0" and
+             inventory == files.split(",")[:3] + ["CLAUDE.md"])
+    if not policy_only and (phase == "selection" or selected != "1" or uninstall == "1"):
+        sys.exit(0)
+    if policy_only or early:
+        if policy_only:
+            need(manifest.get("domestique_version") in ("0.4.3", "0.4.4") and
+                 set(manifest) == {"snapshot_format", "platform", "domestique_version",
+                                   "installed_ref", "installed_at", "script_sha256", "files"},
+                 "unknown policy-only manifest generation")
+        # No missing/extra/tampered state may be reinterpreted as unowned.
+        bases = [f"{pair.state}/base/{p}" + (".block" if p in policies else "")
+                 for p in inventory]
+        allowed = {pair.manifest, *bases}
+        if early:
+            allowed.update(f"{pair.state}/{p}" for p in
+                           ("mode", "platforms", "guest-excludes", "beads-owned"))
+        directories = {str(parent) for p in allowed for parent in Path(p).parents
+                       if str(parent).startswith(pair.state)}
+        for directory, dirs, leaves in os.walk(pair.state, followlinks=False):
+            for name in dirs:
+                path = Path(directory) / name
+                need(not path.is_symlink() and str(path) in directories,
+                     "unknown policy-only/early state directory: " + str(path))
+            for name in leaves:
+                need(str(Path(directory) / name) in allowed,
+                     "unknown policy-only/early state path: " + str(Path(directory) / name))
+        pair.files = list(allowed) + inventory
+        _, evidence = pair.read_snapshot(absent=True)
+        guard = (scratch / "native-policy-guard").read_bytes()
+        for rel, base in zip(inventory, bases):
+            raw = evidence[base]
+            need(raw is not None, "missing pristine base: " + base)
+            mode = "guest" if rel == "CLAUDE.local.md" or rel not in policies and guest == "1" else "normal"
+            if policy_only:
+                need(raw.startswith(guard), "invalid policy-only pristine guard: " + base)
+                historical = raw[len(guard):]
+                if provider == "codex":
+                    historical = b"# Domestique orchestration policy (Codex)\n\n" + historical
+                need(identity(provider, rel, mode, sha(historical)),
+                     "unknown policy-only pristine body: " + base)
+            else:
+                need(identity(provider, rel, mode, sha(raw)), "unknown early pristine base: " + base)
+                live = evidence[rel]
+                if rel in policies and live is not None:
+                    begin, end = b"<!-- BEGIN domestique (managed) -->\n", b"<!-- END domestique -->"
+                    need(live.count(begin) == 1 and live.count(end) == 1, "invalid early policy markers")
+                    live = live.split(begin, 1)[1].split(end, 1)[0]
+                need(live == raw, "edited/missing early ownership: " + rel + "; preserve and reconcile explicitly")
+        if policy_only:
+            (scratch / ("policy-only-existing-" + provider)).touch()
+            if not requested or uninstall == "1":
+                sys.exit(10)
+    if uninstall == "1" or phase == "selection":
+        sys.exit(0)
+    if selected != "1":
+        sys.exit(0)
+    absent_state = not os.path.lexists(pair.state)
+    native = files.split(",")
+    pair.files = native + [f"{pair.state}/base/{p}" for p in native]
+    _, evidence = pair.read_snapshot(absent=True)
+    if not absent_state and not policy_only and not early:
+        need(manifest is not None, "missing native inventory; not an unowned adoption")
+        for rel in native:
+            if evidence[rel] is not None:
+                need(rel in inventory and evidence[f"{pair.state}/base/{rel}"] is not None,
+                     "incomplete native ownership: " + rel + "; restore its pristine base/inventory")
+        sys.exit(0)  # Existing authority stays on the ordinary preserving path.
+    mode = "guest" if guest == "1" else "normal"
+    if not early and any(evidence[p] is not None for p in native):
+        need(requested, "pristine native adoption requires selecting " + provider +
+             " explicitly; retained platform hints do not authorize a new native pair")
+    for rel in native:
+        raw, base = evidence[rel], evidence[f"{pair.state}/base/{rel}"]
+        if early and rel in inventory:
+            continue
+        need(base is None, "unowned native base: " + rel)
+        if raw is None:
+            continue
+        need(identity(provider, rel, mode, sha(raw)),
+             "cannot establish ownership of native path " + rel +
+             "; pristine policy does not prove native ownership; preserve and reconcile explicitly")
+        destination = scratch / "native-adopt" / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw)
+        if rel in pair.paths.values():
+            role = next(r for r, p in pair.paths.items() if p == rel)
+            upstream = (scratch / ("native-" + role)).read_bytes()
+            candidate = lib["restore_settings"](raw, lib["project_settings"](upstream, role), role)
+            destination = scratch / "native-candidate" / rel
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(candidate)
+    if not early and (policy_only or any(evidence[p] is not None for p in native)):
+        if policy_only:
+            (scratch / ("native-adopt-manifest-" + provider)).write_bytes(contents[pair.manifest])
+        (scratch / ("native-adopt-" + provider)).touch()
+except (OSError, ValueError) as error:
+    print(f"Native ownership refused ({provider}): {error}. No project writes.", file=sys.stderr)
+    sys.exit(3)
+PY
+    case "$rc" in
+      0) : ;;
+      10)
+        # A retained policy isn't a request to install its native provider.
+        if [ "$UNINSTALL" -eq 0 ]; then
+          case "$provider" in
+            claude) SELECT_CLAUDE=0; PERSISTED_CLAUDE=0 ;;
+            codex) SELECT_CODEX=0; PERSISTED_CODEX=0 ;;
+            copilot) SELECT_COPILOT=0; PERSISTED_COPILOT=0 ;;
+          esac
+        fi ;;
+      *) shared_refuse "native ownership preflight failed for $provider" ;;
+    esac
+  done
+  platform_set
 }
 
 # Only wholly absent, unrequested native projections may become inactive.
@@ -5146,6 +6038,7 @@ retain_inactive_providers() {
   [ "$PLATFORM_EXPLICIT" -eq 1 ] || return 0
   local provider rc
   for provider in claude codex; do
+    [ ! -f "$TMPDIR_WORK/policy-only-existing-$provider" ] || continue
     case "$PLATFORM_ARG:$provider" in
       all:*|both:*|claude:claude|codex:codex) continue ;;
     esac
@@ -5229,7 +6122,7 @@ try:
     need(all(evidence[p] is not None for p in bases), "missing inactive pristine base")
     for role, rel in pair.paths.items():
         _, _, marker = lib["parse"](evidence[f"{pair.state}/base/{rel}"], role)
-        need(marker is None, "pristine base must not confirm a pair")
+        need(marker is None, pair.pristine_base_guidance(role))
     if pair.helper in inventory:
         ast.parse(evidence[f"{pair.state}/base/{pair.helper}"])
     need(evidence[f"{pair.state}/mode"] in (None, b"guest\n"), "invalid inactive mode")
@@ -5383,9 +6276,8 @@ def prepare(provider):
                  "Reconcile competing edits, keep the pristine base unchanged, then retry --dry-run.")
             return paths[-1].read_bytes()
 
-    def merge(local, base, upstream):
-        # Both roles use the same native merge strategy, not the role identity.
-        return merge_for(layout.paths["implementer"], local, base, upstream)
+    def merge(role, local, base, upstream):
+        return merge_for(layout.paths[role], local, base, upstream)
 
     entry = (directory / "entry-guard").read_text()
     guard = (directory / ("delegated-guard" if provider == "copilot" else "entry-guard")).read_text()
@@ -5416,25 +6308,63 @@ def prepare(provider):
                                  merge_for(layout.paths[role], *projected))
         need(scoped[2] and (scoped[1] or not scoped[0] and
                            (unchanged_legacy or preserving_legacy)),
-             "missing native discovery guard: " + layout.paths[role])
+             "missing native discovery guard: " + layout.paths[role] +
+             ". The decoded discovery description in ./" + layout.paths[role] +
+             " must start with " + repr(prefix) + "; restore that prefix (custom text may follow it), " +
+             "reconcile the role by hand and retry. --force cannot authorize guard repair. " +
+             "Role body guards are also required.")
         if provider == "codex":
             required = ("These instructions apply only in the actual native Codex client; foreign or\n"
                         "ambiguous callers stop without work. Installed directories do not identify it.")
             need(required in bodies[2] and
                  (required in bodies[1] or required not in bodies[0] and
-                  (unchanged_legacy or preserving_legacy)), "missing native Codex body guard")
+                  (unchanged_legacy or preserving_legacy)),
+                 "missing native Codex body guard: " + layout.paths[role] +
+                 ". Restore this required text in the developer_instructions of ./" + layout.paths[role] +
+                 ": " + json.dumps(required) + " Reconcile the role by hand and retry; " +
+                 "--force cannot authorize guard repair.")
         else:
             expected = entry if provider == "copilot" and bodies[0].startswith(entry) else guard
+            # Copilot has exactly two known role-boundary shapes: the historical
+            # entry guard and the delegated guard. A valid live/confirmed pair
+            # cannot authorize a damaged pristine merge anchor as "legacy".
+            need(provider != "copilot" or bodies[0].startswith(expected),
+                 "missing native body guard in pristine base: ./" + layout.state +
+                 "/base/" + layout.paths[role] + " (role ./" + layout.paths[role] + "). "
+                 "Keep copies of the local role and base; restore the original pristine snapshot "
+                 "for that installed generation, not current upstream or customized live text. "
+                 "The historical base is merge authority. Reconcile the local role separately "
+                 "without discarding custom text, then retry --dry-run. "
+                 "--force cannot authorize base repair.")
             source_safe = (bodies[1].startswith(expected) or bodies[1].startswith(guard) or
                            provider == "claude" and not bodies[0].startswith(expected) and
                            (unchanged_legacy or preserving_legacy))
             need(source_safe and (bodies[2].startswith(guard) or
                                   candidate == live and bodies[2].startswith(expected)),
-                 "missing native body guard: " + layout.paths[role])
+                 "missing native body guard: " + layout.paths[role] +
+                 ". Restore the '## Active harness boundary (" + provider + " only)' caller guard at the " +
+                 "start of the role body in ./" + layout.paths[role] + " (as emitted by this installer), " +
+                 "reconcile the role by hand and retry. --force cannot authorize guard repair.")
 
-    pair = lib["InstallerPair"](pristine, recognized, merge, validate)
-    before, contents = pair.snapshot()
-    if contents[layout.manifest] is not None:
+    before, contents = layout.read_snapshot(absent=True)
+    adopting = (scratch / ("native-adopt-" + provider)).exists()
+    if adopting:
+        authority = scratch / ("native-adopt-manifest-" + provider)
+        need(contents[layout.manifest] == (authority.read_bytes() if authority.exists() else None),
+             "changed pristine adoption inventory")
+        if not authority.exists():
+            need(before["parents"].get(str(root / layout.state)) is None,
+                 "new provider authority cannot become pristine adoption")
+        for rel in (*layout.paths.values(), layout.helper):
+            need(contents[f"{layout.state}/base/{rel}"] is None,
+                 "existing native base cannot become pristine adoption: " + rel)
+            if contents[rel] is not None:
+                proof = scratch / "native-adopt" / rel
+                need(proof.is_file() and contents[rel] == proof.read_bytes(),
+                     "changed pristine native adoption: " + rel)
+    pair = lib["InstallerPair"](pristine, recognized, merge, validate,
+                                adopted=contents if adopting else None)
+    if contents[layout.manifest] is not None and not adopting:
         old = pair.inventory(contents[layout.manifest])
         need((old.get("domestique_version"), old["files"]) in recognized,
              "unknown inventory generation")
@@ -5458,15 +6388,27 @@ def prepare(provider):
             continue
         live, base = root / rel, root / layout.state / "base" / rel
         if live.exists():
+            if (scratch / "native-adopt" / rel).is_file():
+                need(live.read_bytes() == (scratch / "native-adopt" / rel).read_bytes(),
+                     "changed pristine native adoption: " + rel)
+                continue
             need(base.is_file(), "unknown provider ownership: " + rel)
             merge_for(rel, live.read_bytes(), base.read_bytes(), (directory / rel).read_bytes())
     overrides = request["overrides"].get(provider, {})
     result = pair.prepare(overrides, force=force == "1" and provider in request["selected"])
     if provider not in request["selected"]:
         return
-    current = (None if result["plan"]["eligibility"] == "fresh" else
+    current = (None if result["plan"]["eligibility"] == "fresh" or adopting else
                lib["verify"](pair, contents)["selected"])
     selection = lib["installer_model_plan"](overrides, current)
+    if adopting:
+        for role, rel in layout.paths.items():
+            if contents[rel] is not None:
+                fields = parse(contents[rel], role)[1]
+                old = {"model": fields.get("model"),
+                       "effort": fields.get("model_reasoning_effort" if provider == "codex" else "effort")}
+                selection["roles"][role] = lib["installer_model_plan"](
+                    overrides, {r: old for r in layout.paths})["roles"][role]
     for role, value in selection["roles"].items():
         print("  [model selection] " + provider + ":" + role + ": " +
               display(value["current"]) + " -> " + display(value["requested"]) +
@@ -5489,6 +6431,19 @@ try:
             if request["overrides"].get(provider):
                 raise ValueError("unconfirmed Copilot preview; migrate and review/Save before model override")
     # No selected pair is published until every provider has been planned.
+    if (scratch / "guest-write-plan").exists():
+        exec(compile((scratch / "guest-validator").read_bytes(), "<guest preflight>", "exec"))
+        writes = (scratch / "guest-write-plan").read_text().splitlines()
+        for _, pair, result in prepared:
+            _, _, contents, outputs, dependencies = pair.prepared
+            writes.extend(rel for rel, data in dependencies.items() if contents[rel] != data)
+            changed_roles = [pair.paths[r] for r, data in outputs.items()
+                             if contents[pair.paths[r]] != data]
+            writes.extend(changed_roles)
+            # Publication revokes an existing marker before a changed pair.
+            if changed_roles:
+                writes.append(pair.paths["implementer"])
+        validate_guest_writes(root, writes)
     for provider, pair, result in prepared:
         if dry == "0":
             publishing = True
@@ -5555,8 +6510,24 @@ install_plain() {
   staged="$TMPDIR_WORK/staged"
   "$emitter" > "$staged"
   case "$dest" in */domestique-model-setup.py) python_helper_preflight "$staged" ;; esac
+  local proof="$TMPDIR_WORK/native-adopt/${dest#"$TARGET_DIR"/}" candidate
+  if [ -f "$proof" ]; then
+    cmp -s "$proof" "$dest" || shared_refuse "changed pristine native adoption $dest"
+    candidate="$TMPDIR_WORK/native-candidate/${dest#"$TARGET_DIR"/}"
+    [ -f "$candidate" ] || candidate="$staged"
+    guest_plan_write "$dest"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      note_dry "upgrade proven pristine native $dest"
+    else
+      cp "$candidate" "$dest"
+    fi
+    snapshot_plain "$dest" "$staged"
+    SUM_ADOPTED+=("$dest (proven pristine historical bytes)")
+    return 0
+  fi
 
   if [ ! -e "$dest" ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest"
     else
@@ -5583,6 +6554,7 @@ install_plain() {
 
   # Differs.
   if [ "$FORCE" -eq 1 ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "overwrite $dest (--force, no backup)"
     else
@@ -5620,6 +6592,7 @@ install_plain() {
   merge_native_plain "${dest#"$TARGET_DIR"/}" "$dest" "$basepath" "$staged" "$merged" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "merge $dest (clean)"
     else
@@ -5635,6 +6608,8 @@ install_plain() {
   # and force a non-zero exit for the whole run.
   CONFLICT_OCCURRED=1
   local newfile="$dest.new" backup="$dest.bak.$TS" kind="conflict"
+  guest_plan_write "$newfile"
+  guest_plan_write "$backup"
   if [ "$rc" -ge 128 ]; then
     kind="error"
     echo "Error: git merge-file failed unexpectedly for $dest (exit $rc)." >&2
@@ -5712,7 +6687,9 @@ splice_policy_body() {
 #     advances the snapshot; conflict/error leaves dest untouched, writes
 #     dest.new (full file, conflict-marked block spliced in) + a .bak, and
 #     does not advance the snapshot.
-#   - no base snapshot (legacy/pre-snapshot install) -> ADOPT: seed the
+#   - proven unguarded pre-snapshot policy -> merge against the ephemeral exact
+#     historical body validated by policy_preflight, then snapshot upstream.
+#   - otherwise no base snapshot (guarded legacy install) -> ADOPT: seed the
 #     block snapshot from the PRISTINE emitted policy body (not the
 #     current/edited on-disk block), leave the file unchanged (no
 #     overwrite, no .bak); re-run to merge upstream.
@@ -5749,6 +6726,7 @@ install_claude_md() {
 
   # Case A: no CLAUDE.md -> create it as just the managed block.
   if [ ! -e "$dest" ]; then
+    guest_plan_write "$dest"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest (managed block only)"
     else
@@ -5819,6 +6797,9 @@ install_claude_md() {
         : # wholesale replace (already computed in $result above), no merge.
       else
         local basepath="$POLICY_SNAPSHOT"
+        if [ ! -e "$basepath" ] && [ -f "$TMPDIR_WORK/policy-base/${dest#"$TARGET_DIR"/}" ]; then
+          basepath="$TMPDIR_WORK/policy-base/${dest#"$TARGET_DIR"/}"
+        fi
         if [ -e "$basepath" ]; then
           # 3-way merge the block body: ours=$oursblock, base=$basepath,
           # theirs=$policybody.
@@ -5839,6 +6820,8 @@ install_claude_md() {
             fi
 
             local backup="$dest.bak.$TS"
+            guest_plan_write "$backup"
+            guest_plan_write "$dest"
             if [ "$DRY_RUN" -eq 1 ]; then
               note_dry "backup $dest -> $backup, then merge managed block (clean)"
             else
@@ -5857,6 +6840,8 @@ install_claude_md() {
           # up the current live file, force a non-zero exit for the run.
           CONFLICT_OCCURRED=1
           local newfile="$dest.new" backup2="$dest.bak.$TS" kind="conflict"
+          guest_plan_write "$newfile"
+          guest_plan_write "$backup2"
           if [ "$rc" -ge 128 ]; then
             kind="error"
             echo "Error: git merge-file failed unexpectedly for $dest block (exit $rc)." >&2
@@ -5915,6 +6900,8 @@ install_claude_md() {
   fi
 
   local backup="$dest.bak.$TS"
+  guest_plan_write "$backup"
+  guest_plan_write "$dest"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "backup $dest -> $backup, then update managed block"
   else
@@ -5937,6 +6924,7 @@ install_claude_md() {
 install_git_exclude() {
   local target="$1" common_dir="" exclude_file
   local block="$TMPDIR_WORK/exclude_block" result="$TMPDIR_WORK/exclude_result"
+  warn_visible_guest_policies
 
   if command -v git >/dev/null 2>&1; then
     common_dir="$(git -C "$target" rev-parse --git-common-dir 2>/dev/null)" || common_dir=""
@@ -5959,8 +6947,8 @@ install_git_exclude() {
 
   exclude_file="$common_dir/info/exclude"
 
-  # Warn (never fail) if a guest-managed path is already tracked in the
-  # target repo — an exclude entry cannot hide an already-tracked path.
+  # Tracked-write preflight has already passed. Warn for retained tracked
+  # paths: an exclude entry cannot hide them, even though no rewrite is needed.
   if command -v git >/dev/null 2>&1; then
     local trackme tracked_paths=".beads"
     [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && tracked_paths="CLAUDE.local.md .claude $tracked_paths"
@@ -6030,13 +7018,13 @@ install_git_exclude() {
   } > "$block"
 
   if [ -e "$exclude_file" ]; then
-    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" && ! grep -qF "$GITEXCLUDE_MARKER_END" "$exclude_file"; then
+    if grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" && ! grep -qxF "$GITEXCLUDE_MARKER_END" "$exclude_file"; then
       echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
       echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
       exit 1
     fi
 
-    if grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file"; then
+    if grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file"; then
       awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" -v blockfile="$block" '
         BEGIN { while ((getline line < blockfile) > 0) blk = blk line ORS }
         $0 == beginm && !seen { seen=1; inblock=1; printf "%s", blk; next }
@@ -6095,8 +7083,8 @@ remove_git_exclude() {
   [ -n "$common_dir" ] || return 0
   exclude_file="$common_dir/info/exclude"
   [ -e "$exclude_file" ] || return 0
-  grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null || return 0
-  if ! grep -qF "$GITEXCLUDE_MARKER_END" "$exclude_file" 2>/dev/null; then
+  grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null || return 0
+  if ! grep -qxF "$GITEXCLUDE_MARKER_END" "$exclude_file" 2>/dev/null; then
     echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
     echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
     exit 1
@@ -6123,6 +7111,9 @@ sync_guest_beads_ownership() {
   local codex_marker="$TARGET_DIR/.codex/.domestique/beads-owned"
   local copilot_marker="$TARGET_DIR/.github/.domestique/beads-owned"
   if [ ! -d "$TARGET_DIR/.beads" ]; then
+    if [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ] && [ -e "$claude_marker" ]; then guest_plan_write "$claude_marker"; fi
+    if [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ] && [ -e "$codex_marker" ]; then guest_plan_write "$codex_marker"; fi
+    [ ! -e "$copilot_marker" ] || guest_plan_write "$copilot_marker"
     if [ "$DRY_RUN" -eq 0 ]; then
       [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 1 ] || rm -f "$claude_marker"
       [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 1 ] || rm -f "$codex_marker"
@@ -6134,25 +7125,91 @@ sync_guest_beads_ownership() {
   if [ ! -e "$claude_marker" ] && [ ! -e "$codex_marker" ] && [ ! -e "$copilot_marker" ]; then
     return 0
   fi
-  if [ "$DRY_RUN" -eq 1 ]; then
-    note_dry "propagate shared .beads ownership across active guest providers"
-    return 0
-  fi
+  note_dry "propagate shared .beads ownership across active guest providers"
   # Inactive provenance remains a source for active guests, not a write target.
   if [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] &&
      [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ]; then
-    mkdir -p "$(dirname "$claude_marker")"
-    : > "$claude_marker"
+    guest_plan_write "$claude_marker"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mkdir -p "$(dirname "$claude_marker")"
+      : > "$claude_marker"
+    fi
   fi
   if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] &&
      [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ]; then
-    mkdir -p "$(dirname "$codex_marker")"
-    : > "$codex_marker"
+    guest_plan_write "$codex_marker"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mkdir -p "$(dirname "$codex_marker")"
+      : > "$codex_marker"
+    fi
   fi
   if [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ]; then
-    mkdir -p "$(dirname "$copilot_marker")"
-    : > "$copilot_marker"
+    guest_plan_write "$copilot_marker"
+    if [ "$DRY_RUN" -eq 0 ]; then
+      mkdir -p "$(dirname "$copilot_marker")"
+      : > "$copilot_marker"
+    fi
   fi
+}
+
+# uninstall_unmarked <provider> <rel> <src> <out> <target> <implementer-base>
+# The installer (dom-models) inserts one '# domestique-model-setup: <json>'
+# line into the implementer role file (line 1 for Codex .toml, line 2 for
+# Claude/Copilot, after the '---' frontmatter opener). That line is
+# installer-owned, so it must not make an otherwise pristine role look
+# user-modified. Write <src> minus that line to <out> and return 0 only when
+# the line is EXACTLY the installer's format at its expected position: the
+# canonical JSON with the exact key set, v=1, matching harness, a
+# project equal to the physical target root, and an implementer_sha256 that
+# attests the remaining content, and a reviewer_sha256 equal to the sha256 of
+# the reviewer's base copy (absent base: fail safe). Anything else
+# (edited marker, extra/misplaced marker, edited body) returns 1 and the file
+# is compared unmodified, i.e. counts as modified. A marker whose value was
+# changed no longer attests the content, so it is user-owned and retained.
+uninstall_unmarked() {
+  case "$2" in
+    */implementer.md | */implementer.toml | */*implementer.agent.md) ;;
+    *) return 1 ;;
+  esac
+  local base_impl="$6" base_rev
+  base_rev="${base_impl%/*}/$(basename "$base_impl" | sed 's/implementer/reviewer/')"
+  [ -f "$base_rev" ] || return 1
+  python3 -I -B - "$1" "$3" "$4" "$5" "$base_rev" <<'PY'
+import hashlib, json, os, re, sys
+harness, src, out, target, base_rev = sys.argv[1:6]
+try:
+    data = open(src, "rb").read()
+    lines = data.splitlines(keepends=True)
+    marker = b"# domestique-model-setup:"
+    pos = 0 if harness == "codex" else 1
+    if sum(marker in l for l in lines) != 1 or len(lines) <= pos or \
+            not lines[pos].startswith(marker + b" "):
+        sys.exit(1)
+    raw = lines[pos][len(marker) + 1:]
+    nl = b"\r\n" if raw.endswith(b"\r\n") else b"\n"
+    if not raw.endswith(nl):
+        sys.exit(1)
+    body = raw[:-len(nl)]
+    value = json.loads(body.decode("utf-8"))
+    canon = json.dumps(value, sort_keys=True, ensure_ascii=False,
+                       separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if body != canon or not isinstance(value, dict) or set(value) != {
+            "v", "project", "harness", "implementer_sha256", "reviewer_sha256"} or \
+            type(value["v"]) is not int or value["v"] != 1 or \
+            value["project"] != os.path.realpath(target) or value["harness"] != harness or \
+            any(type(value[k]) is not str or not re.fullmatch("[0-9a-f]{64}", value[k])
+                for k in ("implementer_sha256", "reviewer_sha256")):
+        sys.exit(1)
+    rest = b"".join(lines[:pos] + lines[pos + 1:])
+    if hashlib.sha256(rest).hexdigest() != value["implementer_sha256"]:
+        sys.exit(1)
+    # reviewer_sha256 must attest the installed reviewer file (its base copy).
+    if hashlib.sha256(open(base_rev, "rb").read()).hexdigest() != value["reviewer_sha256"]:
+        sys.exit(1)
+    open(out, "wb").write(rest)
+except Exception:
+    sys.exit(1)
+PY
 }
 
 # do_uninstall <target-dir>
@@ -6184,7 +7241,7 @@ do_uninstall() {
   # --- 1. provider-owned plain files, safety-compared ----------------------
   # Traverse the same ownership/selection inventory twice, so even the last
   # preservation collision refuses before any earlier file/state is removed.
-  local provider state_rel rel emitter dest staged basepath reference phase
+  local provider state_rel rel emitter dest staged basepath reference phase cmpdest
   for phase in preflight apply; do
     if [ "$phase" = apply ] && [ "$DRY_RUN" -eq 0 ]; then MUTATION_STARTED=1; fi
   while IFS='|' read -r provider state_rel rel emitter; do
@@ -6207,6 +7264,7 @@ do_uninstall() {
     [ "$provider" = "copilot" ] && { [ "$UNINSTALL_COPILOT" -eq 0 ] || [ "$SHARED_COPILOT" -eq 0 ]; } && continue
     [ "$provider" = "claude" ] && [ "$claude_evidence" -eq 0 ] && continue
     [ "$provider" = "codex" ] && [ "$codex_evidence" -eq 0 ] && continue
+    [ ! -f "$TMPDIR_WORK/policy-only-existing-$provider" ] || continue
     dest="$target/$rel"
     [ -e "$dest" ] || continue
     if [ "$provider" != "claude" ] && [ -e "$ownership" ] &&
@@ -6219,16 +7277,22 @@ do_uninstall() {
     basepath="$target/$state_rel/base/$rel"
     reference="$basepath"
     [ -e "$reference" ] || reference="$staged"
+    # Compare against base with only the installer's own model-setup marker
+    # line removed (see uninstall_unmarked); dest itself stays untouched.
+    cmpdest="$dest"
+    if uninstall_unmarked "$provider" "$rel" "$dest" "$TMPDIR_WORK/uninstall_unmarked" "$target" "$basepath"; then
+      cmpdest="$TMPDIR_WORK/uninstall_unmarked"
+    fi
 
     if [ "$phase" = preflight ]; then
-      if [ "$FORCE" -eq 0 ] && ! cmp -s "$dest" "$reference"; then
+      if [ "$FORCE" -eq 0 ] && ! cmp -s "$cmpdest" "$reference"; then
         shared_safe_path "$rel.uninstalled.$TS" && [ ! -e "$dest.uninstalled.$TS" ] ||
           shared_refuse "unsafe or occupied uninstall preservation $rel.uninstalled.$TS; preserve it and retry with a new timestamp"
       fi
       continue
     fi
 
-    if cmp -s "$dest" "$reference"; then
+    if cmp -s "$cmpdest" "$reference"; then
       anything_done=1
       if [ "$DRY_RUN" -eq 1 ]; then
         note_dry "remove $dest"
@@ -6571,19 +7635,57 @@ MODEL_PAIRS_ACTIVE=0
 MODEL_CODEX_IMPL_ABSENT=0
 MODEL_CODEX_REVIEWER_ABSENT=0
 if [ "$UNINSTALL" -eq 0 ]; then
-  model_gitroot="$(git -C "$TARGET_DIR" rev-parse --show-toplevel 2>/dev/null)" || model_gitroot=""
-  if [ "$model_gitroot" = "$(cd "$TARGET_DIR" && pwd -P)" ]; then
+  # Classify the target: Git root, inside a worktree (not root), not a Git
+  # repository, or some other git failure. "Not a repository" is detected from
+  # git's stderr under LC_ALL=C (which also disables LANGUAGE translations);
+  # git exits 128 for every fatal error, so the exit status alone cannot tell
+  # it apart from dubious ownership, permission errors, etc.
+  model_gitroot=""
+  model_gitprefix=""
+  model_gitout=""
+  model_git_err=""
+  model_not_git=0
+  if ! command -v git >/dev/null 2>&1; then
+    model_git_err="git executable not found"
+  elif model_gitout="$(LC_ALL=C git -C "$TARGET_DIR" rev-parse --show-toplevel --show-prefix 2>"$TMPDIR_WORK/model-git-err")"; then
+    # Line 1: worktree root (message text only); line 2: path of the target
+    # relative to it ("" at the root). --show-prefix is used instead of
+    # comparing paths so case-insensitive filesystems and symlinked spellings
+    # of a real root are not misread as subdirectories.
+    model_gitroot="$(printf '%s\n' "$model_gitout" | sed -n 1p)"
+    model_gitprefix="$(printf '%s\n' "$model_gitout" | sed -n 2p)"
+  else
+    model_gitroot=""
+    model_git_err="$(cat "$TMPDIR_WORK/model-git-err" 2>/dev/null)"
+    case "$model_git_err" in
+      *"not a git repository"*) model_not_git=1 ;;
+    esac
+  fi
+  if [ -n "$model_gitroot" ] && [ -z "$model_gitprefix" ]; then
     MODEL_PAIRS_ACTIVE=1
   elif [ "${#MODEL_ARGS[@]}" -gt 0 ]; then
     echo "Error: --model requires the physical Git worktree root. No project writes." >&2
     exit 3
+  elif [ "$model_not_git" -eq 1 ]; then
+    # Not inside any Git worktree: model setup cannot apply; install roles/policy
+    # without a model lifecycle and without claiming an unconfirmed pair.
+    echo "Model setup skipped: requires a Git repository (run dom inside a Git worktree to configure role models)."
+  elif [ -n "$model_gitroot" ]; then
+    # Inside a worktree but not at its root: same skip, no unconfirmed state.
+    echo "Model setup skipped: run dom at the repository root ($model_gitroot) to configure role models."
   else
+    # git failed for a reason other than "not a repository": do not skip
+    # silently; keep the unconfirmed (exit 3) behavior and show git's error.
     echo "Model configuration requires the physical Git worktree root; this installation will remain unconfirmed." >&2
+    [ -z "$model_git_err" ] || echo "git: $model_git_err" >&2
     touch "$TMPDIR_WORK/model-unconfirmed"
+    CONFLICT_OCCURRED=1
   fi
 fi
+native_ownership_preflight selection
 retain_inactive_providers
 lifecycle_preflight
+native_ownership_preflight native
 preview_preflight
 copilot_preflight
 shared_preflight
@@ -6611,28 +7713,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
   exit $?
 fi
 
-# ---------------------------------------------------------------------------
-print_install_notice
-[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
-if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
-  MUTATION_STARTED=0
-  [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] || MODEL_CODEX_IMPL_ABSENT=1
-  [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] || MODEL_CODEX_REVIEWER_ABSENT=1
-  model_rc=0
-  installer_model_pairs || model_rc=$?
-  [ ! -f "$TMPDIR_WORK/model-publication-started" ] || MUTATION_STARTED=1
-  [ "$model_rc" -eq 0 ] || exit "$model_rc"
-fi
-[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
-
-if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
-  if [ "$DRY_RUN" -eq 1 ]; then
-    note_dry "validated preview cutover: preserve source, revoke old receipt, publish five replacements and snapshots, remove only unchanged .github public aliases and their exact exclusion contribution"
-  else
-    preview_migration apply || exit $?
-  fi
-fi
-
+# The same publication branches drive the prospective guest write plan and the
+# real install. The plan runs in a dry-run subshell before any pair/mode writes.
+install_projection() {
 install_retained_policies
 
 ANY_GUEST=0
@@ -6710,6 +7793,87 @@ if [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ]; then
 fi
 
 persist_platform_set
+}
+
+# ---------------------------------------------------------------------------
+print_install_notice
+GUEST_PREFLIGHT=0
+if [ "$NO_GUEST" -eq 0 ]; then
+  for guest_provider in claude codex copilot; do
+    configure_provider "$guest_provider"
+    case "$guest_provider" in
+      claude) [ "$SELECT_CLAUDE" -eq 1 ] || continue ;;
+      codex) [ "$SELECT_CODEX" -eq 1 ] || continue ;;
+      copilot) [ "$SELECT_COPILOT" -eq 1 ] || continue ;;
+    esac
+    if [ "$REQUESTED_GUEST" -eq 1 ] ||
+       [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ] ||
+       { [ "$guest_provider" = copilot ] && [ "$PREVIEW_MIGRATE" -eq 1 ]; }; then
+      GUEST_PREFLIGHT=1
+    fi
+  done
+fi
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+  [ -e "$TARGET_DIR/.codex/agents/implementer.toml" ] || MODEL_CODEX_IMPL_ABSENT=1
+  [ -e "$TARGET_DIR/.codex/agents/reviewer.toml" ] || MODEL_CODEX_REVIEWER_ABSENT=1
+fi
+if [ "$GUEST_PREFLIGHT" -eq 1 ] &&
+   git -C "$TARGET_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  emit_guest_plan_validator > "$TMPDIR_WORK/guest-validator"
+  (
+    DRY_RUN=1
+    GUEST_WRITE_PLAN="$TMPDIR_WORK/guest-write-plan"
+    : > "$GUEST_WRITE_PLAN"
+    # These manifests/helpers are published by prepared model pairs, not the
+    # shell projection. Mark exactly the same requested providers here.
+    if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+      python3 - "$MODEL_REQUEST" "$TMPDIR_WORK" "$PREVIEW_MIGRATE" <<'PY'
+import json
+from pathlib import Path
+import sys
+for provider in json.loads(sys.argv[1])["selected"]:
+    if provider != "copilot" or sys.argv[3] == "0":
+        (Path(sys.argv[2]) / ("model-selected-" + provider)).touch()
+PY
+    fi
+    install_projection
+    sync_guest_beads_ownership
+  ) >/dev/null
+  # With model pairs active the combined check runs after ALL pairs prepare,
+  # but before ANY pair applies. Non-root/non-Git model skips need no pair plan.
+  if [ "$MODEL_PAIRS_ACTIVE" -eq 0 ]; then
+    python3 - "$TARGET_DIR" "$TMPDIR_WORK" <<'PY' || exit 3
+from pathlib import Path
+import subprocess
+import sys
+root, scratch = map(Path, sys.argv[1:])
+exec(compile((scratch / "guest-validator").read_bytes(), "<guest preflight>", "exec"))
+try:
+    validate_guest_writes(root, (scratch / "guest-write-plan").read_text().splitlines())
+except (OSError, ValueError, subprocess.SubprocessError) as error:
+    print(str(error), file=sys.stderr)
+    sys.exit(3)
+PY
+  fi
+fi
+[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
+if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then
+  MUTATION_STARTED=0
+  model_rc=0
+  installer_model_pairs || model_rc=$?
+  [ ! -f "$TMPDIR_WORK/model-publication-started" ] || MUTATION_STARTED=1
+  [ "$model_rc" -eq 0 ] || exit "$model_rc"
+fi
+[ "$DRY_RUN" -eq 1 ] || MUTATION_STARTED=1
+
+if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    note_dry "validated preview cutover: preserve source, revoke old receipt, publish five replacements and snapshots, remove only unchanged .github public aliases and their exact exclusion contribution"
+  else
+    preview_migration apply || exit $?
+  fi
+fi
+install_projection
 
 # --- beads (opt-in) --------------------------------------------------------
 if [ "$WITH_BEADS" -eq 1 ]; then
@@ -6794,9 +7958,11 @@ else
 fi
 
 # --- summary ---------------------------------------------------------------
+RECONFIRMATION_REQUIRED=0
 if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
   for model_provider in claude codex copilot; do
     [ -d "$TMPDIR_WORK/model-input/$model_provider" ] || continue
+    model_verify_rc=0
     python3 -I -B -c "$(CURRENT_PROVIDER="$model_provider" emit_installer_model_library)
 request = load(sys.argv[1])
 if HARNESS not in request['selected']:
@@ -6808,17 +7974,27 @@ try:
     expected = load(Path(sys.argv[3], 'model-final-' + HARNESS).read_bytes())
     need(actual == expected, HARNESS + ': state changed after pair publication')
     result = verify(pair, contents)
-    need(result['confirmed'], HARNESS + ': reconfirmation-required')
+    if not result['confirmed']:
+        print('Final model verification: ' + HARNESS + ': reconfirmation-required',
+              file=sys.stderr)
+        sys.exit(4)  # Internal status: verified publication, pending review/Save.
 except (OSError, ValueError, subprocess.SubprocessError) as error:
     print('Final model verification: ' + str(error), file=sys.stderr)
     sys.exit(3)
-" "$MODEL_REQUEST" "$TARGET_DIR" "$TMPDIR_WORK" || CONFLICT_OCCURRED=1
+" "$MODEL_REQUEST" "$TARGET_DIR" "$TMPDIR_WORK" || model_verify_rc=$?
+    case "$model_verify_rc" in
+      0) : ;;
+      4) RECONFIRMATION_REQUIRED=1 ;;
+      *) CONFLICT_OCCURRED=1 ;;
+    esac
   done
 fi
 if [ -f "$TMPDIR_WORK/model-unconfirmed" ]; then
+  RECONFIRMATION_REQUIRED=1
+fi
+if [ "$RECONFIRMATION_REQUIRED" -eq 1 ]; then
   echo "Configuration incomplete: review/Save required; no native readiness or workflow authorization." >&2
   echo "Use dom-models --confirm in the selected native client to review the current pair, then Save." >&2
-  CONFLICT_OCCURRED=1
 fi
 echo
 if [ "$DRY_RUN" -eq 1 ]; then echo "Summary (planned):"; else echo "Summary:"; fi
@@ -6836,4 +8012,7 @@ if [ "$CONFLICT_OCCURRED" -eq 1 ]; then
   echo "One or more files ended in conflict/error — see 'Conflicted' above and the .new/.bak files for each." >&2
   exit 3
 fi
+# Publication finished without errors; pending review/Save is not interruption.
+LIFECYCLE_COMPLETED=1
+[ "$RECONFIRMATION_REQUIRED" -eq 0 ] || exit 3
 echo "Done."

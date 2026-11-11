@@ -765,6 +765,53 @@ assert not (root / ".beads").exists()
 PY
 }
 
+# hq-dds.19: the installer-written '# domestique-model-setup:' line in the
+# implementer role must not make an untouched role look user-modified.
+# Semantics: only a canonical, correctly-placed marker whose implementer hash
+# attests the rest of the file is installer-owned; a tampered marker value or
+# any body edit means the file is user-modified and retained.
+marker_uninstall_case() {
+  local name="$1" mutate="$2" expect="$3"
+  local t="$WORKROOT/marker-$name"; mkdir -p "$t"
+  git_init "$t"
+  check "install" claude_install "$DOM" "$t"
+  check "installer wrote marker line 2" bash -c 'sed -n 2p "$1" | grep -q "^# domestique-model-setup: {"' _ "$t/$IMPL_REL"
+  case "$mutate" in
+    body) printf '\nUSER EDIT SENTINEL\n' >> "$t/$IMPL_REL" ;;
+    reviewer) python3 -I - "$t/$IMPL_REL" <<'PY'
+import re, sys
+p = sys.argv[1]
+lines = open(p, "rb").read().splitlines(keepends=True)
+lines[1] = re.sub(rb'("reviewer_sha256":")[0-9a-f]{64}', rb'\g<1>' + b"a" * 64, lines[1])
+open(p, "wb").write(b"".join(lines))
+PY
+      ;;
+    project) python3 -I - "$t/$IMPL_REL" <<'PY'
+import sys
+p = sys.argv[1]
+lines = open(p, "rb").read().splitlines(keepends=True)
+lines[1] = lines[1].replace(b'"project":"', b'"project":"/elsewhere', 1)
+open(p, "wb").write(b"".join(lines))
+PY
+      ;;
+    marker) sed -i.bak '2s/[0-9a-f]\{64\}/'"$(printf '0%.0s' $(seq 64))"'/' "$t/$IMPL_REL" && rm -f "$t/$IMPL_REL.bak" ;;
+  esac
+  local rc
+  claude_install "$DOM" "$t" --uninstall >/dev/null 2>&1; rc=$?
+  check "exit 0" test "$rc" -eq 0
+  check "original path gone" test ! -e "$t/$IMPL_REL"
+  if [ "$expect" = clean ]; then
+    check "no .uninstalled residue" bash -c 'shopt -s nullglob; f=("$1".uninstalled.*); [ "${#f[@]}" -eq 0 ]' _ "$t/$IMPL_REL"
+  else
+    check "retained as .uninstalled" bash -c 'shopt -s nullglob; f=("$1".uninstalled.*); [ "${#f[@]}" -eq 1 ]' _ "$t/$IMPL_REL"
+  fi
+}
+scenario_marker_untouched_clean() { marker_uninstall_case untouched none clean; }
+scenario_marker_body_edit_kept() { marker_uninstall_case body body kept; }
+scenario_marker_tampered_kept() { marker_uninstall_case tampered marker kept; }
+scenario_marker_reviewer_sha_tampered_kept() { marker_uninstall_case reviewersha reviewer kept; }
+scenario_marker_project_tampered_kept() { marker_uninstall_case project project kept; }
+
 run_scenario "plain round-trip"                                 scenario_plain_roundtrip
 run_scenario "guest round-trip"                                 scenario_guest_roundtrip
 run_scenario "modified .claude/ file kept (.uninstalled.<TS>)"  scenario_modified_file_kept
@@ -790,6 +837,11 @@ run_scenario "guard/strip consistency: BEGIN with trailing space" scenario_guard
 run_scenario "prunes only empty dirs"                            scenario_prune_only_empty_dirs
 if [ "${1:-}" = "--current" ]; then
   run_scenario "configured roles retained on uninstall (real installer)" scenario_configured_pair_uninstall
+  run_scenario "untouched install: marker ignored, clean removal" scenario_marker_untouched_clean
+  run_scenario "implementer body edit retained despite marker" scenario_marker_body_edit_kept
+  run_scenario "tampered marker value retained" scenario_marker_tampered_kept
+  run_scenario "tampered reviewer_sha256 retained" scenario_marker_reviewer_sha_tampered_kept
+  run_scenario "tampered project retained" scenario_marker_project_tampered_kept
 fi
 
 echo
