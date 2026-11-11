@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -34,6 +35,271 @@ VERSION = re.search(r'^DOMESTIQUE_VERSION="([^"]+)"', SCRIPT, re.M).group(1)
 GUIDE = ("https://github.com/ebowman/domestique/blob/main/"
          "docs/install-upgrade-design.md#remote-install-and-upgrade")
 LABELS = {"claude": "Claude Code", "codex": "Codex", "copilot": "GitHub Copilot"}
+
+
+def run_stdin(args, *, input, **kwargs):
+    """Private POSIX run helper; stdin and process-group ownership are reserved."""
+    # Keep Bash's input a real pipe, but feed it independently of the output
+    # reader. The retained-policy probe stalled for 900s with communicate(input),
+    # while its file control completed in 66s (zero writes in both). Artifacts:
+    # /tmp/dds28-retained-{stdin,file}-probe/result.json. The small transport
+    # probe also passed with raw subprocess.run in review (5/5): the stall is
+    # intermittent, not proof of a deterministic macOS poll()/write() defect.
+    # /tmp/bash_2026-11-10_233623_wV52.sample.txt shows Bash in
+    # __write_nocancel; that stack alone does not establish the parent's state.
+    # Spooling only the transport bytes does not give Bash a script filename.
+    for reserved in ("stdin", "start_new_session", "process_group", "preexec_fn"):
+        if reserved in kwargs:
+            raise ValueError(f"run_stdin reserves {reserved}")
+    timeout = kwargs.pop("timeout", None)
+    check = kwargs.pop("check", False)
+    if kwargs.pop("capture_output", False):
+        if kwargs.get("stdout") is not None or kwargs.get("stderr") is not None:
+            raise ValueError("stdout and stderr may not be used with capture_output")
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    with tempfile.TemporaryFile() as source:
+        with subprocess.Popen(args, stdin=subprocess.PIPE, start_new_session=True,
+                              **kwargs) as process:
+            feeder = None
+            try:
+                # Let Popen choose text mode, locale encoding and errors exactly
+                # as for communicate(input); binary input is never re-encoded.
+                data = input
+                if data is not None:
+                    if process.text_mode:
+                        data = data.encode(process.stdin.encoding, process.stdin.errors)
+                    source.write(data)
+                source.seek(0)
+                feeder = subprocess.Popen(
+                    ["cat"], stdin=source, stdout=process.stdin)
+                process.stdin.close()
+                process.stdin = None
+                stdout, stderr = process.communicate(timeout=timeout)
+                status = feeder.wait(timeout=5)
+                # Help/refusals can exit before consuming the whole script.
+                if status not in (0, -signal.SIGPIPE):
+                    raise subprocess.CalledProcessError(status, feeder.args)
+                result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
+                if check:
+                    result.check_returncode()
+                return result
+            except BaseException:
+                # This private harness is the sole waiter (default SIGCHLD).
+                # POSIX Popen records returncode when it reaps, including waits
+                # inside communicate(). Until then even an exited leader pins
+                # its PID, so pre-reap failures can kill the owned group safely.
+                # Do not poll here: that could reap and release the identity.
+                # After reaping, only feeder/FD cleanup remains ours; surviving
+                # descendants no longer justify signaling the old group ID.
+                if process.returncode is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                # Do not communicate() again: inherited output descriptors can
+                # keep a drain blocked. Popen's context closes them after wait.
+                process.wait()
+                raise
+            finally:
+                if feeder is not None:
+                    if feeder.poll() is None:
+                        feeder.kill()
+                    feeder.wait()
+
+
+class StdinTransport(unittest.TestCase):
+    def test_output_backpressure_while_script_is_still_being_fed(self):
+        # Bounded concurrent feed/drain contract, NOT a deterministic failure
+        # control for the intermittent original stall. Output precedes input
+        # consumption and exceeds pipe capacity in both directions.
+        child = (
+            "import hashlib, sys\n"
+            "sys.stdout.buffer.write(b'o' * 262144); sys.stdout.buffer.flush()\n"
+            "sys.stderr.buffer.write(b'e' * 262144); sys.stderr.buffer.flush()\n"
+            "print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())\n"
+        )
+        data = b"x" * 1048576
+        result = run_stdin([sys.executable, "-c", child], input=data,
+                           capture_output=True, timeout=10, check=True)
+        self.assertEqual(result.stdout, b"o" * 262144 +
+                         hashlib.sha256(data).hexdigest().encode() + b"\n")
+        self.assertEqual(result.stderr, b"e" * 262144)
+
+    def test_text_binary_empty_and_encoding_errors(self):
+        for data, options, expected in (
+                ("caf\u00e9", {"text": True, "encoding": "latin-1"}, "caf\u00e9"),
+                ("caf\u00e9", {"encoding": "latin-1"}, "caf\u00e9"),
+                ("caf\u00e9", {"encoding": "ascii", "errors": "replace"}, "caf?"),
+                (b"\x00\xff\r\n", {}, b"\x00\xff\r\n"),
+                ("", {"text": True}, ""),
+                (b"", {}, b"")):
+            with self.subTest(data=data, options=options):
+                result = run_stdin(["cat"], input=data, capture_output=True,
+                                   timeout=5, check=True, **options)
+                self.assertEqual(result.stdout, expected)
+        with self.assertRaises(UnicodeEncodeError):
+            run_stdin(["cat"], input="\u00e9", encoding="ascii", timeout=5)
+        decoded = run_stdin(
+            [sys.executable, "-c", "import os; os.write(1, b'\\xff')"],
+            input="", encoding="ascii", errors="replace", capture_output=True,
+            timeout=5, check=True)
+        self.assertEqual(decoded.stdout, "\ufffd")
+        with self.assertRaises(subprocess.CalledProcessError) as caught:
+            run_stdin(["bash", "-c", "printf failure; exit 7"], input=b"",
+                      capture_output=True, check=True, timeout=5)
+        self.assertEqual((caught.exception.returncode, caught.exception.stdout),
+                         (7, b"failure"))
+
+    def assert_process_gone(self, pid):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)  # Allow the OS to reap an orphan after group kill.
+        self.fail(f"owned process {pid} survived cleanup")
+
+    def test_timeout_and_error_cleanup_forked_descendants(self):
+        real_popen = subprocess.Popen
+        # A separate session must remain untouched by the helper's cleanup.
+        with real_popen([sys.executable, "-c", "import signal; signal.pause()"],
+                        start_new_session=True) as unrelated:
+            try:
+                for failure in ("timeout", "exited-leader", "error"):
+                    with self.subTest(failure=failure):
+                        owned = []
+                        ready = []
+
+                        def spawn(*args, **kwargs):
+                            process = real_popen(*args, **kwargs)
+                            owned.append(process)
+                            return process
+
+                        def fail_communicate(process, **_kwargs):
+                            ready.append(process.stdout.readline())
+                            raise RuntimeError("injected drain error")
+
+                        code = (
+                            "import os, signal\n"
+                            "pid = os.fork()\n"
+                            "if pid == 0:\n"
+                            "    print(os.getpid(), flush=True)\n"
+                            "    signal.pause()\n"
+                            f"elif {failure == 'exited-leader'}:\n"
+                            "    os._exit(0)\n"
+                            "else:\n"
+                            "    signal.pause()\n"
+                        )
+                        with patch.object(subprocess, "Popen", side_effect=spawn):
+                            if failure == "error":
+                                with patch.object(real_popen, "communicate", fail_communicate):
+                                    with self.assertRaisesRegex(RuntimeError, "injected"):
+                                        run_stdin([sys.executable, "-c", code],
+                                                  input=b"x" * 1048576,
+                                                  capture_output=True, timeout=1)
+                                child_pid = int(ready[0])
+                            else:
+                                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                                    run_stdin([sys.executable, "-c", code],
+                                              input=b"x" * 1048576,
+                                              capture_output=True, timeout=1)
+                                child_pid = int(caught.exception.output)
+                        self.assert_process_gone(child_pid)
+                        for process in owned:
+                            self.assertIsNotNone(process.returncode)
+                            for stream in (process.stdin, process.stdout, process.stderr):
+                                if stream is not None:
+                                    self.assertTrue(stream.closed)
+                        self.assertIsNone(unrelated.poll())
+            finally:
+                unrelated.kill()
+                unrelated.wait()
+
+    def test_unexpected_feeder_failure_is_reported(self):
+        real_popen = subprocess.Popen
+
+        def spawn(args, **kwargs):
+            if args == ["cat"]:
+                args = [sys.executable, "-c", "raise SystemExit(42)"]
+            return real_popen(args, **kwargs)
+
+        with patch.object(subprocess, "Popen", side_effect=spawn):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                run_stdin(["bash", "-s"], input="exit\n", text=True,
+                          capture_output=True, timeout=5)
+        self.assertEqual(caught.exception.returncode, 42)
+
+    def test_post_reap_errors_never_signal_group(self):
+        real_popen = subprocess.Popen
+        real_communicate = real_popen.communicate
+        real_wait = real_popen.wait
+        for failure in ("check", "feeder-status", "feeder-wait"):
+            with self.subTest(failure=failure):
+                owned = []
+                completed = []
+                wait_failed = []
+
+                def spawn(args, **kwargs):
+                    if args == ["cat"] and failure == "feeder-status":
+                        args = [sys.executable, "-c", "raise SystemExit(42)"]
+                    process = real_popen(args, **kwargs)
+                    owned.append(process)
+                    return process
+
+                def communicate(process, **kwargs):
+                    output = real_communicate(process, **kwargs)
+                    self.assertIsNotNone(process.returncode)
+                    # Confirm actual reaping, not merely an exited leader.
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(process.pid, os.WNOHANG)
+                    completed.append(process)
+                    return output
+
+                def wait(process, *args, **kwargs):
+                    if (failure == "feeder-wait" and completed
+                            and process is owned[1] and not wait_failed):
+                        wait_failed.append(True)
+                        raise RuntimeError("injected post-completion feeder wait error")
+                    return real_wait(process, *args, **kwargs)
+
+                error = RuntimeError if failure == "feeder-wait" else subprocess.CalledProcessError
+                with patch.object(subprocess, "Popen", side_effect=spawn), \
+                        patch.object(real_popen, "communicate", communicate), \
+                        patch.object(real_popen, "wait", wait), \
+                        patch.object(os, "killpg") as group_signal:
+                    with self.assertRaises(error) as caught:
+                        run_stdin(["bash", "-c", "printf failure; exit 7"
+                                   if failure == "check" else "exit 0"],
+                                  input=b"", capture_output=True, check=True, timeout=5)
+                self.assertEqual(completed, [owned[0]])
+                # Intercept rather than send a potentially stale PGID signal.
+                # This detects the unsafe attempt; it does not simulate PID reuse.
+                group_signal.assert_not_called()
+                if failure == "check":
+                    self.assertEqual((caught.exception.returncode, caught.exception.stdout),
+                                     (7, b"failure"))
+                elif failure == "feeder-status":
+                    self.assertEqual(caught.exception.returncode, 42)
+                else:
+                    self.assertTrue(wait_failed)
+                for process in owned:
+                    self.assertIsNotNone(process.returncode)
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            self.assertTrue(stream.closed)
+
+    def test_pipe_transport_early_exit_and_timeout(self):
+        result = run_stdin(
+            ["bash", "-s"], input="test -p /dev/stdin || exit 9\n"
+            "printf 'out\\n'; printf 'err\\n' >&2; exit 7\n" + "# padding\n" * 5000,
+            text=True, capture_output=True, timeout=5)
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (7, "out\n", "err\n"))
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_stdin(["bash", "-s"], input="exec sleep 10\n" + "# padding\n" * 5000,
+                      text=True, capture_output=True, timeout=0.1)
 
 
 def notice_timeout():
@@ -99,9 +365,9 @@ class AllProviders(unittest.TestCase):
     def run_dom(self, root, *args, ok=True, script=SCRIPT, env=None):
         # No path to the source, launcher or even a target argument: cwd is an
         # independent temp project. All installed bytes must come from stdin.
-        result = subprocess.run(["bash", "-s", "--", *args], cwd=root,
-                                input=script, text=True, capture_output=True,
-                                env=env or self.env)
+        result = run_stdin(["bash", "-s", "--", *args], cwd=root,
+                           input=script, text=True, capture_output=True,
+                           env=env or self.env)
         if ok:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         else:
@@ -2731,7 +2997,7 @@ class AllProviders(unittest.TestCase):
                 elif scenario == "dry-run":
                     args = ["--dry-run"]
                 before = snapshot(root)
-                result = subprocess.run(
+                result = run_stdin(
                     ["bash", "-x", "-s", "--", str(root), *args], cwd=root, input=SCRIPT,
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     env=self.env, timeout=notice_timeout())
