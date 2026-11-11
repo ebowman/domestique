@@ -147,6 +147,23 @@ BASE_IMPL_REL=".claude/.domestique/base/.claude/agents/implementer.md"
 BASE_CLAUDE_BLOCK_REL=".claude/.domestique/base/CLAUDE.md.block"
 MANIFEST_REL=".claude/.domestique/manifest"
 
+# Current native adoption requires proven raw bytes, not just a managed policy.
+# These fixtures deliberately removed all ownership and customized a native role.
+assert_unproven_native_refusal() {
+  local installer="$1" t="$2" before flag out rc
+  before="$(treehash "$t")"
+  for flag in "" --dry-run --force; do
+    out="$(claude_install "$installer" "$t" ${flag:+"$flag"} 2>&1)"; rc=$?
+    check "${flag:-ordinary}: entire project unchanged" test "$before" = "$(treehash "$t")"
+    check "${flag:-ordinary}: exit 3" test "$rc" -eq 3
+    check "${flag:-ordinary}: exact native ownership refusal" grep -qxF \
+      "Native ownership refused (claude): cannot establish ownership of native path $IMPL_REL; pristine policy does not prove native ownership; preserve and reconcile explicitly. No project writes." <<< "$out"
+    check "${flag:-ordinary}: no .new or backup files" bash -c \
+      '! find "$1" \( -name "*.new" -o -name "*.bak.*" \) | grep -q .' _ "$t"
+    check "${flag:-ordinary}: no manifest or base state recreated" test ! -e "$t/.claude/.domestique"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Scenario 1: fresh install
 # ---------------------------------------------------------------------------
@@ -309,8 +326,8 @@ scenario_claude_md_conflict() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 8: legacy adopt — no snapshot present, differing file is adopted
-# (local edit preserved, no clobber) rather than backed up + overwritten.
+# Scenario 8: current refuses an unproven customized native role without writes.
+# Frozen history adopts the differing file (local edit preserved, no clobber).
 # ---------------------------------------------------------------------------
 scenario_legacy_fallback() {
   local t="$WORKROOT/s8"; mkdir -p "$t"
@@ -323,6 +340,11 @@ scenario_legacy_fallback() {
   sed -i.orig 's/^tools:/tools: EDITED/' "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
   local before; before="$(cat "$t/$IMPL_REL")"
+
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    assert_unproven_native_refusal "$DOM" "$t"
+    return
+  fi
 
   local out rc
   out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
@@ -356,9 +378,8 @@ scenario_dry_run_no_writes() {
 }
 
 # ---------------------------------------------------------------------------
-# Scenario 10: adopt then upgrade merges (plain file) — a legacy install with
-# a local edit gets adopted (no clobber), and the NEXT run 3-way-merges in
-# the upstream change while keeping the local edit.
+# Scenario 10: current and successor both refuse the unproven customized role.
+# Frozen history adopts the local edit, then 3-way-merges the upstream change.
 # ---------------------------------------------------------------------------
 scenario_adopt_then_upgrade_merges_plain() {
   local t="$WORKROOT/s10"; mkdir -p "$t"
@@ -372,6 +393,12 @@ scenario_adopt_then_upgrade_merges_plain() {
     "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
   local before; before="$(cat "$t/$IMPL_REL")"
+
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    assert_unproven_native_refusal "$DOM" "$t"
+    assert_unproven_native_refusal "$V2" "$t"
+    return
+  fi
 
   local out1 rc1
   out1="$(claude_install "$DOM" "$t" 2>&1)"; rc1=$?
@@ -441,6 +468,8 @@ scenario_adopt_then_upgrade_merges_claude_md() {
 # again. Assert the local edit is never silently dropped: it must survive in
 # the live file (clean merge or untouched-on-conflict) and/or be visible in a
 # surfaced .new conflict, with a non-zero-but-known (3) exit on conflict.
+# That adoption behavior is frozen history only. Current refuses both attempts:
+# synthetic V0 is not a published identity, and no ownership survives here.
 # ---------------------------------------------------------------------------
 scenario_predates_emitter_change_conflict() {
   local t="$WORKROOT/s12"; mkdir -p "$t"
@@ -455,6 +484,12 @@ scenario_predates_emitter_change_conflict() {
     "$t/$IMPL_REL"
   rm -f "$t/$IMPL_REL.orig"
   local before1; before1="$(cat "$t/$IMPL_REL")"
+
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    assert_unproven_native_refusal "$DOM" "$t"
+    assert_unproven_native_refusal "$V2" "$t"
+    return
+  fi
 
   # Adopt with the CURRENT script: seeds base from current-pristine, which
   # differs from ours at the Blockers line (ours still has v0's old wording).
@@ -535,11 +570,23 @@ run_scenario "upgrade preserves a local edit (plain file)"      scenario_upgrade
 run_scenario "conflict (plain file)"                            scenario_conflict_plain
 run_scenario "CLAUDE.md in-block edit preserved"                scenario_claude_md_inblock_preserved
 run_scenario "CLAUDE.md conflict"                               scenario_claude_md_conflict
-run_scenario "legacy fallback (no snapshot)"                    scenario_legacy_fallback
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  run_scenario "unproven native role refuses (no snapshot)"      scenario_legacy_fallback
+else
+  run_scenario "legacy fallback (no snapshot)"                  scenario_legacy_fallback
+fi
 run_scenario "--dry-run makes no writes"                        scenario_dry_run_no_writes
-run_scenario "adopt then upgrade merges (plain)"                scenario_adopt_then_upgrade_merges_plain
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  run_scenario "unproven native role refuses current and successor" scenario_adopt_then_upgrade_merges_plain
+else
+  run_scenario "adopt then upgrade merges (plain)"              scenario_adopt_then_upgrade_merges_plain
+fi
 run_scenario "adopt then upgrade merges (CLAUDE.md block)"      scenario_adopt_then_upgrade_merges_claude_md
-run_scenario "predates-emitter-change conflict"                 scenario_predates_emitter_change_conflict
+if [ "${CURRENT_TEST:-0}" = 1 ]; then
+  run_scenario "unproven synthetic V0 refuses current and successor" scenario_predates_emitter_change_conflict
+else
+  run_scenario "predates-emitter-change conflict"               scenario_predates_emitter_change_conflict
+fi
 if [ "${1:-}" = "--current" ]; then
   run_scenario "configured role pair three-way preservation (real installer)" scenario_configured_pair_upgrade
 fi

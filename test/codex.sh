@@ -603,14 +603,19 @@ scenario_guest_scoped_uninstall_exact_excludes() {
 # removes the managed ignore block instead of leaving normal assets hidden.
 # ---------------------------------------------------------------------------
 assert_unowned_guest_refusal() {
-  local t="$1" rel="$2" reason="$3" before out rc
+  local t="$1" rel="$2" provider="$3" before out rc failed=0
   mkdir -p "$t/$(dirname "$rel")"
   git_init "$t"
   printf 'host customization\n' > "$t/$rel"
   before="$(treehash "$t")"
   out="$("$DOM" "$t" --platform both --guest 2>&1)"; rc=$?
-  if [ "$rc" -ne 3 ] || ! grep -qF "$reason" <<< "$out" ||
-     [ "$before" != "$(treehash "$t")" ]; then
+  # Always check the whole project first; a diagnostic mismatch must not
+  # short-circuit the independent no-writes assertion.
+  check "unowned $rel: entire project unchanged" test "$before" = "$(treehash "$t")" || failed=1
+  check "unowned $rel: exit 3" test "$rc" -eq 3 || failed=1
+  check "unowned $rel: exact native ownership refusal" grep -qxF \
+    "Native ownership refused ($provider): cannot establish ownership of native path $rel; pristine policy does not prove native ownership; preserve and reconcile explicitly. No project writes." <<< "$out" || failed=1
+  if [ "$failed" -ne 0 ]; then
     printf 'Expected ownership refusal without writes for %s (exit %s):\n%s\n' "$rel" "$rc" "$out" >&2
     return 1
   fi
@@ -620,7 +625,7 @@ scenario_guest_visibility_ownership() {
   local t="$WORKROOT/s13"; mkdir -p "$t"
   local host_rel="$IMPL_REL"
   if [ "${CURRENT_TEST:-0}" = 1 ]; then
-    check "unowned role refuses without writes" assert_unowned_guest_refusal "$WORKROOT/s13-unowned" "$IMPL_REL" "missing manifest"
+    check "unowned role refuses without writes" assert_unowned_guest_refusal "$WORKROOT/s13-unowned" "$IMPL_REL" codex
     # Managed roles now require ownership and a valid pair. Keep the supported
     # host visibility lifecycle on an unrelated Codex role, alongside real
     # installer-owned roles; do not manufacture a manifest for a host file.
@@ -863,7 +868,7 @@ scenario_public_names() {
 scenario_public_name_host_collisions() {
   local t="$WORKROOT/public-host" rel rc before
   mkdir -p "$t"; git_init "$t"
-  check "unowned Claude command refuses without writes" assert_unowned_guest_refusal "$WORKROOT/public-unowned" .claude/commands/dom-goal.md "unknown provider ownership"
+  check "unowned Claude command refuses without writes" assert_unowned_guest_refusal "$WORKROOT/public-unowned" .claude/commands/dom-goal.md claude
   # Claude commands require real ownership; shared Codex aliases still support
   # host collisions. Seed only Claude, then customize its owned command.
   "$DOM" "$t" --platform claude --guest >/dev/null 2>&1; rc=$?
