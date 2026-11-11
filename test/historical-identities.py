@@ -189,14 +189,15 @@ class EmbeddedIdentities(unittest.TestCase):
         cls.library = cls.block.split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
         cls.namespace = {}
         exec(compile(cls.library, "embedded-identities", "exec"), cls.namespace)
-        cls.current = HISTORY.current_projection(cls.source, 60)
+        # Fresh all-provider emissions can exceed 60s under qualification load.
+        cls.current = HISTORY.current_projection(cls.source, 300)
 
     def test_exact_drift_from_history_and_explicit_working_tree_source(self):
         self.assertEqual(self.block, HISTORY.lookup_block(self.data, self.current))
 
     def test_working_tree_and_head_current_emission_membership(self):
         lookup = self.namespace["installer_identity"]
-        head = HISTORY.current_projection(HISTORY.git("show", "HEAD:domestique.sh"), 60)
+        head = HISTORY.current_projection(HISTORY.git("show", "HEAD:domestique.sh"), 300)
         for name, identities in (("HEAD", head), ("working tree", self.current)):
             self.assertTrue(identities)
             for identity in identities:

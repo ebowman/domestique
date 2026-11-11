@@ -7,7 +7,29 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.4.3: retain removed providers without reactivating them
+## v0.4.4: proof-based upgrades and preserving recovery
+
+v0.4.4 strengthens upgrade ownership checks with finite historical byte
+identities and pristine manifestless adoption, without blessing unknown or
+edited roles. Retained custom policies and completely removed providers stay
+retained; guest operations refuse tracked policy writes with recovery guidance.
+Unconfirmed model pairs receive actionable review/Save instructions rather than
+silent confirmation. The installer remains standalone, including `curl | bash`.
+
+**Offline qualification and independent final release review passed.**
+The candidate has **359/359 baseline checks across 13 groups**, by composite
+coverage of completed methods/scenarios and reviewed focused fixes—not one
+uninterrupted run—and **3/3 working-candidate published-upgrade smoke cases**.
+Earlier **74 published-tag cases and seven reported checks** remain separate
+reviewed provenance, not fresh executions of this candidate. Exhaustive
+intermediate-history coverage is deferred; universal automatic migration is not
+claimed. Unproven native files, including edited roles without ownership
+evidence, require explicit backup/reconciliation; tracked guest policy writes
+require reviewed recovery. No native
+paid/account/model-readiness qualification is claimed.
+See [test gates, provenance and limits](docs/install-upgrade-design.md#v044-release-status-and-limits).
+
+### Retained release behavior
 
 An explicit unrelated-provider install, such as `dom --platform copilot`, no
 longer reactivates completely removed Claude/Codex projections merely because
@@ -25,8 +47,8 @@ See [evidence and limits](docs/install-upgrade-design.md#v043-release-status-and
 The v0.4.2 fix remains: recognition of five verified historical policy-base identities omitted by
 v0.4.1, including the public `99e6274` Claude base. Unknown or modified bases,
 current-guard tampering and selected-policy conflicts still refuse; `--force`
-does not bypass these checks. Very early `ff41544` installs still fail the
-independent complete-inventory check: this is not support for every historical install.
+does not bypass these checks. v0.4.4 also recognizes the exact pristine early
+`ff41544` inventory through a separate proof path, not a blanket missing-base exception.
 
 The v0.4.1 fix remains: custom workflows in unselected or inactive retained
 policies are preserved instead of attempting an unrelated full workflow upgrade. Known-owned legacy
@@ -73,7 +95,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-After v0.4.3 is published to `main`, the existing alias fetches it on its next
+After v0.4.4 is published to `main`, the existing alias fetches it on its next
 invocation; no alias change is needed:
 
 ```sh
@@ -101,7 +123,7 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional; v0.4.3's removed-provider fix is included in remote
+A source checkout is optional; v0.4.4's safe-upgrade changes are included in remote
 `dom` after publication to `main`. To inspect reviewed source locally, run from
 that checkout against a disposable Git project:
 
@@ -373,7 +395,7 @@ setup and other installer calls are unchanged).
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.4.3 qualification limits](docs/install-upgrade-design.md#v043-release-status-and-limits).
+ancestry and the [v0.4.4 qualification limits](docs/install-upgrade-design.md#v044-release-status-and-limits).
 
 ## License
 

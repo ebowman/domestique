@@ -1,6 +1,13 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.4.3 release guide**: explicit unrelated-provider installs retain
+This is the **v0.4.4 release guide**: finite historical ownership proof and
+pristine manifestless adoption support bounded preserving upgrades. Unknown
+converted roles require explicit backup migration, not fabricated pristine
+bases or automatic overwrite. Tracked guest policy writes refuse with recovery
+guidance; unconfirmed model pairs receive actionable reconfirmation instructions.
+Retained custom policies keep their workflows.
+
+The v0.4.3 behavior remains: explicit unrelated-provider installs retain
 completely removed Claude/Codex projections as inactive when actual safe absence
 is established, rather than reactivating them from leftover owned metadata.
 Metadata, pristine bases, host policy bytes and inactive guest Beads markers are
@@ -24,18 +31,18 @@ Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
 Validation is instruction-level/filesystem-only, not new native UX qualification.
-Historical evidence below does not qualify v0.3.1, v0.4.0, v0.4.1, v0.4.2 or v0.4.3.
+Historical native evidence below does not qualify v0.3.1–v0.4.4.
 hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
-See [v0.4.3 evidence and limits](#v043-release-status-and-limits) for this fix.
+See [v0.4.4 evidence and limits](#v044-release-status-and-limits) for this release.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.4.3 is published to `main`, existing `dom` aliases that fetch
-`main/domestique.sh` receive its removed-provider fix on their next invocation,
+After v0.4.4 is published to `main`, existing `dom` aliases that fetch
+`main/domestique.sh` receive its safe-upgrade changes on their next invocation,
 without an alias change.
 For the covered completely removed Claude/Codex case, optionally preview with
 `dom --platform copilot --dry-run`, then run `dom --platform copilot`.
@@ -68,7 +75,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.4.3's removed-provider fix is included in remote
+A source checkout is optional; v0.4.4's safe-upgrade changes are included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -502,6 +509,85 @@ cannot reverse migrated ownership/workflows. See the concise
 
 ## Qualification and known issues
 
+### v0.4.4 release status and limits
+
+- **Offline qualification and independent final release review passed.**
+  Qualification completed on 2026-11-12 using a working-tree candidate based on `0574c0c`,
+  installer SHA-256
+  `12374816427c11db455d52b1b6b767d8f14d3d803c2aab8b6101b78f598d99f1`.
+  Complete required coverage is **359/359 baseline checks across 13 groups**:
+  **205 unittest methods and 154 shell scenarios**, with no skips, unknown
+  inventory entries or unresolved failures. This is a **composite** of completed
+  methods/scenarios and independently reviewed focused fixes, not one
+  uninterrupted baseline or thirteen newly successful full-suite invocations.
+  Source hashes and exact method/scenario inventories establish which earlier
+  passes remain applicable; focused duplicates are not counted twice.
+- The final group counts and provenance are:
+
+  | Group | Covered | Evidence composition |
+  | --- | ---: | --- |
+  | All-current | 111/111 | 100 completed methods + 11 fresh shards |
+  | Copilot-current | 21/21 | 14 completed methods + 7 fresh shards |
+  | Model setup | 41/41 | 40 completed methods + reviewed changed-method pass |
+  | Upgrade current | 13/13 | 10 completed scenarios + 3 reviewed replacements |
+  | Uninstall current | 29/29 | Completed full command |
+  | Guest current | 17/17 | Completed full command |
+  | Codex current | 30/30 | 28 completed scenarios + 2 reviewed replacements |
+  | Upgrade historical | 12/12 | Full command; 3 affected scenarios rechecked |
+  | Uninstall historical | 23/23 | Completed full command |
+  | Guest historical | 14/14 | Completed full command |
+  | Codex historical | 16/16 | Full command; affected visibility scenario rechecked |
+  | Historical identities | 19/19 | Retained completed command |
+  | Published-gate units | 13/13 | Completed full command |
+
+  Shell coverage is **89/89 current + 65/65 frozen historical = 154/154**.
+  Frozen `b60feef` fixtures preserve historical adoption behavior; they are not
+  current-candidate CLI acceptance. The reviewed shell corrections verify
+  **17 exit-3 zero-write refusals** for unproven native files, with exact
+  diagnostics and snapshots checked first. They do not restore automatic
+  adoption of edited roles or weaken ownership checks.
+- Original identity failures, the 28,800-second all-current/Copilot
+  interruptions, model/shell assertion failures and the interrupted initial
+  focused selector remain immutable non-PASS attempts. Identity coverage
+  completed 19/19 in 307.800 seconds after fresh-emission fixture budgets changed
+  from 60 to a finite 300 seconds; production logic and the intentional
+  one-second timeout negative control were unchanged. A timeout is never PASS.
+- **3/3 focused published-upgrade smoke cases** passed against the actual
+  working installer above: v0.1.0 normal default/all, and v0.4.3 normal and guest
+  default/all, in 649.128 seconds. A session-only source adapter supplied the
+  working bytes to the existing harness, retaining its assertions and isolation;
+  it did not pretend that `--revision HEAD` selected the uncommitted candidate.
+  These three cases are separate from the 359 baseline checks.
+- The final session evidence is indexed by
+  `release044-final-qualified-coverage.json` (exact names, source hashes,
+  commands, durations, logs and scenario renames) and
+  `release044-final-review-manifest.json` (final five-file hashes and scoped
+  diff). It references the unchanged original attempts and the reviewed
+  `hq-dds30-review.json` / `hq-dds30-artifacts.json` focused evidence.
+  Recorded Bash syntax, warning-level ShellCheck, Python AST and diff checks
+  passed. Final documentation completion checks consistency and diff only;
+  it does not rerun qualification suites or change installer/test code.
+- The [bounded published-upgrade gate](#bounded-published-upgrade-gate)
+  qualifies **74 published-tag cases plus seven reported checks**, with the
+  exact earlier revisions, installer fingerprint and evidence recorded below.
+  These are not new executions of the release candidate.
+  **Exhaustive intermediate-history/mutation coverage remains deferred**;
+  there is no universal automatic-migration guarantee.
+- Ownership requires finite historical byte proof and safe inventories.
+  Exact pristine manifestless policies/native roles and the early Claude
+  inventory have bounded adoption paths. Unproven native files, including
+  edited or unknown converted roles without ownership evidence, require
+  explicit backup/reconciliation; do not delete evidence or use `--force`
+  to manufacture ownership.
+- Retained custom policies and removed-provider metadata remain preserved.
+  Guest writes to tracked policies refuse with recovery guidance; review
+  `--no-guest` or explicit uninstall/backup recovery rather than expecting
+  exclusions to hide tracked files. Unconfirmed pairs require review and Save.
+- **No native paid/account/readiness qualification:** offline configuration
+  evidence does not establish client loading, model availability or native
+  dispatch. Network delivery and consumer projects were not tested.
+  Historical unresolved investigations remain recorded below.
+
 ### Offline baseline release gate
 
 The historical hq-dds.3 baseline, recorded on **2026-11-07**, targets installer
@@ -682,8 +768,8 @@ installation, helper checks and offline tests do not attest native readiness.
 
 `test/published-upgrades.py` is an opt-in, stdlib-only offline gate, not a
 universal every-commit upgrade guarantee. This is candidate evidence for the
-**v0.4.4 safe-upgrade scope with explicit preserving recovery**, not a version
-bump or a promise of universal automatic migration. Its exact published set is
+**v0.4.4 safe-upgrade scope with explicit preserving recovery**, not a promise
+of universal automatic migration. Its exact published set is
 `v0.1.0`, `v0.2.0`, `v0.2.1`, `v0.2.2`, `v0.3.0`, `v0.3.1`, `v0.4.0`,
 `v0.4.1`, `v0.4.2`, `v0.4.3`. Local tag objects and historical support files
 are required; it never fetches missing history or substitutes a newer core.
@@ -776,7 +862,7 @@ mutation/ancestry qualification.
 and seven reported risks have PASS evidence.** The 74 file-execution results
 remain the **2026-11-10** run at `202bfe9`: 48 initial passes plus 26 targeted
 replays after correcting unchanged-manifest comparison. They were digest-checked,
-not rerun. The installer remains SHA-256
+not rerun. That earlier gate used installer SHA-256
 `ee3efc9dccecbc81d429216e731412f9515a051567b9709f90cd01f248f67324`.
 The original digest index is `/tmp/dds28-final-evidence/evidence.json`; its
 historical BLOCKED status is superseded only for these reported checks.
@@ -796,8 +882,10 @@ addressed the intermittent host subprocess input/output stall in the test
 transport; no installer product change or deterministic root-cause claim is
 implied. The completed checks above use actual piped stdin. This bounded result
 does not qualify network delivery, native clients/accounts, consumer projects,
-all guest conversions or exhaustive ancestry. Parent independent review and
-the final post-version-bump baseline are still required.
+all guest conversions or exhaustive ancestry. At that checkpoint, parent review
+and the final post-version-bump baseline were still required. The later
+[v0.4.4 composite baseline](#v044-release-status-and-limits) records completed
+offline coverage and passed independent final release review.
 
 ### Historical 0.2.0 release selection and fixture portability
 

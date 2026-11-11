@@ -5,7 +5,7 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
-DOMESTIQUE_VERSION="0.4.3"
+DOMESTIQUE_VERSION="0.4.4"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -5852,7 +5852,7 @@ def installer_inventories(provider, files, policies, helper):
                                 ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
             for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
                 recognized.add((version, old_files + "," + helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3"):
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3", "0.4.4"):
                 recognized.add((version, files + suffix))
     return recognized
 PY
@@ -5921,7 +5921,7 @@ try:
         sys.exit(0)
     if policy_only or early:
         if policy_only:
-            need(manifest.get("domestique_version") == "0.4.3" and
+            need(manifest.get("domestique_version") in ("0.4.3", "0.4.4") and
                  set(manifest) == {"snapshot_format", "platform", "domestique_version",
                                    "installed_ref", "installed_at", "script_sha256", "files"},
                  "unknown policy-only manifest generation")
