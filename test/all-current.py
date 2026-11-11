@@ -2789,6 +2789,24 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(byte_snapshot(root), before)
 
     def test_platformless_legacy_claude_invalid_ownership_zero_writes(self):
+        # Native preflight validates authority and deduplicated safe inventory
+        # before policy_preflight can diagnose an unowned policy base.
+        reasons = {
+            "foreign": "wrong snapshot authority",
+            "empty": "wrong snapshot authority",
+            "duplicate-platform": "ambiguous manifest",
+            "ambiguous-platform": "ambiguous manifest",
+            "unsupported-schema": "wrong snapshot authority",
+            "missing-schema": "wrong snapshot authority",
+            "duplicate-schema": "ambiguous manifest",
+            "malformed": "ambiguous manifest",
+            "extra-equals": "wrong snapshot authority",
+            "duplicate-inventory": "ambiguous manifest",
+            "duplicate-file": "incomplete/unsafe inventory; preserving installer upgrade required",
+            # The implementer remains owned; the next live role does not.
+            "unowned-base": "incomplete native ownership: .claude/agents/reviewer.md; "
+                            "restore its pristine base/inventory",
+        }
         for guest in (False, True):
             root, rel = self.legacy_claude(f"invalid-{guest}", guest=guest)
             (root / rel).write_text("# Host policy without managed markers\n")
@@ -2810,18 +2828,24 @@ class AllProviders(unittest.TestCase):
                                        original),
             }
             for kind, body in invalid.items():
-                with self.subTest(guest=guest, kind=kind):
-                    manifest.write_text(body)
-                    before = snapshot(root)
-                    for flags in (("--dry-run",), (), ("--force",)):
+                manifest.write_text(body)
+                before = snapshot(root)
+                for flags in (("--dry-run",), (), ("--force",)):
+                    with self.subTest(guest=guest, kind=kind, flags=flags):
                         result = self.run_dom(root, *flags, ok=False)
-                        self.assertIn("unowned policy base collision", result.stderr)
-                        self.assertIn("No project writes", result.stderr)
                         self.assertEqual(before, snapshot(root))
+                        self.assertEqual(result.returncode, 3)
+                        self.assertIn(
+                            f"Native ownership refused (claude): {reasons[kind]}. No project writes.",
+                            result.stderr.splitlines())
+                        self.assertIn("No project writes", result.stderr)
             manifest.unlink()
             before = snapshot(root)
-            self.run_dom(root, ok=False)
-            self.assertEqual(before, snapshot(root))
+            with self.subTest(guest=guest, kind="missing-manifest", flags=()):
+                result = self.run_dom(root, ok=False)
+                self.assertEqual(before, snapshot(root))
+                self.assertEqual(result.returncode, 3)
+                self.assertIn("No project writes", result.stderr)
 
     def test_platformless_legacy_claude_unsafe_evidence_zero_writes(self):
         for evidence in ("manifest", "base/CLAUDE.md.block"):
