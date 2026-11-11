@@ -1112,21 +1112,34 @@ class ModelSetup(unittest.TestCase):
                     self.helper(root, "codex").unlink()
                     (root / ".codex/.domestique/base/.codex/domestique-model-setup.py").unlink()
                 before = CURRENT.snapshot(root)
-                for dry in (("--dry-run",), ()):
-                    result = self.fixture.run_dom(root, *dry, "--model=codex:implementer=new", ok=False)
-                    if kind in ("unknown", "custom-inventory", "current-without-helper-inventory"):
-                        self.assertIn("unknown inventory generation", result.stderr)
-                    elif kind == "missing-helper":
-                        self.assertIn("missing claimed helper", result.stderr)
-                    self.assertEqual(before, CURRENT.snapshot(root))
-                if kind in ("stale", "custom"):
-                    old = {p: p.read_bytes() for p in roles.values()}
-                    self.fixture.run_dom(root, "--platform", "codex", ok=False)
-                    self.assertEqual(old, {p: p.read_bytes() for p in roles.values()})
-                    self.assertFalse(self.call(root, "codex", "verify")["confirmed"])
-                else:
-                    self.fixture.run_dom(root, ok=False)
-                    self.assertEqual(before, CURRENT.snapshot(root))
+                for flags in (("--dry-run",), ()):
+                    with self.subTest(flags=(*flags, "--model=codex:implementer=new")):
+                        result = self.fixture.run_dom(
+                            root, *flags, "--model=codex:implementer=new", ok=False)
+                        self.assertEqual(before, CURRENT.snapshot(root))
+                        self.assertEqual(result.returncode, 3)
+                        if kind == "custom-inventory":
+                            # Native ownership is validated before inventory generation.
+                            self.assertIn(
+                                "Native ownership refused (codex): incomplete native ownership: "
+                                ".agents/skills/domestique/SKILL.md; restore its pristine "
+                                "base/inventory. No project writes.", result.stderr)
+                        elif kind in ("unknown", "current-without-helper-inventory"):
+                            self.assertIn("unknown inventory generation", result.stderr)
+                        elif kind == "missing-helper":
+                            self.assertIn("missing claimed helper", result.stderr)
+                flags = ("--platform", "codex") if kind in ("stale", "custom") else ()
+                with self.subTest(flags=flags):
+                    if kind in ("stale", "custom"):
+                        old = {p: p.read_bytes() for p in roles.values()}
+                        result = self.fixture.run_dom(root, *flags, ok=False)
+                        self.assertEqual(old, {p: p.read_bytes() for p in roles.values()})
+                        self.assertEqual(result.returncode, 3)
+                        self.assertFalse(self.call(root, "codex", "verify")["confirmed"])
+                    else:
+                        result = self.fixture.run_dom(root, *flags, ok=False)
+                        self.assertEqual(before, CURRENT.snapshot(root))
+                        self.assertEqual(result.returncode, 3)
 
     def test_actual_installer_reconfirmation_only_summary(self):
         for provider in PROVIDERS:
