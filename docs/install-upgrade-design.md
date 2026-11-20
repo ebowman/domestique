@@ -1,6 +1,14 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.4.4 release guide**: finite historical ownership proof and
+This is the **v0.5.0 release guide**. Independent final release and root acceptance
+passed; acceptance is separate from publication.
+Named completion includes in-scope corrections, local scoped commits and task
+bookkeeping, subject to independent review, ownership, permissions and actual
+budgets. See [current evidence and limits](#v050-local-candidate-status-and-limits);
+full registered-role/Beads lifecycle and comprehensive native unattended
+execution remain **UNQUALIFIED**.
+
+Retained v0.4.4 safe-upgrade behavior: finite historical ownership proof and
 pristine manifestless adoption support bounded preserving upgrades. Unknown
 converted roles require explicit backup migration, not fabricated pristine
 bases or automatic overwrite. Tracked guest policy writes refuse with recovery
@@ -30,19 +38,20 @@ optional setup were introduced in v0.3.0.
 Implementation reviews hq-c6o.2–.6 passed; native qualification hq-c6o.8
 remains **UNQUALIFIED pending user authorization for fixture/model usage**. Publication was authorized
 with this limitation disclosed, not with native PASS or epic completion.
-Validation is instruction-level/filesystem-only, not new native UX qualification.
+Those historical validations are instruction-level/filesystem-only, not new native UX qualification.
 Historical native evidence below does not qualify v0.3.1–v0.4.4.
 hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
-See [v0.4.4 evidence and limits](#v044-release-status-and-limits) for this release.
+The [v0.4.4 evidence and limits](#v044-release-status-and-limits) remain history,
+not fresh v0.5.0 qualification.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.4.4 is published to `main`, existing `dom` aliases that fetch
-`main/domestique.sh` receive its safe-upgrade changes on their next invocation,
+After v0.5.0 is published to `main`, existing `dom` aliases that fetch
+`main/domestique.sh` receive its completion changes and retained safe-upgrade behavior on their next invocation,
 without an alias change.
 For the covered completely removed Claude/Codex case, optionally preview with
 `dom --platform copilot --dry-run`, then run `dom --platform copilot`.
@@ -52,8 +61,7 @@ For the covered historical Claude base, preview with
 Hash recognition needs no `--force`.
 For the covered unselected/inactive retained-policy case, ordinary
 `dom --platform=copilot` needs neither `--force` nor manual repair.
-Preview with `dom --dry-run`, then run `dom`; refresh cached native instructions
-if needed. Nothing
+Preview with `dom --dry-run`, then run `dom`. Nothing
 updates in the background; publishing only a tag does not change those aliases.
 Run from the intended project root; the optional positional argument is the
 target directory. Bash, Git and Python 3.11+ cover the all-three path.
@@ -75,7 +83,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.4.4's safe-upgrade changes are included in remote
+A source checkout is optional; v0.5.0's completion changes are included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -238,8 +246,10 @@ information on failure; do not blindly roll back.
    missing/unsafe authority needs explicit preserving installer repair.
    Unavailable models, unsupported effort or known mismatches stop with the
    affected role/reason and `--configure` route, never automatic substitution.
-5. Explicitly review/dispose of tracked changes before goal work; do not
-   auto-stage, stash or hide them. Installation/Save never queues or authorizes
+5. Baseline HEAD, tracked/untracked edits and index ownership before work or
+   branch changes; preserve separable unrelated changes exactly. Overlap,
+   collisions, uncertain ownership or an unsafe branch switch need narrow
+   clarification, not blanket cleanup. Installation/Save never queues or authorizes
    a goal. After a configuration detour, give a fresh explicit goal naming the
    intended target; a fresh valid install alone needs no renewed authorization.
 
@@ -247,8 +257,8 @@ information on failure; do not blindly roll back.
 
 ### Complete named goals
 
-These v0.4.0 instructions passed review and bounded offline checks, not native
-qualification. Use remote or local preview/apply above; preserving reruns retain
+v0.5.0 retains v0.4.0 named scope and adds scoped completion.
+Use remote (after publication) or local preview/apply above; preserving reruns retain
 model/effort choices. Refresh stale native instructions as needed. Defaults,
 optional model setup and explicit model-editor Save are unchanged.
 
@@ -271,9 +281,9 @@ flags. Ordinary next-ready requests remain one bead.
 Every **15 successful closures is a soft progress checkpoint**: report and
 continue to 16, 31 and beyond without a pause, renewed permission or expiry.
 Current user count/time/cost limits and actual runtime/session budgets bind.
-Cancellation/objective change, material ambiguity, regressions, actual
-native/permission/model/tool/Beads errors or a second non-PASS after one corrective
-pass stop execution. No provider/session-limit bypass or automatic cross-session
+Cancellation/objective change and material ambiguity stop affected execution.
+Use the progress/recovery rules below for review gaps, task-caused regressions
+and recoverable errors. No provider/session-limit bypass or automatic cross-session
 resumption is promised. Preserve concrete unfinished IDs, reasons and commit state.
 Blocked/deferred/other-owned branches do not stop other runnable authorized branches;
 no runnable work with unfinished scope is **BLOCKED**, not COMPLETE.
@@ -284,15 +294,70 @@ is **ROOT UNFINISHED**.
 Keep one task in flight on a dedicated non-default branch, fresh independent
 review before scoped commit/closure, and focused relevant validation rather than
 a full suite per bead/checkpoint. The parent hands off verified claim state;
-an already-owned in-progress assignment is not reclaimed. Dirty/uncertain work
-needs human disposition; guest state stays local and unstaged. No automatic
+an already-owned in-progress assignment is not reclaimed. No automatic
 merge/push occurs in the loop; separately explicit parent Git approval below
 remains valid.
 
-**Native coverage BLOCKED:** no new three-dependent-task epic, exact single-task
-or 16-task native run was authorized. Offline 15-to-16 protocol cases are not
-live large-epic proof. See [release evidence and limits](#v040-release-status-and-limits);
-historical qualification and the hq-c6o.8 gap are not superseded.
+#### Scoped completion, review and recovery
+
+- Authorization covers necessary in-scope fixes, validation, local commits and
+  bookkeeping without redundant permission, unless the user restricts it.
+  The parent owns commit/closure; implementers stay within their brief and never
+  commit/close, and reviewers remain read-only in a fresh independent context.
+- Baseline and recheck HEAD, tracked/untracked edits and the index, including
+  role configuration. Global cleanliness is not required. Preserve unrelated
+  edits and staged entries exactly; never adopt user edits implicitly. Overlap,
+  untracked collisions, uncertain ownership or unsafe branch switches stop only
+  affected work for clarification. Never stash, discard, hide or broadly stage.
+- Independent fresh PASS on the exact owned changes precedes finalization.
+  Stage only reviewed paths/hunks with literal pathspecs, inspect the staged
+  diff and exclude unrelated pre-staged changes while preserving their index.
+  If safe isolation is impossible, ask narrowly. Keep one scoped commit per
+  changed bead. Verify an existing accepted commit rather than duplicate it.
+  A clean reviewed state is valid; a no-code decision needs durable review
+  evidence, not an empty commit. Close and verify actual state.
+- Commit failure stops without closure; reconcile Git state before safe retry.
+  Close failure preserves the commit ID and actual unfinished/unknown state;
+  reconcile before retry, never recommit or roll back to hide failure.
+  Normal-mode metadata is explicitly reviewed/exported/staged only at known
+  in-scope paths after checking configuration and diff, never broad `.beads/`
+  staging. Guest personal state remains local and unstaged. Bookkeeping
+  dirtiness alone is not a blocker; unknown ownership is.
+- Record acceptance blockers and evidence after every fresh review. Correct
+  in-scope gaps and task-caused regressions, then obtain fresh review. Continue
+  while specific blockers decrease, required criteria remain intact and actual
+  budgets permit; there is no arbitrary second-review or total-cycle cap.
+- Unchanged findings or oscillation require a materially different bounded
+  hypothesis, action and observable success check. Default: **at most two
+  nonprogress recovery attempts per bead, cumulative**, never reset by temporary
+  progress or rephrasing. If neither restores measurable progress, or nonprogress
+  recurs after the allowance is spent, stop with concrete blockers. Report the
+  allowance/consumption; do not invent time/credit ceilings.
+- Only transient reads or demonstrably idempotent operations permit **at most
+  two retries per failing operation**, then ERROR and stop affected work.
+  Reconcile uncertain writes before repetition; no blind claim/create/commit/close
+  retries. Failed/unusable queries never mean empty, complete or successful;
+  suspend dependent dispatch until valid evidence exists. Actual permission
+  denial, credentials/model/configuration changes, unavailable native roles,
+  unsafe state, ownership/criteria/scope ambiguity and material product decisions
+  require narrow operator disposition, never fallback tools/models or bypass.
+- Use focused tests/lint and broader checks where required. Baseline unrelated
+  failures honestly; uncertain causality or unmet mandatory criteria remain
+  blockers. Reviewers tie each blocker to an existing required criterion,
+  evidence and correction. **PASS may carry advisory notes** without another
+  mandatory implementation/review cycle; neither invent criteria nor silently
+  downgrade genuine blockers. The parent cannot override required independent PASS.
+
+Examples: “Complete epic EPIC_ID” includes its reviewed local commits and
+bookkeeping, not push/merge; “Execute only this bead BEAD_ID” never widens scope.
+A third correction is appropriate when concrete mandatory blockers keep
+decreasing; an optional naming suggestion on PASS does not force another cycle.
+
+**Native limits:** hq-6f1.3 adds controlled Copilot/Astra probes, not a real
+multi-cycle registered-role run. The earlier three-dependent-task, exact-task
+and 16-task lifecycle gaps are not superseded. Offline 15-to-16 cases are not
+live large-epic proof. See [current evidence](#v050-local-candidate-status-and-limits)
+and [historical v0.4.0 limits](#v040-release-status-and-limits).
 
 ### Parent Git authorization (separate from managed execution)
 
@@ -348,6 +413,18 @@ live in `CLAUDE.md`, `AGENTS.md` (or existing `AGENTS.override.md`) and
 `.github/copilot-instructions.md`.
 
 ## Preserving upgrades and mode conversion
+
+Canonical emitters ship in `domestique.sh`; a source version bump or download
+does not refresh installed policies, native registrations or cached instructions.
+Apply the reviewed installer to the intended project after previewing the same
+source/flags. Reload stale instructions/registrations according to the native
+client, starting a fresh invocation when needed (Codex conversation roles may
+be immutable). Verify effective roles and current projections, not just a
+manifest version: untouched snapshots may retain exact historical provenance.
+No automatic refresh of ignored `CLAUDE.md`, `CLAUDE.local.md` or `.claude/`
+in this source checkout, and no user configuration changes, accompany release
+preparation. Release bytes reach `main` through a separate publication step,
+not through local version changes.
 
 Compatible snapshot upgrades preserve model/effort scalars even when they equal
 older shipped defaults; other compatible customizations use three-way merges.
@@ -508,6 +585,121 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+<a id="v050-local-candidate-status-and-limits"></a>
+
+### v0.5.0 release status and limits
+
+**Independent final release and root acceptance passed** for hq-6f1.4 and
+root hq-6f1, with no blockers. The final independent reviewer passed **25 fresh
+tests**: three AllProviders selectors plus two normal/guest preserving-upgrade
+selectors (**5** total, the five selectors documented below), the native harness
+(**7**) and the published-upgrade harness (**13**). Bash syntax, warning-level
+shellcheck and diff checks also passed. The canonical completion contract hash
+remains unchanged. These results are independent final validation, separate
+from the preparation and predecessor observations retained below.
+
+Acceptance does not itself publish the release. Commit, merge, push, tag and
+GitHub release are separate publication operations; installed-policy refresh
+remains a reviewed user upgrade.
+Full registered-role/Beads lifecycle and comprehensive native unattended
+execution remain **UNQUALIFIED**. No new full historical matrix was run;
+v0.4.4's 359/359 composite qualification is retained history, not fresh v0.5.0
+results.
+
+#### Independently reviewed predecessor evidence
+
+These are predecessor results reported by the independent reviewers, not reruns
+performed during final version preparation:
+
+- hq-6f1.1 (`5632965`): policy reviewer ran **8 relevant AllProviders tests**,
+  plus syntax and lint; PASS for the scoped completion implementation.
+- hq-6f1.2 (`de0f71f`): regression reviewer ran
+  `python3 test/all-current.py CompletionQualification` — **5 PASS**, including
+  actual published v0.4.4 → candidate normal and guest all-provider upgrades
+  and **19 contradiction controls**; and
+  `python3 test/published-upgrades-tests.py` — **13 PASS**, plus syntax/lint.
+  These are installed-instruction/filesystem checks, not model behavior.
+- hq-6f1.3 (`6de7dd6`): native reviewer ran
+  `python3 -B test/copilot-astra-native-tests.py` — **7 PASS**, relevant
+  syntax/lint, and independently inspected actual retained fixture artifacts
+  and logs. The deterministic seven tests qualify the harness, not native
+  behavior by themselves.
+
+The separately observed controlled native probes used **Copilot CLI 1.0.114**,
+with native usage confirming **gpt-6-astra/main**. Reproduction and isolation
+protocol: [`test/copilot-astra-native.md`](../test/copilot-astra-native.md);
+opt-in runner: [`test/copilot-astra-native.py`](../test/copilot-astra-native.py).
+Review histories supplied to the probes were explicitly simulated:
+
+| Probe | Reviewed observation | Boundary |
+| --- | --- | --- |
+| A, final approved fixture | PASS: actual local commit `dc6c1cf` changed only `owned.txt`; unrelated staged/unstaged files, index entries/blob bytes and local configuration preserved | Real scoped commit, not registered-role dispatch or Beads closure |
+| B | PASS: permitted third progressing corrective cycle and fresh review | Decision only; no actual multi-cycle native execution |
+| C | PASS: advisory/no-code completion without mandatory extra cycle or empty commit | Decision only; no actual closure |
+| D | PASS: uncertain ownership stopped without mutation | Narrow ownership boundary |
+| E | PASS: actual Git-commit permission denial, no retry/bypass or completion claim | Deliberate denial boundary, not a workflow failure |
+
+Two earlier A attempts were **INCONCLUSIVE because of test allowlist omissions**,
+not policy failures. Each fresh grant followed explicit user approval; those
+attempts and their logs remain evidence, not erased or silently retried.
+Personal session paths, account details and verbose transcripts are not published
+here; hq-6f1.3 retains the evidence references. These limited observations do not
+supersede historical native lifecycle gaps or qualify automatic unattended work.
+
+#### Final version-preparation checks
+
+The final installer changes `DOMESTIQUE_VERSION` from 0.4.4 to 0.5.0 and adds
+0.5.0 to the existing current-inventory and policy-only generation allowlists
+relative to `6de7dd6`; inventory shape, ownership and safety checks are unchanged.
+Its SHA-256 is
+`71b4ca27d66ff08294c1e981e0f1807d23559485800c5ece886084a2eeb28746`
+(predecessor source:
+`a92e56a8e250f6e3f442dbf7bf213d733eab34f8afef7f19da44a7e0908c977c`).
+The literal canonical completion contract, including its emitted final newline,
+is byte-identical in both, SHA-256
+`8af5a3e3b2b964d4880f3259be836cfe8f0df300a3d7817a11248c9dbdb54221`.
+This supports retaining the reviewed native observations without another paid
+run; it does not turn them into fresh v0.5.0 native executions.
+
+Fresh final-candidate checks (separate from predecessor evidence):
+
+The first four-test projection/version/upgrade run completed **2 PASS, 2 FAIL**
+in 1031.317 seconds. Both upgrades passed preview/apply and preservation checks,
+then refused the stable rerun with `unknown inventory generation`: the initial
+version-only bump wrote 0.5.0 manifests not recognized by the old allowlists.
+The directly coupled correction adds only 0.5.0 to the two finite current
+generation lists. That failed attempt is not counted as qualification.
+
+After correction, this exact final-candidate command completed **4 PASS** in
+1684.285 seconds:
+
+```sh
+python3 -B test/all-current.py \
+  AllProviders.test_reviewed_transaction_across_entry_layers \
+  AllProviders.test_notice_absent_on_help_errors_and_scoped_uninstall \
+  CompletionQualification.test_published_v044_preserving_upgrade_normal_all \
+  CompletionQualification.test_published_v044_preserving_upgrade_guest_all
+```
+
+The two upgrade smokes used actual v0.4.4
+(`98bdea04732c4862d45ddae6eed25436e09182d9`) installers and the final candidate
+in normal/guest default-all mode across Claude, Codex and Copilot. Both
+preview/apply/rerun sequences passed, preserving six custom role choices,
+host configuration/policies, pristine bases, unrelated index/backups and guest
+privacy while checking current projections. This is bounded filesystem evidence,
+not a repeated full qualification suite or native workflow run.
+
+- `bash -n domestique.sh` — PASS.
+- `shellcheck --severity=warning domestique.sh` — PASS.
+- `git diff --check` — PASS.
+- `python3 -B test/all-current.py AllProviders.test_presnapshot_pristine_policy_copilot_upgrade`
+  — **1 PASS** (336.403 seconds): current-version policy-only preservation and
+  stable preview/rerun after the generation-list correction.
+- `python3 -B test/published-upgrades-tests.py` — **13 PASS** (gate unit
+  controls, not the 74-case historical installer matrix).
+- `python3 -B test/copilot-astra-native-tests.py` — **7 PASS** (deterministic
+  harness checks only; no paid/native CLI invocation).
 
 ### v0.4.4 release status and limits
 

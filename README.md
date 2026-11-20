@@ -7,7 +7,29 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.4.4: proof-based upgrades and preserving recovery
+## v0.5.0: scoped completion
+
+**Independent final release and root acceptance passed.** Authorized managed work includes
+in-scope corrections, validation, local scoped commits and task bookkeeping.
+Independent fresh reviewer PASS still precedes commit/closure; PASS may carry
+advisory notes without requiring another cycle. Ownership-aware handling
+preserves unrelated staged/unstaged work instead of demanding a globally clean
+tree. Progressing corrections have no arbitrary second-review cap; finite
+nonprogress recovery and actual user/runtime budgets still bind.
+Ordinary next-ready work remains one task; no automatic push or merge.
+
+Predecessor implementation, regression and controlled Copilot/Astra probes
+passed independent review (hq-6f1.1–.3). The native evidence includes one actual
+scoped commit, ownership and permission-denial boundaries, and decision-only
+progress/advisory probes—not a full registered-role/Beads lifecycle or
+comprehensive native unattended execution, which remain **UNQUALIFIED**.
+See [release evidence and limits](docs/install-upgrade-design.md#v050-local-candidate-status-and-limits)
+for exact provenance and final-candidate checks. Historical v0.4.4 counts below
+are not fresh v0.5.0 qualification. Final independent validation passed all
+**25 fresh tests** plus syntax/lint/diff checks (hq-6f1.4 and root hq-6f1).
+Acceptance and publication are separate.
+
+### Retained v0.4.4 release history: proof-based upgrades and preserving recovery
 
 v0.4.4 strengthens upgrade ownership checks with finite historical byte
 identities and pristine manifestless adoption, without blessing unknown or
@@ -16,12 +38,12 @@ retained; guest operations refuse tracked policy writes with recovery guidance.
 Unconfirmed model pairs receive actionable review/Save instructions rather than
 silent confirmation. The installer remains standalone, including `curl | bash`.
 
-**Offline qualification and independent final release review passed.**
-The candidate has **359/359 baseline checks across 13 groups**, by composite
+**v0.4.4 offline qualification and independent final release review passed.**
+That candidate had **359/359 baseline checks across 13 groups**, by composite
 coverage of completed methods/scenarios and reviewed focused fixes—not one
 uninterrupted run—and **3/3 working-candidate published-upgrade smoke cases**.
 Earlier **74 published-tag cases and seven reported checks** remain separate
-reviewed provenance, not fresh executions of this candidate. Exhaustive
+reviewed provenance, not fresh executions of v0.5.0. Exhaustive
 intermediate-history coverage is deferred; universal automatic migration is not
 claimed. Unproven native files, including edited roles without ownership
 evidence, require explicit backup/reconciliation; tracked guest policy writes
@@ -95,7 +117,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-After v0.4.4 is published to `main`, the existing alias fetches it on its next
+After v0.5.0 is published to `main`, the existing alias fetches it on its next
 invocation; no alias change is needed:
 
 ```sh
@@ -116,14 +138,22 @@ curl -fsSL https://raw.githubusercontent.com/ebowman/domestique/main/domestique.
 
 `main` is a **moving channel**: its next invocation downloads whatever is
 published there. There is no background auto-update; a tag alone does not update
-main or an alias. Refresh cached native instructions if needed after upgrading.
+main or an alias. Canonical workflow emitters ship in the installer; changing a
+source checkout does not update installed policies or already-loaded native
+instructions. Apply a reviewed preserving upgrade in the intended project,
+then reload stale instructions/registrations as appropriate for the client
+(a fresh invocation may be required; Codex conversation roles may be immutable).
+Compare the installer plan/version, installed projections and effective native
+roles when diagnosing drift; a manifest version alone does not prove loaded
+instructions. No user configuration or ignored local policy is auto-refreshed
+by release preparation.
 For repeatable dry-run/apply, replace `main` in **both** commands with the same
 full reviewed published commit SHA. Pinning script bytes does not reverse
 migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional; v0.4.4's safe-upgrade changes are included in remote
+A source checkout is optional; v0.5.0's completion changes are included in remote
 `dom` after publication to `main`. To inspect reviewed source locally, run from
 that checkout against a disposable Git project:
 
@@ -206,9 +236,10 @@ ordinary next-ready work still defaults to **one reviewed bead**.
    execution gate without a questionnaire, Save or restart merely because fresh.
 2. Before managed-bead execution, establish native role registration, effective choices,
    precedence and availability. Saved configuration is **not loaded native choice**.
-   Reload only if current registrations are actually stale/unknown. Review and
-   explicitly dispose of tracked changes before goal work; never auto-stage,
-   stash or hide them.
+   Reload only if current registrations are actually stale/unknown. Baseline
+   HEAD, tracked/untracked edits and index ownership before work or branch changes.
+   Preserve separable unrelated changes exactly; overlapping edits, collisions
+   or uncertain ownership need narrow clarification, not blanket cleanup.
 3. Unconfirmed/stale pairs stop with `dom-models --confirm` (review current bytes)
    or `--configure` (change choices). Missing/unsafe state needs preserving
    installer repair. Unavailable/mismatched choices stop execution, not planning:
@@ -218,8 +249,9 @@ ordinary next-ready work still defaults to **one reviewed bead**.
 
 ### Complete named goals
 
-These v0.4.0 instructions passed implementation/regression review and bounded
-offline checks, not native unattended-execution qualification.
+v0.5.0 retains v0.4.0 named scope and adds the scoped completion
+contract below. Focused offline and controlled native evidence does not qualify
+full native unattended execution.
 
 Use these in the native client with a real project Beads ID:
 
@@ -249,9 +281,25 @@ Codex `$domestique-goal`, and Copilot `/domestique-v2-copilot-goal`.
 After every 15 successful closures, report progress and continue to bead 16,
 31 and beyond while healthy. Explicit current user count/time/cost limits and
 actual runtime/session budgets still bind; this does not bypass provider limits
-or carry authority into another session. Cancellation/objective change, actual
-tool/permission/model/Beads errors, observed regressions, material ambiguity or
-failed review stop the run (review gaps allow one corrective pass, then fresh review).
+or carry authority into another session. Cancellation/objective change and
+material scope/ownership/criteria ambiguity stop affected work. Actual permission
+denial, unavailable native roles or required model/configuration changes need
+narrow operator disposition, never alternate-tool/model bypass.
+
+Record concrete acceptance blockers after each independent review. In-scope
+corrections and task-caused regressions may proceed to fresh review while
+specific blockers decrease, mandatory criteria remain intact and budgets permit.
+Unchanged findings or oscillation require a different bounded approach with a
+hypothesis, changed action and observable success check. The default allowance
+is **two nonprogress recovery attempts per bead, cumulative**, never reset by
+temporary progress or rephrasing. If neither restores progress, or nonprogress
+recurs after the allowance is spent, stop with concrete unfinished state.
+This is not a two-review or total-cycle cap. Only transient reads or demonstrably
+idempotent operations allow up to **two retries per failing operation**; then
+report ERROR and stop affected work. Reconcile uncertain writes before repeating;
+never blindly retry claim/create/commit/close. Failed queries are not empty queues.
+Baseline unrelated failures honestly; uncertain causality or unmet mandatory
+criteria remain blockers. PASS may include advisory notes, not new requirements.
 
 A blocked or other-owned branch does not prevent other authorized runnable work.
 No ready work with unfinished descendants means **BLOCKED**, not complete.
@@ -263,12 +311,20 @@ work for an explicitly authorized continuation, not a silent restart.
 Execution stays sequential on a dedicated non-default branch, with independent
 review before scoped commit/closure. The parent hands off verified ownership;
 children do not reclaim already-owned in-progress work. Use focused relevant
-tests/lint, not a mandatory full suite every bead or checkpoint. Dirty/uncertain
-work needs human disposition; guest personal state stays local and unstaged.
+tests/lint, not a mandatory full suite every bead or checkpoint. The parent
+finalizes exact owned reviewed paths/hunks without redundant permission, preserving
+unrelated work and index entries; implementers do not commit/close and reviewers
+remain read-only. Verify an existing reviewed commit instead of duplicating it;
+a clean reviewed state is valid, and no-code completion needs durable evidence,
+not an empty commit. Commit failure stops without closure; reconcile Git state.
+Close failure preserves the commit ID and unfinished/unknown task state; reconcile
+before retrying, never recommit or roll back to hide failure. Explicitly review
+and stage only known in-scope normal-mode task metadata; never broadly stage
+`.beads/`. Guest personal state stays local and unstaged.
 The loop does not automatically merge or push; [separate explicit Git approval](#direct-git-requests)
 still permits those operations. Model defaults and model-editor Save are unchanged.
 See [scope](docs/install-upgrade-design.md#complete-named-goals) and
-[qualification limits](docs/install-upgrade-design.md#v040-release-status-and-limits).
+[qualification limits](docs/install-upgrade-design.md#v050-local-candidate-status-and-limits).
 
 ### Direct Git requests
 
@@ -395,7 +451,7 @@ setup and other installer calls are unchanged).
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.4.4 qualification limits](docs/install-upgrade-design.md#v044-release-status-and-limits).
+ancestry and the [v0.5.0 qualification limits](docs/install-upgrade-design.md#v050-local-candidate-status-and-limits).
 
 ## License
 
