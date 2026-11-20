@@ -1,6 +1,7 @@
 """Current standalone all-provider contract. Offline, no native clients."""
 import itertools
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -350,7 +351,9 @@ class AllProviders(unittest.TestCase):
         self.bin.mkdir()
         (self.bin / "python3").symlink_to(sys.executable)
         self.env = dict(os.environ, HOME=str(self.work / "home"),
-                        PATH=f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin")
+                        PATH=f"{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+                        GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_CONFIG_COUNT="0", GIT_TERMINAL_PROMPT="0")
         for key in ("BASH_ENV", "ENV", "CDPATH", "PYTHONPATH"):
             self.env.pop(key, None)
         for client in ("claude", "codex", "copilot", "domestique2", "bd"):
@@ -4309,6 +4312,270 @@ class AllProviders(unittest.TestCase):
         self.assertNotIn("Model setup skipped", result.stdout)
         self.assertNotIn("Configuration incomplete", result.stderr)
         self.assertTrue((top / ".claude/agents/implementer.md").is_file())
+
+
+class CompletionQualification(unittest.TestCase):
+    """Installed instruction contracts and real upgrades, NOT native execution."""
+
+    RELEASE = "98bdea04732c4862d45ddae6eed25436e09182d9"
+    GOALS = {
+        "claude": ".claude/commands/dom-goal.md",
+        "codex": ".agents/skills/domestique-goal/SKILL.md",
+        "copilot": ".github/skills/domestique-v2-copilot-goal/SKILL.md",
+    }
+    # Paired boundaries, independent of the emitter implementation. These are
+    # instructions for the named scenarios, not a simulated model/state machine.
+    CASES = {
+        "owned_diff_vs_unrelated_or_uncertain_baseline": (
+            "finalize that reviewed dirty work without asking again",
+            "exact reviewed paths/hunks with literal Git pathspecs",
+            "commit excludes unrelated pre-staged changes",
+            "Preserve separable unrelated edits and staged changes exactly",
+            "never implicitly adopt existing user edits",
+            "Overlapping edits, untracked collisions, uncertain ownership",
+            "stop only affected work for narrow clarification",
+        ),
+        "clean_reviewed_commit_vs_no_code": (
+            "Verify an existing reviewed task commit against the accepted diff",
+            "A clean reviewed state is not a blocker",
+            "A reviewed no-code decision closes with durable review/evidence and no empty commit",
+            "Then close and verify actual state",
+            "never recommit or roll back to hide failure",
+        ),
+        "third_progressing_cycle_vs_finite_stagnation": (
+            "Further corrective passes are allowed while specific blockers decrease",
+            "no mandatory criteria are weakened",
+            "Unchanged findings or oscillation",
+            "stated hypothesis, changed action and observable success check",
+            "at most two such recovery attempts per bead, cumulative, never reset",
+            "nonprogress recurs after that allowance is spent, stop",
+            "NOT a two-review or total work-cycle cap",
+        ),
+        "pass_advisory_vs_required_blocker": (
+            "For each blocker cite the existing mandatory criterion, observed evidence",
+            "Do not invent criteria or silently downgrade real unmet requirements",
+            "a PASS advisory note is not a new requirement or another mandatory implementation/review cycle",
+            "Independent fresh PASS remains mandatory before commit or closure",
+            "must not override a genuine blocker just to finish",
+        ),
+        "transient_read_vs_denial_or_uncertain_write": (
+            "Only transient reads or demonstrably idempotent operations may be retried",
+            "at most two retries per failing operation",
+            "Reconcile uncertain write results before any repeat",
+            "no blind claim/create/commit/close retries",
+            "Failed or unusable queries never mean empty, complete or successful",
+            "Actual permission denial, credentials/model/config changes",
+            "require narrow operator disposition, not retries or bypass",
+        ),
+    }
+    OBSOLETE = (
+        r"second non-PASS", r"fails review twice", r"two failed reviews",
+        r"require a clean tracked", r"if dirty, stop", r"any observed regression",
+        r"errors stop immediately, no retry", r"dirtiness requires disposition",
+        "dirtiness (including configuration edits) requires human",
+        r"default bound is ONE reviewed bead",
+        "allow one corrective", "at most one corrective",
+        r"no third pass", r"do not force a third pass",
+        r"ERROR: stop and preserve state, no retry",
+        r"any actual native/Beads/infrastructure error: stop immediately",
+        r"observed regression or actual native/Beads/infrastructure error stops immediately",
+        r"Beads-induced dirtiness needs disposition", r"no two-error grace",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = AllProviders()
+        cls.fixture.setUp()
+        cls.addClassCleanup(cls.fixture.doCleanups)
+        spec = importlib.util.spec_from_file_location(
+            "completion_published", SOURCE.parent / "test/published-upgrades.py")
+        cls.published = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.published)
+        # Fail on tag drift; replay its installer AND same-revision support.
+        actual = cls.published.history.git("rev-parse", "v0.4.4^{commit}").strip()
+        if actual != cls.RELEASE:
+            raise AssertionError(f"v0.4.4 ref drift: {actual} != {cls.RELEASE}")
+        cls.released = cls.fixture.work / "released"
+        cls.published.export(cls.RELEASE, cls.released)
+        cls.seeds = {}
+        for guest in (False, True):
+            root = cls.fixture.root(f"completion-current-{guest}")
+            cls.fixture.run_dom(root, *(("--guest",) if guest else ()))
+            cls.seeds[guest] = root
+
+    def surfaces(self, guest):
+        parents = [
+            "CLAUDE.local.md" if guest else "CLAUDE.md",
+            ".agents/skills/domestique/SKILL.md",
+            ".github/skills/domestique-v2-copilot/SKILL.md",
+        ]
+        if not guest:
+            parents += ["AGENTS.md", ".github/copilot-instructions.md"]
+        return [*parents, *self.GOALS.values(), ".claude/commands/goal.md",
+                *ROLES, *(p.replace("implementer", "reviewer") for p in ROLES)]
+
+    def assert_contract(self, root, guest):
+        for rel in self.surfaces(guest):
+            flat = " ".join((root / rel).read_text().split())
+            for case, phrases in self.CASES.items():
+                for phrase in phrases:
+                    self.assertIn(phrase, flat, (guest, rel, case))
+        self.assert_no_legacy(root, guest)
+
+    def assert_no_legacy(self, root, guest):
+        # Only live installed Markdown/TOML, never bases, backups, helpers or
+        # historical fixture source. Include decompose and routing entry layers.
+        live = set(self.surfaces(guest))
+        for directory in (".claude/commands", ".agents/skills", ".github/skills"):
+            live.update(str(p.relative_to(root)) for p in (root / directory).rglob("*.md"))
+        for rel in sorted(live):
+            flat = " ".join((root / rel).read_text().split())
+            for pattern in self.OBSOLETE:
+                self.assertNotRegex(flat, re.compile(re.escape(pattern), re.I), rel)
+
+    def test_paired_completion_boundaries_all_installed_surfaces(self):
+        for guest, root in self.seeds.items():
+            self.assert_contract(root, guest)
+
+    def test_named_goal_reachable_without_widening_ordinary_scope(self):
+        for guest, root in self.seeds.items():
+            self.assert_named_routes(root, guest)
+
+    def assert_named_routes(self, root, guest):
+        self.fixture.assert_static_inventory(root)
+        parents = {
+            "claude": ["CLAUDE.local.md" if guest else "CLAUDE.md"],
+            "codex": [".agents/skills/domestique/SKILL.md"],
+            "copilot": [".github/skills/domestique-v2-copilot/SKILL.md"],
+        }
+        if not guest:
+            parents["codex"].append("AGENTS.md")
+            parents["copilot"].append(".github/copilot-instructions.md")
+        for provider, goal in self.GOALS.items():
+            for parent in parents[provider]:
+                text = " ".join((root / parent).read_text().split())
+                with self.subTest(guest=guest, provider=provider, parent=parent):
+                    self.assertIn(f"Native goal body: `{goal}`", text)
+                    self.assertIn("An ordinary next-ready request remains one bead", text)
+                    self.assertIn("do not invoke another command or fall through", text)
+                    native = " ".join((root / goal).read_text().split())
+                    self.assertIn("## Scoped completion and recovery contract", native)
+                    self.assertIn("Default named epic execution runs to target completion, not ONE or a fixed cap", native)
+                    self.assertIn("Non-epic scope is exactly that resolved bead", native)
+                    self.assertIn("Never substitute other returned work", native)
+                    self.assertIn("continue to bead 16, 31 and onward", native)
+                    if provider != "claude":
+                        self.assertIn(goal, (root / SHARED).read_text())
+                    else:
+                        self.assertEqual((root / goal).read_bytes(),
+                                         (root / ".claude/commands/goal.md").read_bytes())
+
+    def test_contradiction_negative_controls_in_active_output(self):
+        root = self.seeds[False]
+        # Positive new contract plus a stale clause must fail, not merely an
+        # emitter missing the new contract. Restore the disposable seed exactly.
+        paths = [*self.GOALS.values(), *ROLES,
+                 *(p.replace("implementer", "reviewer") for p in ROLES),
+                 SHARED, ".claude/commands/dom-decompose.md"]
+        for index, pattern in enumerate(self.OBSOLETE):
+            path = root / paths[index % len(paths)]
+            original = path.read_bytes()
+            try:
+                path.write_bytes(original + ("\n" + pattern + "\n").encode())
+                with self.assertRaises(AssertionError, msg=str(path)):
+                    self.assert_no_legacy(root, False)
+            finally:
+                path.write_bytes(original)
+
+    def upgrade(self, guest):
+        gate = self.published
+        root = self.fixture.root(f"completion-upgrade-{guest}")
+        flags = ("--guest",) if guest else ()
+        exclude = root / ".git/info/exclude"
+        exclude.write_bytes(b"# release-gate host exclusion\nhost-private.txt\n")
+        config = root / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b'# Independent host config\nmodel = "host-parent-model"\n')
+        host_config = config.read_bytes()
+        (root / "host.txt").write_bytes(b"unrelated user bytes\n")
+        subprocess.run(["git", "add", "host.txt"], cwd=root,
+                       env=self.fixture.env, check=True)
+        model_flags = [arg for provider in STATES for role in ("implementer", "reviewer")
+                       for arg in ("--model", f"{provider}:{role}=fixture/{provider}-{role}")]
+        result = gate.history.run(
+            ["bash", str(self.released / "domestique.sh"), *flags, *model_flags],
+            cwd=root, env=self.fixture.env, timeout=1800)
+        self.assertFalse(result["timeout"], "published installer timed out; inconclusive")
+        self.assertEqual(result["returncode"], 0, result["stdout"] + result["stderr"])
+        # Real old installed output is a failure control, not historical text
+        # searched by the active-output contradiction check.
+        with self.assertRaises(AssertionError):
+            self.assert_contract(root, guest)
+        policies = [p for p in gate.history.POLICIES if (root / p).is_file()]
+        for rel in policies:
+            path = root / rel
+            path.write_bytes(gate.PREFIX + path.read_bytes() + gate.SUFFIX)
+        # An independent custom rule INSIDE the managed block must also survive.
+        policy = root / ("CLAUDE.local.md" if guest else "CLAUDE.md")
+        custom = b"- Host policy: include the fixture acceptance ID in review reports.\n"
+        anchor = b"## Writing briefs\n"
+        self.assertIn(anchor, policy.read_bytes())
+        policy.write_bytes(policy.read_bytes().replace(anchor, anchor + custom))
+        old = gate.history.snapshot(root)
+        choices = gate.roles(old, SCRIPT)
+        self.assertEqual(len(choices), 6)
+        for path, (model, _effort) in choices.items():
+            self.assertTrue(model.startswith("fixture/"), (path, model))
+        before = snapshot(root)
+        self.fixture.run_dom(root, *flags, "--dry-run")
+        self.assertEqual(snapshot(root), before, "preview wrote fixture data")
+        self.fixture.run_dom(root, *flags)
+        self.assert_contract(root, guest)
+        self.assert_named_routes(root, guest)
+        self.assertEqual(config.read_bytes(), host_config)
+        self.assertEqual(gate.roles(gate.history.snapshot(root), SCRIPT), choices)
+        self.assertEqual((root / ".git/index").read_bytes(), old[".git/index"][0])
+        self.assertIn(custom, policy.read_bytes())
+        # Reuse the published gate's full current projection/base, choice,
+        # backup and unknown-data checks; account only for explicit host edits.
+        reference = self.seeds[guest]
+        ref_policy = reference / policy.relative_to(root)
+        original = ref_policy.read_bytes()
+        try:
+            ref_policy.write_bytes(original.replace(anchor, anchor + custom))
+            gate.compare_contract(root, reference, old, SCRIPT, policies, guest=guest)
+        finally:
+            ref_policy.write_bytes(original)
+        if guest:
+            self.assertFalse((root / "AGENTS.md").exists())
+            self.assertFalse((root / ".github/copilot-instructions.md").exists())
+            private = [p for p in gate.history.snapshot(root)
+                       if p != ".codex/config.toml" and
+                       (p.startswith((".claude/", ".codex/", ".github/", ".agents/"))
+                        or p == "CLAUDE.local.md")]
+            # With bd absent, this fixture creates no personal Beads database.
+            # Do not demand exclusions for hypothetical/unowned host metadata.
+            self.assertFalse((root / ".beads").exists())
+            for rel in private:
+                ignored = subprocess.run(["git", "check-ignore", "-q", "--", rel],
+                                         cwd=root, env=self.fixture.env)
+                self.assertEqual(ignored.returncode, 0, rel)
+        stable = byte_snapshot(root)
+        self.fixture.run_dom(root, *flags)
+        self.assertEqual(byte_snapshot(root), stable, "repeat install drift/new backups")
+        print(f"\nv0.4.4 ({self.RELEASE}) -> candidate "
+              f"sha256={hashlib.sha256(SCRIPT.encode()).hexdigest()}: "
+              f"mode={'guest' if guest else 'normal'}, selector=default/all, "
+              "providers=claude,codex,copilot; preview/apply/rerun PASS; "
+              "6 custom role choices, host config/policies, current projections, "
+              "pristine bases, index/backups and privacy checked; filesystem only",
+              flush=True)
+
+    def test_published_v044_preserving_upgrade_normal_all(self):
+        self.upgrade(False)
+
+    def test_published_v044_preserving_upgrade_guest_all(self):
+        self.upgrade(True)
 
 
 if __name__ == "__main__":
