@@ -23,6 +23,7 @@ emit_policy() {
   emit_harness_guard claude policy
   emit_git_authorization
   emit_goal_routing claude
+  emit_completion_contract
   cat <<'DOM_EOF'
 # Orchestration policy
 
@@ -60,7 +61,7 @@ DOM_EOF
 1. For an ordinary next-ready request, `bd ready` → pick one highest-priority unblocked task. An authorized named goal instead uses the native goal body's resolved scope and selection protocol.
 2. Claim/verify the selected task through the ownership handoff above, then delegate it to the `implementer` subagent with that precise assignment brief.
 3. When the implementer returns, delegate verification to the `reviewer` subagent with the same bead id and its done-criteria. The reviewer inspects the real diff, reads the changed files, and runs focused relevant tests/lint in a fresh context — judging the work against the done-criteria, not against the implementer's summary — and returns a pass/fail verdict.
-4. Adjudicate against independent PASS, never agreement of summaries alone. Fingerprint tracked/staged diffs and bead state before/after review; reviewer-caused mutation stops immediately. After PASS, stage only reviewed paths/hunks with literal pathspecs, inspect the staged diff, commit with the bead id, then close and verify actual state. A reviewed no-code decision closes with durable review/evidence and no empty commit. Commit failure stops without closing; close failure preserves the commit and unfinished evidence, never recommit. For gaps, allow one corrective implementer pass then fresh review; a second non-PASS stops, leaving the bead unfinished.
+4. Adjudicate against independent PASS, never agreement of summaries alone. Fingerprint tracked/staged diffs and bead state before/after review; reviewer-caused mutation stops immediately. Finalize owned reviewed work through the completion contract: stage exact reviewed paths/hunks with literal pathspecs, inspect the staged diff, commit with the bead id, then close and verify actual state. Use its existing-commit/no-code and failure reconciliation rules. For gaps, use measurable progress and bounded recovery, then fresh review.
 5. For an ordinary single assignment, **stop and report to the human before dispatching the next task.** Authorized named goals use the native goal body's loop and bounds instead.
 
 ## Named goal mode (/dom-goal; compatibility: /goal)
@@ -83,7 +84,7 @@ DOM_EOF
       ;;
     *)
       cat <<'DOM_EOF'
-- At session end ("land the plane"): file any loose discovered work as beads, then export and commit (`bd export`, then commit `.beads/`). `bd export` writes the git-tracked `.beads/*.jsonl` — that JSONL is the versioned snapshot. There is no `bd sync`; bd is Dolt-backed now, and `bd dolt commit` records local Dolt history only (`.beads/dolt/` is gitignored, so it never affects a clean tree).
+- At session end ("land the plane"): file loose discovered work as beads. In normal mode, export/stage only known project task metadata through the completion contract, not an entire `.beads/` directory or guessed database path. There is no `bd sync`; local Dolt history is not a Git commit.
 DOM_EOF
       ;;
   esac
@@ -127,6 +128,92 @@ Exposed permission/sandbox controls alone are not evidence of denial. Actual
 denial or unavailability means report a concise blocked reason and stop: no
 bypass, retry through other tools, global settings changes or allow-all.
 This does not alter the model editor's explicit Save protections.
+DOM_EOF
+}
+
+# One contract for all managed parent entry points and delegated roles.
+# Authority remains role-scoped; emitting it never authorizes execution itself.
+emit_completion_contract() { cat <<'DOM_EOF'
+## Scoped completion and recovery contract
+This contract applies only to already authorized managed work, after the native
+execution gates; loading it grants no authority. The parent/orchestrator owns
+local commits and task bookkeeping. Implementers remain within their brief and
+never commit or close; reviewers remain read-only in a fresh independent context.
+An authorized task includes necessary in-scope fixes, validation, local scoped
+commits and task bookkeeping without redundant permission. Explicit user
+restrictions still bind. An ordinary next-ready request remains one bead.
+Keep one bead in flight and one scoped commit per changed bead, never batch.
+No automatic push or merge; direct parent Git requests use their separate rules.
+
+### Ownership-aware completion
+Before work or branch changes, baseline HEAD, tracked/untracked edits and the
+index (including configured role files), recording ownership and intended scope.
+Recheck before each new bead and finalization. A globally clean tree is not a
+prerequisite. Preserve separable unrelated edits and staged changes exactly;
+never implicitly adopt existing user edits. Overlapping edits, untracked
+collisions, uncertain ownership or an unsafe branch switch stop only affected
+work for narrow clarification. Never stash, discard, hide or broadly stage them.
+Goal work uses a dedicated non-default task/epic branch without carrying
+unrelated changes into its commits.
+After independent PASS on the exact owned task changes, finalize that reviewed
+dirty work without asking again merely because it is uncommitted. Stage only
+exact reviewed paths/hunks with literal Git pathspecs, inspect the staged diff
+and ensure the commit excludes unrelated pre-staged changes; if that cannot be
+done while preserving the unrelated index, ask narrowly rather than include it.
+Never commit or close unpassed work. Verify an existing reviewed task commit
+against the accepted diff and evidence instead of demanding a duplicate commit.
+A clean reviewed state is not a blocker. A reviewed no-code decision closes with
+durable review/evidence and no empty commit. Then close and verify actual state.
+Commit failure stops without closing; reconcile actual Git state before any
+safe retry. Close failure after commit preserves and reports commit ID and
+actual unfinished/unknown state; never recommit or roll back to hide failure.
+Reconcile actual bead state before retrying a close; unknown results stay
+unfinished/unknown in the report, never assumed successful.
+In normal mode, export/stage only known project task metadata explicitly after
+checking its actual configuration, paths, diff and scope. Review changed
+metadata too; never guess/stage database paths or broad-stage `.beads/`.
+Guest personal state is never staged or committed. Beads-induced dirtiness
+alone is not a reason to block; unknown paths/ownership require clarification.
+
+### Measurable progress and bounded recovery
+Record concrete acceptance blockers and validation evidence after each fresh
+review. Route in-scope gaps and task-caused regressions to the implementer, then
+fresh review. Further corrective passes are allowed while specific blockers
+decrease, no mandatory criteria are weakened, and actual budgets permit.
+Compare findings and evidence, not pass counts or optimistic summaries.
+Unchanged findings or oscillation require a materially different bounded
+approach with a stated hypothesis, changed action and observable success check.
+Default nonprogress allowance: at most two such recovery attempts per bead,
+cumulative, never reset by temporary progress or rephrased findings. If neither
+restores measurable progress, or nonprogress recurs after that allowance is
+spent, stop with concrete blockers and unfinished state. These are nonprogress
+recovery limits, NOT a two-review or total work-cycle cap. State the allowance
+and consumed attempts transparently; respect explicit user limits and actual
+runtime/session budgets, never invent elapsed-time or credit ceilings.
+Run focused relevant tests/lint; broader checks when acceptance requires them.
+Fix in-scope regressions. Baseline unrelated failures with evidence and report
+them honestly, never claim failed checks passed. If causality is uncertain or a
+mandatory criterion remains unmet, retain the blocker; do not silently downgrade.
+Only transient reads or demonstrably idempotent operations may be retried:
+default at most two retries per failing operation, then report ERROR and stop
+affected work. Reconcile uncertain write results before any repeat; no blind
+claim/create/commit/close retries. Failed or unusable queries never mean empty,
+complete or successful; suspend dependent dispatch until valid evidence exists.
+Actual permission denial, credentials/model/config changes, unavailable native
+role selection, unsafe state, ownership/criteria/scope ambiguity and material
+product decisions require narrow operator disposition, not retries or bypass.
+No fallback tools/models, automatic repair or expanded authority for recovery.
+
+### Acceptance blockers versus advisory review
+Every reviewer must independently assess the actual diff and acceptance
+evidence, separating concrete acceptance blockers from advisory improvements.
+For each blocker cite the existing mandatory criterion, observed evidence and
+required correction. Do not invent criteria or silently downgrade real unmet
+requirements. PASS may include advisory notes; a PASS advisory note is not a
+new requirement or another mandatory implementation/review cycle. Report actual
+test/lint commands and outcomes, including baseline failures and uncertainty.
+Independent fresh PASS remains mandatory before commit or closure; the parent
+must not override a genuine blocker just to finish.
 DOM_EOF
 }
 
@@ -178,8 +265,9 @@ emit_goal_scope() { cat <<'DOM_EOF'
    never install/init/repair or search a sibling checkout. This scope computation
    is read-only and needs no model questions, setup, helper verify or dispatch.
    Require successful, parseable, complete output for every query; nonzero exit,
-   missing/malformed/truncated output or unknown semantics means STOP and report
-   the query failure: errors are never an empty queue.
+   missing/malformed/truncated output or unknown semantics suspends dependent
+   dispatch. Apply only the completion contract's safe bounded transient recovery;
+   otherwise STOP and report the query failure: errors are never an empty queue.
 2. Resolve one canonical ID with `bd --readonly show TARGET --json`, retaining
    returned issue_type, status, criteria and the original objective. For a name,
    discover candidates with
@@ -296,7 +384,8 @@ parent must not also claim it. Never send an unspecified claim state.
 The child read-verifies the assignment through the child ownership protocol;
 do not tell it to claim an already owned bead. A mismatched assignment is a
 concrete scope BLOCK, not permission to steal, reopen or reset state. Failed
-commands or unusable output mean ERROR and stop, not an empty queue or repair.
+commands or unusable output mean ERROR, not an empty queue or repair; suspend
+dependent dispatch and use only the completion contract's bounded safe recovery.
 Keep commits and closure in the parent after independent PASS; reviewers remain
 read-only and receive the same actual bead ID, root, scope and done criteria.
 DOM_EOF
@@ -329,7 +418,8 @@ scope/criteria with the brief, not merely the parent's claimed status.
   BLOCK reporting the ID/root and expected versus actual status, assignee and
   scope. Do not steal, reopen, reset state or invent a need for a fresh claim.
 Any failed bd command or missing/malformed/truncated/unusable output means
-ERROR: stop and preserve state, no retry or automatic repair.
+ERROR: preserve state and suspend dependent work; use only the completion
+contract's bounded safe recovery, never blind write retries or automatic repair.
 Never commit or close the bead; the parent does so only after independent PASS.
 DOM_EOF
 }
@@ -348,11 +438,12 @@ DOM_EOF
 You are an implementer. You receive one bounded task and complete exactly that task — nothing more.
 DOM_EOF
   emit_child_assignment
+  emit_completion_contract
   cat <<'DOM_EOF'
 
 ## Operating rules
 - Do the assigned task only. Do not expand scope, refactor adjacent code, or start the next task.
-- Run the project's tests and linter after meaningful changes. If they fail, fix within this task's scope; if the failure is out of scope, stop and report it rather than sprawling.
+- Run focused relevant tests and lint after meaningful changes; broader checks when criteria require them. Fix in-scope failures; baseline and report unrelated failures under the completion contract rather than sprawling or claiming they passed.
 - Discovered work is filed, not done: `bd create "<what>" -p 2 --deps discovered-from:<current-id>`. Do not chase it yourself.
 - Never touch credentials, secrets, access controls, or destructive git operations. Surface these to the orchestrator instead.
 - Implement the brief exactly as written; do not substitute your own interpretation.
@@ -378,6 +469,7 @@ model: opus
 ---
 DOM_EOF
   emit_harness_guard claude
+  emit_completion_contract
   cat <<'DOM_EOF'
 
 You are a reviewer. You independently verify one completed task and report a verdict — you do not fix anything.
@@ -385,7 +477,7 @@ You are a reviewer. You independently verify one completed task and report a ver
 ## Operating rules
 - Judge the work against the bead's done-criteria and the actual changes, not against the implementer's self-report. Assume the summary may be wrong or incomplete; check it against reality.
 - Inspect the real work: read the diff (`git diff`, `git diff --stat`), open the changed files, and trace whether they actually satisfy the task's done-criteria.
-- Run the project's tests and linter yourself. Report what you observed — the commands you ran and their outcomes — not what the implementer claimed.
+- Run focused relevant tests and lint yourself; broader validation when criteria require it. Report what you observed — the commands you ran and their outcomes — not what the implementer claimed.
 - Do not edit code, refactor, or fix problems you find. Do not close or reopen beads. Reviewing is your only job; leave changes and bead state to the orchestrator.
 - Stay in scope: review this task only. Note adjacent problems in one line, but don't chase them.
 - Never touch credentials, secrets, or destructive git operations.
@@ -1688,9 +1780,11 @@ DOM_EOF
 ## End execution gate — continue only for a confirmed, natively ready pair
 Retain the original explicit goal scope, current user limits and actual runtime
 budgets; progress checkpoints never reset a cap or require renewed approval.
-Before goal work,
-ALL tracked/index dirtiness (including configuration edits) requires human
-disposition; never auto-stage, commit, stash, discard or hide it. Always use a
+Before goal work, baseline ALL tracked/index dirtiness (including configuration
+edits) and ownership under the completion contract in the native execution body.
+Preserve separable unrelated changes; ask narrowly for overlap or uncertain
+ownership, not dirtiness alone. Never auto-stage, commit, stash, discard or hide
+unrelated changes. Planning remains planning, not execution authority. Always use a
 fresh independent reviewer context, even when both roles use the same model.
 DOM_EOF
 }
@@ -1789,10 +1883,11 @@ already-closed no-op, BLOCKED, ROOT UNFINISHED, explicit limit reached,
 cancellation/objective change and actual ERROR; these are not new bd statuses.
 Never treat successful parseable `[]` as proof of completion: it is empty only
 for that query. Any failed bd command, nonzero exit, missing/malformed/truncated
-or unusable scoped output, or unknown query semantics means ERROR: stop dispatch
-and preserve state, never convert failure to an empty queue. Actual native
-permission/selection/tool/infrastructure errors stop immediately, no retry
-grace, fallback, automatic repair or bypass.
+or unusable scoped output, or unknown query semantics means ERROR: suspend
+dependent dispatch and preserve state, never convert failure to an empty queue.
+Use only the completion contract's bounded safe transient recovery; actual
+permission denial or unavailable native selection stops for operator disposition,
+never fallback, automatic repair or bypass.
 File loose adjacent work through the existing discovered-from pattern, not
 opportunistic implementation. Preserve guest-state exclusions and unrelated
 edits; never guess/stage database paths. No automatic merge or push. Separately
@@ -1812,6 +1907,7 @@ DOM_EOF
   emit_goal_scope
   emit_claude_model_setup
   emit_parent_assignment
+  emit_completion_contract
   cat <<'DOM_EOF'
 
 Use the read-only execution gate above. Fresh installer-configured defaults and
@@ -1826,27 +1922,27 @@ scope replaces ordinary stop-between-assignments routing; authority ends on
 completion or a stop condition and never carries to another objective/session.
 
 ## Branch isolation (load-bearing)
-Only after target resolution and the read-only execution gate pass, check ALL tracked/index dirtiness (including configured role files). If dirty, stop for human disposition; never auto-stage, commit, stash, discard or hide it. Then create or switch to a dedicated task/epic branch for the resolved target. Never commit to the default branch during this unattended loop. The loop never merges or pushes, including in guest installs; separately explicit parent Git requests use the guidance above.
+Only after target resolution and the read-only execution gate pass, check ALL tracked/index dirtiness (including configured role files) and baseline ownership under the completion contract. Preserve separable unrelated changes; ask narrowly for overlap, uncertain ownership or unsafe switching, not dirtiness alone. Then create or switch to a dedicated task/epic branch for the resolved target. Never commit to the default branch during this unattended loop. The loop never merges or pushes, including in guest installs; separately explicit parent Git requests use the guidance above.
 
 ## Per-cycle loop
 For each cycle:
 1. Use the resolved target's scope/readiness protocol above — pick the highest-priority runnable unfinished in-scope task. Blocked children do not stop other runnable authorized branches. Empty ready requires unfinished/root acceptance inspection below, never outside work.
-2. Require a clean tracked tree/index before a new bead. Unrelated dirtiness or visible untracked collisions/uncertain ownership require human disposition; ignored test caches alone are allowed. Beads-induced dirtiness is not permission to guess/stage database paths.
+2. Recheck baseline edits/index and ownership before a new bead under the completion contract. Preserve separable unrelated work; visible untracked collisions/uncertain ownership require narrow disposition. Ignored test caches are allowed. Beads-induced dirtiness is not permission to guess/stage database paths.
 3. Claim/read-verify it through the parent ownership handoff above unless already owned in flight under its existing brief; never steal other-owner active work.
 4. Dispatch to the `implementer` subagent with the actual ID/root/scope/assignee/claim state from that handoff and a precise brief built from the bead's description, input/output, and done-criteria.
 5. Fingerprint tracked/staged diffs and relevant bead state, then dispatch to a fresh independent `reviewer` subagent with the same bead id and done-criteria. The reviewer runs focused relevant tests/lint and inspects the real work — never trust the implementer's summary. Fingerprint again; reviewer-caused tracked/staged/bead mutation stops immediately. Ignored test caches are allowed.
 6. Adjudicate:
-   - Reviewer PASS → stage exact reviewed paths/hunks with literal Git pathspecs, inspect the staged diff and make one scoped commit including the bead id, never batch/broad-stage. Keep guest personal state out. Then `bd close <id>` and verify actual closed state. A reviewed no-code decision closes with durable review/evidence and no empty commit.
-   - Commit failure → stop, no close. Close failure after commit → preserve and report commit ID and actual unfinished/unknown bead state; never recommit or roll back to hide failure.
-   - Reviewer reports gaps → route at most one corrective pass back to the implementer, then fresh review. A second non-PASS stops with unfinished state and concrete gaps, no third pass.
+   - Reviewer PASS → finalize exact owned reviewed work through the completion contract, including its existing-commit/no-code rules. For changed work not already committed, stage exact reviewed paths/hunks with literal Git pathspecs, inspect the staged diff and make one scoped commit including the bead id, never batch/broad-stage. Keep guest personal state out. Then `bd close <id>` and verify actual closed state.
+   - Commit/close failure → apply the completion contract's state reconciliation and bounded recovery; never close after a failed commit or duplicate an existing commit.
+   - Reviewer reports gaps → route corrective work and fresh review through measurable progress and bounded recovery, not a second-review-failure cap.
 7. After verified closure, continue via the progress/target protocol below, not a terminal per-bead report.
 
-## Stop conditions — halt immediately, do not dispatch further work, and report to the human
-- A bead fails review twice: leave it `in_progress` with notes on what's wrong; do not force a third pass.
-- Any observed regression, including a full-suite regression: stop; no unrelated repair sprawl.
+## Stop conditions — halt affected work and report concrete blockers to the human
+- Exhausted nonprogress recovery or an actual binding budget: leave unpassed work `in_progress` with evidence.
+- Fix task-caused regressions within scope; baseline and report unrelated failures without repair sprawl or false passing claims.
 - A decision needs operator input: spec ambiguity, scope change, or UX/semantics not already settled by the bead's description.
 - Required unapproved config/out-of-project action or conflicting unrelated tracked/index changes: stop for narrow disposition. The loop never pushes.
-- Any actual native/Beads/infrastructure error: stop immediately as below; no two-error grace.
+- Actual errors use only the shared safe bounded recovery; hard permission/model/config/ownership boundaries remain stops.
 
 ## Invariants — restate these to yourself at the end of the report
 - One bead in flight at a time.
@@ -1874,6 +1970,7 @@ These instructions apply only in the actual native Codex client; foreign or
 ambiguous callers stop without work. Installed directories do not identify it.
 DOM_EOF
   emit_child_assignment
+  emit_completion_contract
   cat <<'DOM_EOF'
 
 - Stay inside the brief. Do not refactor adjacent code or start another bead.
@@ -1900,6 +1997,9 @@ You are the domestique reviewer. Independently verify one completed task and
 return a verdict; do not fix anything.
 These instructions apply only in the actual native Codex client; foreign or
 ambiguous callers stop without work. Installed directories do not identify it.
+DOM_EOF
+  emit_completion_contract
+  cat <<'DOM_EOF'
 
 - Judge the bead's done criteria against the real files and diff, not the
   implementer's summary.
@@ -1975,6 +2075,7 @@ DOM_EOF
   emit_goal_routing codex
   emit_codex_role_gate
   emit_parent_assignment
+  emit_completion_contract
   cat <<'DOM_EOF'
 
 Act as the orchestrator: plan, delegate, wait, independently review, and
@@ -1985,10 +2086,10 @@ resolved scope/selection instead of step 1 and its loop bounds instead of step 7
 the remaining implementer/reviewer cycle stays sequential.
 
 1. Use `bd ready`, choose one highest-priority unblocked task. Before new
-   managed work require a clean tracked
-   tree/index and a dedicated non-default task/epic branch. Unrelated dirtiness
-   or visible untracked collisions/uncertain ownership require human disposition;
-   ignored test caches alone are allowed. Never auto-stage/stash/discard/hide it.
+   managed work baseline edits/index and ownership under the completion
+   contract and use a dedicated non-default task/epic branch. Preserve separable
+   unrelated changes; ask narrowly about overlap, collisions or uncertain ownership.
+   Ignored test caches are allowed. Never auto-stage/stash/discard/hide unrelated work.
    Then claim/read-verify through the parent ownership handoff above unless
    already owned in flight under its existing brief;
    never steal another owner's active work.
@@ -2003,16 +2104,17 @@ the remaining implementer/reviewer cycle stays sequential.
 5. Fingerprint tracked/staged diffs and bead state again. Any reviewer-caused
    delta is FAIL and an immediate stop. Report new visible untracked files;
    ignored test artifacts are allowed.
-6. PASS with unchanged fingerprints: stage exact reviewed paths/hunks with
+6. PASS with unchanged fingerprints: finalize owned work through the completion
+   contract, verifying any existing reviewed commit rather than duplicating it.
+   For changed work not already committed, stage exact reviewed paths/hunks with
    literal Git pathspecs, inspect the staged diff, make one scoped authorized
    commit including bead ID, then close and verify actual closed state. A
    reviewed no-code decision closes with durable review/evidence and no empty
    commit. Never broad-stage or guess/stage database paths; exclude guest state.
-   Commit failure stops without closing; close failure preserves and reports
-   commit ID and actual unfinished/unknown state, never recommit or roll back.
-   For gaps allow one corrective implementer pass then fresh review; a second
-   non-PASS stops with unfinished state and concrete gaps. Reviewer mutation,
-   observed regression or actual native/Beads/infrastructure error stops immediately.
+   Commit/close failures use the shared reconciliation and bounded recovery rules.
+   For gaps use measurable progress and bounded corrective work then fresh review.
+   Reviewer mutation stops immediately. Fix task-caused regressions; baseline
+   unrelated failures and use only safe bounded recovery for actual errors.
 7. Stop and report after the ordinary single assignment. Authorized named
    goals instead return to the native goal body's loop and bounds.
 
@@ -2063,6 +2165,7 @@ DOM_EOF
   emit_goal_scope
   emit_codex_model_setup
   emit_parent_assignment
+  emit_completion_contract
   cat <<'DOM_EOF'
 
 # Named goal execution
@@ -2078,8 +2181,9 @@ Retain explicit current user limits and actual runtime budgets.
 
 Only after target resolution and the read-only execution gate pass,
 check ALL tracked/index dirtiness (including configured role
-files). If dirty, stop for human disposition; never auto-stage, commit, stash,
-discard or hide it. Then create/switch to a dedicated task/epic branch.
+files) and baseline ownership under the completion contract. Preserve separable
+unrelated changes; ask narrowly for overlap, uncertain ownership or unsafe
+switching, not dirtiness alone. Then create/switch to a dedicated task/epic branch.
 During this unattended loop, never work on the default branch, merge, or push.
 Then use the resolved scope/readiness protocol above, not the ordinary global
 queue selection or single-assignment stop. Repeat the sequential
@@ -2087,23 +2191,24 @@ queue selection or single-assignment stop. Repeat the sequential
 wait, fingerprint, adjudicate. Claim/read-verify only the selected task through
 the parent ownership handoff above, never other-owner active work or an already
 owned in-flight assignment again. Before a new bead,
-require a clean tracked tree/index; visible untracked collisions/uncertain
-ownership need disposition, ignored test caches alone are allowed.
-PASS means scoped reviewed paths/hunks staged with literal Git pathspecs,
+recheck edits/index and ownership; visible untracked collisions/uncertain
+ownership need narrow disposition, ignored test caches are allowed.
+PASS finalization follows the completion contract, including verification of
+existing reviewed commits and no-code work. For changes not already committed:
+scoped reviewed paths/hunks staged with literal Git pathspecs,
 staged diff inspected, one commit including bead ID, then close and verify
 actual closed state. A reviewed no-code decision closes with durable review/
-evidence and no empty commit. Commit failure stops without closing; close
-failure preserves and reports commit ID and actual unfinished/unknown state,
-never recommit or roll back. Never close unpassed work or broad-stage.
-Beads-induced dirtiness needs disposition, never guess/stage database paths.
+evidence and no empty commit. Commit/close failures use the shared reconciliation
+and bounded recovery rules. Never close unpassed work or broad-stage.
+Handle known normal-mode task metadata explicitly; never guess/stage database paths.
 After verified closure, automatically continue through the protocol below.
 
-Allow one corrective implementer pass then fresh review; a second non-PASS stops
-with unfinished state and concrete gaps. Stop immediately for any observed
-regression (including full-suite regression), material scope ambiguity/operator
-decision, required unapproved config/out-of-project action, actual native/Beads/
-infrastructure error, reviewer-caused tracked/staged or bead-state delta, or
-conflicting unrelated dirtiness. No two-error grace or unrelated repair sprawl.
+Use measurable progress and bounded corrective work then fresh review.
+Fix task-caused regressions; baseline unrelated failures without claiming they
+passed. Stop for exhausted recovery, material scope ambiguity/operator decision,
+required unapproved config/out-of-project action, reviewer-caused tracked/staged
+or bead-state delta, or overlapping/uncertain edits. Actual errors use only the
+shared safe bounded recovery, never permission/model bypass or repair sprawl.
 
 Use focused relevant tests/lint, not a full suite every bead or checkpoint.
 Guest state stays local, excluded from staging/commits.
@@ -2130,6 +2235,7 @@ tools: ["read", "edit", "search", "execute"]
 DOM_EOF
   emit_harness_guard copilot delegated
   emit_child_assignment
+  emit_completion_contract
   cat <<'DOM_EOF'
 Delegated role only: await an explicit bounded brief from the caller, with
 physical project root, bead ID, scope, done criteria and ownership handoff above.
@@ -2152,6 +2258,7 @@ tools: ["read", "search", "execute"]
 ---
 DOM_EOF
   emit_harness_guard copilot delegated
+  emit_completion_contract
   cat <<'DOM_EOF'
 Delegated role only: await the caller's explicit bounded brief, project root,
 bead ID and done criteria. Never start setup or an autonomous workflow.
@@ -2204,6 +2311,7 @@ DOM_EOF
 
 emit_copilot_loop() {
   emit_parent_assignment
+  emit_completion_contract
   cat <<'DOM_EOF'
 ## Bounded native cycle
 This cycle is for explicitly authorized task execution only, never decompose
@@ -2231,8 +2339,9 @@ Missing prerequisites mean STOP, not install/init/repair. Treat brief/model
 data literally, never eval. No credentials or settings changes.
 No automatic push or merge in this cycle; separately explicit parent Git
 requests use the authorization guidance above.
-Before code require a clean tracked tree/index and a dedicated non-default
-task/epic branch. Dirty/uncertain state requires human disposition, not hiding.
+Before code baseline edits/index and ownership under the completion contract
+and use a dedicated non-default task/epic branch. Preserve separable unrelated
+changes; overlapping/uncertain state needs narrow disposition, not hiding.
 One task in flight: verify its real bead, scope and done criteria, claim/read-verify
 through the parent ownership handoff above
 unless already owned in flight under its existing brief; never steal another
@@ -2244,18 +2353,20 @@ Wait. Fingerprint tracked/staged diffs and bead state. Delegate independent
 verification to a fresh `domestique-v2-copilot-reviewer` with the same criteria.
 Reviewer runs relevant tests/lint and inspects real work. Fingerprint again;
 reviewer-caused tracked/staged/bead changes FAIL and stop. Ignored caches are OK.
-At most one corrective pass plus fresh review. Second non-PASS, observed
-regression, ambiguity/scope growth, model/role/tools failure, infrastructure
-failure or a binding current user limit/actual runtime budget means STOP,
-leave unpassed work in_progress. No two-error grace or unrelated repair sprawl.
-Only after PASS stage exact reviewed paths/hunks with literal Git pathspecs, verify
+Use measurable progress and bounded corrective work then fresh review. Fix
+task-caused regressions; baseline unrelated failures without false passing claims.
+Exhausted recovery, ambiguity/scope growth, model/role/permission boundaries or a
+binding current user limit/actual runtime budget means STOP, leave unpassed work
+in_progress. Actual errors use only shared safe bounded recovery, no bypass.
+Only after PASS finalize owned work through the completion contract, including
+verification of existing reviewed commits and no-code work. For changes not
+already committed, stage exact reviewed paths/hunks with literal Git pathspecs, verify
 the staged diff, make one authorized local commit including bead ID, then close
 the bead and verify actual closed state. A reviewed no-code decision closes with
 durable review/evidence and no empty commit. Never broad-stage or close unpassed
-work. Commit failure stops without closing. Close failure after commit preserves
-and reports commit ID and actual unfinished/unknown state; never recommit or
-roll back to hide failure.
-Do not guess/stage database paths. Beads-induced dirtiness requires disposition.
+work. Commit/close failures use the shared reconciliation and bounded recovery
+rules. Do not guess/stage database paths. Handle known normal-mode task metadata
+explicitly; Beads-induced dirtiness alone is not a blocker.
 File adjacent work as discovered-from beads, never implement it opportunistically.
 Report changed paths, actual validations, review, commit/bead state and blockers.
 For an ordinary single assignment, stop after one bead. For authorized named
@@ -2329,9 +2440,11 @@ Fresh installer-configured defaults and saved custom/
 inherited pairs use the read-only gate above without model questions, Save or
 restart merely because fresh. Unconfirmed/stale pairs stop with dom-models
 guidance, never an embedded wizard.
-Only after unchanged confirmation/readiness, require human disposition of ALL
-tracked/index dirtiness (including setup changes), then use a dedicated task/epic
-branch. Never auto-stage/commit/stash/discard/hide setup changes.
+Only after unchanged confirmation/readiness, check ALL tracked/index dirtiness
+(including setup changes) and baseline ownership under the completion contract,
+then use a dedicated task/epic branch. Preserve separable unrelated edits; ask
+narrowly about overlap, uncertain ownership or unsafe switching. Never adopt or
+auto-stage/commit/stash/discard/hide unrelated setup changes.
 Use the resolved scope/readiness protocol above, selecting highest-priority
 runnable unfinished in-scope work serially, then automatically continue after
 verified closure through the progress/target protocol below.
@@ -2553,6 +2666,7 @@ DOM_EOF
   emit_git_authorization
   emit_goal_routing codex
   emit_codex_role_gate
+  emit_completion_contract
   cat <<'DOM_EOF'
 
 This session is the orchestrator. Use `$dom-decompose` (compatibility: `$domestique-decompose`) for planning,

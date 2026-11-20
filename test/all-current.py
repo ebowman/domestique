@@ -875,7 +875,8 @@ class AllProviders(unittest.TestCase):
                     "successful parseable `[]`", "empty only for that query",
                     "Any failed bd command, nonzero exit, missing/malformed/truncated",
                     "unknown query semantics means ERROR",
-                    "Actual native permission/selection/tool/infrastructure errors stop immediately",
+                    "Use only the completion contract's bounded safe transient recovery",
+                    "permission denial or unavailable native selection stops for operator disposition",
                 ):
                     self.assertIn(phrase, flat)
         # Base/root/bootstrap and shared alias layers cannot reintroduce old stops.
@@ -1090,7 +1091,8 @@ class AllProviders(unittest.TestCase):
                     "concrete scope BLOCK reporting the ID/root and expected versus actual",
                     "Do not steal, reopen, reset state or invent a need for a fresh claim",
                     "missing/malformed/truncated/unusable output means ERROR",
-                    "stop and preserve state, no retry or automatic repair",
+                    "preserve state and suspend dependent work",
+                    "bounded safe recovery, never blind write retries or automatic repair",
                     "Never commit or close the bead",
                 ):
                     self.assertIn(phrase, child)
@@ -1161,14 +1163,73 @@ class AllProviders(unittest.TestCase):
                                "no empty commit", "Commit failure", "never recommit",
                                "corrective", "fresh review"):
                     self.assertIn(phrase, flat)
-                self.assertRegex(flat, r"(?i)second non-PASS")
+                for phrase in (
+                    "finalize that reviewed dirty work without asking again",
+                    "baseline HEAD, tracked/untracked edits and the index",
+                    "Preserve separable unrelated edits and staged changes exactly",
+                    "never implicitly adopt existing user edits",
+                    "Overlapping edits, untracked collisions, uncertain ownership",
+                    "commit excludes unrelated pre-staged changes",
+                    "Verify an existing reviewed task commit",
+                    "A clean reviewed state is not a blocker",
+                    "In normal mode, export/stage only known project task metadata",
+                    "Guest personal state is never staged or committed",
+                    "specific blockers decrease",
+                    "Unchanged findings or oscillation",
+                    "at most two such recovery attempts per bead",
+                    "cumulative, never reset",
+                    "nonprogress recurs after that allowance is spent, stop",
+                    "NOT a two-review or total work-cycle cap",
+                    "never invent elapsed-time or credit ceilings",
+                    "Baseline unrelated failures with evidence",
+                    "never claim failed checks passed",
+                    "default at most two retries per failing operation",
+                    "Reconcile uncertain write results before any repeat",
+                    "Actual permission denial, credentials/model/config changes",
+                    "no blind claim/create/commit/close retries",
+                    "concrete acceptance blockers from advisory improvements",
+                    "Do not invent criteria or silently downgrade real unmet requirements",
+                    "PASS may include advisory notes",
+                    "Independent fresh PASS remains mandatory before commit or closure",
+                ):
+                    self.assertIn(phrase, flat)
+                for obsolete in (
+                    "second non-PASS", "Second non-PASS", "fails review twice",
+                    "require a clean tracked", "Require a clean tracked",
+                    "If dirty, stop", "Any observed regression",
+                    "errors stop immediately, no retry",
+                    "dirtiness requires disposition",
+                    "dirtiness (including configuration edits) requires human",
+                ):
+                    self.assertNotIn(obsolete, flat)
                 self.assertRegex(flat, r"(?i)then (?:`bd close <id>`\.?|close(?: the bead)?) and verify actual")
                 self.assertRegex(flat, r"(?i)reviewer-caused (?:tracked/staged|mutation|delta)")
-                self.assertRegex(flat, r"(?i)close failure.*(?:commit ID|preserves the commit)")
+                self.assertRegex(flat, r"(?i)close failure.*commit ID")
                 self.assertIn("unfinished", flat)
+        contract = SCRIPT.split("emit_completion_contract() { cat <<'DOM_EOF'\n", 1)[1].split(
+            "\nDOM_EOF", 1)[0]
+        # All active parent and child surfaces reuse the same contract; this
+        # asserts emitted instructions, not native model behavior.
+        for rel in (
+            "CLAUDE.md", "AGENTS.md", ".claude/commands/dom-goal.md",
+            ".claude/commands/goal.md", ".agents/skills/domestique/SKILL.md",
+            ".agents/skills/domestique-goal/SKILL.md",
+            ".github/copilot-instructions.md",
+            ".github/skills/domestique-v2-copilot/SKILL.md",
+            ".github/skills/domestique-v2-copilot-goal/SKILL.md",
+            *ROLES, *(role.replace("implementer", "reviewer") for role in ROLES),
+        ):
+            with self.subTest(contract_surface=rel):
+                self.assertEqual((root / rel).read_text().count(contract), 1)
+        # Shared entry only routes to the native body; it owns no execution loop.
+        self.assertNotIn(contract, (root / SHARED).read_text())
         for provider, role in zip(STATES, ROLES):
             reviewer = (root / role.replace("implementer", "reviewer")).read_text()
             self.assertNotIn("full test/lint suite", reviewer, provider)
+            for phrase in ("For each blocker cite the existing mandatory criterion",
+                           "a PASS advisory note is not a", "read-only",
+                           "Do not invent criteria or silently downgrade"):
+                self.assertIn(phrase, reviewer, provider)
 
     def test_parent_git_guest_privacy_and_bootstrap(self):
         root = self.root("parent-git-guest")
@@ -1362,7 +1423,8 @@ class AllProviders(unittest.TestCase):
                            "`domestique-v2-copilot-implementer` for implementation",
                            "`domestique-v2-copilot-reviewer` for fresh independent review",
                            "confirmed-pair, physical-root, readiness, model, precedence",
-                           "and override gates", "Only after PASS stage exact reviewed paths"):
+                           "and override gates", "Only after PASS finalize owned work",
+                           "stage exact reviewed paths/hunks with literal Git pathspecs"):
                 self.assertIn(phrase, body)
         commands = list((root / ".claude/commands").glob("*.md"))
         self.assertEqual({p.stem for p in commands},
