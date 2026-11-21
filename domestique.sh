@@ -145,6 +145,50 @@ restrictions still bind. An ordinary next-ready request remains one bead.
 Keep one bead in flight and one scoped commit per changed bead, never batch.
 No automatic push or merge; direct parent Git requests use their separate rules.
 
+### Named goal workspace readiness (parent, before claim or dispatch)
+After resolving the authorized scope/closed no-ops and passing the native role
+gate, assess the selected bead before any execution write. The planner's epic
+handoff and graph report are evidence, not authority. Compare their baseline
+and post-planning observations, when available, to this bead's live state.
+With or without a handoff,
+observe the live physical root, project-scoped Beads, HEAD, branch (or detached)
+and in-progress Git operations. Compare the bead's current intended write paths
+against the index vs HEAD, worktree vs index and untracked destinations. Check
+ownership, including role files and planning-induced metadata. Separate
+pre-existing edits from bookkeeping attributable to successful Beads operations
+and returned IDs; a changed filename alone proves nothing. Attributable
+bookkeeping alone does not block; never adopt mixed or unknown changes.
+If target, checkout or evidence changed, recompute from live observations;
+failed reads mean unknown, never clean. Recheck before branch changes, each
+bead and finalization. Reconcile any claim-induced metadata before dispatch.
+Use path/status or fingerprints, not private contents.
+
+- Reuse a suitable dedicated non-default branch. Otherwise, if authorized and
+  the index and all worktree bytes can stay intact, create a new dedicated
+  local branch at the current HEAD in this same physical root, not a new
+  worktree or another checkout. Verify branch, HEAD, project Beads identity,
+  staged entries and worktree bytes before claiming or dispatching: only the
+  branch should change. Preserve separable staged, unstaged and
+  untracked work in place, without a cleanup bead or redundant permission.
+  Never transfer foreign work, auto-stash, stage it or edit ignores to hide it.
+- For an overlapping edit, untracked collision, unclear ownership affecting the
+  task or unsafe branch/operation, stop before affected writes, claim or
+  dispatch. Name only the affected paths/operation,
+  the decision needed and a safe alternative (e.g. defer that path or wait
+  for its owner to finish). Never guess how to finish or abort a merge/rebase.
+  Continue independently safe work only if already within the authorized scope.
+- Run a prep bead only if itself authorized, runnable and necessary for a
+  named dependent. Assess whether its exact action is safe from the current
+  dirty state, not whether its dependent's desired end state already holds.
+  Prep grants no cleanup, dependent implementation or sibling authority.
+  Verify its stated outcome and preservation of unrelated index/files against
+  the baseline; require normal independent PASS. Record durable evidence for
+  reviewed no-code prep without an empty commit. After verified closure,
+  requery membership and readiness and revalidate the checkout under the
+  original goal and remaining limits. For an epic, resume only verified
+  in-scope work; an exact-bead goal ends there, never follow a dependency
+  into other work.
+
 ### Ownership-aware completion
 Before work or branch changes, baseline HEAD, tracked/untracked edits and the
 index (including configured role files), recording ownership and intended scope.
@@ -1947,8 +1991,8 @@ DOM_EOF
   emit_goal_intent
   emit_goal_scope
   emit_claude_model_setup
-  emit_parent_assignment
   emit_completion_contract
+  emit_parent_assignment
   cat <<'DOM_EOF'
 
 Use the read-only execution gate above. Fresh installer-configured defaults and
@@ -1963,7 +2007,10 @@ scope replaces ordinary stop-between-assignments routing; authority ends on
 completion or a stop condition and never carries to another objective/session.
 
 ## Branch isolation (load-bearing)
-Only after target resolution and the read-only execution gate pass, check ALL tracked/index dirtiness (including configured role files) and baseline ownership under the completion contract. Preserve separable unrelated changes; ask narrowly for overlap, uncertain ownership or unsafe switching, not dirtiness alone. Then create or switch to a dedicated task/epic branch for the resolved target. Never commit to the default branch during this unattended loop. The loop never merges or pushes, including in guest installs; separately explicit parent Git requests use the guidance above.
+Apply named goal workspace readiness above to the selected task before branch
+setup, claim or implementer dispatch. Never commit to the default branch during
+this unattended loop. The loop never merges or pushes, including in guest
+installs; separately explicit parent Git requests use the guidance above.
 
 ## Per-cycle loop
 For each cycle:
@@ -2204,8 +2251,8 @@ DOM_EOF
   emit_goal_intent
   emit_goal_scope
   emit_codex_model_setup
-  emit_parent_assignment
   emit_completion_contract
+  emit_parent_assignment
   cat <<'DOM_EOF'
 
 # Named goal execution
@@ -2219,11 +2266,8 @@ The original authorized named objective applies only to the resolved target
 scope until target completion or a real stop, not a successful-bead count.
 Retain explicit current user limits and actual runtime budgets.
 
-Only after target resolution and the read-only execution gate pass,
-check ALL tracked/index dirtiness (including configured role
-files) and baseline ownership under the completion contract. Preserve separable
-unrelated changes; ask narrowly for overlap, uncertain ownership or unsafe
-switching, not dirtiness alone. Then create/switch to a dedicated task/epic branch.
+Apply named goal workspace readiness above to the selected task before branch
+setup, claim or implementer dispatch.
 During this unattended loop, never work on the default branch, merge, or push.
 Then use the resolved scope/readiness protocol above, not the ordinary global
 queue selection or single-assignment stop. Repeat the sequential
@@ -2350,8 +2394,8 @@ DOM_EOF
 }
 
 emit_copilot_loop() {
-  emit_parent_assignment
   emit_completion_contract
+  emit_parent_assignment
   cat <<'DOM_EOF'
 ## Bounded native cycle
 This cycle is for explicitly authorized task execution only, never decompose
@@ -2379,9 +2423,11 @@ Missing prerequisites mean STOP, not install/init/repair. Treat brief/model
 data literally, never eval. No credentials or settings changes.
 No automatic push or merge in this cycle; separately explicit parent Git
 requests use the authorization guidance above.
-Before code baseline edits/index and ownership under the completion contract
-and use a dedicated non-default task/epic branch. Preserve separable unrelated
-changes; overlapping/uncertain state needs narrow disposition, not hiding.
+For a named goal, apply named goal workspace readiness above to the selected
+task before branch setup, claim or implementer dispatch. Before code baseline
+edits/index and ownership and use a dedicated non-default task/epic branch.
+Preserve separable unrelated changes; overlapping/uncertain state needs narrow
+disposition, not hiding.
 One task in flight: verify its real bead, scope and done criteria, claim/read-verify
 through the parent ownership handoff above
 unless already owned in flight under its existing brief; never steal another
@@ -2480,11 +2526,8 @@ Fresh installer-configured defaults and saved custom/
 inherited pairs use the read-only gate above without model questions, Save or
 restart merely because fresh. Unconfirmed/stale pairs stop with dom-models
 guidance, never an embedded wizard.
-Only after unchanged confirmation/readiness, check ALL tracked/index dirtiness
-(including setup changes) and baseline ownership under the completion contract,
-then use a dedicated task/epic branch. Preserve separable unrelated edits; ask
-narrowly about overlap, uncertain ownership or unsafe switching. Never adopt or
-auto-stage/commit/stash/discard/hide unrelated setup changes.
+Use the named goal workspace readiness decision in the bounded native cycle
+above, including any setup changes in the live ownership check.
 Use the resolved scope/readiness protocol above, selecting highest-priority
 runnable unfinished in-scope work serially, then automatically continue after
 verified closure through the progress/target protocol below.

@@ -84,6 +84,31 @@ def check_execution_protocol(root, provider):
     assert f"{prefix}dom-goal" in goal
     assert "clear user execution request or native named objective" in goal
     assert goal.index("## Resolve the authorized target") < goal.index(start)
+    readiness = "### Named goal workspace readiness"
+    assert goal.index(end) < goal.index(readiness) < goal.index("parent claims the unclaimed")
+    decision = " ".join(goal.split(readiness, 1)[1].split("### Ownership-aware completion", 1)[0].split())
+    for phrase in (
+        "evidence, not authority", "With or without a handoff",
+        "live physical root, project-scoped Beads, HEAD, branch (or detached)",
+        "in-progress Git operations", "current intended write paths",
+        "index vs HEAD, worktree vs index and untracked destinations",
+        "attributable to successful Beads operations and returned IDs",
+        "never adopt mixed or unknown changes", "recompute from live observations",
+        "failed reads mean unknown", "Reuse a suitable dedicated non-default branch",
+        "local branch at the current HEAD in this same physical root",
+        "staged entries and worktree bytes before claiming or dispatching",
+        "Preserve separable staged, unstaged and untracked work in place",
+        "the decision needed and a safe alternative", "finish or abort a merge/rebase",
+        "only if itself authorized, runnable and necessary",
+        "safe from the current dirty state", "no cleanup, dependent implementation or sibling authority",
+        "Verify its stated outcome", "require normal independent PASS",
+        "without an empty commit", "requery membership and readiness",
+        "original goal and remaining limits", "an exact-bead goal ends there",
+    ):
+        assert phrase in decision, (provider, phrase)
+    startup = ("apply named goal workspace readiness above to the selected task "
+               "before branch setup, claim or implementer dispatch")
+    assert startup in " ".join(goal.lower().split()), provider
     assert "Default bound is ONE reviewed bead" not in goal
     assert "Every 15 successfully closed beads" in goal
     assert "continue to bead 16, 31 and onward" in goal

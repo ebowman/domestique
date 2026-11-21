@@ -982,7 +982,6 @@ for path in (root / "AGENTS.md", skills / "domestique/SKILL.md"):
         assert phrase in " ".join(text.split()), phrase
     assert "questionnaire INLINE" not in text
     assert text.index("## Role model gate") < text.index("`bd ready`")
-assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create/switch")
 for role in ("implementer", "reviewer"):
     assert (b"domestique-model-setup:" in
             (root / f".codex/agents/{role}.toml").read_bytes()) == (role == "implementer")

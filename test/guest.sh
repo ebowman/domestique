@@ -615,7 +615,6 @@ for phrase in (
 assert "questionnaire INLINE" not in policy + decompose + goal
 assert "selected role model" in policy
 assert "Sonnet" not in policy + decompose and "Opus" not in policy
-assert goal.index("check ALL tracked/index dirtiness") < goal.index("Then create or switch")
 for role in ("implementer", "reviewer"):
     assert (b"domestique-model-setup:" in
             (root / f".claude/agents/{role}.md").read_bytes()) == (role == "implementer")
