@@ -693,6 +693,31 @@ class ModelSetup(unittest.TestCase):
                             pair.apply(**prepared)
                         self.assertFalse(list(root.rglob(".domestique-model-setup-*")))
 
+    def test_planning_workspace_handoff_in_native_bodies(self):
+        for provider, rel in DECOMPOSE.items():
+            with self.subTest(provider=provider):
+                text = (self.seed / rel).read_text()
+                plan = text.split("\n# Decompose into beads\n", 1)[1]
+                self.assertTrue(plan.lstrip().startswith("## Workspace readiness handoff"))
+                flat = " ".join(plan.split())
+                for phrase in (
+                    "Before the first graph write", "bound physical worktree root",
+                    "HEAD, branch (or detached)", "in-progress Git operation",
+                    "index vs HEAD", "worktree vs index", "untracked destinations",
+                    "failed reads mean unknown", "No prep child", "same HEAD",
+                    "separable edits", "one bounded prep child", "options, exact outcome",
+                    "only children that need that outcome depend on prep",
+                    "ask narrowly", "short handoff on the epic", "fingerprints",
+                    "Never include diffs, contents or secrets", "stay local",
+                    "specific successful operations and their returned IDs",
+                    "pre-existing, attributable and mixed/unknown",
+                    "without updating the epic again", "not goal authority",
+                    "must recheck the actual checkout",
+                ):
+                    self.assertIn(phrase, flat)
+                goal = (self.seed / rel.replace("decompose", "goal")).read_text()
+                self.assertNotIn("## Workspace readiness handoff", goal)
+
     def test_planning_routes_bypass_setup_at_every_entry_layer(self):
         # Emitted protocol checks, not a simulation of native assistant behavior.
         for guest in (False, True):

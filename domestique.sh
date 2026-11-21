@@ -1791,6 +1791,48 @@ DOM_EOF
 
 emit_claude_model_setup() { emit_execution_gate claude; }
 
+emit_planning_handoff() { cat <<'DOM_EOF'
+
+# Decompose into beads
+
+## Workspace readiness handoff
+Before the first graph write, sketch each child's intended write paths. Observe
+only the bound physical worktree root: identify HEAD, branch (or detached),
+and any in-progress Git operation. Compare intended paths with staged changes
+(index vs HEAD), unstaged changes (worktree vs index) and untracked destinations.
+Use read-only observations; failed reads mean unknown, not clean.
+
+- No prep child for a suitable dedicated non-default branch, for safe local
+  branch creation at the same HEAD that preserves index and worktree, or for
+  separable edits. Leave those edits untouched; branch setup belongs to goal.
+- Only for a concrete, necessary in-scope action with known ownership and a
+  safe starting state, plan one bounded prep child. Specify options, exact
+  outcome and how to verify it. Make only children that need that outcome
+  depend on prep, not the reverse. Do not execute it.
+- For overlap, uncertain ownership, unsafe switching, a foreign Git operation
+  or a missing choice, name the affected paths/operation and ask narrowly.
+  Do not invent a cleanup child or block independent work.
+
+Put a short handoff on the epic: identify the root without exposing private
+absolute paths (use a root fingerprint if needed), branch/HEAD, operation,
+intended scope, relevant path/status or fingerprints, decision and unknowns.
+Use fingerprints in place of sensitive names. Never include diffs, contents or
+secrets. Guest Beads and harness state stay local; no tracked ignore edits.
+
+Compare the baseline with observations after graph writes, including Beads
+exports. Attribute only deltas supported by specific successful operations and
+their returned IDs; a changed metadata path alone proves nothing. Separate
+pre-existing, attributable and mixed/unknown changes. Include that distinction
+in the epic handoff; after its final write reobserve and report any further
+export with the graph, without updating the epic again.
+
+Graph writes are the only planning writes. Never switch or create branches or
+worktrees, stage, stash, reset, commit, claim, close, dispatch or perform prep.
+This handoff is evidence, not goal authority: separately authorized execution
+must recheck the actual checkout rather than replay the plan.
+DOM_EOF
+}
+
 emit_decompose() { cat <<'DOM_EOF'
 ---
 description: Claude Code only; never match in another harness. Decompose a goal or spec into a beads epic with bounded, dependency-ordered tasks.
@@ -1801,9 +1843,8 @@ DOM_EOF
   emit_git_authorization
   emit_decompose_routing
   emit_claude_model_setup
+  emit_planning_handoff
   cat <<'DOM_EOF'
-
-# Decompose into beads
 
 Decompose the following into a beads work graph: $ARGUMENTS
 
@@ -2136,9 +2177,8 @@ DOM_EOF
   emit_git_authorization
   emit_decompose_routing
   emit_codex_model_setup
+  emit_planning_handoff
   cat <<'DOM_EOF'
-
-# Decompose into beads
 
 Use the goal or specification in the invoking prompt.
 
@@ -2408,8 +2448,8 @@ DOM_EOF
   emit_git_authorization
   emit_decompose_routing
   emit_copilot_model_setup
+  emit_planning_handoff
   cat <<'DOM_EOF'
-# Decompose into beads
 
 On an explicit planning request, create one epic and bounded child
 tasks using the existing project-scoped bd. Each task has one deliverable,
