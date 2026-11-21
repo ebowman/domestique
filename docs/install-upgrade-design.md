@@ -253,6 +253,52 @@ information on failure; do not blindly roll back.
    a goal. After a configuration detour, give a fresh explicit goal naming the
    intended target; a fresh valid install alone needs no renewed authorization.
 
+   #### Proposed: workspace handoff from decompose to goal
+
+   This is an acceptance contract for subsequent implementation, not a feature of
+   released v0.5.0. Within the active harness, an explicit planning request still
+   authorizes only the Beads plan (epic, bounded children, real dependencies and
+   graph report). No role inspection/setup, delegation, claim, closure, source
+   edit, branch change, staging or commit is part of planning.
+
+   **Read-only observation.** Before plan writes, identify the physical worktree
+   root, HEAD commit and branch (or detached state), and any in-progress Git
+   operation. Compare each child's intended write paths with the index relative
+   to HEAD, worktree relative to the index, and untracked paths that could collide.
+   Report the baseline and the effects of actual planning writes with the plan:
+   use paths/status or fingerprints, not diffs, private file contents or secrets.
+   Distinguish pre-existing changes from metadata attributable to specific
+   successful Beads operations and their returned IDs. A changed path after a
+   write is not by itself proof of authorship. Mark unknown paths, attribution or
+   branch suitability explicitly; neither a directory name nor a role filename
+   establishes ownership.
+
+   **Decision at execution.** The handoff is evidence, not authority. On a named,
+   authorized goal, resolve scope/closed no-ops and apply the existing read-only
+   role gate. Before any execution write, claim or dispatch, observe the actual
+   checkout again, including metadata changed by planning. Reclassify against the
+   current target; recheck before branch changes, each bead and finalization.
+   Never treat a failed read as a clean result.
+
+   | Decision | When and what to do |
+   | --- | --- |
+   | Proceed as-is | Reuse a suitable dedicated non-default branch. If a new dedicated local branch at the current HEAD would preserve the index and all worktree bytes, create it at goal startup, not as a preparation bead. |
+   | Bounded preparation | Plan a prerequisite only for a specific necessary, in-scope action with known ownership, a safe starting state and a verifiable result. Name the dependent work and what makes it ready; do not make the prerequisite itself depend on that result. Execute it only under the ordinary goal gates. |
+   | Ask about overlap | If a collision, uncertain ownership, unsafe switch, foreign merge/rebase or unresolved user choice prevents safe progress, identify the affected operation/paths and ask for the missing decision. Do not assign a cleanup bead, finish or abort someone else's operation, stash, reset, discard or broadly stage. |
+
+   **Fixture acceptance.** Compare branch/HEAD, staged entries, worktree bytes
+   and actual Beads state before planning, after planning and at goal startup.
+   Only the requested graph changes during planning; the following are execution
+   outcomes, not a global cleanliness test:
+
+   | Fixture | Observable result |
+   | --- | --- |
+   | Clean | No prep child. Reuse the suitable branch or create the dedicated branch at the same HEAD; index and files unchanged by branch setup. Only then claim the authorized ready task (do not reclaim an already-owned assignment). |
+   | Separable staged, unstaged and untracked changes | No cleanup, prep child or redundant permission. Start the scoped task as above; unrelated staged entries and worktree bytes survive startup and the reviewed task commit unchanged and excluded from that commit. |
+   | Overlapping staged/unstaged edit or untracked destination | Ask narrowly before affected branch/index/file changes, claim, dispatch or closure. Keep the plan and user's edits intact; independently safe authorized work need not wait. |
+   | Changed since plan | Recompute, don't replay: a newly separable change survives; a new collision stops affected work before mutation or claim. Recheck planning-induced metadata too: attributable bookkeeping alone does not block; mixed or unknown changes cannot be adopted as plan output. |
+   | Guest | Permit the same safe host task/branch and local Beads lifecycle. Personal Beads and harness state stay local, never staged or committed; no tracked ignore edits to hide them. In normal mode only reviewed, known in-scope project metadata may enter a scoped commit. |
+
 <a id="upcoming-named-goals-reviewed-candidate"></a>
 
 ### Complete named goals
