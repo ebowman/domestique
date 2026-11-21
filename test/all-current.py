@@ -2162,6 +2162,185 @@ class AllProviders(unittest.TestCase):
             set(native) | {rel + ".bak.20000101000000" for rel in native})
         return root, policy, pristine
 
+    def isolate_ancestor_fixture(self):
+        # No inherited GIT_DIR, alternate objects, index override or config.
+        self.env = dict(HOME=self.env["HOME"], PATH=self.env["PATH"], TMPDIR=str(self.work),
+                        LC_ALL="C", GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                        GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="", GIT_TERMINAL_PROMPT="0",
+                        GIT_AUTHOR_DATE="2000-01-01T00:00:00Z",
+                        GIT_COMMITTER_DATE="2000-01-01T00:00:00Z")
+
+    def mixed_legacy_fixture(self, name):
+        """Disposable acceptance input; all provider content is public installer output."""
+        self.isolate_ancestor_fixture()
+        root = self.root(name)
+
+        def published(rev):
+            return subprocess.check_output(
+                ["git", "-C", str(SOURCE.parent), "show", rev + ":domestique.sh"],
+                text=True, env=self.env)
+
+        released = published("067569a331539883c326a5d221e0e5837efefddd")
+        for provider in ("codex", "copilot"):
+            self.run_dom(root, "--platform", provider, "--guest", script=released)
+        self.run_dom(root, script=published("e12f0fc30bea68ac63d97d3c4b24bd0abdd1d305"))
+        git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+               "-c", "commit.gpgsign=false"]
+        policy = root / "CLAUDE.md"
+        policy.write_bytes(b"Synthetic host introduction.\n\n" + policy.read_bytes() +
+                           b"\nSynthetic host footer.")
+        roles = [root / f".claude/agents/{role}.md" for role in ("implementer", "reviewer")]
+        subprocess.run([*git, "add", "--", "CLAUDE.md", ".claude"], check=True, env=self.env)
+        subprocess.run([*git, "commit", "-qm", "Original native roles"], check=True, env=self.env)
+        for path, old in zip(roles, (b"sonnet", b"opus")):
+            line = b"\nmodel: " + old + b"\n"
+            raw = path.read_bytes()
+            self.assertEqual(raw.count(line), 1)
+            path.write_bytes(raw.replace(line, b"\nmodel: gpt-6-astra\n"))
+        subprocess.run([*git, "commit", "-qam", "Local role selections"], check=True, env=self.env)
+        return root
+
+    def ancestor_resolver(self):
+        lib = self.model_library("claude")
+        for emitter in ("emit_historical_identity_library", "emit_installer_inventory_library"):
+            source = SCRIPT.split(emitter + "() {\n", 1)[1]
+            body = source.split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
+            exec(compile(body, str(SOURCE), "exec"), lib)
+        return lib["native_ancestor_candidate"]
+
+    def test_mixed_legacy_default_refusal_and_ancestor_proposals(self):
+        root = self.mixed_legacy_fixture("mixed-legacy")
+        self.assertFalse((root / STATES["claude"]).exists())
+        for provider in ("codex", "copilot"):
+            self.assertTrue((root / STATES[provider] / "manifest").is_file())
+        self.assertEqual((root / STATES["copilot"] / "mode").read_bytes(), b"guest\n")
+        before = snapshot(root)  # includes index, guest excludes and all untracked files
+        result = self.run_dom(root, ok=False)
+        self.assertIn("cannot establish ownership of native path .claude/agents/implementer.md",
+                      result.stderr)
+        resolve = self.ancestor_resolver()
+        for role in ("implementer", "reviewer"):
+            rel = f".claude/agents/{role}.md"
+            raw = subprocess.check_output(["git", "show", "HEAD^:" + rel], cwd=root, env=self.env)
+            live = (root / rel).read_bytes()
+            self.assertIn(b"\nmodel: gpt-6-astra\n", live)
+            answer = resolve(root, "claude", rel, "normal")
+            self.assertEqual(answer["status"], "candidate")
+            self.assertEqual(answer["live_sha256"], hashlib.sha256(live).hexdigest())
+            self.assertEqual(answer["proposal"]["base_bytes"], raw)
+            if role == "implementer":
+                # Its original normal-only bytes do NOT acquire a guest identity
+                # because another provider now has a sticky guest marker.
+                wrong_mode = resolve(root, "claude", rel, "guest")
+                self.assertEqual((wrong_mode["status"], wrong_mode["proposal"]), ("no-match", None))
+            self.assertNotEqual(raw, live)
+        self.assertEqual(before, snapshot(root))
+
+    def test_native_ancestor_exact_head(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("exact-head")
+        git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+               "-c", "commit.gpgsign=false"]
+        def run(*args):
+            return subprocess.check_output([*git, *args], env=self.env, text=True).strip()
+
+        tagged = run("rev-parse", "HEAD")
+        run("commit", "-qm", "Actual branch tip", "--allow-empty")
+        actual = run("rev-parse", "HEAD")
+        run("update-ref", "refs/tags/HEAD", tagged)
+        resolve = self.ancestor_resolver()
+        def evidence():
+            before = snapshot(root)
+            answer = resolve(root, "claude", ".claude/agents/reviewer.md", "normal")
+            self.assertEqual(before, snapshot(root))
+            return answer["status"], (answer["proposal"] or {}).get("commit")
+
+        self.assertEqual(evidence(), ("candidate", actual))
+        run("switch", "-q", "--detach", actual)
+        self.assertEqual(evidence(), ("candidate", actual))
+        run("symbolic-ref", "HEAD", "refs/heads/unborn")
+        self.assertEqual(evidence(), ("unknown-history", None))
+
+    def test_native_ancestor_negative_evidence(self):
+        self.isolate_ancestor_fixture()
+        resolve = self.ancestor_resolver()
+        root, _, _ = self.presnapshot_policy_fixture("evidence")
+        rel = ".claude/agents/reviewer.md"
+        path = root / rel
+        def check(status, target=root, provider="claude", path=rel, mode="normal"):
+            before = snapshot(root)
+            answer = resolve(target, provider, path, mode)
+            self.assertEqual((answer["status"], answer["proposal"]), (status, None))
+            self.assertEqual(before, snapshot(root))
+
+        check("unsupported-path", provider="copilot")
+        check("unsupported-path", path="../" + rel)
+        check("unsupported-path", mode="unknown")
+        link = self.work / "linked-root"
+        link.symlink_to(root)
+        check("unsafe", target=link)
+        state = root / STATES["claude"]
+        state.mkdir()
+        check("existing-state")
+        state.rmdir()
+        git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+               "-c", "commit.gpgsign=false"]
+        tip = subprocess.check_output([*git, "rev-parse", "HEAD"], env=self.env)
+        shallow = root / ".git/shallow"
+        shallow.write_bytes(tip)
+        check("unknown-history")
+        shallow.unlink()
+        alternates = root / ".git/objects/info/alternates"
+        alternates.write_bytes(b"unused-alternate\n")
+        check("unknown-history")
+        alternates.unlink()
+        promisor = root / ".git/objects/pack/fixture.promisor"
+        promisor.touch()
+        check("unknown-history")
+        promisor.unlink()
+
+        # Second public pristine reviewer, distinct raw identity at the SAME path.
+        other = self.root("earlier")
+        old = subprocess.check_output(["git", "-C", str(SOURCE.parent), "show",
+                                       "57b7d16196bd39d2a13a70df2cc015d2777a1417:domestique.sh"],
+                                      text=True, env=self.env)
+        self.run_dom(other, script=old)
+        path.write_bytes((other / rel).read_bytes())
+        subprocess.run([*git, "commit", "-qam", "Second recognized base"], check=True, env=self.env)
+        check("ambiguous")
+        path.write_bytes(b"x" * 1048577)
+        subprocess.run([*git, "commit", "-qam", "Oversize history"], check=True, env=self.env)
+        path.write_bytes(b"safe current file\n")
+        check("limit")
+        path.unlink()
+        path.symlink_to("implementer.md")
+        check("unsafe")
+        subprocess.run([*git, "commit", "-qam", "Nonregular entry"], check=True, env=self.env)
+        path.unlink()
+        path.write_bytes(b"safe current file\n")
+        check("unsafe")
+
+        # A pristine file only at another path (including a .bak) proves nothing.
+        absent = self.root("no-match")
+        p = absent / rel
+        p.parent.mkdir(parents=True)
+        p.write_bytes(b"local only\n")
+        p.with_suffix(".bak").write_bytes((other / rel).read_bytes())
+        self.assertEqual(resolve(absent, "claude", rel, "normal")["status"], "unknown-history")
+        subprocess.run([*git, "-C", str(absent), "add", "."], check=True, env=self.env)
+        subprocess.run([*git, "-C", str(absent), "commit", "-qm", "Wrong path"],
+                       check=True, env=self.env)
+        # Even a reachable branch ref is outside the inspected HEAD ancestry.
+        branch_git = [*git, "-C", str(absent)]
+        subprocess.run([*branch_git, "switch", "-qc", "other-tip"], check=True, env=self.env)
+        p.write_bytes((other / rel).read_bytes())
+        subprocess.run([*branch_git, "commit", "-qam", "Unmerged base"], check=True, env=self.env)
+        subprocess.run([*branch_git, "switch", "-q", "-"], check=True, env=self.env)
+        self.assertEqual(resolve(absent, "claude", rel, "normal")["status"], "no-match")
+
     def test_presnapshot_pristine_policy_copilot_upgrade(self):
         root, policy, pristine = self.presnapshot_policy_fixture("pre-snapshot")
         released = subprocess.check_output(

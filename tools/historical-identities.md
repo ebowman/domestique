@@ -74,6 +74,39 @@ bases, preserves model/effort selections and outside-policy bytes, and never
 claims `.bak.*` siblings. Custom owned pairs retain their existing preserving
 merge/review-and-Save requirements.
 
+### Candidate ancestors (internal evidence only)
+
+`native_ancestor_candidate(root, provider, rel, mode)` in the emitted installer
+inventory library is **not called by installation**. It accepts a safe existing
+native path at a physical Git root without that provider's snapshot state.
+`candidate` includes the live SHA-256 separately from a proposal containing the
+exact historical base bytes, their SHA-256 and one witnessing commit/blob ID.
+Only complete HEAD ancestry (all parents, exact path, no renames, other refs,
+index, backups, filters or textconv) and the existing raw identity table count.
+Two distinct recognized bases are `ambiguous`, not “pick the newest.”
+Neither a unique proposal nor a matching current file grants ownership.
+
+Limits per path: 128 commits, 32 distinct blobs, 1 MiB per blob, 20 seconds of
+Git inspection; at most 32,768 entries in the inspected Git metadata directories
+and 64 KiB of local config. Only conventional local SHA-1 repositories: no
+gitfiles/linked worktrees, shallow, grafted, alternate or promisor stores,
+symlinked metadata, local config includes or repository extensions. No fetch,
+scratch, index refresh or config writes. `no-match` means a completed search;
+unsafe, unsupported, existing-state, incomplete/unknown history or an exhausted
+limit never returns a partial proposal. This is point-in-time evidence, not
+protection against concurrent replacement or authority to apply it later.
+
+Focused offline reproduction: run `python3 -B test/all-current.py
+AllProviders.test_mixed_legacy_default_refusal_and_ancestor_proposals
+AllProviders.test_native_ancestor_exact_head
+AllProviders.test_native_ancestor_negative_evidence` (one command). The reusable
+`mixed_legacy_fixture` replays local `067569a` guest provider outputs and
+`e12f0fc` Claude output in a disposable repository. It commits both original
+roles, then both `gpt-6-astra` edits. The ordinary default refusal leaves the
+entire fixture, including the Git index and guest visibility evidence, unchanged.
+Both roles have normal-mode candidates; the original implementer has **no**
+guest-mode match. Another provider's sticky mode is not Claude provenance.
+
 Projection rules:
 
 * Historical evidence comes only from output sets referenced by successful

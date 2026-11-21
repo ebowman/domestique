@@ -6008,6 +6008,137 @@ model_pair_managed() {
 emit_installer_inventory_library() {
   emit_historical_identity_library
   cat <<'PY'
+def native_ancestor_candidate(root, provider, rel, mode):
+    """Read-only evidence, never an ownership, selection or merge decision."""
+    import time
+    from types import SimpleNamespace
+
+    answer = {"status": "unknown-history", "live_sha256": None, "proposal": None}
+    states = {"claude": ".claude", "codex": ".codex", "copilot": ".github"}
+    root = Path(root)
+    if ((provider, rel, mode) not in _INSTALLER_IDENTITIES or provider not in states or
+            not any(part in Path(rel).parts for part in ("agents", "commands", "skills"))):
+        return dict(answer, status="unsupported-path")
+    try:
+        if not root.is_absolute() or root != root.resolve(strict=True):
+            return dict(answer, status="unsafe")
+        # Share the installer's physical path, regular file, ownership and size checks.
+        _, contents = Pair.read_snapshot(SimpleNamespace(root=root, files=[rel]))
+        if os.path.lexists(root / states[provider] / ".domestique"):
+            return dict(answer, status="existing-state")
+        answer["live_sha256"] = sha(contents[rel])
+    except (OSError, ValueError, RuntimeError):
+        return dict(answer, status="unsafe")
+
+    db = root / ".git"
+    deadline = time.monotonic() + 20
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0",
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
+           "GIT_ALLOW_PROTOCOL": "", "GIT_TERMINAL_PROMPT": "0"}
+
+    def git(*args, config=False):
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError
+        return subprocess.run(
+            ["git", *(("--git-dir=" + str(db), "-c", "core.hooksPath=/dev/null",
+                       "-c", "core.commitGraph=false") if not config else ()), *args],
+            cwd="/" if config else root, env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            check=True, timeout=budget).stdout
+
+    try:
+        # Do not discover a parent repository, follow gitfiles/alternates, honor
+        # grafts or consult external includes. Unsupported storage is not proof.
+        if not stat.S_ISDIR(db.lstat().st_mode):
+            return dict(answer, status="unsafe")
+        if any(os.path.lexists(db / p) for p in ("commondir", "shallow")):
+            return answer
+        # Plumbing can follow filesystem links even when the tree entry is safe.
+        # Qualify its local metadata inputs before the first repository command.
+        stack = [db / n for n in ("HEAD", "config", "objects", "refs", "info", "packed-refs")]
+        count = 0
+        while stack:
+            path = stack.pop()
+            if not os.path.lexists(path):
+                continue
+            kind = path.lstat().st_mode
+            if stat.S_ISDIR(kind):
+                with os.scandir(path) as entries:
+                    for entry in entries:
+                        count += 1
+                        if count > 32768 or time.monotonic() >= deadline:
+                            return dict(answer, status="limit")
+                        stack.append(Path(entry.path))
+            elif not stat.S_ISREG(kind):
+                return dict(answer, status="unsafe")
+            elif path.suffix == ".promisor":
+                return answer
+        if any(os.path.lexists(db / p) for p in ("info/grafts", "objects/info/alternates",
+                                                 "objects/info/http-alternates")):
+            return answer
+        if (db / "config").stat().st_size > 65536:
+            return dict(answer, status="limit")
+        keys = git("config", "--no-includes", "--file", str(db / "config"),
+                   "--name-only", "--null", "--list", config=True).split(b"\0")
+        if any(k.startswith((b"include.", b"includeif.", b"extensions.")) or
+               k in (b"core.worktree", b"core.alternaterefscommand") or k.endswith(b".promisor")
+               for k in keys):
+            return answer
+        if git("rev-parse", "--show-toplevel") != os.fsencode(root) + b"\n":
+            return answer
+        # Exact pseudoref lookup (including detached HEAD), not revision DWIM:
+        # an unborn branch must not borrow refs/tags/HEAD as its ancestry.
+        head = git("show-ref", "--head", "--verify", "--hash", "HEAD")
+        if not re.fullmatch(b"[a-f0-9]{40}\n", head):
+            return answer
+        tip = head.rstrip(b"\n")
+        if git("cat-file", "-t", tip) != b"commit\n":
+            return answer
+        commits = git("rev-list", "--max-count=129", tip, "--").splitlines()
+        if len(commits) > 128:
+            return dict(answer, status="limit")
+        if not commits or not all(re.fullmatch(b"[a-f0-9]{40}", c) for c in commits):
+            return answer
+
+        seen, proposal = set(), None
+        parts = Path(rel).parts
+        for commit in commits:
+            tree = commit
+            for i, part in enumerate(parts):
+                row = git("ls-tree", "-z", tree, "--", part)
+                if not row:
+                    break  # Path absent in this commit; no rename following.
+                match = re.fullmatch(rb"([0-7]+) (tree|blob|commit) ([0-9a-f]{40})\t"
+                                     + re.escape(os.fsencode(part)) + b"\0", row)
+                if not match:
+                    return answer
+                perm, kind, tree = match.groups()
+                if i < len(parts) - 1:
+                    if (perm, kind) != (b"040000", b"tree"):
+                        return dict(answer, status="unsafe")
+                elif kind != b"blob" or perm not in (b"100644", b"100755"):
+                    return dict(answer, status="unsafe")
+                elif tree not in seen:
+                    seen.add(tree)
+                    if len(seen) > 32 or int(git("cat-file", "-s", tree)) > LIMIT:
+                        return dict(answer, status="limit")
+                    if git("cat-file", "-t", tree) != b"blob\n":
+                        return answer
+                    raw = git("cat-file", "blob", tree)  # raw object; no filters/textconv
+                    digest = sha(raw)
+                    if installer_identity(provider, rel, mode, digest):
+                        if proposal and proposal["sha256"] != digest:
+                            return dict(answer, status="ambiguous")
+                        proposal = dict(commit=commit.decode(), blob=tree.decode(),
+                                        sha256=digest, base_bytes=raw)
+        return dict(answer, status="candidate" if proposal else "no-match", proposal=proposal)
+    except (TimeoutError, subprocess.TimeoutExpired):
+        return dict(answer, status="limit")
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return answer
+
 def installer_inventories(provider, files, policies, helper):
     import itertools
     # Finite source-backed inventories, NOT today's inventory minus a helper.
