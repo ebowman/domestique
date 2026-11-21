@@ -253,10 +253,24 @@ information on failure; do not blindly roll back.
    a goal. After a configuration detour, give a fresh explicit goal naming the
    intended target; a fresh valid install alone needs no renewed authorization.
 
-   #### Proposed: workspace handoff from decompose to goal
+   #### Candidate: workspace handoff from decompose to goal
 
-   This is an acceptance contract for subsequent implementation, not a feature of
-   released v0.5.0. Within the active harness, an explicit planning request still
+   This is the working candidate contract, not a feature of published v0.5.0.
+   For example, `/dom-decompose Add a CSV header check` returns a graph and
+   handoff; a separate `/dom-goal <returned-epic-id>` authorizes execution.
+   Codex uses `$dom-decompose` and `$dom-goal`. If the client still says to
+   clean the index first, inspect the **installed native bodies**, not just the
+   version string: look for `Workspace readiness handoff` in decompose and
+   `Named goal workspace readiness` in goal. For Copilot these are
+   `.github/skills/domestique-v2-copilot-{decompose,goal}/SKILL.md`.
+   If missing, preview `bash /path/to/candidate/domestique.sh "$TARGET"
+   --platform copilot --dry-run` (retain `--guest` for a guest install);
+   review the preview before applying without `--dry-run`. Do not force over
+   local policy. If disk is current but the loaded instructions are stale,
+   refresh the native session and issue a fresh explicit named goal. A real
+   overlap still needs a decision on the affected path, not a different prompt.
+
+   Within the active harness, an explicit planning request still
    authorizes only the Beads plan (epic, bounded children, real dependencies and
    graph report). No role inspection/setup, delegation, claim, closure, source
    edit, branch change, staging or commit is part of planning.
@@ -298,6 +312,36 @@ information on failure; do not blindly roll back.
    | Overlapping staged/unstaged edit or untracked destination | Ask narrowly before affected branch/index/file changes, claim, dispatch or closure. Keep the plan and user's edits intact; independently safe authorized work need not wait. |
    | Changed since plan | Recompute, don't replay: a newly separable change survives; a new collision stops affected work before mutation or claim. Recheck planning-induced metadata too: attributable bookkeeping alone does not block; mixed or unknown changes cannot be adopted as plan output. |
    | Guest | Permit the same safe host task/branch and local Beads lifecycle. Personal Beads and harness state stay local, never staged or committed; no tracked ignore edits to hide them. In normal mode only reviewed, known in-scope project metadata may enter a scoped commit. |
+
+   **Qualification boundary (hq-ha2.4).** Run
+   `python3 -B test/copilot-astra-native-tests.py --handoff /tmp` for the
+   controlled fixtures. Each installs the candidate in a fresh Git root and
+   retains its graph, branch/HEAD, index, diffs and file fingerprints before
+   planning, after planning and across goal startup. The graph is synthetic
+   JSON, not a live Beads database. Decisions, planning writes, branch setup
+   and task commits in these seven cases are **fixture operations**, not actions
+   observed from a planner or goal agent. Guest tests use a pre-existing local
+   Beads exclusion and the installer's guest harness exclusions.
+   **7/7 fixture cases passed** (dirty, guest, tracked overlap, untracked
+   collision, stale collision, stale disjoint, already-ready branch). Evidence:
+   `/tmp/hq-ha2.4-wyfs68uc/`. For example, the dirty fixture's scoped commit
+   `04076cb` changed only `owned.txt`; `staged.txt` remained pre-staged and the
+   tracked synthetic graph remained unstaged. Two installed planning/goal
+   projection tests across the three providers and seven runner unit tests
+   also passed; those are offline checks.
+
+   The separate opt-in `--native-cli /absolute/path/to/copilot` runs only one
+   action probe (180-second session deadline). It supplies installed contract
+   text, simulated scope/role checks and a simulated independent PASS; only
+   the client may start the branch and finalize the reviewed change. Inspect
+   the transcript, usage and Git snapshots, not just exit status. On `2ee8b83`,
+   Copilot CLI **1.0.114** exited 1: `No authentication information found.`
+   Requested `gpt-6-astra`; **actual model: none** (zero requests, empty
+   `modelMetrics`). No tool action, branch switch or commit; the disjoint
+   staged entry remained intact. Evidence: `/tmp/hq-ha2.4-psx7w4iz/native/`.
+   No credential lookup or retry by the harness. **Native dirty-start
+   continuation is unqualified**; neither this probe nor the Git simulations
+   establish actual Beads lifecycle, role dispatch or independent review.
 
 <a id="upcoming-named-goals-reviewed-candidate"></a>
 

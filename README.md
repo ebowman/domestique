@@ -29,6 +29,22 @@ are not fresh v0.5.0 qualification. Final independent validation passed all
 **25 fresh tests** plus syntax/lint/diff checks (hq-6f1.4 and root hq-6f1).
 Acceptance and publication are separate.
 
+### Candidate: from a dirty checkout to a named goal
+
+In Claude or Copilot, for example, run `/dom-decompose Add a CSV header check`.
+Read the returned epic, dependencies and workspace handoff. **Planning stops
+there.** When ready, run `/dom-goal <returned-epic-id>` (use `$dom-decompose`
+and `$dom-goal` in Codex). An unrelated staged README edit can stay staged:
+execution rechecks the target paths and preserves both index and file contents
+when starting the dedicated branch and committing reviewed work. If your edit
+overlaps the CSV code, identify which change belongs to whom or defer that
+path; don't stash everything just to start.
+
+This handoff is in the working candidate, **not published v0.5.0**. If planning
+reports no handoff or execution demands a clean tree, [check the installed
+instructions and active session](docs/install-upgrade-design.md#candidate-workspace-handoff-from-decompose-to-goal)
+before changing the checkout.
+
 ### Retained v0.4.4 release history: proof-based upgrades and preserving recovery
 
 v0.4.4 strengthens upgrade ownership checks with finite historical byte

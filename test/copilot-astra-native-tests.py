@@ -1,4 +1,5 @@
 """Deterministic harness checks only: no model calls and no native PASS claims."""
+import argparse
 import importlib.util
 import json
 from pathlib import Path
@@ -161,5 +162,184 @@ class Harness(unittest.TestCase):
             self.assertEqual(json.loads((Path(directory) / "result.json").read_text()), result)
 
 
+GRAPH = ".beads/fixture-graph.json"
+SKILL = ".github/skills/domestique-v2-copilot-{}/SKILL.md"
+BRANCH = "fixture/handoff"
+
+
+def handoff_case(out, case, cli=None):
+    """Real installed instructions and Git. Graph, planner and gate inputs are simulations."""
+    out.mkdir()
+    home = out / "home"
+    home.mkdir()
+    env, overrides = native.environment(home / "copilot")
+    (home / "copilot").mkdir()
+    env["HOME"] = overrides["HOME"] = str(home)
+    root = out / "project"
+    root.mkdir()
+
+    def git(*args):
+        return native.git(root, env, *args)
+
+    graph = root / GRAPH
+    guest = case == "guest"
+    git("init", "-q", "-b", BRANCH if case == "ready" else "main")
+    # Pre-existing personal Beads exclusion, NOT installer ownership of host state.
+    if guest:
+        with (root / ".git/info/exclude").open("a") as f:
+            f.write("\n.beads/\n")
+    bindir = out / "bin"
+    bindir.mkdir()
+    (bindir / "python3").symlink_to(sys.executable)
+    subprocess.run(["bash", str(native.SOURCE), str(root), "--platform", "copilot",
+                    *(["--guest"] if guest else [])], cwd=root,
+                   env=dict(env, PATH=f"{bindir}:/usr/bin:/bin:/usr/sbin:/sbin"),
+                   check=True, capture_output=True, timeout=180)
+    plan_path = root / SKILL.format("decompose")
+    goal_path = root / SKILL.format("goal")
+    plan = plan_path.read_text().split("## Workspace readiness handoff\n", 1)[1].split(
+        "must recheck the actual checkout rather than replay the plan.", 1)[0]
+    plan += "must recheck the actual checkout rather than replay the plan."
+    assert plan in plan_path.read_text()
+    completion = native.contract_bytes(native.SOURCE.read_bytes()).decode()
+    assert completion.rstrip() in goal_path.read_text()
+    graph.parent.mkdir(exist_ok=True)
+    outside = {"id": "other", "parent": None, "needs": []}
+    native.write_json(graph, [outside])
+    for path in native.FILES:
+        (root / path).write_text("base\n")
+    git("add", ".")  # synthetic clean seed only
+    git("commit", "-qm", "synthetic installed baseline")
+    if guest:
+        for path in (GRAPH, SKILL.format("goal")):
+            assert git("check-ignore", path).strip() == path
+            assert not git("ls-files", "--", path)
+    if case not in ("ready", "stale-collision", "stale-disjoint"):
+        (root / "staged.txt").write_text("unrelated staged\n")
+        git("add", "--", "staged.txt")
+        (root / "unstaged.txt").write_text("unrelated unstaged\n")
+        (root / "notes.txt").write_text("unrelated untracked\n")
+    target = "new.txt" if case in ("collision", "stale-collision") else "owned.txt"
+    if case in ("overlap", "collision"):
+        (root / target).write_text("user edit\n")
+        if case == "overlap":
+            git("add", "--", target)
+            (root / target).write_text("later user edit\n")
+
+    def observe(label):
+        snap = native.snapshot(root, env, include_local_config=True)
+        snap.update(branch=git("branch", "--show-current").strip(),
+                    graph=json.loads(graph.read_text()), exclude=(root / ".git/info/exclude").read_text(),
+                    tree={str(p.relative_to(root)): native.digest(p.read_bytes())
+                          for p in root.rglob("*")
+                          if ".git" not in p.relative_to(root).parts and p.is_file()})
+        native.write_json(out / (label + ".json"), snap)
+        return snap
+
+    def decision():
+        # Controlled path-based reference decision; NOT a native planner.
+        return "ask:" + target if git("status", "--porcelain=v1", "-uall", "--", target) else "proceed"
+
+    before = observe("before-plan")
+    planned = decision()
+    nodes = [outside, {"id": "epic", "parent": None, "needs": [], "decision": planned,
+                       "branch": before["branch"], "head": before["head"].strip()},
+             {"id": "fixture-1", "parent": "epic", "needs": [], "write": target},
+             {"id": "verify", "parent": "epic", "needs": ["fixture-1"]}]
+    native.write_json(graph, nodes)
+    post = observe("after-plan")
+    assert before["graph"] == [outside] and post["graph"] == nodes
+    scope = [n for n in post["graph"] if n["parent"] == "epic"]
+    assert [n["id"] for n in scope if not n["needs"]] == ["fixture-1"]
+    assert [(n["id"], n["needs"]) for n in scope if n["needs"]] == [("verify", ["fixture-1"])]
+    assert all(before[k] == post[k] for k in ("branch", "head", "index", "exclude"))
+    assert {p for p in before["tree"] if before["tree"][p] != post["tree"][p]} == {GRAPH}
+    assert before["tree"].keys() == post["tree"].keys()
+    if case == "stale-collision":
+        (root / target).write_text("new user collision\n")
+    if case == "stale-disjoint":
+        (root / "notes.txt").write_text("after planning\n")
+    current = decision()
+    if case == "native":
+        # Simulated pending, reviewed change, not a tool action by the model.
+        (root / target).write_text("reviewed\n")
+    start = observe("before-goal")
+    if case == "native":
+        prompt = (native.PREAMBLE + "\nInstalled planning handoff:\n" + plan +
+                  "\nInstalled goal contract:\n" + completion +
+                  "\nControlled scoped resume: apply the workspace gate for fixture-1. "
+                  "Scope resolution, role checks and independent PASS are simulated. "
+                  "See .beads/fixture-graph.json for the simulated plan (only its change "
+                  "from the seed is attributed to planning; do not commit it). "
+                  "You are authorized to start on dedicated fixture/handoff at current HEAD "
+                  "if safe, verify startup preservation, then finalize pending reviewed "
+                  "work locally. " + native.OWNERSHIP + native.FIXTURE_READ_INSTRUCTIONS +
+                  "\nAdditionally authorized: git switch only to create fixture/handoff "
+                  "at current HEAD in this fixture. No other branch changes or Beads writes. "
+                  "Inspect Git directly in cwd; no compound shell helpers. Report actual outcome.")
+        usage = out / "usage.json"
+        argv = native.argv_for(cli, "A", root, usage, prompt, allow_local_config_read=True,
+                               allow_fixture_inspection=True)
+        argv[-2:-2] = ["shell(git switch)", "--deny-tool", "shell(git push)", "shell(git merge)"]
+        version = subprocess.check_output([cli, "--version"], env=env, cwd=root, timeout=30)
+        native.write_json(out / "invocation.json", dict(argv=argv, cwd=str(root), overrides=overrides,
+                          version=version.decode(), installer=native.digest(native.SOURCE.read_bytes()),
+                          skills={p.name + "/" + p.parent.name: native.digest(p.read_bytes())
+                                  for p in (plan_path, goal_path)}))
+        result, stdout, stderr = native.execute(argv, root, env)
+        (out / "stdout.jsonl").write_bytes(stdout)
+        (out / "stderr.txt").write_bytes(stderr)
+        end = observe("after-goal")
+        checks = native.artifact_checks("A", root, env, start, end)
+        checks.update(branch=end["branch"] == BRANCH, plan_preserved=end["graph"] == nodes,
+                      other_bytes=start["tree"] == end["tree"], usage=usage.is_file(),
+                      original_head=git("rev-parse", "main") == start["head"],
+                      scoped_index=git("diff", "--cached", "--name-only").splitlines() == ["staged.txt"])
+        metrics = json.loads(usage.read_text()).get("modelMetrics", {}) if usage.is_file() else {}
+        status = ("INCONCLUSIVE" if result["timed_out"] else "UNQUALIFIED" if result["exit"]
+                  or not metrics else "ARTIFACT FAILURE" if not all(checks.values())
+                  else "REVIEW TRANSCRIPT AND MODEL")
+        native.write_json(out / "result.json", dict(process=result, checks=checks, status=status,
+                                                   reported_models=list(metrics)))
+        if result["exit"] or not metrics:
+            raise SystemExit(f"{status}: inspect retained stderr and usage; no retry")
+        assert not result["exit"] and not result["timed_out"] and all(checks.values()), checks
+        return  # transcript and usage review required; never auto-certify native behavior
+
+    assert planned == ("ask:" + target if case in ("overlap", "collision") else "proceed")
+    blocked = case in ("overlap", "collision", "stale-collision")
+    assert current == ("ask:" + target if blocked else "proceed")
+    native.write_json(out / "simulated-decisions.json", {"plan": planned, "live": current})
+    if blocked:
+        assert observe("after-goal") == start
+        return
+    if start["branch"] != BRANCH:
+        git("switch", "-qc", BRANCH)
+    started = observe("after-start")
+    assert started == dict(start, branch=BRANCH)
+    (root / target).write_text("reviewed\n")
+    git("commit", "-qm", "fixture-1", "--only", "--", target)
+    end = observe("after-goal")
+    assert end["tree"] == dict(start["tree"], **{target: native.digest(b"reviewed\n")})
+    assert end["graph"] == nodes and end["branch"] == BRANCH and end["exclude"] == start["exclude"]
+    assert git("diff", "--name-only", start["head"].strip(), "HEAD").splitlines() == [target]
+    assert git("show", "HEAD:" + target) == "reviewed\n"
+    assert [l for l in end["index"].splitlines() if not l.endswith("\t" + target)] == [
+        l for l in start["index"].splitlines() if not l.endswith("\t" + target)]
+
+
 if __name__ == "__main__":
-    unittest.main()
+    if "--handoff" in sys.argv:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--handoff", type=Path, required=True, help="existing evidence parent")
+        parser.add_argument("--native-cli", type=Path, help="one actual session instead of Git simulations")
+        args = parser.parse_args()
+        output = Path(tempfile.mkdtemp(prefix="hq-ha2.4-", dir=args.handoff)).resolve()
+        print(output, flush=True)
+        cases = (["native"] if args.native_cli else
+                 ["dirty", "guest", "overlap", "collision", "stale-collision", "stale-disjoint", "ready"])
+        for name in cases:
+            handoff_case(output / name, name, args.native_cli)
+            print(name, "artifact checks passed", flush=True)
+    else:
+        unittest.main()
