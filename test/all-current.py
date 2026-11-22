@@ -6,7 +6,9 @@ import json
 import math
 import os
 from pathlib import Path
+import pty
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -2236,7 +2238,7 @@ class AllProviders(unittest.TestCase):
         self.assertEqual(SCRIPT.count(anchor), 1)
         return SCRIPT.replace(anchor, anchor + '''
 print("TEST_PLAN:" + (scratch / "review-plan.json").read_text())
-print("TEST_OUTPUTS:" + json.dumps([str(p.relative_to(scratch)) for d in ("review-output", "review-projection")
+print("TEST_OUTPUTS:" + json.dumps([str(p.relative_to(scratch)) for d in ("review-output", "review-projection", "review-pair")
                                    for p in (scratch / d).rglob("*") if p.is_file()]))''')
 
     def test_mixed_legacy_default_refusal_and_ancestor_proposals(self):
@@ -2314,6 +2316,7 @@ print("TEST_OUTPUTS:" + json.dumps([str(p.relative_to(scratch)) for d in ("revie
             raw = p.read_bytes()
             if p.name == "manifest":
                 raw = re.sub(rb"(?m)^installed_at=.*$", b"installed_at=<publication-time>", raw)
+                raw += b"reconciliation=requires-save\n"
             self.assertEqual(plan["projection"][rel], hashlib.sha256(raw).hexdigest(), rel)
 
     def assert_blocked_review(self, plan, staged):
@@ -2811,6 +2814,263 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             tokens.append(token)
         self.assertNotEqual(*tokens)
         self.assertEqual(before, snapshot(root))
+
+    def test_review_file_apply_conflict_and_replay(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("apply-conflict")
+        rel = ".claude/commands/decompose.md"
+        changed = re.sub(rb"(?m)^description:.*$", b"description: fixture conflict", (root / rel).read_bytes())
+        (root / rel).write_bytes(changed)
+        for role, model in (("implementer", b"left"), ("reviewer", b"right")):
+            path = root / f".claude/agents/{role}.md"
+            path.write_bytes(re.sub(rb"(?m)^model:.*$", b"model: " + model, path.read_bytes()))
+        flags = ["--platform=claude", "--no-guest"]
+        before = snapshot(root)
+        self.file_review(root, SCRIPT, *flags, eligible=False)
+        self.run_dom(root, "--keep-local", *flags, ok=False)
+        self.assertEqual(before, snapshot(root))
+        flags.append("--use-upstream=" + rel)
+        token, _ = self.file_review(root, SCRIPT, *flags)
+        argv = ["bash", str(self.work / "saved-installer.sh"), "--apply-file", "sha256:" + token, *flags]
+        def apply():
+            return subprocess.run(argv, cwd=root, env=self.env, capture_output=True, text=True,
+                                  start_new_session=True, timeout=600)
+        no_tty = self.run_dom(root, *flags, ok=False)
+        self.assertIn("No foreground controlling terminal", no_tty.stderr)
+        self.assertEqual(before, snapshot(root))
+        applied = apply()
+        self.assertEqual(applied.returncode, 3)
+        self.assertIn("Approved reconciliation published", applied.stdout, applied.stderr)
+        self.assertEqual((root / (rel + ".bak.20000101000000")).read_bytes(), b"Older fixture backup\n")
+        self.assertIn(changed, [p.read_bytes() for p in root.glob(rel + ".bak.*")])
+        self.assertIn(b"Claude Code only;", (root / rel).read_bytes())
+        for role, model in (("implementer", b"left"), ("reviewer", b"right")):
+            path = root / f".claude/agents/{role}.md"
+            self.assertIn(b"model: " + model, path.read_bytes())
+            self.assertNotIn(b"# domestique-model-setup:", path.read_bytes())
+        after = snapshot(root)
+        self.assertNotEqual(apply().returncode, 0)
+        self.assertEqual(after, snapshot(root))
+        self.run_dom(root, "--platform=claude", "--no-guest", ok=False)
+        self.assertEqual(after, snapshot(root), "ordinary rerun cannot confirm the adopted pair")
+
+    def test_approved_mixed_visibility_conversion(self):
+        root = self.mixed_legacy_fixture("approved-mixed")
+        before = (root / ".git/info/exclude").read_bytes()
+        index = (root / ".git/index").read_bytes()
+        token, _ = self.file_review(root, SCRIPT, "--no-guest")
+        result = run_stdin(["bash", str(self.work / "saved-installer.sh"), "--apply-file",
+                            "sha256:" + token, "--no-guest"], cwd=root, env=self.env, input="",
+                           capture_output=True, text=True, timeout=1800)
+        self.assertIn("Approved reconciliation published", result.stdout, result.stderr)
+        self.assertEqual(result.returncode, 3)  # pending Claude Save
+        self.assertEqual(index, (root / ".git/index").read_bytes())
+        self.assertEqual((root / ".git/info/exclude").read_bytes(),
+                         re.sub(rb"(?ms)^# BEGIN domestique \(managed\)\n.*?^# END domestique\n", b"", before))
+        for role in ("implementer", "reviewer"):
+            data = (root / f".claude/agents/{role}.md").read_bytes()
+            self.assertIn(b"\nmodel: gpt-6-astra\n", data)
+            self.assertNotIn(b"# domestique-model-setup:", data)
+        for state in (*STATES.values(), ".agents/.domestique"):
+            self.assertFalse((root / state / "mode").exists())
+
+    def assert_approved_creation_modes(self, mask):
+        self.isolate_ancestor_fixture()
+        root, policy, _ = self.presnapshot_policy_fixture("approved-modes")
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes() + b"\nLocal implementer paragraph.\n")
+        role.chmod(0o750)  # Existing safe execute bits, including in the model-pair writer.
+        policy.chmod(0o600)
+        (root / ".claude/commands/decompose.md").chmod(0o700)
+        (root / "unrelated.txt").write_bytes(b"staged, not installer-owned\n")
+        subprocess.run(["git", "add", "unrelated.txt"], cwd=root, env=self.env, check=True)
+        before = snapshot(root)
+        saved = self.work / "mode-installer.sh"
+        saved.write_text(self.inspect_review())
+        def invoke(*args):
+            return run_stdin(["bash", str(saved), *args, "--platform=claude", "--no-guest"],
+                             input="", cwd=root, env=self.env, text=True, capture_output=True,
+                             umask=mask, timeout=1200)
+        review = invoke("--review-file")
+        self.assertEqual(review.returncode, 3, review.stderr)
+        token = re.search(r"^Reconciliation plan: (sha256:[a-f0-9]{64})$", review.stdout, re.M)
+        self.assertIsNotNone(token, review.stderr)
+        plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", review.stdout, re.M)[1])
+        self.assertEqual(before, snapshot(root))
+        if mask == 0o002:
+            role.chmod(0o770)
+            unsafe = snapshot(root)
+            refused = invoke("--apply-file", token[1])
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertNotIn("Approved reconciliation published", refused.stdout)
+            self.assertEqual(unsafe, snapshot(root))
+            role.chmod(0o750)
+        applied = invoke("--apply-file", token[1])
+        self.assertIn("Approved reconciliation published", applied.stdout, applied.stderr)
+        self.assertEqual(applied.returncode, 3)  # Save still required.
+        after = snapshot(root)
+        self.assertEqual(after[".git/index"], before[".git/index"])
+        for rel, digest in plan["projection"].items():
+            backup = rel.endswith(".bak.<timestamp>")
+            if backup:
+                prefix = rel.removesuffix("<timestamp>")
+                (rel,) = [p for p in after.keys() - before.keys() if p.startswith(prefix)]
+            if digest is None:
+                self.assertNotIn(rel, after)
+                continue
+            mode, _, data = after[rel]
+            expected = before[rel][0] & 0o7777 if rel in before else (0o600 if backup else 0o644) & ~mask
+            self.assertEqual(mode & 0o7777, expected, rel)
+            if rel.endswith("/.domestique/manifest"):
+                data = re.sub(rb"(?m)^installed_at=.*$", b"installed_at=<publication-time>", data)
+            self.assertEqual(hashlib.sha256(data).hexdigest(), digest, rel)
+        for rel in after.keys() - before.keys():
+            if (root / rel).is_dir():
+                self.assertEqual(after[rel][0] & 0o7777, 0o755 & ~mask, rel)
+        helper = ".claude/domestique-model-setup.py"
+        self.assertEqual(after[helper][0] & 0o7777, 0o644 & ~mask)
+        self.assertEqual(after[helper][2], after[STATES["claude"] + "/base/" + helper][2])
+        rerun = invoke()
+        self.assertEqual(rerun.returncode, 3, rerun.stderr)
+        self.assertIn("review/Save required", rerun.stderr)
+        self.assertEqual(after, snapshot(root))
+
+    def test_approved_creation_modes_group_umask(self):
+        self.assert_approved_creation_modes(0o002)
+
+    def test_approved_creation_modes_private_umask(self):
+        self.assert_approved_creation_modes(0o077)
+
+    def test_review_merged_policy_size_boundary(self):
+        self.isolate_ancestor_fixture()
+        root, policy, _ = self.presnapshot_policy_fixture("merged-policy-limit")
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes() + b"\nLocal implementer paragraph.\n")
+        (root / "unrelated").write_bytes(b"already staged\n")
+        subprocess.run(["git", "add", "unrelated"], cwd=root, env=self.env, check=True)
+        limit = self.model_library("claude")["LIMIT"]
+        original = policy.read_bytes()
+        padded = b"x" * (limit - len(original) - 1) + b"\n" + original
+        policy.write_bytes(padded)  # Valid input, growth only inside the managed block.
+        before = snapshot(root)
+        flags = ["--platform=claude", "--no-guest"]
+        script = self.inspect_review()
+        _, refused = self.file_review(root, script, *flags, eligible=False)
+        plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", refused.stdout, re.M)[1])
+        staged = json.loads(re.search(r"^TEST_OUTPUTS:(.+)$", refused.stdout, re.M)[1])
+        self.assert_blocked_review(plan, staged)
+        reason = re.search(r"projected CLAUDE\.md is (\d+) bytes; installer limit is (\d+)",
+                           plan["blockers"]["effects"])
+        self.assertIsNotNone(reason, plan["blockers"])
+        self.assertEqual(int(reason[2]), limit)
+        growth = int(reason[1]) - limit
+        self.assertGreater(growth, 0)
+        self.assertEqual(before, snapshot(root))  # Includes index, backup leaves and directory mtimes.
+        argv = ["bash", str(self.work / "saved-installer.sh"), "--apply-file"]
+        blocked = run_stdin([*argv, "sha256:" + "0" * 64, *flags], cwd=root, env=self.env, input="",
+                            capture_output=True, text=True, timeout=1200)
+        self.assertNotEqual(blocked.returncode, 0)
+        self.assertNotIn("Approved reconciliation published", blocked.stdout)
+        self.assertEqual(before, snapshot(root))
+
+        policy.write_bytes(padded[growth:])  # Same merge now produces exactly LIMIT bytes.
+        before = snapshot(root)
+        token, review = self.file_review(root, script, *flags)
+        plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", review.stdout, re.M)[1])
+        self.assertEqual(before, snapshot(root))
+        result = run_stdin([*argv, "sha256:" + token, *flags], cwd=root, env=self.env, input="",
+                           capture_output=True, text=True, timeout=1200)
+        self.assertIn("Approved reconciliation published", result.stdout, result.stderr)
+        self.assertEqual(result.returncode, 3)  # Model Save required, not a partial publication.
+        merged = policy.read_bytes()
+        self.assertEqual(len(merged), limit)
+        self.assertEqual(hashlib.sha256(merged).hexdigest(), plan["projection"]["CLAUDE.md"])
+        self.assertTrue(merged.startswith(padded[growth:].split(b"<!-- BEGIN domestique (managed) -->")[0]))
+        self.assertTrue(merged.endswith(b"\nPublic host suffix without newline"))
+        self.assertEqual(before[".git/index"], snapshot(root)[".git/index"])
+
+    def test_review_role_afterimage_limit(self):
+        # Exercise both sources of publishable bytes, including complete
+        # model-pair outputs (marker and restored selection already included).
+        lib = self.review_library()
+        rel = ROLES[0]
+        limit = lib["LIMIT"]
+        for directory in ("review-projection", "review-pair"):
+            path = self.work / directory / rel
+            path.parent.mkdir(parents=True)
+            for length in (limit, limit + 1):
+                data = b"x" * length
+                path.write_bytes(data)
+                plan = {"projection": {rel: hashlib.sha256(data).hexdigest()}}
+                if length == limit:
+                    self.assertEqual(lib["reviewed_effects"](plan, self.work, "")[rel], data)
+                else:
+                    with self.assertRaisesRegex(ValueError, "installer limit"):
+                        lib["reviewed_effects"](plan, self.work, "")
+            path.unlink()
+
+    def tty_review_fixture(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("tty-apply")
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes() + b"\nSynthetic extension.\n")
+        saved = self.work / "fixture-installer.sh"
+        saved.write_text(SCRIPT)
+        def terminal(reply, change=None):
+            pid, master = pty.fork()
+            if not pid:
+                os.chdir(root)
+                # Independent script source, never the controlling terminal.
+                with saved.open("rb") as source:
+                    os.dup2(source.fileno(), 0)
+                os.execve("/bin/bash", ["bash", "-s", "--", "--platform=claude"], self.env)
+            output = bytearray()
+            try:
+                answered = False
+                deadline = time.monotonic() + 600
+                while True:
+                    if not select.select([master], [], [], max(0, deadline - time.monotonic()))[0]:
+                        os.kill(pid, signal.SIGKILL)
+                        self.fail(f"terminal timed out (answered={answered}): {output[-1000:]!r}")
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if not answered and b"Type APPLY" in output:
+                        if change:
+                            change()
+                        os.write(master, reply + b"\n")
+                        answered = True
+            finally:
+                os.close(master)
+                _, status = os.waitpid(pid, 0)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 3, output[-1500:])
+            self.assertEqual(output.count(b"Type APPLY"), 1, output[-1500:])
+            return output
+        return root, role, terminal
+
+    def test_review_tty_cancel_stale_and_unsafe(self):
+        root, role, terminal = self.tty_review_fixture()
+        before = snapshot(root)
+        self.assertIn(b"Declined", terminal(b""))
+        self.assertEqual(before, snapshot(root))
+        def stage():
+            subprocess.run(["git", "add", ROLES[0]], cwd=root, env=self.env, check=True)
+        self.assertIn(b"Stale plan", terminal(b"APPLY", stage))
+        self.assertFalse((root / STATES["claude"]).exists())
+        path = root / ".claude/commands/dom-goal.md"
+        self.assertNotIn(b"Approved reconciliation published", terminal(b"APPLY", lambda: path.symlink_to(role)))
+        self.assertTrue(path.is_symlink())
+        self.assertFalse((root / STATES["claude"]).exists())
+
+    def test_review_tty_approve(self):
+        root, role, terminal = self.tty_review_fixture()
+        self.assertIn(b"Approved reconciliation published", terminal(b"APPLY"))
+        self.assertIn(b"Synthetic extension.", role.read_bytes())
+        self.assertNotIn(b"Synthetic extension.", (root / STATES["claude"] / "base" / ROLES[0]).read_bytes())
 
     def test_native_ancestor_exact_head(self):
         self.isolate_ancestor_fixture()

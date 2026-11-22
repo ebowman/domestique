@@ -16,11 +16,12 @@ fi
 # A pathname identifies what to *read*, not what Bash has already executed.
 # Only the materializer computes a token: it supplies the exact bytes it
 # hashed as Bash's complete script, not a claimed filename/hash from a child.
-if [ "${1:-}" = --review-file ]; then
+if [ "${1:-}" = --review-file ] || [ "${1:-}" = --apply-file ]; then
   if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]}" != "$0" ] || [ ! -f "$0" ]; then
     echo "Save the installer to a regular file first; use bash ./domestique.sh --review-file [install flags]." >&2
     exit 2
   fi
+  transport=$1
   shift
   # No here-document or temporary receipt: TMPDIR may be *inside* the
   # not-yet-parsed target. The child checks it before allocating scratch.
@@ -33,8 +34,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-source, bash, *args = sys.argv[1:]
+source, bash, transport, *args = sys.argv[1:]
+approval = None
+if transport == "--apply-file":
+    if not args or not re.fullmatch(r"sha256:[0-9a-f]{64}", args[0]):
+        sys.exit("--apply-file requires the exact sha256: token from --review-file")
+    approval = args.pop(0)
+    if "--dry-run" in args or "--uninstall" in args:
+        sys.exit("--apply-file cannot combine with --dry-run or --uninstall")
 image = Path(source).read_bytes()
+if approval:
+    # Execute exactly the reviewed image, then a materializer-only continuation.
+    # Its two literals are strictly hexadecimal (plus the fixed sha256: prefix).
+    # No target string, flags, environment assertion or filename becomes code.
+    tail = "\npublish_reconciliation " + approval + " " + hashlib.sha256(image).hexdigest() + "\n"
+    sys.exit(subprocess.run([bash, "-s", "--", "--prepare-file-publication", "--dry-run", *args],
+                            input=image + tail.encode("ascii")).returncode)
 read_fd, fd = os.pipe()
 with os.fdopen(read_fd, "rb") as receipt:
     result = subprocess.run([bash, "-s", "--", "--dry-run", *args], input=image,
@@ -45,11 +60,12 @@ with os.fdopen(read_fd, "rb") as receipt:
         binding = {"plan": digest.decode(), "source": hashlib.sha256(image).hexdigest(),
                    "purpose": "domestique-file-review-v2"}
         data = json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
-        print("Reconciliation plan: sha256:" + hashlib.sha256(data).hexdigest())
+        token = "sha256:" + hashlib.sha256(data).hexdigest()
+        print("Reconciliation plan: " + token, flush=True)
     elif result.returncode:
         print("File review incomplete; no plan-bound approval token.")
 sys.exit(result.returncode)
-' "$0" "$BASH" "$@"
+' "$0" "$BASH" "$transport" "$@"
 fi
 
 DOMESTIQUE_VERSION="0.5.0"
@@ -1109,7 +1125,8 @@ def publish(pair, plan, digest):
     return publish_outputs(pair, expected, contents, outputs)
 
 
-def publish_outputs(pair, expected, contents, outputs, *, dependencies=None, configured=True):
+def publish_outputs(pair, expected, contents, outputs, *, dependencies=None, configured=True,
+                    new_file_mode=0o644, new_dir_mode=0o755):
     """One publication engine; installer dependencies precede the final marker."""
     owned, changed, made = {}, [], []
     try:
@@ -1132,7 +1149,7 @@ def publish_outputs(pair, expected, contents, outputs, *, dependencies=None, con
                 if str(parent) in expected["parents"] and expected["parents"][str(parent)] is None:
                     current, _ = pair.snapshot()
                     need(current == expected, "prepublication directory state changed")
-                    parent.mkdir(mode=0o755)
+                    parent.mkdir(mode=new_dir_mode)
                     made.append(str(parent))
                     info = parent.lstat()
                     expected["parents"][str(parent)] = [
@@ -1142,7 +1159,7 @@ def publish_outputs(pair, expected, contents, outputs, *, dependencies=None, con
             try:
                 owned[temp] = (metadata(os.fstat(fd)), b"")
                 record = expected["files"][rel]
-                os.fchmod(fd, stat.S_IMODE(record[2]) if record else 0o644)
+                os.fchmod(fd, stat.S_IMODE(record[2]) if record else new_file_mode)
                 owned[temp] = (metadata(os.fstat(fd)), b"")
                 with os.fdopen(fd, "wb", closefd=False) as stream:
                     stream.write(data)
@@ -1325,6 +1342,8 @@ class InstallerPair(Pair):
             return "confirmed"
         if parse(contents[self.paths["implementer"]], "implementer")[2] is not None:
             return "stale"
+        if manifest.get("reconciliation") == "requires-save":
+            return "custom-unconfirmed"
         if all(project_settings(contents[p], r) ==
                project_settings(contents[f"{self.state}/base/{p}"], r)
                for r, p in self.paths.items()):
@@ -2846,6 +2865,14 @@ Usage: domestique.sh [TARGET_DIR] [options]
   --review-file  First argument only, on a saved installer. Replay those exact
                  bytes with --dry-run for a file-bound reconciliation token.
                  Direct curl | bash previews cannot issue or accept one.
+  --apply-file sha256:TOKEN
+                 First argument only. Apply that saved installer's reviewed
+                 reconciliation with the same target and options.
+  --keep-local   Decline reconciliation. Leave the install incomplete/unmanaged.
+  --use-upstream=PATH
+                 For a conflicting, history-proven native path only: propose
+                 backing up local bytes and using upstream (keep role scalars).
+                 Repeat for each conflict; safety/ownership refusals still apply.
 
 Installs domestique orchestration config into TARGET_DIR (default: current
 directory). Without a selector, installs all three native projections:
@@ -3053,6 +3080,9 @@ UNINSTALL=0
 PURGE_BEADS=0
 MODEL_ARGS=()
 SHOW_HELP=0
+KEEP_LOCAL=0
+UPSTREAM_PATHS=""
+FILE_PREPARATION=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -3066,6 +3096,14 @@ while [ $# -gt 0 ]; do
       MODEL_ARGS+=("$2"); shift ;;
     --model=*)     MODEL_ARGS+=("${1#--model=}") ;;
     --dry-run)      DRY_RUN=1 ;;
+    --keep-local)   KEEP_LOCAL=1 ;;
+    --prepare-file-publication)
+      FILE_PREPARATION=1 ;;
+    --use-upstream=*)
+      rel=${1#*=}
+      [[ "$rel" =~ ^\.(claude|github|codex|agents)/[a-zA-Z0-9./_-]+$ ]] &&
+        [[ "$rel" != *..* ]] || { echo "Invalid native disposition path" >&2; exit 2; }
+      UPSTREAM_PATHS="${UPSTREAM_PATHS}${rel}"$'\n' ;;
     --with-beads)   WITH_BEADS=1 ;;
     --force)        FORCE=1 ;;
     --guest)        GUEST=1; GUEST_EXPLICIT=1 ;;
@@ -3088,6 +3126,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 TARGET_DIR="${TARGET_DIR:-.}"
+if [ "$FILE_PREPARATION" -eq 1 ] && { [ "$DRY_RUN" -ne 1 ] || [ "$UNINSTALL" -ne 0 ]; }; then exit 2; fi
 
 # Even rendering large here-documents can allocate Bash temporary files.
 # No probes that create/delete a file (including tempfile.gettempdir).
@@ -4781,7 +4820,11 @@ copilot_preflight() {
         continue
       fi
       rc=0
-      merge_native_plain "$rel" "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" "$TMPDIR_WORK/copilot-candidate" || rc=$?
+      if [ -f "$TMPDIR_WORK/review-evidence/$rel" ] && [ -f "$TMPDIR_WORK/review-output/$rel" ]; then
+        cp "$TMPDIR_WORK/review-output/$rel" "$TMPDIR_WORK/copilot-candidate"
+      else
+        merge_native_plain "$rel" "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" "$TMPDIR_WORK/copilot-candidate" || rc=$?
+      fi
       if [ "$rc" -ne 0 ]; then native_merge_refuse "$rc" copilot "$rel" "$native_root/$rel" "$base"; continue; fi
       native_role_description_preflight copilot "$TMPDIR_WORK/copilot-candidate" "$rel"
       case "$rel" in
@@ -6074,6 +6117,10 @@ write_manifest() {
     printf 'installed_at=%s\n' "${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     printf 'script_sha256=%s\n' "$sha"
     printf 'files=%s\n' "$(managed_files_list)"
+    if [ -f "$TMPDIR_WORK/review-native-$CURRENT_PROVIDER" ] ||
+       grep -qxF 'reconciliation=requires-save' "${SNAPSHOT_BASE%/base}/manifest" 2>/dev/null; then
+      printf 'reconciliation=requires-save\n'
+    fi
   } > "$manifest"
 }
 
@@ -6364,6 +6411,56 @@ def review_input_paths(state, natives, policies):
             *(f"{state}/base/{p}.block" for p in policies),
             *(f"{state}/{p}" for p in ("manifest", "mode", "platforms", "guest-excludes", "beads-owned"))]
 
+def reviewed_effects(plan, scratch, ts):
+    """Materialize the exact bytes which will face Pair.read_snapshot after publication."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ").encode()
+    effects = {}
+    for key, digest in plan["projection"].items():
+        rel = key.removesuffix("<timestamp>") + ts if key.endswith(".bak.<timestamp>") else key
+        if digest is None:
+            need(plan["destinations"]["files"][rel] is not None, "absent removal target: " + rel)
+            effects[rel] = None
+            continue
+        source = scratch / "review-pair" / rel
+        if not source.exists():
+            source = scratch / "review-projection" / rel
+        data = source.read_bytes()
+        manifest = rel.endswith("/.domestique/manifest")
+        if manifest:
+            data = b"\n".join(b"installed_at=<publication-time>" if s.startswith(b"installed_at=")
+                              else s for s in data.split(b"\n"))
+        need(sha(data) == digest, "changed staged output: " + rel)
+        if manifest:
+            data = data.replace(b"\ninstalled_at=<publication-time>\n", b"\ninstalled_at=" + now + b"\n")
+        need(len(data) <= LIMIT, f"projected {rel} is {len(data)} bytes; installer limit is {LIMIT}")
+        effects[rel] = data
+    return effects
+
+def reviewed_pairs(plan, scratch, effects):
+    """Use the trusted provider's final verification on the whole projected pair, not just changed roles."""
+    pairs = []
+    for provider in plan["providers"]:
+        if not provider["requested"]:
+            continue
+        model = {"__name__": "trusted_installer"}
+        helper = scratch / "model-input" / provider["provider"] / "helper"
+        exec(compile(helper.read_bytes(), "<installer>", "exec"), model)
+        class ReviewedPair(model["Pair"]):
+            snapshot = model["InstallerPair"].snapshot
+            publication_writable = model["InstallerPair"].publication_writable
+        pair = ReviewedPair(installed=False)
+        before, original = pair.snapshot()
+        for section, records in before.items():
+            need(all(provider["inputs"][section][p] == value for p, value in records.items()),
+                 "changed model pair inputs: " + provider["provider"])
+        final = {r: effects.get(r, original[r]) for r in pair.files}
+        pair.validate_contents(final)
+        configured = provider.get("pair", {}).get("configured", False)
+        need(model["verify"](pair, final)["confirmed"] == configured, "invalid reviewed confirmation")
+        pairs.append((model, pair, final, configured))
+    return pairs
+
 def finalize_review(plan, scratch):
     """Only a fully validated transaction has publication outputs. Treat all
     paths (including shared, backups and future write types) uniformly."""
@@ -6388,7 +6485,7 @@ def finalize_review(plan, scratch):
         (scratch / ("review-" + name + ".json")).unlink(missing_ok=True)
         if reason:
             (scratch / ("assessment-" + name)).unlink(missing_ok=True)
-    for directory in ("review-output", "review-projection"):
+    for directory in ("review-output", "review-projection", "review-pair"):
         if (scratch / directory).exists():
             shutil.rmtree(scratch / directory)
     for leaf in ("review-writes", "review-removals", "projection-notice"):
@@ -6888,7 +6985,7 @@ copilot|.github/domestique-model-setup.py|emit_copilot_model_helper
 copilot|.github/skills/domestique-v2-copilot-models/SKILL.md|emit_copilot_models
 ENTRIES
   done
-  python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$MODEL_REQUEST" "$DRY_RUN" "$FORCE" <<'PY'
+  python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$MODEL_REQUEST" "$DRY_RUN" "$FORCE" "$UPSTREAM_PATHS" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -6896,7 +6993,7 @@ import subprocess
 import sys
 import tempfile
 
-root, scratch, request, dry, force = sys.argv[1:]
+root, scratch, request, dry, force, upstream_paths = sys.argv[1:]
 root, scratch = Path(root).resolve(), Path(scratch)
 request = json.loads(request)
 os.chdir(root)
@@ -6976,7 +7073,7 @@ def prepare(provider):
               "codex": "Codex only; never match in another harness.",
               "copilot": "Copilot only; never match in Claude, Codex or an unknown harness."}[provider]
 
-    def validate(role, base, live, candidate):
+    def validate(role, base, live, candidate, *, chosen_upstream=False):
         bodies, descriptions = [], []
         for data in (base, live, candidate):
             parsed, fields, _ = parse(data, role)
@@ -6995,8 +7092,8 @@ def prepare(provider):
         preserving_legacy = False
         if not scoped[0] and not scoped[1] and not unchanged_legacy:
             projected = [lib["project_settings"](data, role) for data in (live, base, pristine[layout.paths[role]])]
-            preserving_legacy = (lib["project_settings"](candidate, role) ==
-                                 merge_for(layout.paths[role], *projected))
+            expected = projected[2] if chosen_upstream else merge_for(layout.paths[role], *projected)
+            preserving_legacy = lib["project_settings"](candidate, role) == expected
         need(scoped[2] and (scoped[1] or not scoped[0] and
                            (unchanged_legacy or preserving_legacy)),
              "missing native discovery guard: " + layout.paths[role] +
@@ -7062,6 +7159,8 @@ def prepare(provider):
                     rec["ancestor"] = info
                     need(info["status"] == "candidate", info["status"])
                 if role and live is not None:
+                    if evidence.exists() and parse(live, role)[2] is not None:
+                        raise ValueError("unowned model confirmation marker; restore trusted ownership")
                     parsed = parse(live, role)[1]
                     rec["local_choice"] = {k: parsed.get(k) for k in
                                            ("model", "model_reasoning_effort" if provider == "codex" else "effort")}
@@ -7101,12 +7200,23 @@ def prepare(provider):
                 elif role:
                     need(base is not None, "missing ownership base")
                     projected = [lib["project_settings"](data, role) for data in (live, base, upstream)]
-                    merged = merge_for(rel, *projected)
+                    try:
+                        merged = merge_for(rel, *projected)
+                    except PathConflict:
+                        if not evidence.exists() or rel not in upstream_paths.splitlines():
+                            raise
+                        merged = projected[2]
+                        action = "explicit upstream (preserve role scalars)"
                     candidate = lib["restore_settings"](live, merged, role)
-                    validate(role, base, live, candidate)
+                    validate(role, base, live, candidate, chosen_upstream=action.startswith("explicit upstream"))
                 else:
                     need(base is not None, "missing ownership base")
-                    candidate = merge_for(rel, live, base, upstream)
+                    try:
+                        candidate = merge_for(rel, live, base, upstream)
+                    except PathConflict:
+                        if not evidence.exists() or rel not in upstream_paths.splitlines():
+                            raise
+                        candidate, action = upstream, "explicit upstream"
                     if force == "1" and not evidence.exists():
                         candidate = upstream
                     if evidence.exists() and entry.encode() in upstream:
@@ -7122,6 +7232,9 @@ def prepare(provider):
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(candidate)
                 rec.update(action=action, output=lib["sha"](candidate))
+                if action.startswith("explicit upstream"):
+                    with (scratch / "dispositions-used").open("a") as chosen:
+                        print(rel, file=chosen)
                 print(f"  {rel}: {action}; proposed sha256={rec['output']}", flush=True)
             except ValueError as error:
                 reason = str(error).splitlines()[0]
@@ -7133,8 +7246,10 @@ def prepare(provider):
                     rec["hard_refusal"] = True
                     print("    hard refusal; repair the unsafe evidence or guard, then re-preview.")
                 else:
-                    print("    keep-local (unmanaged/incomplete), or inspect disposable upstream sha256=" +
+                    print("    --keep-local (unmanaged/incomplete), or inspect disposable upstream sha256=" +
                           rec["upstream"] + "; resolve manually before retrying. No overwrite.", flush=True)
+                    if isinstance(error, PathConflict) and evidence.exists():
+                        print("    To propose backed-up replacement on this proven path: --use-upstream=" + rel)
             if "local_choice" in rec or "proposed_choice" in rec:
                 print("    model selection: " + json.dumps(rec.get("local_choice")) +
                       " -> " + json.dumps(rec.get("proposed_choice")), flush=True)
@@ -7147,6 +7262,8 @@ def prepare(provider):
         (scratch / ("review-" + provider + ".json")).write_bytes(lib["canonical"](plan))
     if review:
         if any((scratch / "review-evidence" / p).exists() for p in files.split(",")):
+            need(not request["overrides"].get(provider),
+                 "reconciliation preserves the current pair; review/Save before model override")
             review_paths()
             (scratch / ("review-native-" + provider)).touch()
             print("  [model pair] " + provider + ": proposed content only; "
@@ -7225,6 +7342,10 @@ def prepare(provider):
             if any(rel in report["pair"]["writes"] for rel in layout.paths.values()):
                 report["pair"]["writes"] = sorted(set(report["pair"]["writes"]) | {layout.paths["implementer"]})
             report["pair"]["outputs"] = dict(plan["outputs"])
+            for rel in report["pair"]["writes"]:
+                destination = scratch / "review-pair" / rel
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(actual[rel])
             manifest = actual[layout.manifest]
             if manifest != original[layout.manifest]:
                 report["pair"]["outputs"][layout.manifest] = lib["sha"](
@@ -7365,6 +7486,10 @@ install_plain() {
     local rel="${1#"$TARGET_DIR"/}"
     local reviewed="$TMPDIR_WORK/review-output/$rel" upstream="$TMPDIR_WORK/model-input/$CURRENT_PROVIDER/$rel"
     [ -f "$reviewed" ] && [ -f "$upstream" ] || shared_refuse "incomplete native decision $rel"
+    if [ -f "$1" ] && ! cmp -s "$1" "$reviewed"; then
+      policy_backup_preflight "$rel"
+      guest_plan_write "$1.bak.$TS" "$1"
+    fi
     install_resolved_plain "$1" "$reviewed" "$upstream"
     return 0
   fi
@@ -8512,6 +8637,12 @@ UNINSTALL_POLICIES
   echo "Done."
 }
 
+prepare_install_context() {
+GUEST=$GUEST_EXPLICIT
+REQUESTED_GUEST=$GUEST_EXPLICIT
+SELECT_CLAUDE=0; SELECT_CODEX=0; SELECT_COPILOT=0
+PERSISTED_CLAUDE=0; PERSISTED_CODEX=0; PERSISTED_COPILOT=0
+RETAINED_INACTIVE_CLAUDE=0; RETAINED_INACTIVE_CODEX=0
 MODEL_PAIRS_ACTIVE=0
 MODEL_CODEX_IMPL_ABSENT=0
 MODEL_CODEX_REVIEWER_ABSENT=0
@@ -8571,6 +8702,16 @@ native_ownership_preflight selection
 retain_inactive_providers
 lifecycle_preflight
 native_ownership_preflight native
+}
+if [ "$KEEP_LOCAL" -eq 1 ]; then
+  echo "Kept local. No project writes; reconciliation not installed."
+  exit 3
+fi
+prepare_install_context
+if { [ "$FILE_PREPARATION" -eq 1 ] || [ -n "$UPSTREAM_PATHS" ]; } && [ ! -d "$TMPDIR_WORK/review-evidence" ]; then
+  echo "No matching reconciliation remains. No project writes." >&2
+  exit 3
+fi
 install_preflights() {
   local check owner
   for check in preview_preflight copilot_preflight shared_preflight policy_preflight; do
@@ -8818,7 +8959,7 @@ reconciliation_preview() {
   emit_guest_plan_validator > "$TMPDIR_WORK/guest-validator"
   python3 -I -B - "$TMPDIR_WORK" "$TARGET_DIR" "$MODEL_REQUEST" "$PLATFORM_ARG" \
     "$GUEST_EXPLICIT" "$NO_GUEST" "$FORCE" "$WITH_BEADS" "$PLATFORM_SET" "$review_rc" \
-    "$SHARED_FILES" "$DOMESTIQUE_VERSION" "$TS" <<'PY'
+    "$SHARED_FILES" "$DOMESTIQUE_VERSION" "$TS" "$UPSTREAM_PATHS" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -8828,13 +8969,17 @@ import sys
 
 scratch, root = map(Path, sys.argv[1:3])
 root = root.resolve(strict=True)
-request, platform, guest, normal, force, beads, platforms, rc, shared, version, ts = sys.argv[3:]
+request, platform, guest, normal, force, beads, platforms, rc, shared, version, ts, dispositions = sys.argv[3:]
 providers = [json.loads(p.read_bytes()) for name in ("claude", "codex", "copilot")
              if (p := scratch / ("review-" + name + ".json")).is_file()]
 plan = dict(version=2, root=str(root), installer=version,
             request=json.loads(request), platform=platform, guest=guest, no_guest=normal,
             force=force, with_beads=beads, platforms=platforms, providers=providers,
             preflight=rc, blockers={p.name: p.read_text() for p in scratch.glob("review-blocked-*")})
+used = scratch / "dispositions-used"
+plan["upstream_dispositions"] = sorted(set(dispositions.splitlines()))
+if set(plan["upstream_dispositions"]) != (set(used.read_text().splitlines()) if used.exists() else set()):
+    plan["blockers"]["dispositions"] = "upstream choice not applicable to a proven conflict"
 for findings in scratch.glob("review-conflicts-*"):
     for rel in findings.read_text().splitlines():
         plan["blockers"][rel] = "unresolved preserving merge"
@@ -8880,7 +9025,8 @@ for name in ("claude", "codex", "copilot"):
     elif any("blocker" in row or not row.get("output") for row in observed["paths"]):
         plan["blockers"][name] = "unresolved path"
     elif not (observed.get("pair", {}).get("configured") or
-            (observed["requested"] and any(row.get("action") == "proposed adoption" for row in observed["paths"]))):
+            (observed["requested"] and any(row.get("action") == "proposed adoption" or
+             row.get("action", "").startswith("explicit upstream") for row in observed["paths"]))):
         plan["blockers"][refusal] = "unresolved selection or model pair"
 if rc != "0" or not (scratch / "review-writes").is_file():
     plan["blockers"]["projection"] = "preflight or write projection incomplete"
@@ -8896,7 +9042,16 @@ else:
     print("[blocker] " + plan["blockers"]["git"], file=sys.stderr)
 try:
     plan["shared_snapshot"] = snapshot(paths)
-except (OSError, ValueError) as error:
+    if not plan["blockers"]:
+        index = subprocess.check_output(["git", "-C", str(root), "rev-parse", "--git-path", "index"])
+        if (root / os.fsdecode(index.rstrip(b"\n"))).resolve() != root / ".git/index":
+            plan["blockers"]["index"] = "alternate Git index not supported for reconciliation"
+        else:
+            # Bind effective entries too (split indices have another backing file).
+            plan["index_entries"] = lib["sha"](subprocess.check_output(
+                ["git", "--no-optional-locks", "-C", str(root), "-c", "core.fsmonitor=false",
+                 "ls-files", "--stage", "-z"], timeout=20))
+except (OSError, ValueError, subprocess.SubprocessError) as error:
     plan["blockers"]["review-blocked-shared"] = "unsafe shared reconciliation evidence: " + str(error)
 shell_writes = set((scratch / "review-writes").read_text().splitlines()) if (scratch / "review-writes").exists() else set()
 writes = set(shell_writes)
@@ -8955,6 +9110,14 @@ for provider in providers:
             plan["blockers"]["review-blocked-" + provider["provider"]] = "adoption does not establish manifest ownership"
 if set(plan["writes"]) != set(plan["projection"]):
     plan["blockers"]["effects"] = "publication paths and afterimages disagree"
+if not plan["blockers"]:
+    try:
+        plan["destinations"] = snapshot(sorted(p for p in writes if p == stable_path(p)))
+        os.chdir(root)
+        effects = lib["reviewed_effects"](plan, scratch, ts)
+        lib["reviewed_pairs"](plan, scratch, effects)
+    except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
+        plan["blockers"]["effects"] = "invalid projected publication: " + str(error)
 # Check mode against the actual marker afterimage (including retained inputs),
 # independently of which providers have model-pair reports.
 if not plan["blockers"]:
@@ -8974,6 +9137,25 @@ for rel in writes:
     if stable_path(rel) != rel and os.path.lexists(root / rel):
         plan["blockers"][stable_path(rel)] = "backup destination already exists"
 plan["beads_directory_present"] = (root / ".beads").is_dir()
+plan["umask"] = os.umask(0o777)
+os.umask(plan["umask"])
+# Existing files keep their verified mode, including execute bits. New
+# helpers are read by isolated Python, not launched as native executables.
+# Both publication engines must use these same reviewed creation modes.
+if not plan["blockers"]:
+    mask = plan["umask"]
+    modes = {"file": 0o644 & ~mask, "directory": 0o755 & ~mask, "backup": 0o600 & ~mask}
+    inputs = plan["destinations"]
+    for rel, after in plan["projection"].items():
+        if after is None or inputs["files"].get(rel) is not None:
+            continue
+        mode = modes["backup" if rel.endswith(".bak.<timestamp>") else "file"]
+        if mode & 0o600 != 0o600:
+            plan["blockers"][rel] = "umask prevents readable/writable publication"
+    if None in inputs["parents"].values() and modes["directory"] & 0o700 != 0o700:
+        plan["blockers"]["directories"] = "umask prevents traversable/writable publication directories"
+    if not plan["blockers"]:
+        plan["creation_modes"] = modes
 if rc != "0":
     plan["diagnostics"] = {p.name: lib["sha"](p.read_bytes().replace(str(scratch).encode(), b"<scratch>")
                                              .replace(ts.encode(), b"<timestamp>"))
@@ -8991,6 +9173,10 @@ for provider in providers:
         print((scratch / ("assessment-" + name)).read_text(), end="")
 if plan["reviewable"]:
     print((scratch / "projection-notice").read_text(), end="")
+    print("Complete publication (afterimage SHA-256; backup suffix/time allocated at publication):")
+    for rel, after in sorted(plan["projection"].items()):
+        print("  " + rel + ": " + (after or "REMOVE"))
+    print("Historical model pairs require native review/Save after publication; not native-ready.")
 data = lib["canonical"](plan)
 # Internal interface for a later approval layer. The digest identifies the
 # review, including unsuccessful/blocked plans; it is NOT authority. Bind a
@@ -9020,11 +9206,227 @@ print("Manual: save a private copy, compare the indicated ancestor, local file a
 print("No consent or publication.")
 PY
 }
+publish_reconciliation() {
+  python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$TS" "$1" "${2:-}" <<'PY'
+import json, os, secrets, stat, subprocess, sys
+from pathlib import Path
+from types import SimpleNamespace
+
+root, scratch = (Path(p).resolve(strict=True) for p in sys.argv[1:3])
+ts = sys.argv[3]
+os.chdir(root)
+reviewed = (scratch / "review-plan.json").read_bytes()
+plan = json.loads(reviewed)
+def library(path):
+    result = {"__name__": "trusted_installer"}
+    exec(compile(path.read_bytes(), "<installer>", "exec"), result)
+    return result
+lib = library(scratch / "native-library")
+need, sha = lib["need"], lib["sha"]
+files, parents = {}, {}
+published, made = [], []
+def include(before):
+    for target, section in ((files, "files"), (parents, "parents")):
+        for k, value in before[section].items():
+            need(target.get(k, value) == value, "inconsistent review inputs: " + k)
+            target[k] = value
+def check(rel=None):
+    # Complete barrier before the first write and at completion. At each
+    # intervening atomic write recheck its destination and pinned ancestors;
+    # do not rehash every provider and the index three times per file.
+    scope = files if rel is None else [rel]
+    current, contents = lib["Pair"].read_snapshot(SimpleNamespace(root=root, files=scope), absent=True)
+    need(current["files"] == {r: files[r] for r in scope} and
+         all(parents[p] == value for p, value in current["parents"].items()), "stale reconciliation inputs")
+    return contents
+def writable(rel):
+    path = root / rel
+    if path.exists():
+        need(path.stat().st_mode & 0o222 and os.access(path, os.W_OK), "not writable: " + rel)
+    ancestor = path.parent
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    need(ancestor.stat().st_mode & 0o222 and os.access(ancestor, os.W_OK | os.X_OK),
+         "directory not writable: " + str(ancestor))
+
+def write(rel, data):
+    # Pin each parent and publish from a same-directory operation-owned temp.
+    # A reviewed absent destination (including a backup) is never replaced.
+    check(rel)
+    writable(rel)
+    parts = Path(rel).parts
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, flags)
+    parent = root
+    try:
+        for part in parts[:-1]:
+            parent /= part
+            if parents[str(parent)] is None:
+                os.mkdir(part, mode=modes["directory"], dir_fd=fd)
+                made.append(str(parent))
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            i = os.fstat(fd)
+            identity = [i.st_dev, i.st_ino, i.st_mode, i.st_uid]
+            need(parents[str(parent)] in (None, identity), "directory changed: " + str(parent))
+            parents[str(parent)] = identity
+        check(rel)
+        leaf = parts[-1]
+        if data is None:
+            os.unlink(leaf, dir_fd=fd)
+            files[rel] = None
+        else:
+            name = ".domestique-" + secrets.token_hex(16)
+            temp = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd)
+            try:
+                with os.fdopen(temp, "wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    if files[rel]:
+                        os.fchmod(stream.fileno(), stat.S_IMODE(files[rel][2]))
+                    else:
+                        os.fchmod(stream.fileno(), modes["backup" if rel.endswith(".bak." + ts) else "file"])
+                    os.fsync(stream.fileno())
+                    record = lib["metadata"](os.fstat(stream.fileno())) + [sha(data)]
+                check(rel)
+                if files[rel] is None:
+                    os.link(name, leaf, src_dir_fd=fd, dst_dir_fd=fd)
+                else:
+                    os.replace(name, leaf, src_dir_fd=fd, dst_dir_fd=fd)
+                files[rel] = record
+            finally:
+                try:
+                    os.unlink(name, dir_fd=fd)
+                except FileNotFoundError:
+                    pass
+        published.append(rel)
+    finally:
+        os.close(fd)
+
+try:
+    expected = sha(reviewed)
+    if sys.argv[5]:
+        expected = "sha256:" + sha(lib["canonical"]({"purpose": "domestique-file-review-v2",
+                                                     "source": sys.argv[5], "plan": expected}))
+    need(expected == sys.argv[4], "stale or mismatched approval")
+    need(plan["reviewable"] and plan["root"] == str(root), "invalid publication scope")
+    modes = plan["creation_modes"]
+    for before in [plan["destinations"], plan["shared_snapshot"],
+                   *(p["inputs"] for p in plan["providers"]),
+                   *(s["inputs"] for s in plan["applicability"].values() if "inputs" in s)]:
+        include(before)
+    effects = lib["reviewed_effects"](plan, scratch, ts)
+    for rel in effects:
+        if rel.endswith(".bak." + ts):
+            files[rel] = None
+        writable(rel)
+    check()
+    for p in plan["providers"]:
+        name = p["provider"]
+        for row in p["paths"]:
+            if "ancestor" in row:
+                current = lib["native_ancestor_candidate"](root, name, row["path"], p["mode"])
+                if current["proposal"]:
+                    current["proposal"].pop("base_bytes")
+                need(dict(current, mode=p["mode"]) == row["ancestor"], "stale Git evidence: " + row["path"])
+    pairs = lib["reviewed_pairs"](plan, scratch, effects)
+    for _, pair, _, _ in pairs:
+        pair.publication_writable()
+    need(sha(subprocess.check_output(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
+                                      "ls-files", "--stage", "-z"], timeout=20)) == plan["index_entries"],
+         "stale Git index")
+    check()
+    # Backups first; no existing backup may be overwritten, even on retry.
+    for rel in list(effects):
+        if rel.endswith(".bak." + ts):
+            write(rel, effects.pop(rel))
+    for model, pair, final, configured in pairs:
+        check()
+        before, contents = pair.snapshot()
+        need(all(files[r] == record for r, record in before["files"].items()) and
+             all(parents[p] == record for p, record in before["parents"].items()),
+             "stale model pair inputs")
+        result = model["publish_outputs"](pair, before, contents,
+            {r: final[path] for r, path in pair.paths.items()},
+            dependencies={r: final[r] for r in pair.files if r not in pair.paths.values()},
+            configured=configured, new_file_mode=modes["file"], new_dir_mode=modes["directory"])
+        published.extend(result["published"])
+        files.update(result["publication_snapshot"]["files"])
+        parents.update(result["publication_snapshot"]["parents"])
+        for rel in pair.files:
+            effects.pop(rel, None)
+    for rel, data in effects.items():
+        write(rel, data)
+    check()
+except (ValueError, OSError, KeyError, KeyboardInterrupt, subprocess.SubprocessError) as exc:
+    print("Reconciliation stopped:", exc, "\nCompleted publications:", published, "Created directories:", made,
+          "\nNo rollback; inspect any reported partial results before retrying.", file=sys.stderr)
+    sys.exit(3)
+print("Approved reconciliation published. Configuration incomplete: review/Save required "
+      "in dom-models --confirm. No native readiness or workflow authorization.")
+sys.exit(3)
+PY
+}
+review_consent() {
+  python3 -I -B - "$TMPDIR_WORK/review-plan.json" <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+data = Path(sys.argv[1]).read_bytes()
+plan = json.loads(data)
+if not plan["reviewable"]:
+    sys.exit(3)
+digest = hashlib.sha256(data).hexdigest()
+def consent():
+    # stdin belongs to Bash. A background process must not stop on SIGTTIN.
+    try:
+        with open("/dev/tty", "rb+", buffering=0) as tty:
+            if os.tcgetpgrp(tty.fileno()) != os.getpgrp():
+                raise OSError("not in foreground")
+            def say(s):
+                tty.write((s + "\n").encode("ascii", "backslashreplace"))
+            say("Approve complete reconciliation " + digest + " in " + ascii(plan["root"]) + "?")
+            for p in plan["providers"]:
+                say(p["provider"] + " " + p["mode"] + (" selected" if p["requested"] else " retained"))
+                for row in p["paths"]:
+                    say("  " + row["path"] + ": " + row["action"] +
+                        ("; choices " + json.dumps(row.get("local_choice")) + " -> " +
+                         json.dumps(row["proposed_choice"]) if "proposed_choice" in row else ""))
+            for path, after in sorted(plan["projection"].items()):
+                say("  " + path + ": " + (after or "REMOVE"))
+            say("Historical roles remain unconfirmed: native review/Save required. No native readiness.")
+            say("Type APPLY to publish these changes, or Return to keep local:")
+            if tty.readline(32).strip() != b"APPLY":
+                sys.exit("Declined; kept local. No project writes.")
+    except OSError:
+        sys.exit("No foreground controlling terminal. Kept local; no project writes. "
+                 "Use --review-file then --apply-file sha256:TOKEN for noninteractive approval.")
+consent()
+print(digest)
+PY
+}
+publish_revalidated_plan() {
+  # Scope the fresh scratch to this pass. The outer EXIT trap retains
+  # ownership of the original scratch, including this child directory.
+  local approved="$TMPDIR_WORK/review-plan.json"
+  local TMPDIR_WORK="$TMPDIR_WORK/revalidated"
+  mkdir "$TMPDIR_WORK"
+  prepare_install_context
+  [ -d "$TMPDIR_WORK/review-evidence" ] || { echo "Stale plan; no project writes." >&2; exit 3; }
+  reconciliation_preview >/dev/null
+  cmp -s "$approved" "$TMPDIR_WORK/review-plan.json" || { echo "Stale plan; no project writes." >&2; exit 3; }
+  publish_reconciliation "$1"
+}
 print_install_notice
 if [ -d "$TMPDIR_WORK/review-evidence" ]; then
   reconciliation_preview
-  exit 3
-fi
+  if [ "$FILE_PREPARATION" -eq 0 ]; then
+    [ "$DRY_RUN" -eq 0 ] || exit 3
+    approval="$(review_consent)" || exit 3
+    (publish_revalidated_plan "$approval")
+    exit $?
+  fi
+else
 GUEST_PREFLIGHT=0
 if [ "$NO_GUEST" -eq 0 ]; then
   for guest_provider in claude codex copilot; do
@@ -9239,3 +9641,4 @@ fi
 LIFECYCLE_COMPLETED=1
 [ "$RECONFIRMATION_REQUIRED" -eq 0 ] || exit 3
 echo "Done."
+fi
