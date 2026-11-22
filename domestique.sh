@@ -5,6 +5,53 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
+# Scratch safety and the file-review transport both need a working interpreter
+# before the later dependency checks. Do not allocate scratch to probe it.
+if ! python3 -I -B -c 'import pathlib' >/dev/null 2>&1; then
+  echo "Error: a working python3 is required (Codex requires Python 3.11+ with tomllib). No project writes." >&2
+  exit 3
+fi
+
+# Opt-in replay from byte zero of one private, materialized installer image.
+# A pathname identifies what to *read*, not what Bash has already executed.
+# Only the materializer computes a token: it supplies the exact bytes it
+# hashed as Bash's complete script, not a claimed filename/hash from a child.
+if [ "${1:-}" = --review-file ]; then
+  if [ -z "${BASH_SOURCE[0]:-}" ] || [ "${BASH_SOURCE[0]}" != "$0" ] || [ ! -f "$0" ]; then
+    echo "Save the installer to a regular file first; use bash ./domestique.sh --review-file [install flags]." >&2
+    exit 2
+  fi
+  shift
+  # No here-document or temporary receipt: TMPDIR may be *inside* the
+  # not-yet-parsed target. The child checks it before allocating scratch.
+  exec python3 -I -B -c '
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+source, bash, *args = sys.argv[1:]
+image = Path(source).read_bytes()
+read_fd, fd = os.pipe()
+with os.fdopen(read_fd, "rb") as receipt:
+    result = subprocess.run([bash, "-s", "--", "--dry-run", *args], input=image,
+                            pass_fds=(fd,), env=dict(os.environ, DOM_REVIEW_RECEIPT_FD=str(fd)))
+    os.close(fd)
+    digest = receipt.read(65)
+    if result.returncode == 3 and re.fullmatch(b"[0-9a-f]{64}", digest):
+        binding = {"plan": digest.decode(), "source": hashlib.sha256(image).hexdigest(),
+                   "purpose": "domestique-file-review-v2"}
+        data = json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+        print("Reconciliation plan: sha256:" + hashlib.sha256(data).hexdigest())
+    elif result.returncode:
+        print("File review incomplete; no plan-bound approval token.")
+sys.exit(result.returncode)
+' "$0" "$BASH" "$@"
+fi
+
 DOMESTIQUE_VERSION="0.5.0"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
@@ -1154,6 +1201,10 @@ def project_settings(data, role):
     return "".join(line for i, line in enumerate(lines) if i not in indices).encode()
 
 
+class InstallerMergeConflict(ValueError):
+    """A checked member has no preserving merge. Never supplies candidate bytes."""
+
+
 def restore_settings(local, merged, role):
     """Reinsert exact local scalar lines at unambiguous unchanged boundaries."""
     (lines, _, _, spans), _, _ = parse(local, role)
@@ -1169,7 +1220,8 @@ def restore_settings(local, merged, role):
     for i, line in enumerate(lines):
         if i in indices:
             targets = {0} if offset == 0 else boundaries.get(offset, set())
-            need(len(targets) == 1, "selection boundary changed; preserving merge requires review")
+            if len(targets) != 1:
+                raise InstallerMergeConflict("selection boundary changed; preserving merge requires review")
             additions.setdefault(next(iter(targets)), []).append(line)
         else:
             offset += 1
@@ -1279,7 +1331,9 @@ class InstallerPair(Pair):
             return "legacy"
         return "custom-unconfirmed"
 
-    def prepare(self, overrides, *, force=False):
+    def prepare(self, overrides, *, force=False, on_conflict=None):
+        """Preview may collect member conflicts; None means no prepared transaction."""
+        self.prepared = None
         self.check_root()
         need(type(overrides) is dict and set(overrides) <= set(ROLES),
              "installer overrides name individual roles")
@@ -1299,8 +1353,7 @@ class InstallerPair(Pair):
                       self.helper not in self.inventory(contents[self.manifest])["files"].split(","))
         need(qualified or not overrides,
              "unconfirmed pair; review/Save before model override")
-        outputs = {}
-        for role, (model, effort) in installer_defaults().items():
+        def prepare_member(role, model, effort):
             rel = self.paths[role]
             local, upstream = contents[rel], self.pristine[rel]
             base = contents[f"{self.state}/base/{rel}"]
@@ -1308,7 +1361,7 @@ class InstallerPair(Pair):
                 base = local  # Exact raw historical proof supplied by installer.
             if local is None:
                 selected = overrides.get(role, model)
-                outputs[role] = patch(upstream, role, {
+                output = patch(upstream, role, {
                     "model": selected, "effort": effort if selected == model else None})
             elif qualified or historical:
                 # No generic merge may decide that local==base unpins a scalar.
@@ -1318,18 +1371,29 @@ class InstallerPair(Pair):
                 if force and qualified:
                     self.guard(role, base, local, restore_settings(local, merged, role))
                     merged = projected[2]
-                outputs[role] = restore_settings(local, merged, role)
+                output = restore_settings(local, merged, role)
                 if role in overrides:
-                    current_model = parse(outputs[role], role)[1].get("model")
+                    current_model = parse(output, role)[1].get("model")
                     if HARNESS == "claude" and current_model == "inherit":
                         current_model = None
                     if current_model != overrides[role]:
-                        outputs[role] = patch(outputs[role], role,
-                                              {"model": overrides[role]}, model_only=True)
+                        output = patch(output, role, {"model": overrides[role]}, model_only=True)
             else:
-                outputs[role] = local
-            self.guard(role, base or upstream, local or upstream, outputs[role])
-            parse(outputs[role], role)
+                output = local
+            self.guard(role, base or upstream, local or upstream, output)
+            parse(output, role)
+            return output
+
+        outputs = {}
+        for role, defaults in installer_defaults().items():
+            try:
+                outputs[role] = prepare_member(role, *defaults)
+            except InstallerMergeConflict as error:
+                if on_conflict is None:
+                    raise
+                on_conflict(self.paths[role], error)
+        if set(outputs) != set(ROLES):
+            return None  # no marker, plan, digest or apply authority for either member
         if qualified:
             mark_outputs(self, outputs)
             # Preserve even noncanonical-but-valid v1 marker formatting and inode.
@@ -2777,6 +2841,11 @@ usage() {
   printf 'domestique VERSION %s — project configuration installer\n\n' "$DOMESTIQUE_VERSION"
   cat <<'EOF'
 Usage: domestique.sh [TARGET_DIR] [options]
+       bash ./domestique.sh --review-file [install options] [TARGET_DIR]
+
+  --review-file  First argument only, on a saved installer. Replay those exact
+                 bytes with --dry-run for a file-bound reconciliation token.
+                 Direct curl | bash previews cannot issue or accept one.
 
 Installs domestique orchestration config into TARGET_DIR (default: current
 directory). Without a selector, installs all three native projections:
@@ -2952,9 +3021,13 @@ print_install_notice() (
     esac
     [ "$selected" -eq 1 ] || continue
     configure_provider "$provider"
-    resolve_provider_mode >/dev/null 2>&1
-    mode=normal
-    [ "$GUEST" -eq 0 ] || mode=guest
+    if [ -f "$TMPDIR_WORK/review-invalid-mode-$provider" ]; then
+      mode=unknown
+    else
+      resolve_provider_mode >/dev/null 2>&1
+      mode=normal
+      [ "$GUEST" -eq 0 ] || mode=guest
+    fi
     printf '%s%s (%s)' "$separator" "$label" "$mode"
     separator=", "
   done
@@ -2979,6 +3052,7 @@ NO_GUEST=0
 UNINSTALL=0
 PURGE_BEADS=0
 MODEL_ARGS=()
+SHOW_HELP=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -2998,10 +3072,15 @@ while [ $# -gt 0 ]; do
     --no-guest)     NO_GUEST=1 ;;
     --uninstall)    UNINSTALL=1 ;;
     --purge-beads)  PURGE_BEADS=1 ;;
-    -h|--help)      usage; exit 0 ;;
-    --) shift; break ;;
-    -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    -h|--help)      SHOW_HELP=1 ;;
+    --)
+      shift
+      if [ "$#" -eq 1 ] && [ -z "$TARGET_DIR" ] && [ -n "$1" ]; then TARGET_DIR="$1"
+      elif [ "$#" -ne 0 ]; then echo "Ambiguous target after --" >&2; exit 2; fi
+      break ;;
+    -*) echo "Unknown option: $1 (see --help)" >&2; exit 2 ;;
     *)
+      [ -n "$1" ] || { echo "Empty target directory" >&2; exit 2; }
       if [ -z "$TARGET_DIR" ]; then TARGET_DIR="$1"
       else echo "Unexpected argument: $1" >&2; exit 2; fi
       ;;
@@ -3009,6 +3088,26 @@ while [ $# -gt 0 ]; do
   shift
 done
 TARGET_DIR="${TARGET_DIR:-.}"
+
+# Even rendering large here-documents can allocate Bash temporary files.
+# No probes that create/delete a file (including tempfile.gettempdir).
+TMPDIR="$(python3 -I -B -c '
+import os, sys
+from pathlib import Path
+try:
+    root, tmp = (Path(p).resolve(strict=True) for p in sys.argv[1:])
+    if not root.is_dir() or not tmp.is_dir() or not os.access(tmp, os.W_OK | os.X_OK):
+        raise ValueError("target and writable temporary directory required")
+    if any(p.samefile(root) for p in (tmp, *tmp.parents)):
+        raise ValueError("TMPDIR must be outside the physical target")
+    if any(ord(c) < 32 or ord(c) == 127 for c in str(tmp)):
+        raise ValueError("ambiguous temporary directory name")
+    print(tmp)
+except (OSError, RuntimeError, ValueError) as exc:
+    sys.exit("Unsafe scratch location: " + str(exc))
+' "$TARGET_DIR" "${TMPDIR:-/tmp}")" || exit 3
+export TMPDIR
+if [ "$SHOW_HELP" -eq 1 ]; then usage; exit 0; fi
 
 if [ "$PLATFORM_EXPLICIT" -eq 1 ] && [ -z "$PLATFORM_ARG" ]; then
   echo "Error: --platform requires a nonempty selection." >&2
@@ -3084,12 +3183,18 @@ COPILOT_ENTRIES="$COPILOT_ENTRIES
 .github/skills/domestique-v2-copilot-models/SKILL.md|emit_copilot_models"
 COPILOT_HELPER_FILES="$COPILOT_OLD_FILES,.github/domestique-model-setup.py"
 COPILOT_FILES="$COPILOT_HELPER_FILES,.github/skills/domestique-v2-copilot-models/SKILL.md"
+CODEX_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml,.codex/domestique-model-setup.py,.agents/skills/domestique-models/SKILL.md"
 
 # configure_provider <claude|codex|copilot|shared> — select inventory and
 # snapshot namespace. Policy destination is finalized after sticky guest mode
 # is resolved for that provider.
+review_check_owner() {
+  [ -z "${REVIEW_CHECK_FILE:-}" ] || printf '%s\n' "$1" > "$REVIEW_CHECK_FILE"
+}
+REVIEW_CHECK_FILE=""
 configure_provider() {
   CURRENT_PROVIDER="$1"
+  review_check_owner "$1"
   SNAPSHOT_TOUCHED=0
   POLICY_DEST=""
   case "$CURRENT_PROVIDER" in
@@ -3105,7 +3210,7 @@ configure_provider() {
       POLICY_EMITTER="emit_codex_policy"
       POLICY_LABEL="AGENTS.md"
       POLICY_CANDIDATES="AGENTS.md AGENTS.override.md"
-      MANAGED_PLAIN_FILES=".codex/agents/implementer.toml,.codex/agents/reviewer.toml,.agents/skills/domestique/SKILL.md,.agents/skills/domestique-decompose/SKILL.md,.agents/skills/domestique-goal/SKILL.md,.agents/skills/domestique-goal/agents/openai.yaml,.codex/domestique-model-setup.py,.agents/skills/domestique-models/SKILL.md"
+      MANAGED_PLAIN_FILES="$CODEX_FILES"
       ;;
     copilot)
       SNAPSHOT_DIR="$TARGET_DIR/.github/.domestique"
@@ -3130,6 +3235,7 @@ configure_provider() {
 resolve_provider_mode() {
   local marker_content=""
   GUEST="$REQUESTED_GUEST"
+  [ ! -f "$TMPDIR_WORK/review-normal-$CURRENT_PROVIDER" ] || GUEST=0
   if [ "$CURRENT_PROVIDER" = copilot ] && [ "${PREVIEW_MIGRATE:-0}" -eq 1 ] &&
      [ "$NO_GUEST" -eq 0 ]; then GUEST=1; fi
   if [ -e "$MODE_MARKER" ]; then
@@ -3137,7 +3243,7 @@ resolve_provider_mode() {
     case "$marker_content" in
       guest)
         if [ "$NO_GUEST" -eq 1 ]; then
-          guest_plan_write "$MODE_MARKER"
+          guest_plan_write "$MODE_MARKER" --absent
           if [ "$DRY_RUN" -eq 1 ]; then
             note_dry "remove mode marker $MODE_MARKER (--no-guest)"
           else
@@ -3156,8 +3262,7 @@ resolve_provider_mode() {
         fi
         ;;
       *)
-        echo "Warning: $MODE_MARKER has unexpected content '$marker_content' (expected 'guest') — treating $CURRENT_PROVIDER as normal." >&2
-        GUEST=0
+        shared_refuse "invalid mode $MODE_MARKER"
         ;;
     esac
   elif [ "$NO_GUEST" -eq 1 ]; then
@@ -3208,6 +3313,8 @@ resolve_provider_mode() {
 # are accepted as a one-time migration source.
 codex_exclude_was_owned() {
   local rel="$1" ownership="$TARGET_DIR/.codex/.domestique/guest-excludes"
+  local projected="$TMPDIR_WORK/review-projection/.codex/.domestique/guest-excludes"
+  [ ! -f "$projected" ] || ownership="$projected"
   if [ -e "$ownership" ] && grep -qxF "$rel" "$ownership" 2>/dev/null; then
     return 0
   fi
@@ -3249,7 +3356,8 @@ write_codex_guest_ownership() {
     [ "${CODEX_PREEXIST_DOM_GOAL_SKILL:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/SKILL.md\n'
     [ "${CODEX_PREEXIST_DOM_GOAL_META:-0}" -eq 1 ] || printf '.agents/skills/dom-goal/agents/openai.yaml\n'
   } > "$staged"
-  if ! cmp -s "$staged" "$ownership"; then guest_plan_write "$ownership"; fi
+  validate_guest_exclusions codex "$staged" || shared_refuse "invalid generated Codex exclusions"
+  if ! cmp -s "$staged" "$ownership"; then guest_plan_write "$ownership" "$staged"; fi
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "record exact Codex guest ownership -> $ownership"
   else
@@ -3261,7 +3369,12 @@ write_codex_guest_ownership() {
 write_provider_manifest() {
   if model_pair_managed && [ -f "$TMPDIR_WORK/model-selected-$CURRENT_PROVIDER" ]; then return 0; fi
   [ "$SNAPSHOT_TOUCHED" -eq 1 ] || return 0
-  guest_plan_write "$SNAPSHOT_DIR/manifest"
+  if [ -n "$GUEST_WRITE_PLAN" ] && [ -d "$TMPDIR_WORK/review-evidence" ]; then
+    write_manifest "$TMPDIR_WORK/review-manifest" '<publication-time>'
+    guest_plan_write "$SNAPSHOT_DIR/manifest" "$TMPDIR_WORK/review-manifest"
+  else
+    guest_plan_write "$SNAPSHOT_DIR/manifest"
+  fi
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "write/update manifest -> $SNAPSHOT_DIR/manifest"
   else
@@ -3306,7 +3419,7 @@ install_current_provider() {
         install_plain "$TARGET_DIR/$rel" "$emitter"
       done <<< "$COPILOT_ENTRIES"
       if ! cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes"; then
-        guest_plan_write "$SNAPSHOT_DIR/guest-excludes"
+        guest_plan_write "$SNAPSHOT_DIR/guest-excludes" "$TMPDIR_WORK/copilot-excludes"
       fi
       if [ "$DRY_RUN" -eq 0 ]; then
         cmp -s "$TMPDIR_WORK/copilot-excludes" "$SNAPSHOT_DIR/guest-excludes" ||
@@ -3318,7 +3431,7 @@ install_current_provider() {
 
   if [ "$GUEST" -eq 1 ]; then
     if [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" != guest ]; then
-      guest_plan_write "$MODE_MARKER"
+      guest_plan_write "$MODE_MARKER" --line guest
     fi
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "write mode marker -> $MODE_MARKER (guest)"
@@ -3345,7 +3458,7 @@ persist_platform_set() {
     state_file="$state_dir/platforms"
     old="$(cat "$state_file" 2>/dev/null || true)"
     [ "$old" = "$PLATFORM_SET" ] && continue
-    guest_plan_write "$state_file"
+    guest_plan_write "$state_file" --line "$PLATFORM_SET"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "persist platform set '$PLATFORM_SET' -> $state_file"
     else
@@ -3392,10 +3505,12 @@ read_platform_state() {
   esac
   case "$value" in
     ""|,*|*,|*,,*|*$'\n'*)
-      echo "Error: invalid domestique platform state in $statefile. No project writes." >&2
-      exit 3 ;;
+      return 1 ;;
   esac
   IFS=, read -r -a members <<< "$value"
+  for provider in "${members[@]}"; do
+    case "$provider" in claude|codex|copilot) : ;; *) return 1 ;; esac
+  done
   for provider in "${members[@]}"; do
     case "$provider" in
       claude) PERSISTED_CLAUDE=1 ;;
@@ -3406,9 +3521,21 @@ read_platform_state() {
   done
 }
 
-read_platform_state "$TARGET_DIR/.claude/.domestique/platforms"
-read_platform_state "$TARGET_DIR/.codex/.domestique/platforms"
-read_platform_state "$TARGET_DIR/.github/.domestique/platforms"
+select_providers() {
+local provider state
+for provider in claude codex copilot; do
+  configure_provider "$provider"
+  state="${SNAPSHOT_DIR#"$TARGET_DIR"/}"
+  if ! shared_safe_path "$state/mode" ||
+     { [ -e "$MODE_MARKER" ] && ! printf 'guest\n' | cmp -s - "$MODE_MARKER"; }; then
+    touch "$TMPDIR_WORK/review-invalid-mode-$provider"
+    refuse_provider "$provider" "unsafe or invalid mode $state/mode"
+    continue
+  fi
+  if ! shared_safe_path "$state/platforms" || ! read_platform_state "$SNAPSHOT_DIR/platforms"; then
+    refuse_provider "$provider" "invalid domestique platform state in $state/platforms"
+  fi
+done
 
 # Own state is evidence even when it predates the platforms marker. The
 # lifecycle/inactive preflights below validate it before any project writes.
@@ -3443,6 +3570,7 @@ else
   SELECT_COPILOT=1
 fi
 
+}
 platform_set() {
 local claude="$SELECT_CLAUDE" codex="$SELECT_CODEX"
 if [ "$UNINSTALL" -eq 0 ]; then
@@ -3464,12 +3592,11 @@ if [ "$SELECT_COPILOT" -eq 1 ] ||
   PLATFORM_SET="${PLATFORM_SET:+$PLATFORM_SET,}copilot"
 fi
 }
-platform_set
 
 REQUESTED_GUEST="$GUEST"
 
 TS="$(date +%Y%m%d%H%M%S)"
-TMPDIR_WORK="$(mktemp -d)"
+TMPDIR_WORK="$(mktemp -d "$TMPDIR/domestique.XXXXXXXX")"
 MUTATION_STARTED=0
 LIFECYCLE_COMPLETED=0
 trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ] && [ "$LIFECYCLE_COMPLETED" -eq 0 ]; then echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2; fi; rm -rf "$TMPDIR_WORK"; exit "$rc"' EXIT
@@ -4060,13 +4187,32 @@ shared_refuse() {
   exit 3
 }
 
+# A conflict in checked inputs vetoes publication, not the authority to
+# inspect a different path. Hard preflight failures still exit the validator.
+review_merge_conflict() {
+  local rc="$1" owner="$2" rel="$3" reason="$4"
+  if [ -z "$REVIEW_CHECK_FILE" ] || [ "$rc" -gt 127 ]; then shared_refuse "$reason"; fi
+  printf '%s\n' "$rel" >> "$TMPDIR_WORK/review-conflicts-$owner"
+  echo "Error: $reason. No project writes." >&2
+}
+
 # Collect publication intents by exercising the real installers read-only, not
 # by treating every owned (or every tracked) path as a write. Pair publication
 # adds its prepared byte deltas before this plan is checked, across providers.
 GUEST_WRITE_PLAN=""
 guest_plan_write() {
   [ -n "${GUEST_WRITE_PLAN:-}" ] || return 0
-  printf '%s\n' "${1#"$TARGET_DIR"/}" >> "$GUEST_WRITE_PLAN"
+  local rel="${1#"$TARGET_DIR"/}"
+  printf '%s\n' "$rel" >> "$GUEST_WRITE_PLAN"
+  if [ "$#" -gt 1 ] && [ -d "$TMPDIR_WORK/review-evidence" ]; then
+    local out="$TMPDIR_WORK/review-projection/$rel"
+    case "$2" in
+      --absent) printf '%s\n' "$rel" >> "$TMPDIR_WORK/review-removals" ;;
+      --empty) mkdir -p "$(dirname "$out")"; : > "$out" ;;
+      --line) mkdir -p "$(dirname "$out")"; printf '%s\n' "$3" > "$out" ;;
+      *) mkdir -p "$(dirname "$out")"; cp "$2" "$out" ;;
+    esac
+  fi
 }
 
 emit_guest_plan_validator() {
@@ -4312,14 +4458,21 @@ PY
 
 # All dependencies, selected inventories and provider modes are checked before
 # any provider, shared owner or exclude is changed. No native client is needed.
+refuse_provider() {
+  [ "$UNINSTALL" -eq 0 ] || shared_refuse "$2"
+  printf 'Hard refusal (%s): %s. No project writes.\n' "$1" "$2" >&2
+  printf '%s\n' "$2" > "$TMPDIR_WORK/review-blocked-$1"
+}
+
 lifecycle_preflight() {
-  local provider state rel selected mode guests=0 normals=0 missing=0
+  local provider state rel selected guests=0 normals=0 missing=0
   local paths=""
   if [ "$SELECT_CODEX" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
     python3 -c 'import tomllib' >/dev/null 2>&1 ||
-      shared_refuse "Python 3.11+ with tomllib is required for Codex role validation"
+      refuse_provider codex "Python 3.11+ with tomllib is required for Codex role validation"
   fi
   for provider in claude codex copilot; do
+    [ ! -f "$TMPDIR_WORK/review-blocked-$provider" ] || continue
     configure_provider "$provider"
     state="${SNAPSHOT_DIR#"$TARGET_DIR"/}"
     selected=0
@@ -4328,24 +4481,12 @@ lifecycle_preflight() {
       codex) selected="$SELECT_CODEX" ;;
       copilot) selected="$SELECT_COPILOT" ;;
     esac
-    shared_safe_path "$state" directory || shared_refuse "unsafe $state"
+    shared_safe_path "$state" directory || { refuse_provider "$provider" "unsafe $state"; continue; }
     for rel in mode platforms manifest guest-excludes beads-owned; do
-      shared_safe_path "$state/$rel" || shared_refuse "unsafe $state/$rel"
+      shared_safe_path "$state/$rel" || { refuse_provider "$provider" "unsafe $state/$rel"; continue 2; }
     done
     if [ -d "$SNAPSHOT_DIR" ]; then
-      mode="$(cat "$MODE_MARKER" 2>/dev/null || true)"
-      case "$mode" in
-        guest) guests=$((guests + 1)) ;;
-        "")
-          if [ "$SELECT_COPILOT" -eq 1 ] || [ "$provider" = copilot ]; then
-            [ ! -e "$MODE_MARKER" ] || shared_refuse "invalid mode $state"
-          fi
-          normals=$((normals + 1)) ;;
-        *)
-          [ "$SELECT_COPILOT" -eq 0 ] && [ "$provider" != copilot ] ||
-            shared_refuse "invalid mode $state"
-          normals=$((normals + 1)) ;;
-      esac
+      if [ -e "$MODE_MARKER" ]; then guests=$((guests + 1)); else normals=$((normals + 1)); fi
     elif [ "$selected" -eq 1 ]; then
       missing=1
     fi
@@ -4359,7 +4500,7 @@ lifecycle_preflight() {
       shared_safe_path "$rel" && shared_safe_path "$state/base/$rel" &&
         shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" &&
         shared_safe_path "$rel.uninstalled.$TS" ||
-        shared_refuse "unsafe selected $provider path $rel"
+        { refuse_provider "$provider" "unsafe selected $provider path $rel"; break; }
       case "$rel" in
         .claude/commands/dom-models.md|.agents/skills/domestique-models/SKILL.md|.github/skills/domestique-v2-copilot-models/SKILL.md)
           if [ -e "$TARGET_DIR/$rel" ] || [ -e "$TARGET_DIR/$state/base/$rel" ]; then
@@ -4367,7 +4508,7 @@ lifecycle_preflight() {
               { [ ! -e "$TARGET_DIR/$state" ] ||
                 [ -f "$TMPDIR_WORK/policy-only-existing-$provider" ]; }; } ||
               snapshot_has_file "$state" "$provider" "$rel" ||
-              shared_refuse "unowned model command $rel; no adoption"
+              { refuse_provider "$provider" "unowned model command $rel; no adoption"; break; }
           fi
           ;;
         */domestique-model-setup.py)
@@ -4375,15 +4516,17 @@ lifecycle_preflight() {
             snapshot_has_file "$state" "$provider" "$rel" &&
               [ -f "$TARGET_DIR/$state/base/$rel" ] &&
               cmp -s "$TARGET_DIR/$rel" "$TARGET_DIR/$state/base/$rel" ||
-              shared_refuse "modified/unowned helper $rel; no adoption or merge"
+              { refuse_provider "$provider" "modified/unowned helper $rel; no adoption or merge"; break; }
           else
             [ ! -e "$TARGET_DIR/$state/base/$rel" ] ||
-              shared_refuse "missing owned helper $rel; explicit repair required"
+              { refuse_provider "$provider" "missing owned helper $rel; explicit repair required"; break; }
           fi
           ;;
       esac
       paths="$paths$rel"$'\n'"$state/base/$rel"$'\n'"$rel.bak.$TS"$'\n'"$rel.new"$'\n'"$rel.uninstalled.$TS"$'\n'
     done
+    printf '%s' "$paths" > "$TMPDIR_WORK/lifecycle-paths-$provider"
+    paths=""
   done
   if [ "$UNINSTALL" -eq 0 ] && [ "$missing" -eq 1 ] &&
      [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ]; then
@@ -4392,13 +4535,16 @@ lifecycle_preflight() {
     [ "$guests" -eq 0 ] || REQUESTED_GUEST=1
   fi
   for provider in claude codex copilot; do
+    [ ! -f "$TMPDIR_WORK/review-blocked-$provider" ] || continue
     configure_provider "$provider"
     for rel in $POLICY_CANDIDATES; do
       shared_safe_path "$rel" && shared_safe_path "${SNAPSHOT_BASE#"$TARGET_DIR"/}/$rel.block" &&
         shared_safe_path "$rel.bak.$TS" && shared_safe_path "$rel.new" ||
-        shared_refuse "unsafe policy destination $rel"
+        { refuse_provider "$provider" "unsafe policy destination $rel"; break; }
       paths="$paths$rel"$'\n'"${SNAPSHOT_BASE#"$TARGET_DIR"/}/$rel.block"$'\n'"$rel.bak.$TS"$'\n'"$rel.new"$'\n'
     done
+    printf '%s' "$paths" >> "$TMPDIR_WORK/lifecycle-paths-$provider"
+    paths=""
   done
   if [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ]; then
     local shared_files
@@ -4413,23 +4559,13 @@ lifecycle_preflight() {
       esac
     done
   fi
-  # Validate the shared exclude against the original state, before even model
-  # pairs publish. A selected/sticky guest (including a retained provider), or
-  # conversion out of guest mode, will reconcile it later. Keep Copilot's
-  # existing unconditional exclude preflight, but do not gate other guests on it.
-  local check_exclude=0
   # This read precedes shared_preflight: validate the leaf and its ancestors
   # first, even for a Claude-only operation with no shared consumer selected.
   shared_safe_path ".agents/.domestique/mode" || shared_refuse "unsafe .agents/.domestique/mode"
-  if [ "$REQUESTED_GUEST" -eq 1 ] || [ "$guests" -gt 0 ] ||
-     [ "$(cat "$TARGET_DIR/.agents/.domestique/mode" 2>/dev/null || true)" = guest ] ||
-     [ "$SELECT_COPILOT" -eq 1 ] || [ -e "$TARGET_DIR/.github/.domestique" ]; then
-    check_exclude=1
-  fi
   # Writable ancestors and the Git-common exclude need checking together with
   # prospective leaves. This common read-only check also owns exclude type and
   # marker validation for every provider; no post-publication state is needed.
-  python3 - "$TARGET_DIR" "$paths" "$check_exclude" <<'PY' ||
+  python3 - "$TARGET_DIR" "$paths" "$TMPDIR_WORK" "$UNINSTALL" <<'PY' ||
 import os
 from pathlib import Path
 import stat
@@ -4437,6 +4573,7 @@ import subprocess
 import sys
 
 root = Path(sys.argv[1]).resolve()
+scratch = Path(sys.argv[3])
 paths = [root / p for p in sys.argv[2].splitlines()]
 common = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-common-dir"],
                         capture_output=True, text=True)
@@ -4451,7 +4588,7 @@ exclude = directory / "info/exclude" if directory is not None else None
 if exclude is not None:
     paths.append(exclude)
 try:
-    if exclude is not None and sys.argv[3] == "1":
+    if exclude is not None:
         for path in (*reversed(exclude.parents), exclude):
             if path.is_symlink():
                 raise ValueError(f"symlink in exclude path: {path}")
@@ -4460,15 +4597,11 @@ try:
                 if path == exclude:
                     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                         raise ValueError(f"unsafe exclude leaf: {path}")
-                    # Match the reconciliation awk's whole-line semantics.
-                    lines = path.read_bytes().split(b"\n")
-                    b, e = b"# BEGIN domestique (managed)", b"# END domestique"
-                    if lines.count(b) != lines.count(e) or lines.count(b) > 1 or (
-                            b in lines and lines.index(b) > lines.index(e)):
-                        raise ValueError(f"malformed exclude block: {path}; repair markers by hand")
+                    import runpy
+                    runpy.run_path(str(scratch / "exclude-render.py"))["render"](path, b"")
                 elif not path.is_dir():
                     raise ValueError(f"unsafe exclude ancestor: {path}")
-    for candidate in paths:
+    def validate(candidate):
         checked_parent = False
         for item in (candidate, *candidate.parents):
             if item.is_symlink():
@@ -4486,6 +4619,20 @@ try:
                 checked_parent = item.is_dir()
             if item == root or item == root.parent:
                 break
+    for candidate in paths:
+        validate(candidate)
+    for owner in ("claude", "codex", "copilot"):
+        inventory = scratch / ("lifecycle-paths-" + owner)
+        refusal = scratch / ("review-blocked-" + owner)
+        if inventory.exists() and not refusal.exists():
+            try:
+                for rel in inventory.read_text().splitlines():
+                    validate(root / rel)
+            except (OSError, ValueError) as error:
+                if sys.argv[4] != "0":
+                    raise
+                refusal.write_text(str(error))
+                print(f"Lifecycle path preflight ({owner}): {error}. No project writes.", file=sys.stderr)
 except (OSError, ValueError) as exc:
     print(f"Lifecycle path preflight: {exc}", file=sys.stderr)
     sys.exit(1)
@@ -4502,6 +4649,49 @@ from pathlib import Path
 import sys
 ast.parse(Path(sys.argv[1]).read_bytes(), filename="domestique-model-setup.py")
 PY
+}
+
+# A final record at EOF is still an ownership claim. Strip only the LF;
+# empty files contain no claims, but blank or unknown records are invalid.
+validate_guest_exclusions() {
+  local allowed label
+  case "$1" in
+    codex) allowed="$CODEX_FILES,$SHARED_FILES,.codex/.domestique/"; label="unknown Codex exclusion" ;;
+    copilot) allowed="$COPILOT_FILES,.github/.domestique/"; label="unknown Copilot exclusion" ;;
+    shared) allowed="$SHARED_FILES"; label="unknown shared visibility path" ;;
+    # Claude visibility uses fixed block entries, never per-path claims.
+    claude) allowed=""; label="unknown Claude exclusion" ;;
+    *) return 1 ;;
+  esac
+  python3 -I -B - "$2" "$allowed" <<'PY' || { echo "$label in $2" >&2; return 1; }
+import sys
+allowed = set(filter(None, sys.argv[2].encode().split(b",")))
+with open(sys.argv[1], "rb") as records:
+    sys.exit(any(record.rstrip(b"\n") not in allowed for record in records))
+PY
+}
+
+# Validate original visibility evidence even for retained/unselected owners
+# and --no-guest/uninstall. Generating a clean replacement proves nothing
+# about the list that would be overwritten, retained or discarded.
+existing_guest_exclusions_preflight() {
+  local owner rel
+  for owner in claude codex copilot shared; do
+    [ ! -f "$TMPDIR_WORK/review-blocked-$owner" ] || continue
+    configure_provider "$owner"
+    rel="${SNAPSHOT_DIR#"$TARGET_DIR"/}/guest-excludes"
+    shared_safe_path "$rel" || { refuse_provider "$owner" "unsafe $rel"; continue; }
+    [ -e "$TARGET_DIR/$rel" ] || continue
+    validate_guest_exclusions "$owner" "$TARGET_DIR/$rel" ||
+      refuse_provider "$owner" "invalid existing visibility evidence: $rel"
+  done
+}
+
+# Append only to a private staging copy. An unterminated final record is
+# valid input; preserve it and add exactly the missing separator.
+append_guest_record() {
+  if [ -s "$1" ] && [ "$(tail -c 1 "$1" | wc -l)" -eq 0 ]; then printf '\n' >> "$1"; fi
+  printf '%s\n' "$2" >> "$1"
 }
 
 copilot_preflight() {
@@ -4556,9 +4746,6 @@ copilot_preflight() {
       fi
     done < <(find "$TARGET_DIR/$state" -print)
     [ -f "$TARGET_DIR/$state/guest-excludes" ] || shared_refuse "missing Copilot visibility evidence"
-    while IFS= read -r rel; do
-      case ",$COPILOT_FILES,.github/.domestique/," in *",$rel,"*) ;; *) shared_refuse "unknown Copilot exclusion $rel" ;; esac
-    done < "$TARGET_DIR/$state/guest-excludes"
     cp "$TARGET_DIR/$state/guest-excludes" "$TMPDIR_WORK/copilot-excludes"
   else
     printf '.github/.domestique/\n' > "$TMPDIR_WORK/copilot-excludes"
@@ -4573,11 +4760,16 @@ copilot_preflight() {
         shared_refuse "changed pristine native adoption $rel"
       base="$TMPDIR_WORK/native-adopt/$rel"
     fi
+    if [ ! -e "$base" ] && [ -f "$TMPDIR_WORK/review-output/$rel" ]; then
+      # Review-only proof, never staged as an adoption or an on-disk base.
+      [ ! -f "$TMPDIR_WORK/review-evidence/$rel" ] ||
+        base="$TMPDIR_WORK/review-evidence/${rel%.*}.ancestor"
+    fi
     if [ -e "$native_root/$rel" ] && [ ! -f "$base" ]; then
       shared_refuse "unowned Copilot path $rel; no silent preview adoption"
     fi
     if [ ! -e "$native_root/$rel" ]; then
-      printf '%s\n' "$rel" >> "$TMPDIR_WORK/copilot-excludes"
+      append_guest_record "$TMPDIR_WORK/copilot-excludes" "$rel"
     elif [ "$SELECT_COPILOT" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
       if [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] && [ "$PREVIEW_MIGRATE" -eq 0 ]; then
         case "$rel" in .github/agents/*.agent.md) continue ;; esac
@@ -4590,7 +4782,7 @@ copilot_preflight() {
       fi
       rc=0
       merge_native_plain "$rel" "$native_root/$rel" "$base" "$TMPDIR_WORK/copilot-upstream" "$TMPDIR_WORK/copilot-candidate" || rc=$?
-      [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$native_root/$rel" "$base"
+      if [ "$rc" -ne 0 ]; then native_merge_refuse "$rc" copilot "$rel" "$native_root/$rel" "$base"; continue; fi
       native_role_description_preflight copilot "$TMPDIR_WORK/copilot-candidate" "$rel"
       case "$rel" in
         .github/agents/domestique-v2-copilot-implementer.agent.md|.github/agents/domestique-v2-copilot-reviewer.agent.md)
@@ -4633,6 +4825,7 @@ PY
         shared_refuse "missing Copilot caller guard $rel"
     fi
   done <<< "$COPILOT_ENTRIES"
+  validate_guest_exclusions copilot "$TMPDIR_WORK/copilot-excludes" || shared_refuse "invalid generated Copilot exclusions"
   while IFS='|' read -r rel emitter; do
     [ -e "$TARGET_DIR/$rel" ] || printf '%s\n' "$rel" >> "$TMPDIR_WORK/shared-new-excludes"
   done <<< "$SHARED_ENTRIES"
@@ -4650,7 +4843,7 @@ PY
     emit_copilot_policy > "$TMPDIR_WORK/copilot-upstream"
     rc=0
     git merge-file -p "$TMPDIR_WORK/copilot-policy" "$TARGET_DIR/$state/base/$path.block" "$TMPDIR_WORK/copilot-upstream" >/dev/null || rc=$?
-    [ "$rc" -eq 0 ] || shared_refuse "Copilot policy conflict"
+    [ "$rc" -eq 0 ] || review_merge_conflict "$rc" copilot "$path" "Copilot policy conflict: $path"
   fi
   # Validate native syntax without a YAML dependency or any confirmation write.
   command -v python3 >/dev/null 2>&1 || shared_refuse "python3 required for Copilot preflight"
@@ -4740,6 +4933,8 @@ PY
   # Copilot enablement must not partially publish before an older selected
   # projection's unsafe path, merge conflict or missing caller guard is found.
   while IFS='|' read -r provider rel emitter; do
+    [ ! -f "$TMPDIR_WORK/review-blocked-$provider" ] || continue
+    [ ! -f "$TMPDIR_WORK/review-path-refusals-$provider" ] || continue
     # An unrelated explicit provider operation retains Copilot unchanged.
     # Still enforce discovery isolation on any Codex roles it will rewrite;
     # other retained-projection checks remain scoped to Copilot enablement.
@@ -4748,6 +4943,7 @@ PY
     fi
     [ "$provider" != claude ] || [ "$SELECT_CLAUDE" -eq 1 ] || continue
     [ "$provider" != codex ] || [ "$SELECT_CODEX" -eq 1 ] || continue
+    review_check_owner "$provider"
     if [ "${MODEL_PAIRS_ACTIVE:-0}" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
       case "$rel" in .claude/agents/*.md|.codex/agents/*.toml) continue ;; esac
     fi
@@ -4759,7 +4955,10 @@ PY
     "$emitter" > "$TMPDIR_WORK/legacy-upstream"
     cp "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate"
     if [ -f "$TARGET_DIR/$rel" ]; then
-      if [ -f "$TMPDIR_WORK/native-adopt/$rel" ]; then
+      if [ -f "$TMPDIR_WORK/review-evidence/$rel" ] &&
+         [ -f "$TMPDIR_WORK/review-output/$rel" ]; then
+        cp "$TMPDIR_WORK/review-output/$rel" "$TMPDIR_WORK/legacy-candidate"
+      elif [ -f "$TMPDIR_WORK/native-adopt/$rel" ]; then
         cmp -s "$TARGET_DIR/$rel" "$TMPDIR_WORK/native-adopt/$rel" ||
           shared_refuse "changed pristine native adoption $rel"
         [ ! -f "$TMPDIR_WORK/native-candidate/$rel" ] ||
@@ -4768,7 +4967,7 @@ PY
         [ -f "$TARGET_DIR/$base" ] || shared_refuse "unknown retained ownership $rel"
         rc=0
         merge_native_plain "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base" "$TMPDIR_WORK/legacy-upstream" "$TMPDIR_WORK/legacy-candidate" || rc=$?
-        [ "$rc" -eq 0 ] || native_merge_refuse "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base"
+        if [ "$rc" -ne 0 ]; then native_merge_refuse "$rc" "$provider" "$rel" "$TARGET_DIR/$rel" "$TARGET_DIR/$base"; continue; fi
       fi
     fi
     case "$rel" in
@@ -4875,9 +5074,6 @@ shared_preflight() {
       shared_safe_path "${path#"$TARGET_DIR"/}" || shared_refuse "unsafe state path $path"
     done < <(find "$TARGET_DIR/$state" -print)
     [ -f "$TARGET_DIR/$state/guest-excludes" ] || shared_refuse "missing shared visibility evidence"
-    while IFS= read -r rel; do
-      case ",$SHARED_FILES," in *",$rel,"*) : ;; *) shared_refuse "unknown shared visibility path $rel" ;; esac
-    done < "$TARGET_DIR/$state/guest-excludes"
     [ ! -e "$TARGET_DIR/$state/mode" ] || [ "$(cat "$TARGET_DIR/$state/mode")" = guest ] ||
       shared_refuse "invalid shared mode"
     [ "$SHARED_CODEX" -eq 1 ] || [ "$SHARED_COPILOT" -eq 1 ] ||
@@ -4896,12 +5092,19 @@ shared_preflight() {
       base="$TARGET_DIR/$legacy/base/$rel"
       SHARED_MIGRATE=1
     fi
+    # Review is not the legacy install_plain fallback. An unrelated native
+    # adoption cannot authorize seeding a base (or --force replacing the live
+    # shared file). Accept only the shared owner or its verified Codex predecessor.
+    if { [ "$DRY_RUN" -eq 1 ] || [ "$FORCE" -eq 1 ]; } && [ -f "$TARGET_DIR/$rel" ]; then
+      snapshot_has_file "$state" shared "$rel" || snapshot_has_file "$legacy" codex "$rel" ||
+        shared_refuse "unproven shared ownership for $rel; preserve the host file and reconcile its ownership before retrying"
+    fi
     [ -f "$base" ] && [ -f "$TARGET_DIR/$rel" ] || continue
     staged="$TMPDIR_WORK/shared-preflight"
     "$emitter" > "$staged"
     rc=0
     git merge-file -p "$TARGET_DIR/$rel" "$base" "$staged" >/dev/null || rc=$?
-    [ "$rc" -eq 0 ] || shared_refuse "merge conflict for $rel against $base; preserve custom bytes and resolve explicitly"
+    [ "$rc" -eq 0 ] || review_merge_conflict "$rc" shared "$rel" "merge conflict for $rel against $base; preserve custom bytes and resolve explicitly"
   done <<< "$SHARED_ENTRIES"
 }
 
@@ -4931,9 +5134,9 @@ resolve_shared_visibility() {
 write_shared_mode() {
   local marker="$TARGET_DIR/.agents/.domestique/mode"
   if [ "$SHARED_GUEST" -eq 1 ]; then
-    if [ "$(cat "$marker" 2>/dev/null || true)" != guest ]; then guest_plan_write "$marker"; fi
+    if [ "$(cat "$marker" 2>/dev/null || true)" != guest ]; then guest_plan_write "$marker" --line guest; fi
   elif [ -e "$marker" ]; then
-    guest_plan_write "$marker"
+    guest_plan_write "$marker" --absent
   fi
   [ "$DRY_RUN" -eq 0 ] || return 0
   if [ "$SHARED_GUEST" -eq 1 ]; then
@@ -4957,34 +5160,39 @@ install_shared() {
   if [ "$SHARED_PRESENT" -eq 0 ] ||
      { [ "$new_models" -eq 1 ] &&
        ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$SNAPSHOT_DIR/guest-excludes" 2>/dev/null; }; then
-    guest_plan_write "$SNAPSHOT_DIR/guest-excludes"
-  fi
-  if [ "$DRY_RUN" -eq 0 ]; then
+    local ownership="$TMPDIR_WORK/shared-guest-ownership"
     if [ "$SHARED_PRESENT" -eq 0 ]; then
-      : > "$SNAPSHOT_DIR/guest-excludes"
+      : > "$ownership"
       while IFS='|' read -r rel emitter; do
         if codex_exclude_was_owned "$rel" ||
            grep -qxF "$rel" "$TMPDIR_WORK/shared-new-excludes" 2>/dev/null; then
-          printf '%s\n' "$rel" >> "$SNAPSHOT_DIR/guest-excludes"
+          printf '%s\n' "$rel" >> "$ownership"
         fi
       done <<< "$SHARED_ENTRIES"
+    else
+      cp "$SNAPSHOT_DIR/guest-excludes" "$ownership"
     fi
     if [ "$new_models" -eq 1 ] &&
-       ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$SNAPSHOT_DIR/guest-excludes"; then
-      printf '.agents/skills/dom-models/SKILL.md\n' >> "$SNAPSHOT_DIR/guest-excludes"
+       ! grep -qxF '.agents/skills/dom-models/SKILL.md' "$ownership"; then
+      append_guest_record "$ownership" '.agents/skills/dom-models/SKILL.md'
     fi
+    validate_guest_exclusions shared "$ownership" || shared_refuse "invalid generated shared exclusions"
+    guest_plan_write "$SNAPSHOT_DIR/guest-excludes" "$ownership"
+    [ "$DRY_RUN" -eq 1 ] || cp "$ownership" "$SNAPSHOT_DIR/guest-excludes"
   fi
   write_shared_mode
   if [ "$SHARED_MIGRATE" -eq 1 ]; then
     configure_provider codex
     while IFS='|' read -r rel emitter; do
-      [ ! -e "$SNAPSHOT_BASE/$rel" ] || guest_plan_write "$SNAPSHOT_BASE/$rel"
+      [ ! -e "$SNAPSHOT_BASE/$rel" ] || guest_plan_write "$SNAPSHOT_BASE/$rel" --absent
       [ "$DRY_RUN" -eq 1 ] || rm -f "$SNAPSHOT_BASE/$rel"
     done <<< "$SHARED_ENTRIES"
     SNAPSHOT_TOUCHED=1
     write_provider_manifest
   fi
-  [ "$DRY_RUN" -eq 1 ] || SHARED_PRESENT=1
+  if [ "$DRY_RUN" -eq 0 ] || { [ -n "$GUEST_WRITE_PLAN" ] && [ -d "$TMPDIR_WORK/review-evidence" ]; }; then
+    SHARED_PRESENT=1
+  fi
 }
 
 # BEGIN GENERATED HISTORICAL IDENTITIES
@@ -5567,6 +5775,8 @@ sys.exit(not installer_identity(provider, rel, mode, hashlib.sha256(Path(path).r
 policy_preflight() {
   local provider requested state rel status bc ec block expected base emitter mode merged rc guarded selected active upstream reference native_selected native_rel
   for provider in claude codex copilot; do
+    [ ! -f "$TMPDIR_WORK/review-blocked-$provider" ] || continue
+    [ "$#" -eq 0 ] || [ "$1" = "$provider" ] || continue
     configure_provider "$provider"
     selected=0
     case "$provider" in
@@ -5587,6 +5797,7 @@ policy_preflight() {
     [ "$provider" != copilot ] || state=".github/.domestique"
     shared_safe_path "$state/mode" || shared_refuse "unsafe $state/mode"
     requested="$REQUESTED_GUEST"
+    [ ! -f "$TMPDIR_WORK/review-normal-$provider" ] || requested=0
     if [ "$provider" = copilot ] && [ "$PREVIEW_MIGRATE" -eq 1 ] &&
        [ "$NO_GUEST" -eq 0 ]; then requested=1; fi
     if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
@@ -5683,6 +5894,7 @@ policy_preflight() {
           for native_rel in ${MANAGED_PLAIN_FILES//,/ }; do
             shared_safe_path "$native_rel" || shared_refuse "unsafe native path $native_rel"
             [ ! -e "$TARGET_DIR/$native_rel" ] ||
+              [ -f "$TMPDIR_WORK/review-evidence/$native_rel" ] ||
               { [ -f "$TMPDIR_WORK/native-adopt/$native_rel" ] &&
                 cmp -s "$TARGET_DIR/$native_rel" "$TMPDIR_WORK/native-adopt/$native_rel"; } ||
               shared_refuse "cannot establish ownership of native path $native_rel from pristine policy $rel; preserve native files and restore their original snapshot/inventory, or explicitly relocate them before a fresh native install; retry --dry-run"
@@ -5730,8 +5942,12 @@ policy_preflight() {
       merged="$TMPDIR_WORK/retained-merged"
       rc=0
       git merge-file -p "$block" "$reference" "$upstream" > "$merged" || rc=$?
-      [ "$rc" -eq 0 ] ||
-        shared_refuse "owned policy merge conflict for $rel against $base; preserve custom text and reconcile the block explicitly before retrying"
+      if [ "$rc" -ne 0 ]; then
+        # A checked merge conflict is local to this policy. Keep inspecting
+        # other independent paths, never the conflicted merge output.
+        review_merge_conflict "$rc" "$provider" "$rel" "owned policy merge conflict for $rel against $base; preserve custom text and reconcile the block explicitly before retrying"
+        continue
+      fi
       head -c "$(wc -c < "$expected")" "$merged" | cmp -s "$expected" - ||
         shared_refuse "merged owned policy $rel lacks the harness guard; reconcile the block against $base explicitly"
       mkdir -p "$(dirname "$TMPDIR_WORK/preserve-$rel")"
@@ -5789,7 +6005,7 @@ snapshot_plain() {
     return 0
   fi
   SNAPSHOT_TOUCHED=1
-  guest_plan_write "$basepath"
+  guest_plan_write "$basepath" "$content"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
     return 0
@@ -5805,7 +6021,7 @@ snapshot_plain() {
 snapshot_claude_block() {
   local content="$1" basepath="$POLICY_SNAPSHOT"
   SNAPSHOT_TOUCHED=1
-  guest_plan_write "$basepath"
+  guest_plan_write "$basepath" "$content"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "snapshot base -> $basepath"
     return 0
@@ -5838,15 +6054,16 @@ managed_files_list() {
 
 # write_manifest — flat key=value manifest describing the snapshot.
 write_manifest() {
-  local manifest="$SNAPSHOT_DIR/manifest" ref sha
-  ref="$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null)" || ref="unknown"
-  [ -z "$ref" ] && ref="unknown"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha="$(sha256sum "$0" 2>/dev/null | awk '{print $1}')" || sha=""
-  elif command -v shasum >/dev/null 2>&1; then
-    sha="$(shasum -a 256 "$0" 2>/dev/null | awk '{print $1}')" || sha=""
-  else
-    sha=""
+  local manifest="${1:-$SNAPSHOT_DIR/manifest}" ref=unknown sha=unavailable
+  # Under bash -s, $0 is the interpreter (possibly an absolute path);
+  # neither its binary nor the target's HEAD is installer provenance.
+  if [ -n "${BASH_SOURCE[0]:-}" ] && [ "${BASH_SOURCE[0]}" = "$0" ] && [ -f "$0" ]; then
+    ref="$(git -C "$(dirname "$0")" rev-parse --short HEAD 2>/dev/null)" || ref="unknown"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha="$(sha256sum "$0" 2>/dev/null | awk '{print $1}')" || sha=""
+    elif command -v shasum >/dev/null 2>&1; then
+      sha="$(shasum -a 256 "$0" 2>/dev/null | awk '{print $1}')" || sha=""
+    fi
   fi
   [ -z "$sha" ] && sha="unavailable"
   {
@@ -5854,7 +6071,7 @@ write_manifest() {
     printf 'platform=%s\n' "$CURRENT_PROVIDER"
     printf 'domestique_version=%s\n' "$DOMESTIQUE_VERSION"
     printf 'installed_ref=%s\n' "$ref"
-    printf 'installed_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'installed_at=%s\n' "${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     printf 'script_sha256=%s\n' "$sha"
     printf 'files=%s\n' "$(managed_files_list)"
   } > "$manifest"
@@ -5990,12 +6207,14 @@ PY
 }
 
 native_merge_refuse() {
+  local rc="$1" owner="$2"
+  shift 2
   echo "Error: native projection merge conflict: $1" >&2
   echo "  local: $2" >&2
   echo "  pristine base: $3" >&2
   echo "  upstream: Domestique $DOMESTIQUE_VERSION emitted by $0" >&2
   echo "No project writes. Keep local and base copies; install this same script into an empty disposable directory with the same --platform selection to inspect pristine upstream at $1. Reconcile only the competing edits in the local file, keep the pristine base unchanged, then retry --dry-run before applying. --force is not conflict recovery." >&2
-  exit 3
+  review_merge_conflict "$rc" "$owner" "$1" "unresolved native merge: $1"
 }
 
 model_pair_managed() {
@@ -6096,6 +6315,7 @@ def native_ancestor_candidate(root, provider, rel, mode):
         tip = head.rstrip(b"\n")
         if git("cat-file", "-t", tip) != b"commit\n":
             return answer
+        answer["head"] = tip.decode()  # Bind review evidence to the inspected ancestry.
         commits = git("rev-list", "--max-count=129", tip, "--").splitlines()
         if len(commits) > 128:
             return dict(answer, status="limit")
@@ -6138,6 +6358,41 @@ def native_ancestor_candidate(root, provider, rel, mode):
         return dict(answer, status="limit")
     except (OSError, ValueError, subprocess.CalledProcessError):
         return answer
+
+def review_input_paths(state, natives, policies):
+    return [*natives, *policies, *(f"{state}/base/{p}" for p in natives),
+            *(f"{state}/base/{p}.block" for p in policies),
+            *(f"{state}/{p}" for p in ("manifest", "mode", "platforms", "guest-excludes", "beads-owned"))]
+
+def finalize_review(plan, scratch):
+    """Only a fully validated transaction has publication outputs. Treat all
+    paths (including shared, backups and future write types) uniformly."""
+    import shutil
+    plan["reviewable"] = not plan["blockers"]
+    if plan["reviewable"]:
+        return
+    plan.update(writes=[], projection={})
+    for report in plan["providers"]:
+        name = report["provider"]
+        reason = plan["blockers"].get("review-blocked-" + name)
+        report.pop("pair", None)
+        for row in report["paths"]:
+            if reason:
+                rel = row["path"]
+                row.clear()
+                row.update(path=rel, blocker=reason, scope="provider", hard_refusal=True)
+            elif "output" in row:
+                row["diagnostic_sha256"] = row.pop("output")
+                row["diagnostic_action"] = row.pop("action")
+        # Provisional reports may describe republishing an invalid pair.
+        (scratch / ("review-" + name + ".json")).unlink(missing_ok=True)
+        if reason:
+            (scratch / ("assessment-" + name)).unlink(missing_ok=True)
+    for directory in ("review-output", "review-projection"):
+        if (scratch / directory).exists():
+            shutil.rmtree(scratch / directory)
+    for leaf in ("review-writes", "review-removals", "projection-notice"):
+        (scratch / leaf).unlink(missing_ok=True)
 
 def installer_inventories(provider, files, policies, helper):
     import itertools
@@ -6192,6 +6447,7 @@ PY
 native_ownership_preflight() {
   local provider selected requested rc phase="$1"
   for provider in claude codex copilot; do
+    [ ! -f "$TMPDIR_WORK/review-blocked-$provider" ] || continue
     configure_provider "$provider"
     selected=0
     case "$provider" in
@@ -6216,12 +6472,14 @@ native_ownership_preflight() {
     rc=0
     python3 -I -B - "$TARGET_DIR" "$TMPDIR_WORK" "$provider" "$selected" \
       "$MANAGED_PLAIN_FILES" "$POLICY_CANDIDATES" "$requested" \
-      "$PLATFORM_EXPLICIT" "$PLATFORM_ARG" "$UNINSTALL" "$phase" <<'PY' || rc=$?
+      "$PLATFORM_EXPLICIT" "$PLATFORM_ARG" "$UNINSTALL" "$phase" "$MODEL_PAIRS_ACTIVE" \
+      "$GUEST_EXPLICIT" "$NO_GUEST" "$SHARED_OLD_FILES" <<'PY' || rc=$?
+import json
 import os
 from pathlib import Path
 import sys
 
-root, scratch, provider, selected, files, policies, guest, explicit, platform, uninstall, phase = sys.argv[1:]
+root, scratch, provider, selected, files, policies, guest, explicit, platform, uninstall, phase, gitroot, guest_flag, normal_flag, legacy_shared = sys.argv[1:]
 os.chdir(root)
 scratch = Path(scratch)
 lib = {"__name__": "trusted_installer"}
@@ -6245,6 +6503,29 @@ try:
     early = (provider == "claude" and manifest is not None and
              manifest.get("domestique_version") == "0.1.0" and
              inventory == files.split(",")[:3] + ["CLAUDE.md"])
+    # A manifest is a claim, not proof that its pristine files still exist.
+    # Check the entire bounded inventory before selection, including retained
+    # policies and former Codex-owned shared files. Never derive a path to
+    # read from unrecognized manifest text.
+    if inventory and uninstall == "0" and phase == "selection":
+        known = set(files.split(",")) | set(policies)
+        if provider == "codex":
+            known.update(legacy_shared.split(","))
+        need(set(inventory) <= known, "unknown claimed inventory")
+        pair.files = [f"{pair.state}/base/{p}" + (".block" if p in policies else "") for p in inventory]
+        _, pristine = pair.read_snapshot(absent=True)
+        for p, base in zip(inventory, pair.files):
+            if p == pair.helper and pristine[base] is None:
+                # The manifest snapshot checked the provider directory. Inspect
+                # only the helper leaf, without following or reading it.
+                try:
+                    (pair.root / p).lstat()
+                except FileNotFoundError:
+                    raise ValueError(f"missing claimed helper {p} and pristine base {base}; "
+                                     "restore both from a trusted copy of the installed generation, then retry")
+            need(pristine[base] is not None, "incomplete native ownership: " + p +
+                 "; restore missing pristine base " + base +
+                 " from the installed generation, then reconcile local edits to " + p + " and retry")
     if not policy_only and (phase == "selection" or selected != "1" or uninstall == "1"):
         sys.exit(0)
     if policy_only or early:
@@ -6315,6 +6596,26 @@ try:
     if not early and any(evidence[p] is not None for p in native):
         need(requested, "pristine native adoption requires selecting " + provider +
              " explicitly; retained platform hints do not authorize a new native pair")
+    history = {}
+    def ancestor(path, historical_mode):
+        key = path, historical_mode
+        if key not in history:
+            history[key] = lib["native_ancestor_candidate"](pair.root, provider, *key)
+        return history[key]
+
+    # Sticky guest inheritance is a fresh-install default, not evidence of
+    # the format of this provider's existing files. Resolve once per provider
+    # (independent of inventory iteration order). Explicit flags stay binding.
+    if absent_state and gitroot == "1" and mode == "guest" and guest_flag == normal_flag == "0":
+        for rel in native:
+            raw = evidence[rel]
+            if raw is None or identity(provider, rel, mode, sha(raw)):
+                continue
+            if (ancestor(rel, "guest")["status"] == "no-match" and
+                    ancestor(rel, "normal")["status"] == "candidate"):
+                mode = "normal"
+                (scratch / ("review-normal-" + provider)).touch()
+                break
     for rel in native:
         raw, base = evidence[rel], evidence[f"{pair.state}/base/{rel}"]
         if early and rel in inventory:
@@ -6322,9 +6623,25 @@ try:
         need(base is None, "unowned native base: " + rel)
         if raw is None:
             continue
-        need(identity(provider, rel, mode, sha(raw)),
-             "cannot establish ownership of native path " + rel +
-             "; pristine policy does not prove native ownership; preserve and reconcile explicitly")
+        if not identity(provider, rel, mode, sha(raw)) or (rel, "normal") in history:
+            diagnostic = ("cannot establish ownership of native path " + rel +
+                          "; pristine policy does not prove native ownership; preserve and reconcile explicitly")
+            need(absent_state and gitroot == "1", diagnostic)
+            # Evidence remains separate from native-adopt. Neither a commit nor
+            # a preview (even --force) establishes authority to publish.
+            answer = ancestor(rel, mode)
+            if answer["proposal"] is None:
+                print(f"Native ownership refused ({provider}): {diagnostic}. No project writes.", file=sys.stderr)
+            else:
+                print(diagnostic, file=sys.stderr)
+            need(answer["live_sha256"] in (None, sha(raw)), "changed reconciliation input: " + rel)
+            proposal = answer["proposal"]
+            path = scratch / "review-evidence" / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if proposal:
+                path.with_suffix(".ancestor").write_bytes(proposal.pop("base_bytes"))
+            path.write_text(json.dumps(dict(answer, mode=mode)))
+            continue
         destination = scratch / "native-adopt" / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(raw)
@@ -6335,7 +6652,8 @@ try:
             destination = scratch / "native-candidate" / rel
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(candidate)
-    if not early and (policy_only or any(evidence[p] is not None for p in native)):
+    pending = any((scratch / "review-evidence" / p).exists() for p in native)
+    if not early and not pending and (policy_only or any(evidence[p] is not None for p in native)):
         if policy_only:
             (scratch / ("native-adopt-manifest-" + provider)).write_bytes(contents[pair.manifest])
         (scratch / ("native-adopt-" + provider)).touch()
@@ -6354,9 +6672,22 @@ PY
             copilot) SELECT_COPILOT=0; PERSISTED_COPILOT=0 ;;
           esac
         fi ;;
-      *) shared_refuse "native ownership preflight failed for $provider" ;;
+      *)
+        if [ "$UNINSTALL" -eq 0 ]; then
+          # Assessment is per provider. Only after the loop do we know
+          # whether *another* provider needs an ancestor review.
+          refuse_provider "$provider" "native ownership validation failed"
+        else
+          shared_refuse "native ownership preflight failed for $provider"
+        fi ;;
     esac
   done
+  if [ "$phase" = native ] && [ "$DRY_RUN" -eq 0 ] && [ ! -d "$TMPDIR_WORK/review-evidence" ]; then
+    for provider in claude codex copilot shared; do
+      [ ! -f "$TMPDIR_WORK/review-blocked-$provider" ] ||
+        shared_refuse "native ownership preflight failed for $provider"
+    done
+  fi
   platform_set
 }
 
@@ -6366,6 +6697,7 @@ retain_inactive_providers() {
   [ "$PLATFORM_EXPLICIT" -eq 1 ] || return 0
   local provider rc
   for provider in claude codex; do
+    [ ! -f "$TMPDIR_WORK/review-blocked-$provider" ] || continue
     [ ! -f "$TMPDIR_WORK/policy-only-existing-$provider" ] || continue
     case "$PLATFORM_ARG:$provider" in
       all:*|both:*|claude:claude|codex:codex) continue ;;
@@ -6471,7 +6803,7 @@ PY
           claude) SELECT_CLAUDE=0; PERSISTED_CLAUDE=0 ;;
           codex) SELECT_CODEX=0; PERSISTED_CODEX=0 ;;
         esac ;;
-      *) shared_refuse "unsafe inactive $provider ownership history" ;;
+      *) refuse_provider "$provider" "unsafe inactive $provider ownership history" ;;
     esac
   done
   platform_set
@@ -6493,6 +6825,10 @@ installer_model_pairs() {
       copilot) selected="$SELECT_COPILOT" ;;
     esac
     [ "$selected" -eq 1 ] || continue
+    if [ -f "$TMPDIR_WORK/review-blocked-$provider" ]; then
+      echo "[reconciliation] $provider: hard refusal; no eligible outputs"
+      continue
+    fi
     if [ "$provider" = copilot ] && [ "$PREVIEW_MIGRATE" -eq 1 ]; then
       echo "Copilot preview migration remains unconfirmed; review/Save required."
       touch "$TMPDIR_WORK/model-unconfirmed"
@@ -6508,6 +6844,7 @@ installer_model_pairs() {
     printf '%s\n' "$MANAGED_PLAIN_FILES" > "$input/files"
     printf '%s\n' "$POLICY_CANDIDATES" > "$input/policies"
     requested="$REQUESTED_GUEST"
+    [ ! -f "$TMPDIR_WORK/review-normal-$provider" ] || requested=0
     if [ "$GUEST_EXPLICIT" -eq 0 ] && [ "$NO_GUEST" -eq 0 ] &&
        [ "$(cat "$MODE_MARKER" 2>/dev/null || true)" = guest ]; then requested=1; fi
     POLICY_DEST=""
@@ -6520,6 +6857,7 @@ installer_model_pairs() {
       copilot:0) POLICY_DEST=.github/copilot-instructions.md ;;
     esac
     ( SNAPSHOT_DIR="$input"; write_manifest )
+    printf '%s\n' "$requested" > "$input/guest"
     while IFS='|' read -r policy rel emitter; do
       [ "$policy" = "$provider" ] || continue
       mkdir -p "$input/$(dirname "$rel")"
@@ -6564,6 +6902,7 @@ request = json.loads(request)
 os.chdir(root)
 prepared, completed = [], []
 publishing = False
+review = (scratch / "review-evidence").exists()
 
 def display(choice):
     if choice is None:
@@ -6588,6 +6927,8 @@ def prepare(provider):
         pristine[f"{layout.state}/base/{rel}"] = pristine[rel]
     recognized = lib["installer_inventories"](provider, files, policies, layout.helper)
 
+    PathConflict = lib["InstallerMergeConflict"]
+
     def merge_for(rel, local, base, upstream):
         with tempfile.TemporaryDirectory(dir=scratch) as temporary:
             paths = [Path(temporary) / name for name in ("local", "base", "upstream", "merged")]
@@ -6595,7 +6936,9 @@ def prepare(provider):
                 path.write_bytes(data)
             result = subprocess.run(["bash", str(scratch / "model-merge.sh"), rel,
                                      *map(str, paths), str(scratch)], capture_output=True)
-            need(result.returncode == 0, "preserving merge conflict: " + rel +
+            if result.returncode:
+                error = PathConflict if 0 < result.returncode < 128 else ValueError
+                raise error("preserving merge conflict: " + rel +
                  "; no force conflict recovery. " + result.stderr.decode("utf-8", "replace") +
                  "\n  local: ./" + rel + "\n  pristine base: ./" + layout.state + "/base/" + rel +
                  "\n  upstream: Domestique emitted candidate\n"
@@ -6603,6 +6946,26 @@ def prepare(provider):
                  "empty disposable directory with the same --platform selection to inspect upstream. "
                  "Reconcile competing edits, keep the pristine base unchanged, then retry --dry-run.")
             return paths[-1].read_bytes()
+
+    # These checks consume only this path's merge result. Unlike the pair
+    # transaction, they do not depend on another path merging successfully.
+    conflicts = scratch / ("review-conflicts-" + provider)
+    def record_conflict(rel, error):
+        if conflicts.exists() and rel in conflicts.read_text().splitlines():
+            return
+        print(f"{rel}: {error}", file=sys.stderr)
+        with conflicts.open("a") as findings:
+            print(rel, file=findings)
+
+    def check_independent_merge(rel, local, base, upstream):
+        if conflicts.exists() and rel in conflicts.read_text().splitlines():
+            return  # already diagnosed by an ordinary shell validator
+        try:
+            merge_for(rel, local, base, upstream)
+        except PathConflict as error:
+            if not review and dry != "1":
+                raise
+            record_conflict(rel, error)
 
     def merge(role, local, base, upstream):
         return merge_for(layout.paths[role], local, base, upstream)
@@ -6675,6 +7038,120 @@ def prepare(provider):
                  "reconcile the role by hand and retry. --force cannot authorize guard repair.")
 
     before, contents = layout.read_snapshot(absent=True)
+    def review_paths(pair_outputs=None):
+        # A content proposal is not a publication plan or model confirmation.
+        # Bind only fixed managed paths, never print role bodies or host policy.
+        records = []
+        natives = files.split(",")
+        state = layout.state
+        paths = lib["review_input_paths"](state, natives, policies)
+        from types import SimpleNamespace
+        snapshot, inputs = lib["Pair"].read_snapshot(SimpleNamespace(root=root, files=paths), absent=True)
+        mode = "guest" if (directory / "guest").read_text().strip() == "1" else "normal"
+        print(f"[reconciliation] {provider} ({mode})", flush=True)
+        for rel in natives:
+            live, base = inputs[rel], inputs[f"{state}/base/{rel}"]
+            upstream = (directory / rel).read_bytes()
+            role = next((r for r, p in layout.paths.items() if p == rel), None)
+            evidence = scratch / "review-evidence" / rel
+            rec = {"path": rel, "upstream": lib["sha"](upstream)}
+            records.append(rec)
+            try:
+                if evidence.exists():
+                    info = json.loads(evidence.read_text())
+                    rec["ancestor"] = info
+                    need(info["status"] == "candidate", info["status"])
+                if role and live is not None:
+                    parsed = parse(live, role)[1]
+                    rec["local_choice"] = {k: parsed.get(k) for k in
+                                           ("model", "model_reasoning_effort" if provider == "codex" else "effort")}
+                if evidence.exists():
+                    base = evidence.with_suffix(".ancestor").read_bytes()
+                    need(lib["sha"](live) == info["live_sha256"] and
+                         lib["sha"](base) == info["proposal"]["sha256"], "changed evidence")
+                    print("    ancestor: git show " + info["proposal"]["commit"] + ":" + rel)
+                    print("    inspect privately: git diff --no-ext-diff --no-textconv " +
+                          info["proposal"]["commit"] + " -- " + rel)
+                    # Show where the private edits are, never their prose.
+                    import difflib
+                    ranges = [(a + 1, b, c + 1, d) for tag, a, b, c, d in
+                              difflib.SequenceMatcher(None, base.splitlines(), live.splitlines(),
+                                                      autojunk=False).get_opcodes() if tag != "equal"]
+                    print("    local edits (base start/end -> local start/end):", ranges[:20],
+                          "(additional ranges omitted)" if len(ranges) > 20 else "")
+                    action = "proposed adoption"
+                elif (scratch / "native-adopt" / rel).exists():
+                    base, action = live, "exact pristine"
+                else:
+                    action = "owned preserving merge" if live is not None else "create"
+                if pair_outputs and rel in pair_outputs:
+                    candidate = pair_outputs[rel]
+                elif role and provider not in request["selected"]:
+                    candidate, action = live, "retain (model pair not requested)"
+                    if candidate is None:
+                        rec["action"] = action
+                        continue
+                elif live is None:
+                    candidate = upstream
+                    if role:
+                        model, effort = lib["installer_defaults"]()[role]
+                        selected = request["overrides"].get(provider, {}).get(role, model)
+                        candidate = lib["patch"](upstream, role,
+                                                 {"model": selected, "effort": effort if model == selected else None})
+                elif role:
+                    need(base is not None, "missing ownership base")
+                    projected = [lib["project_settings"](data, role) for data in (live, base, upstream)]
+                    merged = merge_for(rel, *projected)
+                    candidate = lib["restore_settings"](live, merged, role)
+                    validate(role, base, live, candidate)
+                else:
+                    need(base is not None, "missing ownership base")
+                    candidate = merge_for(rel, live, base, upstream)
+                    if force == "1" and not evidence.exists():
+                        candidate = upstream
+                    if evidence.exists() and entry.encode() in upstream:
+                        need(entry.encode() in candidate, "missing native caller guard")
+                if role:
+                    overrides = request["overrides"].get(provider, {})
+                    if not pair_outputs and role in overrides and parse(candidate, role)[1].get("model") != overrides[role]:
+                        candidate = lib["patch"](candidate, role, {"model": overrides[role]}, model_only=True)
+                    fields = parse(candidate, role)[1]
+                    rec["proposed_choice"] = {k: fields.get(k) for k in
+                                              ("model", "model_reasoning_effort" if provider == "codex" else "effort")}
+                output = scratch / "review-output" / rel
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(candidate)
+                rec.update(action=action, output=lib["sha"](candidate))
+                print(f"  {rel}: {action}; proposed sha256={rec['output']}", flush=True)
+            except ValueError as error:
+                reason = str(error).splitlines()[0]
+                rec["blocker"] = reason
+                rec["scope"] = "path"
+                (scratch / ("review-path-refusals-" + provider)).touch()
+                print(f"  {rel}: blocked: {reason}", flush=True)
+                if reason == "unsafe" or "guard" in reason or "ownership" in reason:
+                    rec["hard_refusal"] = True
+                    print("    hard refusal; repair the unsafe evidence or guard, then re-preview.")
+                else:
+                    print("    keep-local (unmanaged/incomplete), or inspect disposable upstream sha256=" +
+                          rec["upstream"] + "; resolve manually before retrying. No overwrite.", flush=True)
+            if "local_choice" in rec or "proposed_choice" in rec:
+                print("    model selection: " + json.dumps(rec.get("local_choice")) +
+                      " -> " + json.dumps(rec.get("proposed_choice")), flush=True)
+            if evidence.exists() and not rec.get("hard_refusal"):
+                rec["alternatives"] = {"keep-local-unmanaged": lib["sha"](live),
+                                       "inspect-upstream": rec["upstream"],
+                                       "manual": "requires new preview"}
+        plan = dict(provider=provider, mode=mode, inputs=snapshot, paths=records,
+                    requested=provider in request["selected"])
+        (scratch / ("review-" + provider + ".json")).write_bytes(lib["canonical"](plan))
+    if review:
+        if any((scratch / "review-evidence" / p).exists() for p in files.split(",")):
+            review_paths()
+            (scratch / ("review-native-" + provider)).touch()
+            print("  [model pair] " + provider + ": proposed content only; "
+                  "no adoption, confirmation or readiness inferred")
+            return
     adopting = (scratch / ("native-adopt-" + provider)).exists()
     if adopting:
         authority = scratch / ("native-adopt-manifest-" + provider)
@@ -6704,7 +7181,7 @@ def prepare(provider):
                 base = contents[f"{layout.state}/base/{rel}"]
                 need(base is not None, "missing required role base")
                 if contents[rel] is not None:
-                    merge_for(rel, contents[rel], base, pristine[rel])
+                    check_independent_merge(rel, contents[rel], base, pristine[rel])
         new = pair.inventory(pristine[layout.manifest])
         if all(old.get(k) == new[k] for k in
                ("snapshot_format", "platform", "domestique_version", "files")):
@@ -6721,10 +7198,42 @@ def prepare(provider):
                      "changed pristine native adoption: " + rel)
                 continue
             need(base.is_file(), "unknown provider ownership: " + rel)
-            merge_for(rel, live.read_bytes(), base.read_bytes(), (directory / rel).read_bytes())
+            check_independent_merge(rel, live.read_bytes(), base.read_bytes(), (directory / rel).read_bytes())
     overrides = request["overrides"].get(provider, {})
-    result = pair.prepare(overrides, force=force == "1" and provider in request["selected"])
+    result = pair.prepare(overrides, force=force == "1" and provider in request["selected"],
+                          on_conflict=record_conflict if review or dry == "1" else None)
+    if result is None or conflicts.exists():
+        return  # diagnosis complete; never stage the provider as publishable
+    def report_prepared_pair():
+        _, _, original, roles, deps = pair.prepared
+        actual = {**deps, **{layout.paths[r]: data for r, data in roles.items()}}
+        review_paths(actual if provider in request["selected"] else None)
+        plan = result["plan"]
+        path = scratch / ("review-" + provider + ".json")
+        report = json.loads(path.read_bytes())
+        # New manifest publication time is not reviewable install content.
+        report["pair"] = {k: plan[k] for k in ("eligibility", "configured", "selected")}
+        if provider not in request["selected"]:
+            # prepare also computes what a fresh/legacy pair *could* become.
+            # The retained pair will not publish any of those outputs. Report
+            # its actual confirmation and choices instead of hypothetical ones.
+            confirmed = plan["eligibility"] == "confirmed"
+            report["pair"].update(configured=confirmed, selected=lib["verify"](pair, original)["selected"]
+                                  if confirmed else None, writes=[])
+        else:
+            report["pair"]["writes"] = sorted(rel for rel, data in actual.items() if original[rel] != data)
+            if any(rel in report["pair"]["writes"] for rel in layout.paths.values()):
+                report["pair"]["writes"] = sorted(set(report["pair"]["writes"]) | {layout.paths["implementer"]})
+            report["pair"]["outputs"] = dict(plan["outputs"])
+            manifest = actual[layout.manifest]
+            if manifest != original[layout.manifest]:
+                report["pair"]["outputs"][layout.manifest] = lib["sha"](
+                    b"\n".join(b"installed_at=<publication-time>" if line.startswith(b"installed_at=") else line
+                               for line in manifest.split(b"\n")))
+        path.write_bytes(lib["canonical"](report))
     if provider not in request["selected"]:
+        if review:
+            report_prepared_pair()
         return
     current = (None if result["plan"]["eligibility"] == "fresh" or adopting else
                lib["verify"](pair, contents)["selected"])
@@ -6737,6 +7246,8 @@ def prepare(provider):
                        "effort": fields.get("model_reasoning_effort" if provider == "codex" else "effort")}
                 selection["roles"][role] = lib["installer_model_plan"](
                     overrides, {r: old for r in layout.paths})["roles"][role]
+    if review:
+        report_prepared_pair()
     for role, value in selection["roles"].items():
         print("  [model selection] " + provider + ":" + role + ": " +
               display(value["current"]) + " -> " + display(value["requested"]) +
@@ -6754,10 +7265,35 @@ def prepare(provider):
 try:
     for provider in ("claude", "codex", "copilot"):
         if (scratch / "model-input" / provider).exists():
-            prepare(provider)
+            try:
+                if review:
+                    # Do not render provisional output hashes/actions before
+                    # the shell's ordinary policy/privacy checks have voted.
+                    import contextlib
+                    with (scratch / ("assessment-" + provider)).open("w") as stream, contextlib.redirect_stdout(stream):
+                        prepare(provider)
+                else:
+                    prepare(provider)
+            except (ValueError, OSError, subprocess.SubprocessError) as error:
+                if not review:
+                    if dry == "0":
+                        raise
+                    # Independent dry-run pair preparations are diagnostic;
+                    # don't let an earlier refusal hide the remaining pair.
+                    print(f"Model lifecycle refused ({provider}): {error}\n"
+                          "Completed pairs: none. Publication not started; no project writes.", file=sys.stderr)
+                    (scratch / ("review-blocked-" + provider)).write_text(str(error).splitlines()[0])
+                    continue
+                reason = str(error).splitlines()[0]
+                print(f"[blocker] {provider}: {reason}", flush=True)
+                (scratch / ("review-blocked-" + provider)).write_text(reason)
         elif provider == "copilot" and (scratch / "model-preview-unconfirmed").exists():
             if request["overrides"].get(provider):
                 raise ValueError("unconfirmed Copilot preview; migrate and review/Save before model override")
+    if review:
+        sys.exit(0)  # Read-only; impossible to fall through into pair.apply.
+    if dry == "1" and (any(scratch.glob("review-blocked-*")) or any(scratch.glob("review-conflicts-*"))):
+        sys.exit(3)
     # No selected pair is published until every provider has been planned.
     if (scratch / "guest-write-plan").exists():
         exec(compile((scratch / "guest-validator").read_bytes(), "<guest preflight>", "exec"))
@@ -6812,7 +7348,26 @@ PY
 #     current/edited content instead would make ours == base whenever no
 #     further edit is made, causing the next merge to silently drop it.)
 # See docs/install-upgrade-design.md §2.
+# Live content and pristine ownership are distinct postconditions. Consume a
+# resolved candidate exactly once for *both*; never seed a base from local edits.
+install_resolved_plain() {
+  local dest="$1" candidate="$2" pristine="$3"
+  if ! cmp -s "$candidate" "$dest"; then
+    guest_plan_write "$dest" "$candidate"
+    if [ "$DRY_RUN" -eq 1 ]; then note_dry "install resolved native $dest"
+    else mkdir -p "$(dirname "$dest")"; cp "$candidate" "$dest"; fi
+  fi
+  snapshot_plain "$dest" "$pristine"
+}
+
 install_plain() {
+  if [ "$DRY_RUN" -eq 1 ] && [ -f "$TMPDIR_WORK/review-native-$CURRENT_PROVIDER" ]; then
+    local rel="${1#"$TARGET_DIR"/}"
+    local reviewed="$TMPDIR_WORK/review-output/$rel" upstream="$TMPDIR_WORK/model-input/$CURRENT_PROVIDER/$rel"
+    [ -f "$reviewed" ] && [ -f "$upstream" ] || shared_refuse "incomplete native decision $rel"
+    install_resolved_plain "$1" "$reviewed" "$upstream"
+    return 0
+  fi
   if model_pair_managed; then
     case "${1#"$TARGET_DIR"/}" in
       .claude/agents/implementer.md|.claude/agents/reviewer.md|\
@@ -6843,19 +7398,13 @@ install_plain() {
     cmp -s "$proof" "$dest" || shared_refuse "changed pristine native adoption $dest"
     candidate="$TMPDIR_WORK/native-candidate/${dest#"$TARGET_DIR"/}"
     [ -f "$candidate" ] || candidate="$staged"
-    guest_plan_write "$dest"
-    if [ "$DRY_RUN" -eq 1 ]; then
-      note_dry "upgrade proven pristine native $dest"
-    else
-      cp "$candidate" "$dest"
-    fi
-    snapshot_plain "$dest" "$staged"
+    install_resolved_plain "$dest" "$candidate" "$staged"
     SUM_ADOPTED+=("$dest (proven pristine historical bytes)")
     return 0
   fi
 
   if [ ! -e "$dest" ]; then
-    guest_plan_write "$dest"
+    guest_plan_write "$dest" "$staged"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest"
     else
@@ -6882,7 +7431,7 @@ install_plain() {
 
   # Differs.
   if [ "$FORCE" -eq 1 ]; then
-    guest_plan_write "$dest"
+    guest_plan_write "$dest" "$staged"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "overwrite $dest (--force, no backup)"
     else
@@ -6920,7 +7469,7 @@ install_plain() {
   merge_native_plain "${dest#"$TARGET_DIR"/}" "$dest" "$basepath" "$staged" "$merged" || rc=$?
 
   if [ "$rc" -eq 0 ]; then
-    guest_plan_write "$dest"
+    guest_plan_write "$dest" "$merged"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "merge $dest (clean)"
     else
@@ -6937,7 +7486,7 @@ install_plain() {
   CONFLICT_OCCURRED=1
   local newfile="$dest.new" backup="$dest.bak.$TS" kind="conflict"
   guest_plan_write "$newfile"
-  guest_plan_write "$backup"
+  guest_plan_write "$backup" "$dest"
   if [ "$rc" -ge 128 ]; then
     kind="error"
     echo "Error: git merge-file failed unexpectedly for $dest (exit $rc)." >&2
@@ -7054,7 +7603,7 @@ install_claude_md() {
 
   # Case A: no CLAUDE.md -> create it as just the managed block.
   if [ ! -e "$dest" ]; then
-    guest_plan_write "$dest"
+    guest_plan_write "$dest" "$blk"
     if [ "$DRY_RUN" -eq 1 ]; then
       note_dry "create $dest (managed block only)"
     else
@@ -7148,8 +7697,8 @@ install_claude_md() {
             fi
 
             local backup="$dest.bak.$TS"
-            guest_plan_write "$backup"
-            guest_plan_write "$dest"
+            guest_plan_write "$backup" "$dest"
+            guest_plan_write "$dest" "$result"
             if [ "$DRY_RUN" -eq 1 ]; then
               note_dry "backup $dest -> $backup, then merge managed block (clean)"
             else
@@ -7228,8 +7777,8 @@ install_claude_md() {
   fi
 
   local backup="$dest.bak.$TS"
-  guest_plan_write "$backup"
-  guest_plan_write "$dest"
+  guest_plan_write "$backup" "$dest"
+  guest_plan_write "$dest" "$result"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "backup $dest -> $backup, then update managed block"
   else
@@ -7249,6 +7798,40 @@ install_claude_md() {
 # so worktrees/submodules land in the shared common git dir; falls back to
 # <target>/.git/info/exclude if git isn't on PATH but .git is a real dir;
 # warns and skips (without failing) if the target isn't a git repo at all.
+# The exclusion block is published last and reads the *new* ownership
+# metadata. During reconciliation consult those same afterimages in scratch.
+privacy_input_path() {
+  local dest="$1" rel="${1#"$TARGET_DIR"/}"
+  if [ -f "$TMPDIR_WORK/review-projection/$rel" ]; then
+    dest="$TMPDIR_WORK/review-projection/$rel"
+  elif [ -f "$TMPDIR_WORK/review-removals" ] && grep -qxF "$rel" "$TMPDIR_WORK/review-removals"; then
+    dest="$TMPDIR_WORK/review-absent"
+  fi
+  printf '%s' "$dest"
+}
+
+# One byte-preserving edit for validation, preview, install and uninstall.
+emit_exclude_renderer() {
+  cat <<'PY'
+from pathlib import Path
+import re
+import sys
+
+def render(path, block):
+    raw = path.read_bytes() if path.exists() else b""
+    markers = list(re.finditer(rb"(?m)^# (BEGIN domestique \(managed\)|END domestique)\r?(?:\n|\Z)", raw))
+    if not markers:
+        return raw + (b"\n" if block and raw and not raw.endswith(b"\n") else b"") + block
+    if [m[1] for m in markers] != [b"BEGIN domestique (managed)", b"END domestique"]:
+        raise ValueError(f"malformed exclude block: {path}; repair markers by hand")
+    return raw[:markers[0].start()] + block + raw[markers[1].end():]
+
+if __name__ == "__main__":
+    path, result, *source = map(Path, sys.argv[1:])
+    result.write_bytes(render(path, source[0].read_bytes() if source else b""))
+PY
+}
+
 install_git_exclude() {
   local target="$1" common_dir="" exclude_file
   local block="$TMPDIR_WORK/exclude_block" result="$TMPDIR_WORK/exclude_result"
@@ -7295,7 +7878,8 @@ install_git_exclude() {
       printf '.claude/\n'
     fi
     if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ]; then
-      local codex_ownership="$target/.codex/.domestique/guest-excludes"
+      local codex_ownership
+      codex_ownership="$(privacy_input_path "$target/.codex/.domestique/guest-excludes")"
       if [ -e "$codex_ownership" ]; then
         # Canonical visibility belongs to the shared state, not this guest.
         grep -vE '^\.agents/skills/dom-(decompose|goal|models)/' "$codex_ownership" || true
@@ -7314,16 +7898,18 @@ install_git_exclude() {
       fi
     fi
     if [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ]; then
-      if [ -f "$target/.github/.domestique/guest-excludes" ]; then
-        cat "$target/.github/.domestique/guest-excludes"
+      local copilot_ownership
+      copilot_ownership="$(privacy_input_path "$target/.github/.domestique/guest-excludes")"
+      if [ -f "$copilot_ownership" ]; then
+        awk '{print}' "$copilot_ownership"
       elif [ -f "$TMPDIR_WORK/copilot-excludes" ]; then
-        cat "$TMPDIR_WORK/copilot-excludes"
+        awk '{print}' "$TMPDIR_WORK/copilot-excludes"
       fi
     fi
     if [ "$SHARED_REMOVE" -eq 0 ]; then
       if [ "$SHARED_GUEST" -eq 1 ] && [ "$SHARED_PRESENT" -eq 1 ]; then
         printf '.agents/.domestique/\n'
-        cat "$target/.agents/.domestique/guest-excludes"
+        awk '{print}' "$(privacy_input_path "$target/.agents/.domestique/guest-excludes")"
       elif [ ! -e "$target/.agents/.domestique" ] && [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ]; then
         # Dry-run or a legacy uninstall still uses the original owner.
         printf '.agents/.domestique/\n'
@@ -7337,45 +7923,23 @@ install_git_exclude() {
         fi
       fi
     fi
-    if { [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.claude/.domestique/beads-owned" ]; } ||
-       { [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.codex/.domestique/beads-owned" ]; } ||
-       { [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$target/.github/.domestique/beads-owned" ]; }; then
+    if { [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$(privacy_input_path "$target/.claude/.domestique/beads-owned")" ]; } ||
+       { [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$(privacy_input_path "$target/.codex/.domestique/beads-owned")" ]; } ||
+       { [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ] && [ -e "$(privacy_input_path "$target/.github/.domestique/beads-owned")" ]; }; then
       printf '.beads/\n'
     fi
     printf '%s\n' "$GITEXCLUDE_MARKER_END"
   } > "$block"
 
-  if [ -e "$exclude_file" ]; then
-    if grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" && ! grep -qxF "$GITEXCLUDE_MARKER_END" "$exclude_file"; then
-      echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
-      echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
-      exit 1
-    fi
-
-    if grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file"; then
-      awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" -v blockfile="$block" '
-        BEGIN { while ((getline line < blockfile) > 0) blk = blk line ORS }
-        $0 == beginm && !seen { seen=1; inblock=1; printf "%s", blk; next }
-        inblock && $0 == endm { inblock=0; next }
-        inblock { next }
-        { print }
-      ' "$exclude_file" > "$result"
-    else
-      cp "$exclude_file" "$result"
-      if [ -s "$result" ] && [ "$(tail -c 1 "$result" | wc -l)" -eq 0 ]; then
-        printf '\n' >> "$result"
-      fi
-      cat "$block" >> "$result"
-    fi
-  else
-    cp "$block" "$result"
-  fi
+  python3 -IB "$TMPDIR_WORK/exclude-render.py" "$exclude_file" "$result" "$block" ||
+    shared_refuse "cannot render $exclude_file"
 
   if [ -e "$exclude_file" ] && cmp -s "$result" "$exclude_file"; then
     SUM_SKIPPED+=("$exclude_file (managed block already current)")
     return 0
   fi
 
+  guest_plan_write "$target/.git/info/exclude" "$result"
   if [ "$DRY_RUN" -eq 1 ]; then
     if [ -e "$exclude_file" ]; then
       note_dry "update $exclude_file (managed block)"
@@ -7411,18 +7975,10 @@ remove_git_exclude() {
   [ -n "$common_dir" ] || return 0
   exclude_file="$common_dir/info/exclude"
   [ -e "$exclude_file" ] || return 0
-  grep -qxF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null || return 0
-  if ! grep -qxF "$GITEXCLUDE_MARKER_END" "$exclude_file" 2>/dev/null; then
-    echo "Error: $exclude_file has a '$GITEXCLUDE_MARKER_BEGIN' marker but no matching '$GITEXCLUDE_MARKER_END'." >&2
-    echo "       Refusing to edit a half-marked file. Fix it by hand and re-run." >&2
-    exit 1
-  fi
-  awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" '
-    $0 == beginm && !seen { seen=1; inblock=1; next }
-    inblock && $0 == endm { inblock=0; next }
-    inblock { next }
-    { print }
-  ' "$exclude_file" > "$result"
+  python3 -IB "$TMPDIR_WORK/exclude-render.py" "$exclude_file" "$result" ||
+    shared_refuse "cannot render $exclude_file"
+  cmp -s "$exclude_file" "$result" && return 0
+  guest_plan_write "$target/.git/info/exclude" "$result"
   if [ "$DRY_RUN" -eq 1 ]; then
     note_dry "strip domestique block from $exclude_file"
   else
@@ -7439,9 +7995,9 @@ sync_guest_beads_ownership() {
   local codex_marker="$TARGET_DIR/.codex/.domestique/beads-owned"
   local copilot_marker="$TARGET_DIR/.github/.domestique/beads-owned"
   if [ ! -d "$TARGET_DIR/.beads" ]; then
-    if [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ] && [ -e "$claude_marker" ]; then guest_plan_write "$claude_marker"; fi
-    if [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ] && [ -e "$codex_marker" ]; then guest_plan_write "$codex_marker"; fi
-    [ ! -e "$copilot_marker" ] || guest_plan_write "$copilot_marker"
+    if [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ] && [ -e "$claude_marker" ]; then guest_plan_write "$claude_marker" --absent; fi
+    if [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ] && [ -e "$codex_marker" ]; then guest_plan_write "$codex_marker" --absent; fi
+    [ ! -e "$copilot_marker" ] || guest_plan_write "$copilot_marker" --absent
     if [ "$DRY_RUN" -eq 0 ]; then
       [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 1 ] || rm -f "$claude_marker"
       [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 1 ] || rm -f "$codex_marker"
@@ -7457,7 +8013,7 @@ sync_guest_beads_ownership() {
   # Inactive provenance remains a source for active guests, not a write target.
   if [ "${CLAUDE_GUEST_SELECTED:-0}" -eq 1 ] &&
      [ "${RETAINED_INACTIVE_CLAUDE:-0}" -eq 0 ]; then
-    guest_plan_write "$claude_marker"
+    guest_plan_write "$claude_marker" --empty
     if [ "$DRY_RUN" -eq 0 ]; then
       mkdir -p "$(dirname "$claude_marker")"
       : > "$claude_marker"
@@ -7465,14 +8021,14 @@ sync_guest_beads_ownership() {
   fi
   if [ "${CODEX_GUEST_SELECTED:-0}" -eq 1 ] &&
      [ "${RETAINED_INACTIVE_CODEX:-0}" -eq 0 ]; then
-    guest_plan_write "$codex_marker"
+    guest_plan_write "$codex_marker" --empty
     if [ "$DRY_RUN" -eq 0 ]; then
       mkdir -p "$(dirname "$codex_marker")"
       : > "$codex_marker"
     fi
   fi
   if [ "${COPILOT_GUEST_SELECTED:-0}" -eq 1 ]; then
-    guest_plan_write "$copilot_marker"
+    guest_plan_write "$copilot_marker" --empty
     if [ "$DRY_RUN" -eq 0 ]; then
       mkdir -p "$(dirname "$copilot_marker")"
       : > "$copilot_marker"
@@ -7837,16 +8393,13 @@ UNINSTALL_POLICIES
 
   if [ -n "$common_dir" ]; then
     exclude_file="$common_dir/info/exclude"
-    if [ -e "$exclude_file" ] && grep -qF "$GITEXCLUDE_MARKER_BEGIN" "$exclude_file" 2>/dev/null; then
+    if [ -e "$exclude_file" ]; then
+      local exresult="$TMPDIR_WORK/uninstall_exclude_result"
+      python3 -IB "$TMPDIR_WORK/exclude-render.py" "$exclude_file" "$exresult" ||
+        shared_refuse "cannot render $exclude_file"
+    fi
+    if [ -e "$exclude_file" ] && ! cmp -s "$exclude_file" "$exresult"; then
       anything_done=1
-      local exresult
-      exresult="$TMPDIR_WORK/uninstall_exclude_result"
-      awk -v beginm="$GITEXCLUDE_MARKER_BEGIN" -v endm="$GITEXCLUDE_MARKER_END" '
-        $0 == beginm && !seen { seen=1; inblock=1; next }
-        inblock && $0 == endm { inblock=0; next }
-        inblock { next }
-        { print }
-      ' "$exclude_file" > "$exresult"
       if [ "$DRY_RUN" -eq 1 ]; then
         note_dry "strip domestique block from $exclude_file (preserving everything else)"
       else
@@ -8010,14 +8563,93 @@ if [ "$UNINSTALL" -eq 0 ]; then
     CONFLICT_OCCURRED=1
   fi
 fi
+emit_exclude_renderer > "$TMPDIR_WORK/exclude-render.py"
+select_providers
+existing_guest_exclusions_preflight
+platform_set
 native_ownership_preflight selection
 retain_inactive_providers
 lifecycle_preflight
 native_ownership_preflight native
-preview_preflight
-copilot_preflight
-shared_preflight
-policy_preflight
+install_preflights() {
+  local check owner
+  for check in preview_preflight copilot_preflight shared_preflight policy_preflight; do
+    if [ -z "$REVIEW_CHECK_FILE" ]; then
+      "$check"
+      continue
+    fi
+    case "$check" in
+      preview_preflight|copilot_preflight)
+        [ ! -e "$TMPDIR_WORK/review-blocked-copilot" ] || continue
+        [ ! -e "$TMPDIR_WORK/review-path-refusals-copilot" ] || continue
+        if [ "$check" = preview_preflight ] && [ -e "$TMPDIR_WORK/review-blocked-codex" ] &&
+           [ -e "$TARGET_DIR/.domestique-private" ]; then
+          refuse_provider copilot "cannot verify preview cutover against refused shared ownership"
+          continue
+        fi
+        review_validate copilot "$check" ;;
+      shared_preflight)
+        [ ! -e "$TMPDIR_WORK/review-blocked-shared" ] && [ ! -e "$TMPDIR_WORK/review-blocked-copilot" ] && [ ! -e "$TMPDIR_WORK/review-blocked-codex" ] ||
+          continue
+        review_validate shared "$check" ;;
+      policy_preflight)
+        for owner in claude codex copilot; do
+          [ ! -e "$TMPDIR_WORK/review-blocked-$owner" ] || continue
+          review_validate "$owner" "$check" "$owner"
+        done ;;
+      *) shared_refuse "unmodeled validation phase $check" ;;
+    esac
+  done
+}
+
+# Ordinary validators may exit on unsafe evidence. Isolate that exit, not the
+# decision: return the validated visibility state on success, or record a veto
+# and continue only with independent checks. Never source computed shell code.
+review_validate() {
+  local owner="$1" rc check="$2"
+  shift
+  review_check_owner "$owner"
+  set +e
+  (
+    set -e
+    "$@"
+    printf '%s ' "$PREVIEW_MIGRATE" "$SHARED_PRESENT" "$SHARED_CODEX" "$SHARED_COPILOT" "$SHARED_MIGRATE"
+    printf '%s\n' "$SHARED_GUEST"
+  ) > "$TMPDIR_WORK/check-state" 2>"$TMPDIR_WORK/review-diagnostics-$check-$owner"
+  rc=$?
+  set -e
+  cat "$TMPDIR_WORK/review-diagnostics-$check-$owner" >&2
+  if [ "$rc" -ne 0 ]; then
+    owner="$(cat "$REVIEW_CHECK_FILE")"
+    refuse_provider "$owner" "$check refused; see validation diagnostic"
+  else
+    # A validator may also print notices; only the final six booleans are state.
+    local state
+    state="$(tail -1 "$TMPDIR_WORK/check-state")"
+    [[ "$state" =~ ^[01](\ [01]){5}$ ]] || shared_refuse "invalid review validation state"
+    sed '$d' "$TMPDIR_WORK/check-state"  # preserve successful validator notices
+    read -r PREVIEW_MIGRATE SHARED_PRESENT SHARED_CODEX SHARED_COPILOT SHARED_MIGRATE SHARED_GUEST <<< "$state"
+  fi
+}
+if [ ! -d "$TMPDIR_WORK/review-evidence" ]; then
+  # A clean preview still follows the ordinary installer. Scope its checks
+  # by owner just as for ancestor review: conflict discovery is independent
+  # of whether any native file has historical adoption evidence.
+  if [ "$DRY_RUN" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+    REVIEW_CHECK_FILE="$TMPDIR_WORK/review-check-owner"
+  fi
+  install_preflights
+  if [ -n "$REVIEW_CHECK_FILE" ]; then
+    REVIEW_CHECK_FILE=""
+    for refusal in "$TMPDIR_WORK"/review-blocked-* "$TMPDIR_WORK"/review-conflicts-*; do
+      [ -f "$refusal" ] || continue
+      # Collect independent model errors only; no publication projection
+      # may use incomplete validator state. Refused owners are skipped.
+      if [ "$MODEL_PAIRS_ACTIVE" -eq 1 ]; then installer_model_pairs >/dev/null; fi
+      exit 3
+    done
+  fi
+fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
   UNINSTALL_CLAUDE=1
@@ -8043,28 +8675,25 @@ fi
 
 # The same publication branches drive the prospective guest write plan and the
 # real install. The plan runs in a dry-run subshell before any pair/mode writes.
+projection_provider_mode() {
+  if [ "$1" -eq 1 ]; then
+    resolve_provider_mode
+  else
+    # select_providers validated this marker. A retained provider does not
+    # consume requested mode flags, change policy destinations or write a marker.
+    GUEST=0
+    [ ! -f "$MODE_MARKER" ] || GUEST=1
+  fi
+}
+
 install_projection() {
+local provider selected
 install_retained_policies
 
 ANY_GUEST=0
 CLAUDE_GUEST_SELECTED=0
 CODEX_GUEST_SELECTED=0
 COPILOT_GUEST_SELECTED=0
-if [ "$SELECT_CLAUDE" -eq 0 ] &&
-   [ "$(cat "$TARGET_DIR/.claude/.domestique/mode" 2>/dev/null || true)" = guest ]; then
-  CLAUDE_GUEST_SELECTED=1
-  ANY_GUEST=1
-fi
-if [ "$SELECT_CODEX" -eq 0 ] &&
-   [ "$(cat "$TARGET_DIR/.codex/.domestique/mode" 2>/dev/null || true)" = guest ]; then
-  CODEX_GUEST_SELECTED=1
-  ANY_GUEST=1
-fi
-if [ "$SELECT_COPILOT" -eq 0 ] &&
-   [ "$(cat "$TARGET_DIR/.github/.domestique/mode" 2>/dev/null || true)" = guest ]; then
-  COPILOT_GUEST_SELECTED=1
-  ANY_GUEST=1
-fi
 # Preserve the pre-install visibility of existing untracked Codex-owned
 # paths: guest exclude hides only files domestique is creating itself.
 CODEX_PREEXIST_IMPL=0
@@ -8087,35 +8716,27 @@ CODEX_PREEXIST_DOM_GOAL_META=0
 [ -e "$TARGET_DIR/.agents/skills/dom-decompose/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/dom-decompose/SKILL.md' && CODEX_PREEXIST_DOM_DECOMPOSE_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/dom-goal/SKILL.md" ] && ! codex_exclude_was_owned '.agents/skills/dom-goal/SKILL.md' && CODEX_PREEXIST_DOM_GOAL_SKILL=1
 [ -e "$TARGET_DIR/.agents/skills/dom-goal/agents/openai.yaml" ] && ! codex_exclude_was_owned '.agents/skills/dom-goal/agents/openai.yaml' && CODEX_PREEXIST_DOM_GOAL_META=1
-if [ "$SELECT_CLAUDE" -eq 1 ]; then
-  configure_provider claude
-  resolve_provider_mode
+for provider in claude codex copilot; do
+  case "$provider" in
+    claude) selected="$SELECT_CLAUDE" ;;
+    codex) selected="$SELECT_CODEX" ;;
+    copilot) selected="$SELECT_COPILOT" ;;
+  esac
+  configure_provider "$provider"
+  projection_provider_mode "$selected"
   if [ "$GUEST" -eq 1 ]; then
     ANY_GUEST=1
-    CLAUDE_GUEST_SELECTED=1
+    case "$provider" in
+      claude) CLAUDE_GUEST_SELECTED=1 ;;
+      codex) CODEX_GUEST_SELECTED=1
+        [ "$selected" -eq 0 ] || echo 'Note: Codex guest mode is skills-only; start each new session with `$domestique`.' >&2 ;;
+      copilot) COPILOT_GUEST_SELECTED=1
+        [ "$selected" -eq 0 ] || echo "Note: Copilot guest mode is skills-only; bootstrap with /domestique-v2-copilot." >&2 ;;
+    esac
   fi
+  [ "$selected" -eq 1 ] || continue
   install_current_provider
-fi
-if [ "$SELECT_CODEX" -eq 1 ]; then
-  configure_provider codex
-  resolve_provider_mode
-  if [ "$GUEST" -eq 1 ]; then
-    ANY_GUEST=1
-    CODEX_GUEST_SELECTED=1
-    printf '%s\n' "Note: Codex guest mode is skills-only; start each new session with \`\$domestique\`." >&2
-  fi
-  install_current_provider
-fi
-if [ "$SELECT_COPILOT" -eq 1 ]; then
-  configure_provider copilot
-  resolve_provider_mode
-  if [ "$GUEST" -eq 1 ]; then
-    ANY_GUEST=1
-    COPILOT_GUEST_SELECTED=1
-    echo "Note: Copilot guest mode is skills-only; bootstrap with /domestique-v2-copilot." >&2
-  fi
-  install_current_provider
-fi
+done
 if [ "$SELECT_CODEX" -eq 1 ] || [ "$SELECT_COPILOT" -eq 1 ]; then
   install_shared
 fi
@@ -8123,8 +8744,287 @@ fi
 persist_platform_set
 }
 
+finish_visibility() {
+  sync_guest_beads_ownership
+  if [ "$ANY_GUEST" -eq 1 ] || [ "$SHARED_GUEST" -eq 1 ]; then
+    install_git_exclude "$TARGET_DIR"
+  else
+    remove_git_exclude "$TARGET_DIR"
+  fi
+}
+
 # ---------------------------------------------------------------------------
+reconciliation_preview() {
+  # Separate, terminal branch. No publication authority, even for non-dry
+  # invocation. Run the ordinary read-only checks and write projection, not
+  # a mock target in which the guest/index or snapshot checks would be false.
+  local DRY_RUN=1 review_rc provider selected
+  for provider in claude codex copilot; do
+    case "$provider" in
+      claude) selected="$SELECT_CLAUDE" ;;
+      codex) selected="$SELECT_CODEX" ;;
+      copilot) selected="$SELECT_COPILOT" ;;
+    esac
+    (
+      configure_provider "$provider"
+      if [ -f "$TMPDIR_WORK/review-invalid-mode-$provider" ]; then GUEST=unknown
+      else projection_provider_mode "$selected" >/dev/null 2>&1; fi
+      printf '%s\n' "$selected" "$GUEST" "${SNAPSHOT_DIR#"$TARGET_DIR"/}" "$MANAGED_PLAIN_FILES" "$POLICY_CANDIDATES"
+    ) > "$TMPDIR_WORK/review-inventory-$provider"
+  done
+  installer_model_pairs
+  set +e
+  (
+    set -e
+    REVIEW_CHECK_FILE="$TMPDIR_WORK/review-check-owner"
+    install_preflights
+    review_check_owner shared
+    for refusal in "$TMPDIR_WORK"/review-blocked-* "$TMPDIR_WORK"/review-path-refusals-* "$TMPDIR_WORK"/review-conflicts-*; do
+      if [ -e "$refusal" ]; then
+        : > "$REVIEW_CHECK_FILE"  # existing finding, not a new shared authority failure
+        shared_refuse "publication projection withheld: refused provider or unresolved path"
+      fi
+    done
+    if [ "$PREVIEW_MIGRATE" -eq 1 ]; then
+      shared_refuse "review preview cutover separately before native reconciliation"
+    fi
+    # The ordinary projector assumes the ownership/pair checks succeeded.
+    # Do not let it recreate proposals rejected by the review planner.
+    # The historical resolver and plan snapshot support only a local physical
+    # .git. Never represent a shared/external common-dir write as local.
+    local common
+    common="$(git -C "$TARGET_DIR" rev-parse --git-common-dir)" || shared_refuse "unknown Git common-dir/info/exclude"
+    case "$common" in /*) : ;; *) common="$TARGET_DIR/$common" ;; esac
+    [ -d "$TARGET_DIR/.git" ] && [ ! -L "$TARGET_DIR/.git" ] && [ "$common" -ef "$TARGET_DIR/.git" ] ||
+      shared_refuse "unsupported Git common-dir $common/info/exclude visibility projection"
+    GUEST_WRITE_PLAN="$TMPDIR_WORK/review-writes"
+    : > "$GUEST_WRITE_PLAN"
+    install_projection
+    review_check_owner shared
+    finish_visibility
+    [ "$CONFLICT_OCCURRED" -eq 0 ]
+  ) >"$TMPDIR_WORK/projection-notice" 2>"$TMPDIR_WORK/review-diagnostics"
+  review_rc=$?
+  set -e
+  cat "$TMPDIR_WORK/review-diagnostics" >&2
+  if [ "$review_rc" -ne 0 ]; then
+    # Projection itself can still refuse after validators returned.
+    local owner
+    owner="$(cat "$TMPDIR_WORK/review-check-owner" 2>/dev/null || true)"
+    if [ -n "$owner" ]; then
+      [ -f "$TMPDIR_WORK/review-blocked-$owner" ] || refuse_provider "$owner" "publication projection withheld"
+    fi
+  fi
+  emit_guest_plan_validator > "$TMPDIR_WORK/guest-validator"
+  python3 -I -B - "$TMPDIR_WORK" "$TARGET_DIR" "$MODEL_REQUEST" "$PLATFORM_ARG" \
+    "$GUEST_EXPLICIT" "$NO_GUEST" "$FORCE" "$WITH_BEADS" "$PLATFORM_SET" "$review_rc" \
+    "$SHARED_FILES" "$DOMESTIQUE_VERSION" "$TS" <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+
+scratch, root = map(Path, sys.argv[1:3])
+root = root.resolve(strict=True)
+request, platform, guest, normal, force, beads, platforms, rc, shared, version, ts = sys.argv[3:]
+providers = [json.loads(p.read_bytes()) for name in ("claude", "codex", "copilot")
+             if (p := scratch / ("review-" + name + ".json")).is_file()]
+plan = dict(version=2, root=str(root), installer=version,
+            request=json.loads(request), platform=platform, guest=guest, no_guest=normal,
+            force=force, with_beads=beads, platforms=platforms, providers=providers,
+            preflight=rc, blockers={p.name: p.read_text() for p in scratch.glob("review-blocked-*")})
+for findings in scratch.glob("review-conflicts-*"):
+    for rel in findings.read_text().splitlines():
+        plan["blockers"][rel] = "unresolved preserving merge"
+# Bind shared ownership, visibility, and the index used by tracked-write
+# checks. The resolver qualifies a plain physical .git directory only.
+lib = {"__name__": "trusted_installer"}
+exec(compile((scratch / "native-library").read_bytes(), "<installer>", "exec"), lib)
+from types import SimpleNamespace
+def snapshot(files):
+    return lib["Pair"].read_snapshot(SimpleNamespace(root=root, files=files), absent=True)[0]
+
+# Model preparation isn't the inventory oracle: a missing base may refuse
+# before it starts. Record applicability and actual observations independently.
+plan["applicability"] = {}
+for name in ("claude", "codex", "copilot"):
+    selected, is_guest, state, native, policies = (scratch / ("review-inventory-" + name)).read_text().splitlines()
+    mode = {"unknown": "unknown", "1": "guest", "0": "normal"}[is_guest]
+    paths = native.split(",")
+    status = plan["applicability"][name] = dict(selected=selected == "1", mode=mode,
+                                               requested=name in plan["request"]["selected"])
+    observed = next((p for p in providers if p["provider"] == name), None)
+    refusal = "review-blocked-" + name
+    if observed is None and refusal in plan["blockers"]:
+        observed = dict(provider=name, mode=mode, requested=status["requested"],
+                        paths=[dict(path=rel) for rel in paths])
+        providers.append(observed)
+    try:
+        inputs = snapshot(lib["review_input_paths"](state, paths, policies.split()))
+    except (ValueError, OSError) as error:
+        plan["blockers"][refusal] = "incomplete or unsafe review inputs: " + str(error)
+        continue
+    if refusal in plan["blockers"]:
+        status["inputs"] = inputs
+        continue
+    if observed is None:
+        status["inputs"] = inputs
+        if (status["selected"] or status["requested"]) and not (scratch / ("review-conflicts-" + name)).exists():
+            plan["blockers"][refusal] = "selected provider refused or skipped; inputs recorded, no outputs"
+    elif (not status["selected"] or observed["requested"] != status["requested"] or
+          observed["inputs"] != inputs or observed["mode"] != mode or
+          [row["path"] for row in observed["paths"]] != paths):
+        plan["blockers"][refusal] = "changed or incomplete review inventory"
+    elif any("blocker" in row or not row.get("output") for row in observed["paths"]):
+        plan["blockers"][name] = "unresolved path"
+    elif not (observed.get("pair", {}).get("configured") or
+            (observed["requested"] and any(row.get("action") == "proposed adoption" for row in observed["paths"]))):
+        plan["blockers"][refusal] = "unresolved selection or model pair"
+if rc != "0" or not (scratch / "review-writes").is_file():
+    plan["blockers"]["projection"] = "preflight or write projection incomplete"
+if beads != "0":
+    plan["blockers"]["beads"] = "optional Beads setup is not part of this review"
+paths = [".agents/.domestique/" + p for p in ("manifest", "mode", "guest-excludes")]
+for p in shared.split(","):
+    paths.extend([p, ".agents/.domestique/base/" + p, ".codex/.domestique/base/" + p])
+if (root / ".git").is_dir() and not (root / ".git").is_symlink():
+    paths.extend([".git/HEAD", ".git/index", ".git/info/exclude"])
+else:
+    plan["blockers"]["git"] = "reconciliation requires a physical, local .git directory"
+    print("[blocker] " + plan["blockers"]["git"], file=sys.stderr)
+try:
+    plan["shared_snapshot"] = snapshot(paths)
+except (OSError, ValueError) as error:
+    plan["blockers"]["review-blocked-shared"] = "unsafe shared reconciliation evidence: " + str(error)
+shell_writes = set((scratch / "review-writes").read_text().splitlines()) if (scratch / "review-writes").exists() else set()
+writes = set(shell_writes)
+for provider in providers:
+    writes.update(provider.get("pair", {}).get("writes", ()))
+if any(p["mode"] == "guest" for p in providers):
+    exec(compile((scratch / "guest-validator").read_bytes(), "<guest preflight>", "exec"))
+    try:
+        # Even on an incomplete projection diagnose the tracked-write guard
+        # for known candidates, without inventing any publication intents.
+        candidates = {r["path"] for p in providers for r in p["paths"] if r.get("output") and
+                      r["output"] != (p["inputs"]["files"][r["path"]] or [None])[-1]}
+        validate_guest_writes(root, writes | candidates)
+    except ValueError as error:
+        plan["blockers"]["guest"] = str(error)
+        print("[blocker] " + str(error), file=sys.stderr)
+def stable_path(p):
+    return p.removesuffix(ts) + "<timestamp>" if p.endswith(".bak." + ts) else p
+plan["writes"] = sorted(map(stable_path, writes))
+projection = scratch / "review-projection"
+plan["projection"] = {stable_path(str(p.relative_to(projection))): lib["sha"](p.read_bytes())
+                      for p in projection.rglob("*") if p.is_file()}
+removals = scratch / "review-removals"
+if removals.exists():
+    plan["projection"].update(dict.fromkeys(removals.read_text().splitlines()))
+# Every projected publication intent must have an afterimage (null = remove).
+# New write branches cannot accidentally become reviewable by naming a path.
+for rel in sorted(set(map(stable_path, shell_writes)) - plan["projection"].keys()):
+    plan["blockers"][rel] = "write has no complete afterimage"
+for provider in providers:
+    pair = provider.get("pair", {})
+    for rel in pair.get("writes", []):
+        output = pair["outputs"][rel]
+        if rel in plan["projection"] and plan["projection"][rel] != output:
+            plan["blockers"]["review-blocked-" + provider["provider"]] = "inconsistent publication owners: " + rel
+        plan["projection"][rel] = output
+    if rc != "0":
+        continue
+    files = provider["inputs"]["files"]
+    state = (scratch / ("review-inventory-" + provider["provider"])).read_text().splitlines()[2]
+    historical = (scratch / ("review-native-" + provider["provider"])).exists()
+    for row in provider["paths"]:
+        rel = row["path"]
+        expected = {rel: row["output"]}
+        if historical:
+            expected[f"{state}/base/{rel}"] = row["upstream"]
+        for path, digest in expected.items():
+            final = plan["projection"].get(path, (files[path] or [None])[-1])
+            if final != digest:
+                plan["blockers"]["review-blocked-" + provider["provider"]] = "publication does not establish reviewed live/pristine inventory: " + path
+    if historical:
+        manifest = projection / state / "manifest"
+        inventory = next((s[6:].split(",") for s in manifest.read_text().splitlines()
+                          if s.startswith("files=")), []) if manifest.exists() else []
+        if any(row["path"] not in inventory for row in provider["paths"]):
+            plan["blockers"]["review-blocked-" + provider["provider"]] = "adoption does not establish manifest ownership"
+if set(plan["writes"]) != set(plan["projection"]):
+    plan["blockers"]["effects"] = "publication paths and afterimages disagree"
+# Check mode against the actual marker afterimage (including retained inputs),
+# independently of which providers have model-pair reports.
+if not plan["blockers"]:
+    for name, status in plan["applicability"].items():
+        state = (scratch / ("review-inventory-" + name)).read_text().splitlines()[2]
+        marker = state + "/mode"
+        inputs = status.get("inputs") or next(p["inputs"] for p in providers if p["provider"] == name)
+        final = plan["projection"].get(marker, (inputs["files"][marker] or [None])[-1])
+        expected = lib["sha"](b"guest\n") if status["mode"] == "guest" else None
+        if final != expected or (not status["selected"] and marker in writes):
+            plan["blockers"]["review-blocked-" + name] = "mode disagrees with publication: " + marker
+# These are templates, not a promise to reproduce a historical wall clock.
+# A later publisher must instantiate only these fields and refuse collisions.
+plan["deferred"] = {"installed_at": "new manifest field only: UTC %Y-%m-%dT%H:%M:%SZ",
+                    "backup_suffix": "new backup only: local %Y%m%d%H%M%S; require absent"}
+for rel in writes:
+    if stable_path(rel) != rel and os.path.lexists(root / rel):
+        plan["blockers"][stable_path(rel)] = "backup destination already exists"
+plan["beads_directory_present"] = (root / ".beads").is_dir()
+if rc != "0":
+    plan["diagnostics"] = {p.name: lib["sha"](p.read_bytes().replace(str(scratch).encode(), b"<scratch>")
+                                             .replace(ts.encode(), b"<timestamp>"))
+                           for p in scratch.glob("review-diagnostics*")}
+lib["finalize_review"](plan, scratch)
+if not plan["reviewable"]:
+    print("Diagnostic assessment only; no publishable outputs for this transaction.")
+for provider in providers:
+    name = provider["provider"]
+    if "review-blocked-" + name in plan["blockers"]:
+        print(f"[reconciliation] {name}: hard refusal")
+        for row in provider["paths"]:
+            print("  " + row["path"] + ": blocked (provider refusal); no proposed output")
+    elif (scratch / ("assessment-" + name)).is_file():
+        print((scratch / ("assessment-" + name)).read_text(), end="")
+if plan["reviewable"]:
+    print((scratch / "projection-notice").read_text(), end="")
+data = lib["canonical"](plan)
+# Internal interface for a later approval layer. The digest identifies the
+# review, including unsuccessful/blocked plans; it is NOT authority. Bind a
+# disposition separately and re-run preflights, guest checks and snapshots
+# before publishing anything. Private output bytes live in scratch only.
+(scratch / "review-plan.json").write_bytes(data)
+if not plan["reviewable"]:
+    print("Incomplete review; no plan-bound approval token. Resolve and re-preview:")
+    for key, reason in plan["blockers"].items():
+        print("  " + key + ": " + reason.splitlines()[0])
+elif "DOM_REVIEW_RECEIPT_FD" in os.environ:
+    # A private content receipt, never a token and never an authority input.
+    fd = int(os.environ["DOM_REVIEW_RECEIPT_FD"])
+    info = os.fstat(fd)
+    if fd < 3 or not stat.S_ISFIFO(info.st_mode):
+        sys.exit("Invalid private review receipt; no token.")
+    os.write(fd, lib["sha"](data).encode())
+else:
+    print("Informational preview only: installer bytes unverified; no plan-bound approval token. "
+          "Save and verify the installer outside the target, then run "
+          "bash /path/to/domestique.sh --review-file with the same install flags to obtain a file-bound preview.")
+print("Keep local: decline adoption; leave live files and index unchanged.")
+print("Use upstream: install this same installer into an empty disposable directory to inspect the emitter "
+      "and defaults. Preserve local bytes privately before separately choosing replacement; no --force.")
+print("Manual: save a private copy, compare the indicated ancestor, local file and disposable upstream; "
+      "resolve competing edits and re-preview. Never replace an owned pristine base with local bytes.")
+print("No consent or publication.")
+PY
+}
 print_install_notice
+if [ -d "$TMPDIR_WORK/review-evidence" ]; then
+  reconciliation_preview
+  exit 3
+fi
 GUEST_PREFLIGHT=0
 if [ "$NO_GUEST" -eq 0 ]; then
   for guest_provider in claude codex copilot; do
@@ -8278,12 +9178,7 @@ if [ "$WITH_BEADS" -eq 1 ]; then
   fi
 fi
 
-sync_guest_beads_ownership
-if [ "$ANY_GUEST" -eq 1 ] || [ "$SHARED_GUEST" -eq 1 ]; then
-  install_git_exclude "$TARGET_DIR"
-else
-  remove_git_exclude "$TARGET_DIR"
-fi
+finish_visibility
 
 # --- summary ---------------------------------------------------------------
 RECONFIRMATION_REQUIRED=0

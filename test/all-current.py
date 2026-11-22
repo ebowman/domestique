@@ -2128,7 +2128,7 @@ class AllProviders(unittest.TestCase):
                     self.run_dom(root, "--platform=claude", *flags, ok=False)
                     self.assertEqual(before, snapshot(root))
 
-    def presnapshot_policy_fixture(self, name):
+    def presnapshot_policy_fixture(self, name, *, configured_codex=False):
         # Actual e12f0fc output, committed only in an isolated disposable repo.
         # No consumer prose, reconstructed emitter, native clients or Beads.
         self.env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
@@ -2137,6 +2137,8 @@ class AllProviders(unittest.TestCase):
             ["git", "-C", str(SOURCE.parent), "show", "e12f0fc:domestique.sh"],
             text=True, env=self.env)
         root = self.root(name)
+        if configured_codex:
+            self.run_dom(root, "--platform=codex", "--model=codex:reviewer=retained-model")
         self.run_dom(root, script=old)
         policy = root / "CLAUDE.md"
         original = policy.read_bytes()
@@ -2170,7 +2172,7 @@ class AllProviders(unittest.TestCase):
                         GIT_AUTHOR_DATE="2000-01-01T00:00:00Z",
                         GIT_COMMITTER_DATE="2000-01-01T00:00:00Z")
 
-    def mixed_legacy_fixture(self, name):
+    def mixed_legacy_fixture(self, name, *, copilot_guest=True):
         """Disposable acceptance input; all provider content is public installer output."""
         self.isolate_ancestor_fixture()
         root = self.root(name)
@@ -2182,7 +2184,8 @@ class AllProviders(unittest.TestCase):
 
         released = published("067569a331539883c326a5d221e0e5837efefddd")
         for provider in ("codex", "copilot"):
-            self.run_dom(root, "--platform", provider, "--guest", script=released)
+            mode = "--guest" if provider == "codex" or copilot_guest else "--no-guest"
+            self.run_dom(root, "--platform", provider, mode, script=released)
         self.run_dom(root, script=published("e12f0fc30bea68ac63d97d3c4b24bd0abdd1d305"))
         git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
                "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -2201,13 +2204,40 @@ class AllProviders(unittest.TestCase):
         subprocess.run([*git, "commit", "-qam", "Local role selections"], check=True, env=self.env)
         return root
 
-    def ancestor_resolver(self):
+    def review_library(self):
         lib = self.model_library("claude")
         for emitter in ("emit_historical_identity_library", "emit_installer_inventory_library"):
             source = SCRIPT.split(emitter + "() {\n", 1)[1]
             body = source.split("cat <<'PY'\n", 1)[1].split("\nPY\n}", 1)[0]
             exec(compile(body, str(SOURCE), "exec"), lib)
-        return lib["native_ancestor_candidate"]
+        return lib
+
+    def ancestor_resolver(self):
+        return self.review_library()["native_ancestor_candidate"]
+
+    def file_review(self, root, script, *flags, eligible=True):
+        saved = self.work / "saved-installer.sh"
+        saved.write_text(script)
+        result = subprocess.run(["bash", str(saved), "--review-file", *flags], cwd=root,
+                                capture_output=True, text=True, env=self.env, timeout=600)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        token = re.search(r"^Reconciliation plan: sha256:([0-9a-f]{64})$", result.stdout, re.M)
+        if eligible:
+            self.assertIsNotNone(token, result.stdout + result.stderr)
+        else:
+            self.assertIsNone(token, result.stdout + result.stderr)
+            self.assertIn("no plan-bound approval token", result.stdout)
+        return token[1] if token else None, result
+
+    def inspect_review(self):
+        # Test-only instrumentation in the disposable installer; read the exact
+        # canonical plan and inspect staged paths before the normal EXIT trap.
+        anchor = '(scratch / "review-plan.json").write_bytes(data)'
+        self.assertEqual(SCRIPT.count(anchor), 1)
+        return SCRIPT.replace(anchor, anchor + '''
+print("TEST_PLAN:" + (scratch / "review-plan.json").read_text())
+print("TEST_OUTPUTS:" + json.dumps([str(p.relative_to(scratch)) for d in ("review-output", "review-projection")
+                                   for p in (scratch / d).rglob("*") if p.is_file()]))''')
 
     def test_mixed_legacy_default_refusal_and_ancestor_proposals(self):
         root = self.mixed_legacy_fixture("mixed-legacy")
@@ -2217,8 +2247,36 @@ class AllProviders(unittest.TestCase):
         self.assertEqual((root / STATES["copilot"] / "mode").read_bytes(), b"guest\n")
         before = snapshot(root)  # includes index, guest excludes and all untracked files
         result = self.run_dom(root, ok=False)
-        self.assertIn("cannot establish ownership of native path .claude/agents/implementer.md",
-                      result.stderr)
+        for provider, mode in (("claude", "normal"), ("codex", "guest"), ("copilot", "guest")):
+            self.assertIn(f"[reconciliation] {provider} ({mode})", result.stdout)
+        for role in ("implementer", "reviewer"):
+            self.assertIn(f".claude/agents/{role}.md: proposed adoption", result.stdout)
+        self.assertIn('"model": "gpt-6-astra"', result.stdout)
+        self.assertIn("guest install would rewrite tracked paths", result.stderr)
+        self.assertNotIn("Synthetic host footer", result.stdout + result.stderr)
+        self.assertNotIn("Reconciliation plan: sha256:", result.stdout)
+        self.assertIn("no plan-bound approval token", result.stdout)
+        self.file_review(root, SCRIPT, eligible=False)  # tracked guest guard
+        inspected = self.inspect_review()
+        plan, conversion = self.file_review(root, inspected, "--no-guest")
+        canonical = json.loads(re.search(r"^TEST_PLAN:(.+)$", conversion.stdout, re.M)[1])
+        reference = self.root("ordinary-ownership")
+        self.run_dom(reference, "--platform=all", "--no-guest")
+        self.assert_new_provider_authority(reference, root, "claude", canonical)
+        exclude = ".git/info/exclude"
+        original = (root / exclude).read_bytes()
+        stripped, count = re.subn(rb"(?ms)^# BEGIN domestique \(managed\)\n.*?^# END domestique\n",
+                                  b"", original)
+        self.assertEqual(count, 1)
+        self.assertIn(exclude, canonical["writes"])
+        self.assertEqual(canonical["projection"][exclude], hashlib.sha256(stripped).hexdigest())
+        for state in (STATES["codex"], STATES["copilot"], ".agents/.domestique"):
+            marker = state + "/mode"
+            self.assertTrue((root / marker).is_file())
+            self.assertIn(marker, canonical["writes"])
+            self.assertIsNone(canonical["projection"][marker])
+        repeat, _ = self.file_review(root, inspected, "--no-guest", "--dry-run")
+        self.assertEqual(plan, repeat)
         resolve = self.ancestor_resolver()
         for role in ("implementer", "reviewer"):
             rel = f".claude/agents/{role}.md"
@@ -2235,6 +2293,523 @@ class AllProviders(unittest.TestCase):
                 wrong_mode = resolve(root, "claude", rel, "guest")
                 self.assertEqual((wrong_mode["status"], wrong_mode["proposal"]), ("no-match", None))
             self.assertNotEqual(raw, live)
+        self.assertEqual(before, snapshot(root))
+        # Same selection/ancestor, different ignored guest input.
+        skill = root / ".github/skills/domestique-v2-copilot/SKILL.md"
+        skill.write_bytes(skill.read_bytes() + b"\nLocal guest text.\n")
+        changed = snapshot(root)
+        rerun, _ = self.file_review(root, inspected, "--no-guest", "--dry-run")
+        self.assertNotEqual(plan, rerun)
+        self.assertEqual(changed, snapshot(root))
+
+    def assert_new_provider_authority(self, reference, target, provider, plan):
+        """Compare actual ordinary ownership publication paths and pristine bytes,
+        not the reviewer's own list of individual role/base names."""
+        state = STATES[provider]
+        self.assertFalse((target / state).exists())
+        expected = {str(p.relative_to(reference)): p for p in (reference / state).rglob("*") if p.is_file()}
+        self.assertEqual({p for p in plan["writes"] if p.startswith(state + "/")}, set(expected))
+        self.assertEqual(set(plan["writes"]), set(plan["projection"]))
+        for rel, p in expected.items():
+            raw = p.read_bytes()
+            if p.name == "manifest":
+                raw = re.sub(rb"(?m)^installed_at=.*$", b"installed_at=<publication-time>", raw)
+            self.assertEqual(plan["projection"][rel], hashlib.sha256(raw).hexdigest(), rel)
+
+    def assert_blocked_review(self, plan, staged):
+        self.assertFalse(plan["reviewable"])
+        self.assertEqual((plan["writes"], plan["projection"], staged), ([], {}, []))
+        for p in plan["providers"]:
+            self.assertNotIn("pair", p)
+            for row in p["paths"]:
+                self.assertFalse({"output", "action"} & row.keys())
+                if "review-blocked-" + p["provider"] in plan["blockers"]:
+                    self.assertEqual(set(row), {"path", "scope", "blocker", "hard_refusal"})
+                    self.assertTrue(row["hard_refusal"])
+                    self.assertEqual(row["scope"], "provider")
+
+    def test_reconciliation_cannot_adopt_unowned_shared_file(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("shared-host")
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes().replace(b"\nmodel: sonnet\n", b"\nmodel: custom\n"))
+        host = root / SHARED
+        host.parent.mkdir(parents=True)
+        host.write_bytes(b"Unrelated host instructions without a final LF")
+        before = snapshot(root)
+        for flags in ((), ("--force",)):
+            _, run = self.file_review(root, self.inspect_review(), "--platform=all", "--no-guest",
+                                      *flags, eligible=False)
+            plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+            staged = json.loads(re.search(r"^TEST_OUTPUTS:(.+)$", run.stdout, re.M)[1])
+            self.assert_blocked_review(plan, staged)
+            self.assertIn("review-blocked-shared", plan["blockers"])
+            self.assertIn("unproven shared ownership for " + SHARED, run.stderr)
+            self.assertIn(f"{ROLES[0]}: proposed adoption", run.stdout)
+            self.assertEqual(before, snapshot(root))
+
+    def test_shared_only_host_has_no_preview_or_forced_adoption(self):
+        self.isolate_ancestor_fixture()
+        root = self.root("shared-only-host")
+        host = root / SHARED
+        host.parent.mkdir(parents=True)
+        host.write_bytes(b"Tracked independent host instructions\n")
+        subprocess.run(["git", "add", "--", SHARED], cwd=root, env=self.env, check=True)
+        before = snapshot(root)
+        for flags in ((), ("--force",)):
+            _, file = self.file_review(root, SCRIPT, "--platform=codex", *flags, eligible=False)
+            dry = self.run_dom(root, "--platform=codex", "--dry-run", *flags, ok=False)
+            for run in (file, dry):
+                self.assertEqual(run.returncode, 3)
+                self.assertIn("unproven shared ownership for " + SHARED, run.stderr)
+                self.assertNotIn("[dry-run] ", run.stdout)
+                self.assertNotIn("proposed sha256=", run.stdout)
+            self.assertEqual(before, snapshot(root))
+        run = self.run_dom(root, "--platform=codex", "--force", ok=False)
+        self.assertIn("unproven shared ownership for " + SHARED, run.stderr)
+        self.assertEqual(before, snapshot(root))
+
+    def test_review_modes_bind_projected_and_retained_markers(self):
+        script = self.inspect_review()
+        for guest in (True, False):
+            root = self.mixed_legacy_fixture("copilot-mode-" + str(guest), copilot_guest=guest)
+            before = snapshot(root)
+            for selector in (("both", "all") if guest else ("both",)):
+                _, run = self.file_review(root, script, "--platform=" + selector, "--no-guest")
+                plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+                for provider, state in STATES.items():
+                    status = plan["applicability"][provider]
+                    marker = state + "/mode"
+                    live = root / marker
+                    selected = provider != "copilot" or selector == "all"
+                    retained_guest = not selected and guest
+                    self.assertEqual(status["selected"], selected)
+                    self.assertEqual(status["mode"], "guest" if retained_guest else "normal")
+                    self.assertEqual(marker in plan["writes"], selected and live.exists())
+                    live_hash = hashlib.sha256(live.read_bytes()).hexdigest() if live.exists() else None
+                    self.assertEqual(plan["projection"].get(marker, live_hash),
+                                     hashlib.sha256(b"guest\n").hexdigest() if retained_guest else None)
+                    if not selected:
+                        self.assertEqual((status["inputs"]["files"][marker] or [None])[-1], live_hash)
+                self.assertEqual(before, snapshot(root))
+
+    def test_reconciliation_retained_confirmed_pair_and_owned_shared_upgrade(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("retained-confirmed", configured_codex=True)
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes().replace(b"\nmodel: sonnet\n", b"\nmodel: custom\n"))
+        shared = root / SHARED
+        original = shared.read_bytes()
+        shared_base = ".agents/.domestique/base/" + SHARED
+        self.assertEqual(original, (root / shared_base).read_bytes())
+        extra = b"\nLocal extension.\n"
+        shared.write_bytes(original + extra)
+        anchor = "## Shared native routing — read-only boundary"
+        self.assertIn(anchor.encode(), original)
+        script = self.inspect_review().replace(anchor, anchor + " (updated)")
+        upstream = original.replace(anchor.encode(), (anchor + " (updated)").encode())
+        before = snapshot(root)
+        codex_roles = {f".codex/agents/{r}.toml" for r in ("reviewer", "implementer")}
+        for selector in ("claude", "both"):
+            _, run = self.file_review(root, script, "--platform=" + selector, "--dry-run")
+            plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+            codex = next(p for p in plan["providers"] if p["provider"] == "codex")
+            self.assertEqual(codex["requested"], selector == "both")
+            self.assertEqual(codex["pair"]["eligibility"], "confirmed")
+            self.assertEqual(codex["pair"]["selected"]["reviewer"]["model"], "retained-model")
+            self.assertEqual(codex["pair"]["writes"], [])
+            self.assertFalse(codex_roles.intersection(plan["writes"]))
+            for row in (r for r in codex["paths"] if r["path"] in codex_roles):
+                self.assertEqual(row["action"], "retain (model pair not requested)" if selector == "claude"
+                                 else "owned preserving merge")
+                self.assertEqual(row["output"], hashlib.sha256((root / row["path"]).read_bytes()).hexdigest())
+            self.assertEqual(plan["projection"][SHARED], hashlib.sha256(upstream + extra).hexdigest())
+            self.assertEqual(plan["projection"][shared_base], hashlib.sha256(upstream).hexdigest())
+            self.assertIn(f"{ROLES[0]}: proposed adoption", run.stdout)
+            self.assertEqual(before, snapshot(root))
+
+        # The same selection distinction cannot bless a stale live pair.
+        reviewer = root / ".codex/agents/reviewer.toml"
+        reviewer.write_bytes(reviewer.read_bytes() + b"\n# Unconfirmed edit\n")
+        before = snapshot(root)
+        for selector in ("claude", "both"):
+            _, run = self.file_review(root, script, "--platform=" + selector, "--dry-run", eligible=False)
+            plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+            self.assertIn("review-blocked-codex", plan["blockers"])
+            self.assertEqual(plan["writes"], [])
+            self.assertEqual(before, snapshot(root))
+
+    def test_final_refusal_revokes_all_publication_effects(self):
+        finalize = self.review_library()["finalize_review"]
+        for owner in ("claude", "codex", "copilot", "shared"):
+            scratch = self.work / owner
+            scratch.mkdir()
+            for d in ("review-output", "review-projection"):
+                (scratch / d).mkdir()
+                (scratch / d / "future-write-type").write_bytes(b"candidate")
+            plan = dict(blockers={"review-blocked-" + owner: "late refusal"}, writes=["host.bak"],
+                        projection={"host.bak": "hash"}, providers=[
+                            dict(provider=p, pair={"writes": ["state/manifest"]},
+                                 paths=[dict(path="role", action="create", output="hash")])
+                            for p in ("claude", "codex", "copilot")])
+            finalize(plan, scratch)
+            self.assert_blocked_review(plan, list(scratch.rglob("*")))
+
+    def test_unknown_guest_exclusion_with_and_without_final_lf(self):
+        root = self.mixed_legacy_fixture("exclusion-eof")
+        script = self.inspect_review()
+        for owner, state, reason in (("codex", STATES["codex"], "unknown Codex exclusion"),
+                                     ("copilot", STATES["copilot"], "unknown Copilot exclusion"),
+                                     ("shared", ".agents/.domestique", "unknown shared visibility path")):
+            path = root / state / "guest-excludes"
+            valid = path.read_bytes()
+            prefix = valid + (b"\n" if valid and not valid.endswith(b"\n") else b"")
+            for ending in (b"\n", b""):
+                with self.subTest(owner=owner, ending=ending):
+                    path.write_bytes(prefix + b"unknown-entry" + ending)
+                    before = snapshot(root)  # includes .git/index
+                    _, run = self.file_review(root, script, "--no-guest", eligible=False)
+                    plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+                    staged = json.loads(re.search(r"^TEST_OUTPUTS:(.+)$", run.stdout, re.M)[1])
+                    self.assertIn("review-blocked-" + owner, plan["blockers"])
+                    self.assertIn(reason, run.stderr)
+                    self.assert_blocked_review(plan, staged)
+                    self.assertEqual(before, snapshot(root))
+            path.write_bytes(valid)
+
+    def test_valid_existing_guest_records_with_and_without_final_lf(self):
+        root = self.mixed_legacy_fixture("valid-exclusion-eof")
+        # All three lists are consumed by the same conversion. Codex includes
+        # historical canonical skill aliases which now have a shared owner.
+        paths = [root / state / "guest-excludes" for state in
+                 (STATES["codex"], STATES["copilot"], ".agents/.domestique")]
+        originals = [p.read_bytes().rstrip(b"\n") for p in paths]
+        self.assertTrue(all(originals))
+        for ending in (b"\n", b""):
+            for p, original in zip(paths, originals):
+                p.write_bytes(original + ending)
+            before = snapshot(root)
+            token, _ = self.file_review(root, SCRIPT, "--no-guest")
+            repeat, _ = self.file_review(root, SCRIPT, "--no-guest")
+            self.assertEqual(token, repeat)
+            self.assertEqual(before, snapshot(root))
+
+    def test_retained_guest_exclusion_claims_not_discarded(self):
+        root = self.root("retained-exclusions")
+        self.run_dom(root, "--platform=all", "--guest")
+        # Claude has no supported per-path guest-exclusion claims. Other
+        # owners cannot claim a different provider's otherwise valid paths.
+        for owner, state in ((*STATES.items(), ("shared", ".agents/.domestique"))):
+            p = root / state / "guest-excludes"
+            original = p.read_bytes() if p.exists() else None
+            p.write_bytes(b".codex/agents/reviewer.toml" if owner != "codex" else b".github/.domestique/")
+            before = snapshot(root)
+            for flags in (("--platform=claude",), ("--uninstall", "--platform=all")):
+                run = self.run_dom(root, *flags, ok=False)
+                self.assertIn("guest-excludes", run.stderr)
+                self.assertEqual(snapshot(root), before)
+            if original is None:
+                p.unlink()
+            else:
+                p.write_bytes(original)
+
+    def test_shared_guest_record_append_with_and_without_final_lf(self):
+        root = self.mixed_legacy_fixture("append-record")
+        ordinary = self.root("ordinary-append")
+        self.run_dom(ordinary, "--platform=codex", "--guest")
+        ownership = ".agents/.domestique/guest-excludes"
+        previous = ".agents/skills/dom-goal/agents/openai.yaml"
+        added = ".agents/skills/dom-models/SKILL.md"
+        expected = (previous + "\n" + added + "\n").encode()
+        anchor = '(scratch / "review-plan.json").write_bytes(data)'
+        script = self.inspect_review().replace(anchor, anchor + f'''
+print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_bytes().hex())''')
+        (root / added).unlink(missing_ok=True)
+        tokens = []
+        for ending in ("\n", ""):
+            initial = (previous + ending).encode()
+            (root / ownership).write_bytes(initial)
+            before = snapshot(root)
+            token, run = self.file_review(root, script, "--no-guest")
+            projected = bytes.fromhex(re.search(r"^TEST_RECORDS:(.+)$", run.stdout, re.M)[1])
+            self.assertEqual(projected.splitlines(), [previous.encode(), added.encode()])
+            self.assertEqual(projected, expected)
+            plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+            self.assertEqual(plan["projection"][ownership], hashlib.sha256(projected).hexdigest())
+            repeat, _ = self.file_review(root, script, "--no-guest")
+            self.assertEqual(token, repeat)
+            tokens.append(token)
+            self.assertEqual(snapshot(root), before)
+            # Same record writer in the ordinary lifecycle. Re-read its exact
+            # output with normal ownership validation on the next dry run.
+            (ordinary / added).unlink()
+            (ordinary / ownership).write_bytes(initial)
+            self.run_dom(ordinary, "--platform=codex", "--guest")
+            self.assertEqual((ordinary / ownership).read_bytes(), projected)
+            before = snapshot(ordinary)
+            self.run_dom(ordinary, "--platform=codex", "--guest", "--dry-run")
+            self.assertEqual(snapshot(ordinary), before)
+        self.assertNotEqual(*tokens)  # Different input bytes, identical output.
+
+    def test_manifest_policy_base_and_late_visibility_refusals(self):
+        root = self.mixed_legacy_fixture("refused-ownership")
+        ordinary = self.root("policy-source")
+        self.run_dom(ordinary, "--platform=codex")
+        base = STATES["codex"] + "/base/AGENTS.md.block"
+        for rel in ("AGENTS.md", base):
+            (root / rel).write_bytes((ordinary / rel).read_bytes())
+        manifest = root / STATES["codex"] / "manifest"
+        manifest.write_bytes(re.sub(rb"(?m)^(files=.+)$", rb"\1,AGENTS.md", manifest.read_bytes()))
+        script = self.inspect_review()
+        for owner, flags in (("codex", ("--platform=both", "--no-guest")), ("copilot", ("--no-guest",)),
+                             ("both", ("--no-guest",))):
+            if owner in ("codex", "both"):
+                (root / base).unlink()
+            else:
+                (root / base).write_bytes((ordinary / base).read_bytes())
+                excludes = root / STATES["copilot"] / "guest-excludes"
+                excludes.write_bytes(excludes.read_bytes() + b"unknown-entry\n")
+            before = snapshot(root)
+            _, run = self.file_review(root, script, *flags, eligible=False)
+            plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+            staged = json.loads(re.search(r"^TEST_OUTPUTS:(.+)$", run.stdout, re.M)[1])
+            self.assert_blocked_review(plan, staged)
+            for refused in (("codex", "copilot") if owner == "both" else (owner,)):
+                self.assertIn("review-blocked-" + refused, plan["blockers"])
+                self.assertIn("missing pristine base " + base if refused == "codex" else "unknown Copilot exclusion",
+                              run.stderr)
+                report = next(p for p in plan["providers"] if p["provider"] == refused)
+                for row in report["paths"]:
+                    self.assertNotRegex(run.stdout, re.escape(row["path"]) + r":[^\n]*proposed sha256")
+            self.assertIn(f"{ROLES[0]}: proposed adoption", run.stdout)
+            self.assertEqual(before, snapshot(root))
+        # Same authority check on the ordinary path (no historical candidate
+        # and no review wrapper). A guarded live policy cannot reseed its base.
+        (ordinary / base).unlink()
+        before = snapshot(ordinary)
+        run = self.run_dom(ordinary, "--platform=codex", "--no-guest", ok=False)
+        self.assertIn("missing pristine base " + base, run.stderr)
+        self.assertEqual(before, snapshot(ordinary))
+
+    def test_normal_review_exclude_structure_and_host_bytes(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("exclude-review")
+        impl = root / ROLES[0]
+        impl.write_bytes(impl.read_bytes().replace(b"\nmodel: sonnet\n", b"\nmodel: local\n"))
+        begin, end = b"# BEGIN domestique (managed)\n", b"# END domestique\n"
+        prefix, suffix = b"host\r\n", b"host \xff without final LF"
+        path = root / ".git/info/exclude"
+        flags = ("--platform", "claude", "--no-guest")
+        script = self.inspect_review()
+        for block in (end + begin, begin + end + begin + end, begin + end):
+            path.write_bytes(prefix + block + suffix)
+            before = snapshot(root)
+            valid = block == begin + end
+            _, result = self.file_review(root, script, *flags, eligible=valid)
+            if valid:
+                plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", result.stdout, re.M)[1])
+                self.assertEqual(plan["projection"][".git/info/exclude"], hashlib.sha256(prefix + suffix).hexdigest())
+            else:
+                self.assertIn("malformed exclude block", result.stderr)
+                self.assertNotIn("TEST_OUTPUTS:", result.stdout)
+                result = self.run_dom(root, *flags, ok=False)
+                self.assertIn("malformed exclude block", result.stderr)
+            self.assertEqual(before, snapshot(root))
+
+    def test_partial_owned_provider_has_no_review_outputs(self):
+        root = self.mixed_legacy_fixture("blocked-owned")
+        missing = ".codex/agents/reviewer.toml"
+        (root / missing).unlink()
+        before = snapshot(root)
+        _, result = self.file_review(root, self.inspect_review(), "--no-guest", eligible=False)
+        plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", result.stdout, re.M)[1])
+        staged = json.loads(re.search(r"^TEST_OUTPUTS:(.+)$", result.stdout, re.M)[1])
+        self.assertIn("partial owned pair", plan["blockers"]["review-blocked-codex"])
+        codex = next(p for p in plan["providers"] if p["provider"] == "codex")
+        self.assertIn(missing, [row["path"] for row in codex["paths"]])
+        self.assertNotIn("pair", codex)
+        for row in codex["paths"]:
+            self.assertEqual(row["scope"], "provider")
+            self.assertTrue(row["hard_refusal"])
+            self.assertFalse({"action", "output", "proposed_choice", "alternatives"} & row.keys())
+            rel = row["path"]
+            self.assertNotIn(rel, plan["writes"])
+            self.assertNotIn(rel, plan["projection"])
+            for directory in ("review-output", "review-projection"):
+                self.assertNotIn(f"{directory}/{rel}", staged)
+        self.assertIn(f"{missing}: blocked (provider refusal)", result.stdout)
+        self.assertNotRegex(result.stdout, re.escape(missing) + r":[^\n]*proposed sha256")
+        self.assertIn(f"{ROLES[0]}: proposed adoption", result.stdout)
+        self.assertEqual(before, snapshot(root))
+
+    def test_claimed_helper_missing_base_recovery_matches_live_state(self):
+        root = self.root("helper-recovery")
+        self.run_dom(root, "--platform=codex")
+        helper = ".codex/domestique-model-setup.py"
+        base = STATES["codex"] + "/base/" + helper
+        (root / base).unlink()
+        for missing in (False, True):
+            if missing:
+                (root / helper).unlink()
+            before = snapshot(root)
+            _, result = self.file_review(root, SCRIPT, "--platform=codex", eligible=False)
+            if missing:
+                self.assertIn(f"missing claimed helper {helper} and pristine base {base}", result.stderr)
+                self.assertIn("restore both from a trusted copy of the installed generation", result.stderr)
+                self.assertNotIn("reconcile local edits to " + helper, result.stderr)
+            else:
+                self.assertIn("restore missing pristine base " + base, result.stderr)
+                self.assertIn("reconcile local edits to " + helper, result.stderr)
+                self.assertNotIn("missing claimed helper " + helper, result.stderr)
+            self.assertEqual(before, snapshot(root))
+
+    def test_missing_owned_base_never_issues_token(self):
+        root = self.mixed_legacy_fixture("missing-base")
+        rel = ROLES[1]
+        absent = STATES["codex"] + "/base/" + rel
+        (root / absent).unlink()
+        script = self.inspect_review()
+        for edit in (b"", b"\n# local edit\n"):
+            if edit:
+                (root / rel).write_bytes((root / rel).read_bytes() + edit)
+            before = snapshot(root)
+            _, result = self.file_review(root, script, "--no-guest", eligible=False)
+            plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", result.stdout, re.M)[1])
+            self.assertFalse(plan["reviewable"])
+            state = plan["applicability"]["codex"]
+            self.assertTrue(state["selected"])
+            self.assertEqual(state["mode"], "normal")
+            self.assertIsNone(state["inputs"]["files"][absent])
+            self.assertEqual(state["inputs"]["files"][rel][-1], hashlib.sha256((root / rel).read_bytes()).hexdigest())
+            self.assertEqual(before, snapshot(root))
+
+    def test_earlier_refused_authority_does_not_hide_later_candidate(self):
+        self.isolate_ancestor_fixture()
+        root = self.root("reverse-order")
+        self.run_dom(root, "--platform=claude")
+        (root / STATES["claude"] / "base" / ROLES[0]).unlink()
+        old = subprocess.check_output(["git", "show", "6158d35:domestique.sh"],
+                                      cwd=SOURCE.parent, env=self.env).decode()
+        rel = ".codex/agents/reviewer.toml"
+        path = root / rel
+        path.parent.mkdir(parents=True)
+        pristine = old.split("emit_codex_reviewer() { cat <<'DOM_EOF'\n", 1)[1].split("DOM_EOF\n", 1)[0]
+        path.write_text(pristine)
+        git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+        subprocess.run([*git, "add", "--", rel], check=True, env=self.env)
+        subprocess.run([*git, "commit", "-qm", "Historical Codex role"], check=True, env=self.env)
+        path.write_text(pristine.replace('model = "gpt-5.6"', 'model = "local-choice"'))
+        before = snapshot(root)
+        _, run = self.file_review(root, self.inspect_review(), eligible=False)
+        plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+        self.assertIn("incomplete native ownership: " + ROLES[0], run.stderr)
+        self.assertIn("review-blocked-claude", plan["blockers"])
+        self.assertIn(f"{rel}: proposed adoption", run.stdout)
+        self.assertIn('"model": "local-choice"', run.stdout)
+        self.assertEqual(before, snapshot(root))
+        (root / STATES["claude"] / "mode").write_text("invalid\n")
+        before = snapshot(root)
+        _, run = self.file_review(root, self.inspect_review(), eligible=False)
+        plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1])
+        staged = json.loads(re.search(r"^TEST_OUTPUTS:(.+)$", run.stdout, re.M)[1])
+        self.assertEqual(plan["applicability"]["claude"]["mode"], "unknown")
+        self.assertIn("invalid mode", plan["blockers"]["review-blocked-claude"])
+        self.assertFalse(any("/.claude/" in p for p in staged))
+        self.assertIn(f"{rel}: proposed adoption", run.stdout)
+        self.assertIn('"model": "local-choice"', run.stdout)
+        self.assertEqual(before, snapshot(root))
+
+    def test_scratch_refusal_before_first_target_write(self):
+        root = self.root("temp-target")
+        tmp = root / "temporary"
+        tmp.mkdir()
+        alias = self.work / "alias"
+        alias.symlink_to(root, target_is_directory=True)
+        saved = self.work / "saved.sh"
+        saved.write_text(SCRIPT)
+        def tree():
+            return (root.stat().st_mtime_ns, root.stat().st_ctime_ns, tmp.stat().st_ctime_ns, snapshot(root))
+        before = tree()
+        for folder, target in ((".", "."), ("temporary", "."), (str(alias / "temporary"), str(alias))):
+            env = dict(self.env, TMPDIR=folder)
+            for args in (["bash", str(saved), "--review-file"], ["bash", "-s", "--"], ["bash", str(saved)]):
+                result = subprocess.run([*args, "--dry-run", "--", target], cwd=root, env=env,
+                                        input=SCRIPT, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+                self.assertIn("TMPDIR must be outside", result.stderr)
+                self.assertEqual(before, tree())
+        result = subprocess.run(["bash", str(saved), "--review-file", ".", "--", "."], cwd=root,
+                                env=dict(self.env, TMPDIR="temporary"), capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(before, tree())
+
+    def test_explicit_review_disjoint_conflicting_and_unknown(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("review-conflict")
+        impl = root / ROLES[0]
+        extra = b"\nDo not print this private role text.\n"
+        impl.write_bytes(impl.read_bytes().replace(b"\nmodel: sonnet\n", b"\nmodel: local\n") + extra)
+        reviewer = root / ".claude/agents/reviewer.md"
+        reviewer.write_bytes(re.sub(b"(?m)^description: .+$", b"description: Competing local description",
+                                    reviewer.read_bytes()))
+        (root / ".claude/commands/goal.md").write_text("Unknown content.\n")
+        before = snapshot(root)
+        script = self.inspect_review()
+        flags = ("--platform", "claude", "--no-guest", "--dry-run")
+        run = self.run_dom(root, *flags, script=script, ok=False)
+        emitted = subprocess.check_output(["bash", "-s"], env=self.env, cwd=root,
+                                          input=(SCRIPT.split('TARGET_DIR=""', 1)[0] +
+                                                 "\nemit_implementer\n").encode())
+        expected = emitted.replace(b"\nmodel: sonnet\n", b"\nmodel: local\n") + extra
+        self.assertIn(f"{ROLES[0]}: proposed adoption; proposed sha256={hashlib.sha256(expected).hexdigest()}",
+                      run.stdout)
+        self.assertIn(".claude/agents/reviewer.md: blocked: preserving merge conflict", run.stdout)
+        self.assertIn(".claude/commands/goal.md: blocked: no-match", run.stdout)
+        self.assertNotIn("Do not print this private", run.stdout + run.stderr)
+        self.assertNotIn("[reconciliation] copilot", run.stdout)
+        self.assertNotIn("Reconciliation plan: sha256:", run.stdout)
+        plan_json = re.search(r"^TEST_PLAN:(.+)$", run.stdout, re.M)[1]
+        plan = json.loads(plan_json)
+        staged = json.loads(re.search(r"^TEST_OUTPUTS:(.+)$", run.stdout, re.M)[1])
+        for row in plan["providers"][0]["paths"]:
+            if "blocker" in row:
+                self.assertEqual(row["scope"], "path")
+                self.assertNotIn("output", row)
+                self.assertNotIn(row["path"], plan["writes"])
+                self.assertNotIn("review-output/" + row["path"], staged)
+        self.file_review(root, script, *flags, eligible=False)
+        self.assertEqual(before, snapshot(root))
+        # Resolve both competing/unknown inputs. Only the conflict-free,
+        # fully specified adoption proposal is eligible for a review token.
+        (root / ".claude/commands/goal.md").unlink()
+        reviewer.write_bytes(subprocess.check_output(["git", "show", "HEAD:.claude/agents/reviewer.md"],
+                                                     cwd=root, env=self.env))
+        before = snapshot(root)
+        complete = self.run_dom(root, *flags, script=script, ok=False)
+        plan_json = re.search(r"^TEST_PLAN:(.+)$", complete.stdout, re.M)[1]
+        noop = json.loads(plan_json)
+        self.assertTrue(noop["reviewable"])
+        self.assertNotIn(".git/info/exclude", noop["writes"])
+        self.assertNotIn(STATES["claude"] + "/mode", noop["writes"])
+        self.assertNotIn("Reconciliation plan: sha256:", complete.stdout)
+        # Same plan data, same functions. Only top-level installer bytes change.
+        changed = script.replace('DOMESTIQUE_VERSION="0.5.0"', ':\nDOMESTIQUE_VERSION="0.5.0"', 1)
+        self.assertNotEqual(script, changed)
+        stream = self.run_dom(root, *flags, script=changed, ok=False)
+        self.assertNotIn("Reconciliation plan: sha256:", stream.stdout)
+        tokens = []
+        for materialized in (script, changed):
+            token, file_run = self.file_review(root, materialized, *flags)
+            payload = re.search(r"^TEST_PLAN:(.+)$", file_run.stdout, re.M)[1]
+            self.assertEqual(payload, plan_json)
+            binding = {"purpose": "domestique-file-review-v2",
+                       "source": hashlib.sha256(materialized.encode()).hexdigest(),
+                       "plan": hashlib.sha256(payload.encode()).hexdigest()}
+            exact = json.dumps(binding, sort_keys=True, separators=(",", ":")).encode()
+            self.assertEqual(token, hashlib.sha256(exact).hexdigest())
+            tokens.append(token)
+        self.assertNotEqual(*tokens)
         self.assertEqual(before, snapshot(root))
 
     def test_native_ancestor_exact_head(self):
@@ -3600,6 +4175,137 @@ class AllProviders(unittest.TestCase):
                     self.assertEqual(os.readlink(kept), str(victim))
                 wrapper.unlink()
                 wrapper.symlink_to(sys.executable)
+
+    def test_owned_policy_conflicts_collected_without_native_adoption(self):
+        root = self.root("owned-policy-preview")
+        self.run_dom(root, "--platform=both")
+        policies = {"CLAUDE.md": "## Discipline", "AGENTS.md": POLICY_ANCHOR}
+        originals = {rel: (root / rel).read_text() for rel in policies}
+        upstream = SCRIPT
+        for rel, original in originals.items():
+            self.assertIn(policies[rel], original)
+            (root / rel).write_text(original.replace(policies[rel], "Local policy rule."))
+            upstream = upstream.replace(policies[rel], "Revised upstream policy rule.")
+        for expected in (set(policies), {"AGENTS.md"}):
+            before = snapshot(root)
+            dry = self.run_dom(root, "--platform=both", "--dry-run", script=upstream, ok=False)
+            _, file = self.file_review(root, upstream, "--platform=both", eligible=False)
+            for run in (dry, file):
+                self.assertEqual(run.returncode, 3)
+                self.assertEqual(set(re.findall(r"owned policy merge conflict for (\S+) against", run.stderr)),
+                                 expected, run.stderr)
+                self.assertNotIn("Reconciliation plan: sha256:", run.stdout)
+                self.assertNotIn("proposed adoption", run.stdout)
+            self.assertEqual(before, snapshot(root))
+            for rel in expected - {"AGENTS.md"}:
+                (root / rel).write_text(originals[rel])
+        (root / "AGENTS.md").write_text(originals["AGENTS.md"])
+        before = snapshot(root)
+        self.run_dom(root, "--platform=both", "--dry-run", script=upstream)
+        self.assertEqual(before, snapshot(root))
+        self.run_dom(root, "--platform=both", script=upstream)
+        for rel in policies:
+            self.assertIn("Revised upstream policy rule.", (root / rel).read_text())
+
+    def audit_refused_outputs(self):
+        # Inspect publication records before the normal cleanup, not raw merge
+        # scratch (inputs and diagnostics are expected even on a refusal).
+        cleanup = 'rm -rf "$TMPDIR_WORK"; exit "$rc"'
+        self.assertEqual(SCRIPT.count(cleanup), 1)
+        return SCRIPT.replace(cleanup,
+            'for name in review-plan.json review-output review-projection review-writes review-removals '
+            'model-publication-started; do [ ! -e "$TMPDIR_WORK/$name" ] || echo "TEST_OUTPUT:$name" >&2; done; '
+            'echo TEST_INSPECTED >&2; ' + cleanup)
+
+    def test_confirmed_role_pair_reports_each_conflicting_member(self):
+        root = self.root("confirmed-role-conflicts")
+        self.run_dom(root, "--platform=claude")
+        anchors = {ROLES[0]: "Keep the return small.",
+                   ROLES[0].replace("implementer", "reviewer"): "You independently verify one completed task"}
+        upstream = self.audit_refused_outputs()
+        for rel, anchor in anchors.items():
+            path = root / rel
+            self.assertEqual(path.read_text().count(anchor), 1)
+            path.write_text(path.read_text().replace(anchor, "Local role variant."))
+            upstream = upstream.replace(anchor, "Upstream role variant.")
+        bootstrap = (root / ".claude/commands/dom-models.md").read_text().split(
+            "```python\n", 1)[1].split("\n```", 1)[0]
+
+        def helper(*args, plan=None):
+            return json.loads(subprocess.run([sys.executable, "-I", "-B", "-c", bootstrap, *args],
+                              input=json.dumps(plan) if plan else None, cwd=root, env=self.env, text=True,
+                              capture_output=True, check=True).stdout)
+
+        for expected in (set(anchors), set(anchors) - {ROLES[0]}):
+            # Confirm the actual edited pair after each fixture change. A stale
+            # marker would skip the preserving merge this regression exercises.
+            review = helper("request", "--confirm")
+            self.assertTrue(helper("apply", review["digest"], plan=review["plan"])["confirmed"])
+            self.assertTrue(helper("verify")["confirmed"])
+            if len(expected) == 2:
+                subprocess.run(["git", "add", "--", *anchors], cwd=root, env=self.env, check=True)
+            before = snapshot(root)
+            dry = self.run_dom(root, "--platform=claude", "--dry-run", script=upstream, ok=False)
+            _, file = self.file_review(root, upstream, "--platform=claude", eligible=False)
+            for run in (dry, file):
+                self.assertEqual(run.returncode, 3)
+                self.assertEqual(set(re.findall(r"preserving merge conflict: ([^;]+);", run.stderr)), expected)
+                self.assertIn("TEST_INSPECTED", run.stderr)
+                self.assertNotIn("TEST_OUTPUT:", run.stderr)
+                self.assertNotIn("Reconciliation plan: sha256:", run.stdout)
+                self.assertNotIn("[model pair] claude:", run.stdout)
+            self.assertEqual(before, snapshot(root))
+            if len(expected) == 2:
+                path = root / ROLES[0]
+                path.write_text(path.read_text().replace("Local role variant.", anchors[ROLES[0]]))
+
+    def test_owned_path_conflicts_independent_of_publication_eligibility(self):
+        root = self.root("owned-path-findings")
+        self.run_dom(root, "--platform=both")
+        command = ".claude/commands/decompose.md"
+        alias = ".claude/commands/dom-decompose.md"
+        skill = ".agents/skills/domestique-decompose/SKILL.md"
+        anchors = {"CLAUDE.md": "## Discipline", "AGENTS.md": POLICY_ANCHOR,
+                   command: "Rules for a good decomposition:",
+                   skill: "Use the goal or specification in the invoking prompt."}
+        originals = {p: (root / p).read_text() for p in [*anchors, alias]}
+        upstream = self.audit_refused_outputs()
+        for rel, anchor in anchors.items():
+            self.assertIn(anchor, originals[rel])
+            (root / rel).write_text(originals[rel].replace(anchor, "Local variant."))
+            upstream = upstream.replace(anchor, "New upstream variant.")
+
+        def check(findings, *, both=True, unsafe=None):
+            before = snapshot(root)
+            runs = [self.run_dom(root, "--platform=both", "--dry-run", script=upstream, ok=False)]
+            if both:
+                runs.append(self.file_review(root, upstream, "--platform=both", eligible=False)[1])
+            for run in runs:
+                self.assertEqual(run.returncode, 3)
+                reported = re.findall(r"owned policy merge conflict for (\S+) against|"
+                                      r"preserving merge conflict: ([^;]+);", run.stderr)
+                self.assertEqual({p or n for p, n in reported}, findings, run.stderr)
+                if unsafe:
+                    self.assertIn(unsafe, run.stderr)
+                self.assertIn("TEST_INSPECTED", run.stderr)
+                self.assertNotIn("TEST_OUTPUT:", run.stderr)
+                for text in ("Reconciliation plan: sha256:", "proposed sha256=", "[dry-run] ", "[model publication]"):
+                    self.assertNotIn(text, run.stdout)
+            self.assertEqual(before, snapshot(root))
+
+        check(set(anchors))
+        # Resolve both policies. Two files from the same provider now conflict
+        # independently; neither can prevent assessment of the other's base.
+        for rel in ("CLAUDE.md", "AGENTS.md"):
+            (root / rel).write_text(originals[rel])
+        (root / alias).write_text(originals[alias].replace(anchors[command], "Independent alias edit."))
+        check({command, alias, skill})
+        # A broken provider authority cannot become diagnostic read authority
+        # for a symlink target; the independent Codex skill still gets checked.
+        base = root / STATES["claude"] / "base" / command
+        base.unlink()
+        base.symlink_to(self.work / "not-a-pristine-base")
+        check({skill}, both=False, unsafe=command)
 
     def test_guarded_policy_conflict_preflights_all_project_writes(self):
         root = self.root("selected-conflict")

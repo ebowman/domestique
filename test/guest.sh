@@ -343,6 +343,12 @@ scenario_corrupt_marker() {
   local out rc
   out="$(claude_install "$DOM" "$t" 2>&1)"; rc=$?
 
+  if [ "${CURRENT_TEST:-0}" = 1 ]; then
+    check "invalid mode refused" test "$rc" -eq 3
+    check "invalid mode reported" grep -q 'invalid mode' <<< "$out"
+    check "no normal policy created" test ! -e "$t/CLAUDE.md"
+    return
+  fi
   check "exit 0" test "$rc" -eq 0
   check "warning mentions unexpected content" bash -c 'printf "%s" "$1" | grep -q "unexpected content"' _ "$out"
   check "CLAUDE.md created (normal mode proceeded)" test -f "$t/CLAUDE.md"
