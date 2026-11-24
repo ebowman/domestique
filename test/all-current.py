@@ -3141,6 +3141,199 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
     def test_default_unmatched_codex_pipe(self):
         self.qualify_mixed_default("stdin", guest=False, missing_codex=True, live_codex=True, unmatched=True)
 
+    def unmatched_claude(self, *, punctuation=False):
+        root = self.root("unowned-claude")
+        roles = {}
+        for role, effort in (("implementer", "medium"), ("reviewer", "high")):
+            path = root / ROLES[0].replace("implementer", role)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            metadata = f"description: Local {role}\n"
+            if punctuation:
+                if role == "implementer":
+                    metadata = "description: Local review & checks (code, tests)!\n"
+                metadata += "tools: Read, Grep, Bash(git diff:*)\n"
+            setting = "" if punctuation else f"effort: {effort}\n"
+            roles[path] = (f'---\nname: {role}\n{metadata}model: "local-{role}"\n'
+                           f'{setting}---\nPrivate fixture instructions.\n').encode()
+            path.write_bytes(roles[path])
+        subprocess.run(["git", "add", ".claude/agents"], cwd=root, env=self.env, check=True)
+        subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+                        "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                        "commit", "-qm", "Synthetic custom roles only"], cwd=root, env=self.env, check=True)
+        return root, roles
+
+    def plain_default(self, root, script, file):
+        saved = self.work / "saved-installer.sh"
+        saved.write_text(script)
+        return run_stdin(["bash", str(saved)] if file else ["bash", "-s"], input="" if file else script,
+                         cwd=root, env=self.env, text=True, capture_output=True, timeout=900)
+
+    def test_released_v061_refuses_unmatched_claude(self):
+        root, roles = self.unmatched_claude()
+        released = subprocess.check_output(["git", "show", "v0.6.1:domestique.sh"],
+                                           cwd=SOURCE.parent, text=True, env=self.env)
+        before = snapshot(root)
+        for file in (True, False):
+            result = self.plain_default(root, released, file)
+            self.assertEqual(result.returncode, 3, result.stderr)
+            for path in roles:
+                self.assertIn(str(path.relative_to(root)) + ": blocked: no-match", result.stdout)
+            self.assertEqual(before, snapshot(root))
+
+    def qualify_unmatched_claude(self, file, *, punctuation=True):
+        root, roles = self.unmatched_claude(punctuation=punctuation)
+        if punctuation:
+            for path, original in roles.items():
+                with self.assertRaisesRegex(ValueError, "ambiguous YAML scalar"):
+                    self.model_library("claude")["parse"](original, path.stem)
+        before = snapshot(root)
+        no_tty = self.plain_default(root, SCRIPT, file)
+        self.assertEqual(no_tty.returncode, 3, no_tty.stderr)
+        self.assertIn("No foreground controlling terminal", no_tty.stderr)
+        self.assertEqual(before, snapshot(root))
+        terminal = self.tty_review(root, file=file)
+        declined = terminal(b"").decode()
+        prompt = declined.split("Approve complete reconciliation ", 1)[1]
+        for path in roles:
+            self.assertIn(str(path.relative_to(root)) + ": back up and replace unmatched role", prompt)
+            self.assertIn(str(path.relative_to(root)) + ".bak.<timestamp>", prompt)
+        self.assertIn("discards all other local role content", prompt)
+        self.assertNotIn("Private fixture instructions", declined)
+        self.assertEqual(before, snapshot(root))
+        report = terminal(b"APPLY").decode()
+        self.assertIn("Approved reconciliation published", report)
+        self.assertIn("Status: INSTALLED — pending Save", report)
+        self.assertEqual(self.installed(root), set(STATES))
+        self.assertEqual(before[".git/index"], snapshot(root)[".git/index"])
+        for path, original in roles.items():
+            backup, = path.parent.glob(path.name + ".bak.*")
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+            live = path.read_bytes()
+            self.assertNotIn(b"Private fixture instructions", live)
+            parse = self.model_library("claude")["parse"]
+            _, fields, marker = parse(live, path.stem)
+            self.assertIsNone(marker)
+            self.assertEqual(fields["model"], "local-" + path.stem)
+            if punctuation:
+                self.assertNotIn("effort", fields)
+                self.assertNotIn(b"Bash(git diff:*)", live)
+            else:
+                self.assertEqual(fields["effort"], parse(original, path.stem)[1]["effort"])
+            self.assertIn(hashlib.sha256(live).hexdigest(), report)
+        stable = byte_snapshot(root)
+        rerun = self.plain_default(root, SCRIPT, file)
+        self.assertEqual(rerun.returncode, 3, rerun.stderr)
+        self.assertIn("Status: INSTALLED — pending Save", rerun.stderr)
+        self.assertEqual(byte_snapshot(root), stable)
+
+    def test_default_unmatched_claude_file(self):
+        self.qualify_unmatched_claude(True)
+
+    def test_default_unmatched_claude_pipe(self):
+        self.qualify_unmatched_claude(False)
+
+    def test_default_unmatched_claude_explicit_effort(self):
+        self.qualify_unmatched_claude(True, punctuation=False)
+
+    def test_replacement_only_claude_fields(self):
+        extract = self.review_library()["claude_replacement_fields"]
+        def read(header, newline="\n"):
+            data = ("---\nname: reviewer\n" + header + "\n---\nmodel: body-only\n").replace("\n", newline)
+            return extract(data.encode(), "reviewer")
+        prose = "description: Audit [local] edits & metadata! " + "long prose " * 60
+        header = (prose + "\ntools: Read, Bash(git diff:*)\nfixture-label: Review & test!\n"
+                  "model: 'local/model' # keep\neffort: high")
+        self.assertEqual(read(header, "\r\n"), {"name": "reviewer", "model": "local/model", "effort": "high"})
+        self.assertEqual(read("description: 'Check ''quotes'''\ntools: [\"Read\", \"Bash\"] # list"),
+                         {"name": "reviewer"})
+        for key in ("model", "effort"):
+            for prefix in ",[]{}#&*!|>%@`":
+                with self.subTest(key=key, prefix=prefix), self.assertRaises(ValueError):
+                    read(f"description: plain\n{key}: {prefix}local")
+            for raw, expected in (("local,custom", "local,custom"), ("',local'", ",local"),
+                                  ('"@local"', "@local")):
+                self.assertEqual(read(f"description: plain\n{key}: {raw}")[key], expected)
+        for field in ("description: !str tagged", "description: &anchor text", "description: *alias",
+                      "description: outer: nested", "description: [list]", "description: true",
+                      'description: "unterminated', "description: plain\n  model: indented",
+                      "description: plain\n<<: *defaults", "description: |\n  text",
+                      "description: plain\ntools: [1]", "description: plain\ntools: [[\"Read\"]]",
+                      "description: plain\nmodel: *alias", "description: plain\nmodel: false",
+                      "description: plain\nmodel: a\nModel: b", "description: plain\neffort: {}",
+                      "description: plain\nmodel_reasoning_effort: high",
+                      "description: plain\ntools: Read\ntools: Grep"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                read(field)
+
+    def test_default_unmatched_claude_retained_indicators(self):
+        root, roles = self.unmatched_claude(punctuation=True)
+        path = root / ROLES[0]
+        old = b'model: "local-implementer"'
+        self.assertIn(old, roles[path])
+        for field in (b"model: ,local", old + b"\neffort: ,custom"):
+            with self.subTest(field=field):
+                path.write_bytes(roles[path].replace(old, field))
+                before = snapshot(root)
+                _, result = self.file_review(root, SCRIPT, eligible=False)
+                self.assertIn(ROLES[0] + ": blocked: ambiguous YAML scalar", result.stdout)
+                self.assertEqual(before, snapshot(root))
+        path.write_bytes(roles[path].replace(old, b'model: ",local"\neffort: \',custom\''))
+        before = snapshot(root)
+        _, result = self.file_review(root, SCRIPT)
+        self.assertIn('"model": ",local"', result.stdout)
+        self.assertIn('"effort": ",custom"', result.stdout)
+        self.assertEqual(before, snapshot(root))
+
+    def test_unmatched_claude_refusals(self):
+        root, roles = self.unmatched_claude()
+        path = root / ROLES[0]
+        original = roles[path]
+        def refuse(reason):
+            before = snapshot(root)
+            result = self.run_dom(root, "--platform=claude", "--dry-run", ok=False)
+            self.assertEqual(result.returncode, 3)
+            self.assertIn(reason, result.stdout + result.stderr)
+            self.assertNotIn("Complete publication (afterimage", result.stdout)
+            self.assertEqual(before, snapshot(root))
+        for old, new, reason in (
+                (b"effort: medium", b"effort: high\neffort: medium", "complex/duplicate YAML"),
+                (b"effort: medium", b"effort: [medium]", "ambiguous YAML scalar"),
+                (b"name: implementer", b"name: reviewer", "wrong/missing native role name"),
+                (b"name: implementer", b"name:implementer", "malformed frontmatter field"),
+                (b"name: implementer", b"# domestique-model-setup: {}\nname: implementer", "malformed marker")):
+            with self.subTest(reason=reason):
+                path.write_bytes(original.replace(old, new))
+                refuse(reason)
+        path.write_bytes(original)
+        path.chmod(0o755)
+        refuse("unsafe executable replacement input")
+        path.unlink()
+        refuse(".claude/agents/reviewer.md: blocked: no-match")
+        path.symlink_to("reviewer.md")
+        refuse("unsafe")
+        path.unlink()
+        path.write_bytes(original)
+        helper = root / ".claude/domestique-model-setup.py"
+        helper.write_bytes(b"# private local helper\n")
+        refuse("modified/unowned helper " + str(helper.relative_to(root)))
+        helper.unlink()
+        command = root / ".claude/commands/goal.md"
+        command.parent.mkdir()
+        command.write_bytes(b"Private command\n")
+        refuse(str(command.relative_to(root)) + ": blocked: no-match")
+
+    def test_unmatched_claude_stale(self):
+        root, roles = self.unmatched_claude()
+        path = root / ROLES[0]
+        changed = {}
+        def edit():
+            path.write_bytes(roles[path] + b"Concurrent local edit.\n")
+            changed.update(snapshot(root))
+        report = self.tty_review(root)(b"APPLY", edit)
+        self.assertIn(b"Stale plan", report)
+        self.assertEqual(snapshot(root), changed)
+
     def check_patch_upgrade(self, root, pending):
         """This patch changes no installed role, helper, policy or pristine base."""
         old = byte_snapshot(root)
@@ -3177,9 +3370,9 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                     self.assertEqual(data, old_data, path)
             stable = current
 
-    def test_v060_preserving_patch_upgrade(self):
+    def check_published_patch_upgrade(self, version):
         root = self.root("published-patch-upgrade")
-        released = subprocess.check_output(["git", "show", "v0.6.0:domestique.sh"],
+        released = subprocess.check_output(["git", "show", version + ":domestique.sh"],
                                            cwd=SOURCE.parent, text=True, env=self.env)
         choices = [f"--model={provider}:{role}=fixture/{provider}-{role}"
                    for provider in STATES for role in ("implementer", "reviewer")]
@@ -3191,6 +3384,12 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         subprocess.run(["git", "add", "host.txt"], cwd=root, env=self.env, check=True)
         host.write_bytes(b"unstaged\n")
         self.check_patch_upgrade(root, pending=False)
+
+    def test_v060_preserving_patch_upgrade(self):
+        self.check_published_patch_upgrade("v0.6.0")
+
+    def test_v061_preserving_patch_upgrade(self):
+        self.check_published_patch_upgrade("v0.6.1")
 
     def test_preversion_repair_preserving_patch_upgrade(self):
         root = self.mixed_legacy_fixture("previous-repair", copilot_guest=False, codex_guest=None)

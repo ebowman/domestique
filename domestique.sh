@@ -105,7 +105,7 @@ sys.exit(result.returncode)
 ' "$0" "$BASH" "$transport" "$@"
 fi
 
-DOMESTIQUE_VERSION="0.6.1"
+DOMESTIQUE_VERSION="0.6.2"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -6686,6 +6686,64 @@ def finalize_review(plan, scratch):
     for leaf in ("review-writes", "review-removals", "projection-notice"):
         (scratch / leaf).unlink(missing_ok=True)
 
+def claude_replacement_fields(data, role):
+    """Read only identity and choices from a flat, unowned Claude role. Never merge its prose."""
+    text, marker = split_marker(data, role)
+    need(marker is None, "unowned model confirmation marker; restore trusted ownership")
+    if "\r\n" in text:
+        need("\n" not in text.replace("\r\n", ""), "mixed line endings")
+        text = text.replace("\r\n", "\n")
+    need(not any((unicodedata.category(c) == "Cc" and c not in "\n\t") or c in "\u2028\u2029\ufeff"
+                 for c in text), "unsupported controls or line endings")
+    lines = text.split("\n")
+    need(lines[0] == "---" and "---" in lines[1:], "missing or unterminated YAML frontmatter")
+    end = lines.index("---", 1)
+    need(any(line.strip() for line in lines[end + 1:]), "missing native prompt body")
+    fields, seen = {}, set()
+    for line in lines[1:end]:
+        if not line.strip(" ") or line.lstrip(" ").startswith("#"):
+            continue
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*): +(.+)", line)
+        need(match, "malformed frontmatter field")
+        key, raw = match.groups()
+        need(key.lower() not in seen and key.lower() != "model_reasoning_effort" and
+             (key.lower() not in ("name", "model", "effort", "description", "tools") or key == key.lower()),
+             "complex/duplicate YAML field or conflicting spelling")
+        seen.add(key.lower())
+        if key in ("name", "model", "effort"):
+            fields[key] = scalar_span(raw)[0]
+            # A leading comma is a YAML indicator, not a plain scalar.
+            # Check the spelling, not the decoded value of a quoted string.
+            need(raw.startswith(("'", '"')) or
+                 (not raw.startswith(",") and not re.search(r":\s", fields[key])),
+                 "ambiguous YAML scalar")
+            continue
+        # Discarded metadata is data, not a selection (no model character or length limits).
+        # Support single-line block-mapping strings, plus the native JSON-string tools list.
+        if raw[0] == '"' or (key == "tools" and raw[0] == "["):
+            try:
+                value, stop = json.JSONDecoder().raw_decode(raw)
+            except (ValueError, RecursionError):
+                raise ValueError("malformed quoted field or tools list") from None
+            need(re.fullmatch(r"(?:[ \t]+#.*|[ \t]*)", raw[stop:]) and
+                 ((isinstance(value, str) and value.strip()) or
+                  (key == "tools" and isinstance(value, list) and all(isinstance(v, str) for v in value))),
+                 "invalid metadata string or tools list")
+        elif raw[0] == "'":
+            quoted = re.fullmatch(r"'((?:[^']|'')+)'(?:[ \t]+#.*|[ \t]*)", raw)
+            need(quoted and quoted[1].strip(), "invalid quoted metadata")
+        else:
+            plain = re.split(r"[ \t]+#", raw, maxsplit=1)[0].rstrip()
+            # Indicators at the start introduce YAML structures/tags/aliases;
+            # inside ordinary block scalars punctuation is just text.
+            need(plain and plain[0] not in "-?:,[]{}#&*!|>'\"%@`~+0123456789.\t " and
+                 not re.search(r":(?:\s|$)", plain) and
+                 plain.lower() not in ("true", "false", "null", "yes", "no", "on", "off"),
+                 "unsupported discarded metadata scalar")
+    need(fields.get("name") == role, "wrong/missing native role name")
+    need("description" in seen, "missing native description")
+    return fields
+
 def installer_inventories(provider, files, policies, helper):
     import itertools
     # Finite source-backed inventories, NOT today's inventory minus a helper.
@@ -6727,7 +6785,7 @@ def installer_inventories(provider, files, policies, helper):
                                 ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
             for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
                 recognized.add((version, old_files + "," + helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1"):
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1", "0.6.2"):
                 recognized.add((version, files + suffix))
     return recognized
 PY
@@ -6822,7 +6880,7 @@ try:
         sys.exit(0)
     if policy_only or early:
         if policy_only:
-            need(manifest.get("domestique_version") in ("0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1") and
+            need(manifest.get("domestique_version") in ("0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1", "0.6.2") and
                  set(manifest) == {"snapshot_format", "platform", "domestique_version",
                                    "installed_ref", "installed_at", "script_sha256", "files"},
                  "unknown policy-only manifest generation")
@@ -6935,7 +6993,7 @@ try:
             # Evidence remains separate from native-adopt. Neither a commit nor
             # a preview (even --force) establishes authority to publish.
             answer = ancestor(rel, mode)
-            if provider == "codex" and rel in pair.paths.values() and answer["status"] == "no-match":
+            if provider in ("claude", "codex") and rel in pair.paths.values() and answer["status"] == "no-match":
                 print(f"{rel}: no-match; no merge authority. Assessing explicit pair replacement.", file=sys.stderr)
             elif answer["proposal"] is None:
                 print(f"Native ownership refused ({provider}): {diagnostic}. No project writes.", file=sys.stderr)
@@ -7364,7 +7422,7 @@ def prepare(provider):
         def unmatched(rel):
             path = scratch / "review-evidence" / rel
             return path.exists() and json.loads(path.read_text())["status"] == "no-match"
-        replace_pair = (provider == "codex" and mode == "normal" and provider in request["selected"]
+        replace_pair = (provider in ("claude", "codex") and mode == "normal" and provider in request["selected"]
                         and all(unmatched(p) for p in layout.paths.values()))
         print(f"[reconciliation] {provider} ({mode})", flush=True)
         for rel in natives:
@@ -7382,17 +7440,23 @@ def prepare(provider):
                     need(replacing or info["status"] == "candidate", info["status"] +
                          (": " + info["reason"] if "reason" in info else ""))
                 if replacing:
-                    import tomllib
                     need(info["live_sha256"] == lib["sha"](live), "changed replacement input")
                     need(not snapshot["files"][rel][2] & 0o111, "unsafe executable replacement input")
-                    text, marker = lib["split_marker"](live, role)
-                    need(marker is None, "unowned model confirmation marker; restore trusted ownership")
-                    fields = tomllib.loads(text)
+                    if provider == "claude":
+                        fields = lib["claude_replacement_fields"](live, role)
+                        effort_key = "effort"
+                    else:
+                        import tomllib
+                        text, marker = lib["split_marker"](live, role)
+                        need(marker is None, "unowned model confirmation marker; restore trusted ownership")
+                        fields = tomllib.loads(text)
+                        effort_key = "model_reasoning_effort"
                     selected = {}
-                    for key in ("model", "model_reasoning_effort"):
+                    for key in ("model", effort_key):
                         try:
                             selected[key] = lib["selection"](fields.get(key))
-                            need(key != "model" or selected[key] != "inherit", "use TOML omission for inheritance")
+                            need(provider != "codex" or key != "model" or selected[key] != "inherit",
+                                 "use TOML omission for inheritance")
                         except ValueError as exc:
                             raise ValueError(f"unmappable {key}: {exc}; review the original and retry") from exc
                     rec["local_choice"] = selected
@@ -7431,7 +7495,7 @@ def prepare(provider):
                     action = "owned preserving merge" if live is not None else "create"
                 if replacing:
                     candidate = lib["patch"](upstream, role, {
-                        "model": selected["model"], "effort": selected["model_reasoning_effort"]})
+                        "model": selected["model"], "effort": selected[effort_key]})
                     validate(role, upstream, upstream, candidate)
                 elif pair_outputs and rel in pair_outputs:
                     candidate = pair_outputs[rel]
@@ -9676,8 +9740,10 @@ def consent():
             for path, after in sorted(plan["projection"].items()):
                 say("  " + path + ": " + (after or "REMOVE"))
             say("Historical roles remain unconfirmed: native review/Save required. No native readiness.")
-            if any("backup" in row for p in plan["providers"] for row in p["paths"]):
-                say("Type APPLY to back up and REPLACE BOTH unmatched Codex roles and publish the whole plan, "
+            replaced = [p["provider"].capitalize() for p in plan["providers"] if any("backup" in row for row in p["paths"])]
+            if replaced:
+                say("Type APPLY to back up and REPLACE BOTH unmatched " + " roles and BOTH unmatched ".join(replaced) +
+                    " roles and publish the whole plan, "
                     "or Return to keep everything unchanged:")
             else:
                 say("Type APPLY to publish these changes, or Return to keep local:")

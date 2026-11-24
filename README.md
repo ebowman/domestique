@@ -7,19 +7,21 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.6.1 release candidate: replacing an unmatched Codex role pair
+## v0.6.2 release candidate: replacing an unmatched Claude or Codex role pair
 
-When neither normal-mode Codex role has a matching ancestor, `dom` can
+When neither normal-mode role in a Claude or Codex pair has a matching ancestor, `dom` can
 offer a **replacement, not a merge**, after both searches finish. Review
 the two backup paths and the model/effort choices. Return keeps everything
 as-is; `APPLY` approves the **whole plan**, including backing up both
-originals before replacing their role bodies.
+originals (0600) before replacing **everything except the displayed model and
+effort choices**, including custom instructions. Without terminal or file-bound
+approval there are no writes.
 
 Read the final status: `PREVIEW ONLY` and `NOT INSTALLED by this run` do not
 mean an install happened. `INSTALLED — pending Save` means configuration is
 already on disk; review each unconfirmed pair with `dom-models --confirm` in
 its native client, then Save. Re-running the installer is not a Save.
-See [patch checks and limits](docs/install-upgrade-design.md#v061-candidate-checks-and-limits).
+See [patch checks and limits](docs/install-upgrade-design.md#v062-candidate-checks-and-limits).
 
 ### Retained v0.6.0: dirty-start goals and preserving upgrades
 
@@ -160,7 +162,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-After v0.6.1 is published to `main`, the existing alias fetches it on its next
+After v0.6.2 is published to `main`, the existing alias fetches it on its next
 invocation; no alias change is needed:
 
 ```sh
@@ -196,7 +198,7 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional; v0.6.1's changes are included in remote
+A source checkout is optional; v0.6.2's changes are included in remote
 `dom` after publication to `main`. To inspect reviewed source locally, run from
 that checkout against a disposable Git project:
 
@@ -237,9 +239,10 @@ can refuse before producing any plan.
 Conversely, if only normal Copilot state is present, the absence of Claude and
 Codex snapshots is **not** evidence that their files are absent or safe to
 replace. Inspect the proposed adoptions and creations separately. If **both**
-normal-mode Codex role searches finish with `no-match`, plain `dom` can instead
+normal-mode role searches for the same provider (Claude or Codex) finish with `no-match`, plain `dom` can instead
 offer to back up both originals and replace the pair. This is **not a merge**:
-only the displayed top-level `model` and `model_reasoning_effort` carry over.
+only the displayed `model` and `effort` (Claude frontmatter) or `model` and
+`model_reasoning_effort` (Codex TOML) carry over.
 The plan identifies the owner-only `.bak.<timestamp>` files; do not stage or
 share those backups. Press Return to decline the whole plan without writes.
 An ordinary main checkout can declare `extensions.worktreeConfig` without an
@@ -530,7 +533,7 @@ setup and other installer calls are unchanged).
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.6.1 qualification limits](docs/install-upgrade-design.md#v061-candidate-checks-and-limits).
+ancestry and the [v0.6.2 qualification limits](docs/install-upgrade-design.md#v062-candidate-checks-and-limits).
 
 ## License
 

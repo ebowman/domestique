@@ -1,8 +1,8 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.6.1 release candidate guide**. The patch adds an explicit
-backed-up replacement for an unmatched Codex pair and reports the outcome of
-the installer separately from native model confirmation.
+This is the **v0.6.2 release candidate guide**. The backed-up replacement
+offered for an unmatched Codex pair is now available for a normal-mode Claude
+pair. Replacing role content does not confirm a model or authorize a workflow.
 
 - **Goal startup:** planning records a [workspace handoff](#workspace-handoff-from-decompose-to-goal).
   Execution rechecks the live checkout. Preserve disjoint staged and unstaged
@@ -10,12 +10,12 @@ the installer separately from native model confirmation.
 - **Installer upgrades:** [review the complete plan](#historical-native-role-reconciliation)
   before adopting edited legacy roles. Each role needs its own exact-path
   ancestor evidence. An unmatched role blocks adoption; its neighbors cannot
-  establish ownership. A normal-mode Codex pair with two completed `no-match`
+  establish ownership. A normal-mode Claude or Codex pair with two completed `no-match`
   searches can instead be backed up and **replaced by explicit choice**.
   One approval publishes a complete eligible plan, not a
   partial migration, model confirmation or readiness certificate.
 
-See [candidate checks and limits](#v061-candidate-checks-and-limits).
+See [candidate checks and limits](#v062-candidate-checks-and-limits).
 
 Retained v0.4.4 safe-upgrade behavior: finite historical ownership proof and
 pristine manifestless adoption support bounded preserving upgrades. Unknown
@@ -53,13 +53,13 @@ hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
 The [v0.4.4 evidence and limits](#v044-release-status-and-limits) remain history,
-not fresh v0.6.1 qualification.
+not fresh v0.6.2 qualification.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.6.1 is published to `main`, existing `dom` aliases that fetch
+After v0.6.2 is published to `main`, existing `dom` aliases that fetch
 `main/domestique.sh` receive its workflow and installer changes on their next invocation,
 without an alias change.
 For the covered completely removed Claude/Codex case, optionally preview with
@@ -92,7 +92,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.6.1's changes are included in remote
+A source checkout is optional; v0.6.2's changes are included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -656,6 +656,7 @@ All start with edited historical Claude roles and no Claude snapshot:
 
 | Existing Codex / Copilot | Claude paths in the index | Selector-less outcome |
 | --- | --- | --- |
+| Neither installed | Tracked | A completed `no-match` at both normal Claude role paths permits a replacement offer. Only validated frontmatter `model` and `effort` choices carry over. `APPLY` backs up `.claude/agents/implementer.md` and `.claude/agents/reviewer.md` beside the originals (0600) before replacing their content and installing the other providers. Return keeps all files as they were. |
 | No snapshot / normal | Tracked | Representative state layout. With no conflicting Codex native files in the fixture, preview creates Codex roles, retains the independent private Codex config and preserves the configured Copilot choices. |
 | No snapshot, **live Codex roles** / normal | Tracked | Proven edited Codex roles are proposed for adoption. If both exact-path searches complete with `no-match`, the installer can instead propose replacing both role bodies, backing up their complete original bytes first (0600, beside each role). No ancestor or merge is claimed. Only the displayed top-level TOML model/effort settings survive replacement. Keep these backups out of Git. |
 | Guest / normal | Tracked | Separate negative control: mixed persisted modes and missing Claude state. Refuses before approval without converting or untracking anything. |
@@ -800,6 +801,35 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.6.2 candidate checks and limits
+
+Installer SHA-256:
+`92d6f286b74d967e80787f01abc73fc35fc976f20ca851dfc47c9d288a65cf4a`.
+
+The control is a disposable normal Git project with two tracked, customized
+Claude roles, no recognized role ancestors and no Codex or Copilot install.
+On both plain default transports, v0.6.1 blocked both paths without writes.
+An earlier candidate also blocked valid punctuation in discarded metadata as
+`ambiguous YAML scalar`. The replacement check now reads identity and choices
+from a conservative flat frontmatter subset. Ordinary description punctuation
+and comma-separated tool names are not model choices. Neither those fields
+nor the old instructions are copied into the new role; its emitted discovery
+and role guards still undergo normal validation. In retained choices, a
+leading comma requires quotes: `model: ,local` or `effort: ,custom` blocks
+the whole plan without a token; `model: ",local"` is a string, not a syntax
+error. Accepting a string does not establish native model or effort support.
+
+| Candidate check | Observed |
+| --- | --- |
+| Saved script and script piped to Bash, no flags | No terminal or Return left the tree unchanged. One terminal `APPLY` installed all three providers, preserved the index and both roles' model/effort, and left two byte-exact 0600 backups. The historical pair had no confirmation marker. Exit `3` reported `INSTALLED — pending Save`; a second default run changed no bytes or modes and added no backups. |
+| Refusal controls | Duplicate, malformed or ambiguous frontmatter, wrong role name, invalid confirmation marker, executable, symlink and partial pair refused. Neither an unowned helper nor an unmatched command was swept into role replacement. Changing a role after review invalidated approval before publication. |
+| Existing normal Codex replacement and v0.6.1 upgrade | Saved and piped Codex replacement controls passed. A configured v0.6.1 install upgraded without reconciliation, retaining six model choices, pristine bases, host edits and index. Its second run was byte/mode stable. |
+
+The patch adds v0.6.2 to the two finite generation lists; it does not change
+the historical identities or installed role/helper emitters. These are focused
+offline checks, not the full upgrade matrix, a consumer migration, or native
+client/Save qualification.
 
 ### v0.6.1 candidate checks and limits
 
