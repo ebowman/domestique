@@ -2174,7 +2174,7 @@ class AllProviders(unittest.TestCase):
                         GIT_AUTHOR_DATE="2000-01-01T00:00:00Z",
                         GIT_COMMITTER_DATE="2000-01-01T00:00:00Z")
 
-    def mixed_legacy_fixture(self, name, *, copilot_guest=True):
+    def mixed_legacy_fixture(self, name, *, copilot_guest=True, codex_guest=True):
         """Disposable acceptance input; all provider content is public installer output."""
         self.isolate_ancestor_fixture()
         root = self.root(name)
@@ -2185,9 +2185,26 @@ class AllProviders(unittest.TestCase):
                 text=True, env=self.env)
 
         released = published("067569a331539883c326a5d221e0e5837efefddd")
-        for provider in ("codex", "copilot"):
-            mode = "--guest" if provider == "codex" or copilot_guest else "--no-guest"
-            self.run_dom(root, "--platform", provider, mode, script=released)
+        # A Copilot install can add an already-present Codex to its selection;
+        # install Copilot first when constructing different persisted modes.
+        modes = {"codex": codex_guest, "copilot": copilot_guest}
+        providers = ("codex", "copilot") if codex_guest == copilot_guest else ("copilot", "codex")
+        for provider in providers:
+            if modes[provider] is None:
+                continue  # This fixture starts with no snapshot for that provider.
+            mode = "--guest" if modes[provider] else "--no-guest"
+            choices = (["--model=copilot:implementer=fixture/copilot-local",
+                        "--model=copilot:reviewer=fixture/copilot-review"]
+                       if provider == "copilot" and codex_guest is None else [])
+            self.run_dom(root, "--platform", provider, mode, *choices, script=released)
+        for provider, guest in modes.items():
+            state = root / STATES[provider]
+            if guest is None:
+                self.assertFalse(state.exists())
+                continue
+            self.assertTrue((state / "manifest").is_file())
+            self.assertEqual((state / "mode").read_bytes() if (state / "mode").exists() else None,
+                             b"guest\n" if guest else None)
         self.run_dom(root, script=published("e12f0fc30bea68ac63d97d3c4b24bd0abdd1d305"))
         git = ["git", "-C", str(root), "-c", "core.hooksPath=/dev/null",
                "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
@@ -2874,6 +2891,342 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         for state in (*STATES.values(), ".agents/.domestique"):
             self.assertFalse((root / state / "mode").exists())
 
+    def add_codex_role_history(self, root, *, commit=True):
+        old = subprocess.check_output(["git", "show", "6158d35:domestique.sh"],
+                                      cwd=SOURCE.parent, env=self.env)
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+        for role in ("implementer", "reviewer"):
+            path = root / ROLES[1].replace("implementer", role)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            anchor = f"emit_codex_{role}() {{ cat <<'DOM_EOF'\n".encode()
+            path.write_bytes(old.split(anchor, 1)[1].split(b"DOM_EOF\n", 1)[0])
+        if commit:
+            subprocess.run([*git, "add", "--", ".codex/agents"], cwd=root, env=self.env, check=True)
+            subprocess.run([*git, "commit", "-qm", "Historical synthetic Codex pair", "--only", "--", ".codex/agents"],
+                           cwd=root, env=self.env, check=True)
+        for role in ("implementer", "reviewer"):
+            path = root / ROLES[1].replace("implementer", role)
+            raw, count = re.subn(rb'(?m)^model = ".*"$', f'model = "local-{role}"'.encode(), path.read_bytes())
+            self.assertEqual(count, 1)
+            path.write_bytes(raw)
+
+    def qualify_mixed_default(self, transport, *, guest=True, missing_codex=False, live_codex=False):
+        root = self.mixed_legacy_fixture("mixed-" + transport, copilot_guest=guest,
+                                         codex_guest=None if missing_codex else guest)
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+        def run_git(*args):
+            return subprocess.check_output([*git, *args], cwd=root, env=self.env)
+        # The tracked version of this layout must refuse. Construct its eligible
+        # sibling: the paths exist in HEAD ancestry but are no longer in the index.
+        # Synthetic fixture preparation, NOT a recommended migration step.
+        if guest:
+            run_git("rm", "-qr", "--cached", "--", ".claude", "CLAUDE.md")
+            run_git("commit", "-qm", "Cease tracking synthetic legacy projection")
+        else:
+            run_git("ls-files", "--error-unmatch", "--", ROLES[0], ".claude/agents/reviewer.md", "CLAUDE.md")
+        unrelated = root / "unrelated.txt"
+        unrelated.write_bytes(b"already staged\n")
+        run_git("add", "--", "unrelated.txt")
+        unrelated.write_bytes(b"unstaged second edit\n")
+        reviewer = root / ".claude/agents/reviewer.md"
+        reviewer.write_bytes(reviewer.read_bytes().replace(b"model: gpt-6-astra\n",
+                                                           b"model: other-custom-model\n"))
+        exclude = root / ".git/info/exclude"
+        if guest:
+            marker = b"# END domestique"
+            existing = exclude.read_bytes()
+            self.assertEqual(existing.count(marker), 1)
+            exclude.write_bytes(existing.replace(marker, b"obsolete-synthetic-guest-entry\n" + marker))
+        with exclude.open("ab") as stream:
+            stream.write(b"\n# host-owned ignore rule\nunrelated-local-only\n")
+        if missing_codex:
+            self.assertEqual(self.installed(root), {"copilot"})
+            self.assertFalse((root / STATES["copilot"] / "mode").exists())
+            for role in ("implementer", "reviewer"):
+                self.assertFalse((root / ROLES[1].replace("implementer", role)).exists())
+            if live_codex:
+                self.add_codex_role_history(root)
+                run_git("config", "--local", "core.repositoryFormatVersion", "1")
+                run_git("config", "--local", "extensions.worktreeConfig", "true")
+                self.assertFalse(os.path.lexists(root / ".git/config.worktree"))
+                self.extend_sparse_history(root)
+            # Absence of installer state does not imply absence of user files.
+            config = root / ".codex/config.toml"
+            config.parent.mkdir(exist_ok=True)
+            config.write_bytes(b'model = "synthetic-private-host-choice"\n')
+            config.chmod(0o600)
+            with exclude.open("ab") as stream:
+                stream.write(b".codex/config.toml\n")
+        def provider_choices():
+            result = {}
+            for provider, template in zip(("codex", "copilot"), ROLES[1:]):
+                if missing_codex and provider == "codex":
+                    continue
+                parse = self.model_library(provider)["parse"]
+                for role in ("implementer", "reviewer"):
+                    path = root / template.replace("implementer", role)
+                    fields = parse(path.read_bytes(), role)[1]
+                    result[provider, role] = (fields.get("model"), fields.get("model_reasoning_effort"))
+            return result
+        original_choices = provider_choices()
+        if missing_codex:
+            self.assertEqual(original_choices, {("copilot", "implementer"): ("fixture/copilot-local", None),
+                                                ("copilot", "reviewer"): ("fixture/copilot-review", None)})
+        before = snapshot(root)
+        def piped_preview():
+            run = self.run_dom(root, "--dry-run", ok=False)
+            self.assertEqual(run.returncode, 3, run.stderr)
+            self.assertNotIn("Reconciliation plan: sha256:", run.stdout)
+            return run
+        if transport == "file":
+            token, saved = self.file_review(root, SCRIPT)
+            self.assertEqual(before, snapshot(root))
+            piped = piped_preview()
+        else:
+            piped = piped_preview()
+            self.assertEqual(before, snapshot(root))
+            token, saved = self.file_review(root, SCRIPT)
+        self.assertEqual(before, snapshot(root))
+        # Both transports inspect the very same index, history and guest markers.
+        # The receipt instructions may differ, not the reviewed bytes/choices.
+        end = "Historical model pairs require native review/Save after publication; not native-ready."
+        def reviewed(run):
+            self.assertIn(end, run.stdout, run.stderr)
+            start = "Complete publication (afterimage SHA-256; backup suffix/time allocated at publication):\n"
+            self.assertIn(start, run.stdout, run.stderr)
+            return ([line for line in run.stdout.splitlines() if line.startswith(
+                ("Selected:", "[reconciliation]", "    model selection:"))],
+                    run.stdout.split(start, 1)[1].split(end, 1)[0])
+        self.assertEqual(reviewed(piped), reviewed(saved))
+        preview = saved if transport == "file" else piped
+        other_mode = "guest" if guest else "normal"
+        for provider, mode in (("claude", "normal"), ("codex", other_mode), ("copilot", other_mode)):
+            self.assertIn(f"[reconciliation] {provider} ({mode})", preview.stdout)
+        self.assertIn("Complete publication", preview.stdout)
+        if missing_codex:
+            for role in ("implementer", "reviewer"):
+                action = "proposed adoption" if live_codex else "create"
+                self.assertIn(ROLES[1].replace("implementer", role) + ": " + action + ";", preview.stdout)
+                if live_codex:
+                    self.assertIn(f'"model": "local-{role}"', preview.stdout)
+            for run in (saved, piped):
+                self.assertNotIn("synthetic-private-host-choice", run.stdout + run.stderr)
+        choices = {ROLES[0]: "gpt-6-astra", ".claude/agents/reviewer.md": "other-custom-model"}
+        for rel, choice in choices.items():
+            self.assertIn(rel + ": proposed adoption", preview.stdout)
+            self.assertIn('"model": "' + choice + '"', preview.stdout)
+        if transport == "file":
+            applied = run_stdin(["bash", str(self.work / "saved-installer.sh"), "--apply-file",
+                                 "sha256:" + token], cwd=root, env=self.env, input="",
+                                capture_output=True, text=True, timeout=1200)
+            self.assertEqual(applied.returncode, 3, applied.stderr)
+            report = applied.stdout
+        else:
+            report = self.tty_review(root, timeout=1800)(b"APPLY").decode()
+            prompt = report.split("Approve complete reconciliation ", 1)[1].split("Type APPLY", 1)[0]
+            for rel, choice in choices.items():
+                self.assertRegex(prompt, re.escape(rel) + r": proposed adoption; choices .*" + choice)
+        self.assertEqual(report.count("Approved reconciliation published"), 1,
+                         applied.stderr if transport == "file" else report)
+        for rel, choice in choices.items():
+            role = (root / rel).read_bytes()
+            self.assertIn(f"\nmodel: {choice}\n".encode(), role)
+            self.assertNotIn(b"# domestique-model-setup:", role)
+        self.assertEqual(before[".git/index"], snapshot(root)[".git/index"])
+        self.assertEqual(run_git("show", ":unrelated.txt"), b"already staged\n")
+        self.assertEqual(unrelated.read_bytes(), b"unstaged second edit\n")
+        self.assertIn(b"# host-owned ignore rule\nunrelated-local-only\n", exclude.read_bytes())
+        if guest:
+            self.assertNotIn(b"obsolete-synthetic-guest-entry", exclude.read_bytes())
+        self.assertEqual(provider_choices(), original_choices)
+        if missing_codex:
+            self.assertEqual(snapshot(root)[".codex/config.toml"], before[".codex/config.toml"])
+            run_git("check-ignore", "-q", "--", ".codex/config.toml")
+            self.assertNotIn("synthetic-private-host-choice", report)
+            lib = self.model_library("codex")
+            for role, (model, effort) in lib["installer_defaults"]().items():
+                path = root / ROLES[1].replace("implementer", role)
+                fields = lib["parse"](path.read_bytes(), role)[1]
+                self.assertEqual((fields.get("model"), fields.get("model_reasoning_effort")),
+                                 (f"local-{role}" if live_codex else model, effort))
+        for provider, role in zip(("codex", "copilot"), ROLES[1:]):
+            state = STATES[provider]
+            marker = root / state / "mode"
+            self.assertEqual(marker.read_bytes() if marker.exists() else None, b"guest\n" if guest else None)
+            ignored = subprocess.run([*git, "check-ignore", "-q", "--", role], cwd=root, env=self.env)
+            self.assertEqual(ignored.returncode, 0 if guest else 1)
+            self.assertTrue((root / state / "manifest").is_file())
+        policy = (root / "CLAUDE.md").read_bytes()
+        self.assertTrue(policy.startswith(b"Synthetic host introduction."))
+        self.assertTrue(policy.endswith(b"Synthetic host footer."))
+        after = byte_snapshot(root)
+        rerun = self.run_dom(root, ok=False)
+        self.assertEqual(rerun.returncode, 3)
+        self.assertIn("review/Save required", rerun.stderr)
+        self.assertNotIn("[reconciliation]", rerun.stdout)
+        self.assertEqual(after, byte_snapshot(root))
+
+    def test_mixed_default_approved_saved_file(self):
+        self.qualify_mixed_default("file")
+
+    def test_mixed_default_approved_stdin(self):
+        self.qualify_mixed_default("stdin")
+
+    def test_tracked_default_normal_approved_saved_file(self):
+        self.qualify_mixed_default("file", guest=False)
+
+    def test_tracked_default_normal_approved_stdin(self):
+        self.qualify_mixed_default("stdin", guest=False)
+
+    def test_tracked_default_only_copilot_snapshot_saved_file(self):
+        self.qualify_mixed_default("file", guest=False, missing_codex=True)
+
+    def test_tracked_default_only_copilot_snapshot_stdin(self):
+        self.qualify_mixed_default("stdin", guest=False, missing_codex=True)
+
+    def test_worktree_config_main_checkout_both_live_pairs_file(self):
+        self.qualify_mixed_default("file", guest=False, missing_codex=True, live_codex=True)
+
+    def test_worktree_config_main_checkout_both_live_pairs_stdin(self):
+        self.qualify_mixed_default("stdin", guest=False, missing_codex=True, live_codex=True)
+
+    def test_tracked_default_codex_guest_copilot_normal_refuses_without_conversion(self):
+        root = self.mixed_legacy_fixture("mixed-visibility", copilot_guest=False)
+        self.assertFalse((root / STATES["claude"]).exists())
+        self.assertEqual((root / STATES["codex"] / "mode").read_bytes(), b"guest\n")
+        self.assertTrue((root / STATES["copilot"] / "manifest").is_file())
+        self.assertFalse((root / STATES["copilot"] / "mode").exists())
+        unrelated = root / "unrelated.txt"
+        unrelated.write_bytes(b"already staged\n")
+        subprocess.run(["git", "add", "--", unrelated.name], cwd=root, env=self.env, check=True)
+        unrelated.write_bytes(b"unstaged edit\n")
+        subprocess.run(["git", "ls-files", "--error-unmatch", "--", ROLES[0], ".claude/agents/reviewer.md"],
+                       cwd=root, env=self.env, stdout=subprocess.DEVNULL, check=True)
+        before = snapshot(root)
+        _, saved = self.file_review(root, SCRIPT, eligible=False)
+        piped = self.run_dom(root, "--dry-run", ok=False)
+        for run in (saved, piped):
+            self.assertIn("mixed-mode ambiguity with missing provider", run.stderr)
+            self.assertNotIn("Reconciliation plan: sha256:", run.stdout)
+        self.assertEqual(before, snapshot(root))
+
+    def test_mixed_default_inconclusive_history_does_not_select_guest(self):
+        root = self.mixed_legacy_fixture("unknown-mode")
+        self.extend_sparse_history(root, path=ROLES[0])
+        before = snapshot(root)
+        _, saved = self.file_review(root, SCRIPT, eligible=False)
+        piped = self.run_dom(root, "--dry-run", ok=False)
+        for run in (saved, piped):
+            self.assertIn("Claude Code (unknown), Codex (guest), GitHub Copilot (guest)", run.stdout)
+            self.assertIn("cannot determine historical mode", run.stderr)
+            self.assertIn(ROLES[0] + ": limit", run.stderr)
+            self.assertIn("more than 32 distinct exact-path blobs", run.stderr)
+            self.assertNotIn("Reconciliation plan: sha256:", run.stdout)
+        self.assertEqual(before, snapshot(root))
+
+    def extend_sparse_history(self, root, *, path="unrelated-history/activity"):
+        # Distinct root trees, mostly sharing the role subtree. Do not stage or
+        # refresh the worktree/index; restore the original tree at the final tip.
+        git = ["git", "-c", "core.hooksPath=/dev/null"]
+        tip = subprocess.check_output([*git, "rev-parse", "HEAD"], cwd=root, env=self.env).strip()
+        branch = b"refs/heads/bounded-history"
+        commit = b"commit " + branch + b"\ncommitter Fixture <fixture@example.invalid> 1 +0000\ndata 0\n"
+        history = bytearray()
+        for i in range(160):
+            history.extend(commit + (b"from " + tip + b"\n" if i == 0 else b"") +
+                           f"M 100644 inline {path}\ndata 4\n{i:04d}\n\n".encode())
+        if path == ROLES[0]:
+            original = subprocess.check_output([*git, "rev-parse", "HEAD:" + path], cwd=root, env=self.env).strip()
+            restore = b"M 100644 " + original + b" " + path.encode()
+        else:
+            restore = b"D " + path.encode()
+        subprocess.run([*git, "fast-import", "--quiet"], cwd=root, env=self.env, check=True,
+                       input=history + commit + restore + b"\n\ndone\n")
+        subprocess.run([*git, "symbolic-ref", "HEAD", branch], cwd=root, env=self.env, check=True)
+
+    def test_main_checkout_unproven_codex_then_complete_sparse_history(self):
+        root = self.mixed_legacy_fixture("history-limits", codex_guest=None, copilot_guest=False)
+        subprocess.run(["git", "config", "--local", "extensions.worktreeConfig", "true"],
+                       cwd=root, env=self.env, check=True)
+        self.add_codex_role_history(root, commit=False)
+        before = snapshot(root)
+        _, review = self.file_review(root, SCRIPT, eligible=False)
+        self.assertIn(ROLES[0] + ": proposed adoption", review.stdout)
+        for role in ("implementer", "reviewer"):
+            self.assertIn(ROLES[1].replace("implementer", role) + ": blocked: no-match", review.stdout)
+        self.assertEqual(before, snapshot(root))
+        self.add_codex_role_history(root)
+        self.extend_sparse_history(root)
+        before = snapshot(root)
+        _, review = self.file_review(root, SCRIPT)
+        for role in ("implementer", "reviewer"):
+            for template in ROLES[:2]:
+                self.assertIn(template.replace("implementer", role) + ": proposed adoption", review.stdout)
+        self.assertEqual(before, snapshot(root))
+
+    def test_complete_no_match_reports_unknown_in_notice_and_review_inventory(self):
+        root = self.mixed_legacy_fixture("no-pristine-ancestor")
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture",
+               "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false"]
+        def obj(*args, data=None):
+            return subprocess.check_output([*git, *args], input=data, cwd=root, env=self.env).strip()
+        # Make only the already-customized role tree reachable. Keep the live
+        # files, index and all discarded ancestry's objects untouched.
+        roles = obj("rev-parse", "HEAD:.claude/agents")
+        claude = obj("mktree", data=b"040000 tree " + roles + b"\tagents\n")
+        tree = obj("mktree", data=b"040000 tree " + claude + b"\t.claude\n")
+        tip = obj("commit-tree", tree, "-m", "Local customized roles only")
+        obj("update-ref", "HEAD", tip)
+        self.assertEqual(obj("rev-list", "--count", "HEAD"), b"1")
+        script = self.inspect_review()
+        before = snapshot(root)
+        _, saved = self.file_review(root, script, eligible=False)
+        self.assertEqual(before, snapshot(root))
+        piped = self.run_dom(root, "--dry-run", script=script, ok=False)
+        for result in (saved, piped):
+            self.assertIn("Claude Code (unknown), Codex (guest), GitHub Copilot (guest)", result.stdout)
+            self.assertIn(ROLES[0] + ": no-match", result.stderr)
+            self.assertNotIn("Reconciliation plan: sha256:", result.stdout)
+            plan = json.loads(re.search(r"^TEST_PLAN:(.+)$", result.stdout, re.M)[1])
+            self.assertEqual(plan["applicability"]["claude"]["mode"], "unknown")
+            self.assertEqual(next(p["mode"] for p in plan["providers"] if p["provider"] == "claude"), "unknown")
+            self.assertIn(ROLES[0] + ": no-match", plan["blockers"]["review-blocked-claude"])
+            self.assertFalse(plan["reviewable"])
+            self.assertEqual(plan["writes"], [])
+        self.assertEqual(before, snapshot(root))
+
+    def test_darwin_ancestor_plumbing_uses_only_system_launcher(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("system-git")
+        resolve = self.ancestor_resolver()
+        real_popen = subprocess.Popen
+        def system_git(argv, **kwargs):
+            self.assertEqual(argv[0], "/usr/bin/git")
+            self.assertEqual(kwargs["env"]["GIT_NO_LAZY_FETCH"], "1")
+            self.assertEqual(kwargs["env"]["GIT_ALLOW_PROTOCOL"], "")
+            self.assertEqual(kwargs["env"]["GIT_GRAFT_FILE"], os.devnull)
+            # Also exercise the Darwin dispatch contract on other test hosts.
+            return real_popen(["git", *argv[1:]], **kwargs)
+        with patch.object(sys, "platform", "darwin"), patch.object(subprocess, "Popen", system_git):
+            self.assertEqual(resolve(root, "claude", ROLES[0], "normal")["status"], "candidate")
+
+    def test_default_review_blocks_role_body_conflict_and_unproven_command(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("competing-body")
+        role = root / ".claude/agents/reviewer.md"
+        header, body = role.read_bytes().split(b"\n---\n", 1)
+        self.assertIn(b"You are a reviewer.", body)
+        role.write_bytes(header + b"\n---\n\nLocally rewritten reviewer body.\n")
+        (root / ".claude/commands/goal.md").write_text("Unproven local command.\n")
+        before = snapshot(root)
+        _, review = self.file_review(root, SCRIPT, eligible=False)
+        self.assertIn(".claude/agents/reviewer.md: blocked: preserving merge conflict", review.stdout)
+        self.assertIn(".claude/commands/goal.md: blocked: no-match", review.stdout)
+        self.assertNotIn("Locally rewritten reviewer body", review.stdout + review.stderr)
+        self.assertEqual(before, snapshot(root))
+
     def assert_approved_creation_modes(self, mask):
         self.isolate_ancestor_fixture()
         root, policy, _ = self.presnapshot_policy_fixture("approved-modes")
@@ -3009,11 +3362,7 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                         lib["reviewed_effects"](plan, self.work, "")
             path.unlink()
 
-    def tty_review_fixture(self):
-        self.isolate_ancestor_fixture()
-        root, _, _ = self.presnapshot_policy_fixture("tty-apply")
-        role = root / ROLES[0]
-        role.write_bytes(role.read_bytes() + b"\nSynthetic extension.\n")
+    def tty_review(self, root, *flags, timeout=600):
         saved = self.work / "fixture-installer.sh"
         saved.write_text(SCRIPT)
         def terminal(reply, change=None):
@@ -3022,12 +3371,13 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                 os.chdir(root)
                 # Independent script source, never the controlling terminal.
                 with saved.open("rb") as source:
-                    os.dup2(source.fileno(), 0)
-                os.execve("/bin/bash", ["bash", "-s", "--", "--platform=claude"], self.env)
+                    feeder = subprocess.Popen(["/bin/cat"], stdin=source, stdout=subprocess.PIPE)
+                    os.dup2(feeder.stdout.fileno(), 0)
+                os.execve("/bin/bash", ["bash", "-s", "--", *flags], self.env)
             output = bytearray()
             try:
                 answered = False
-                deadline = time.monotonic() + 600
+                deadline = time.monotonic() + timeout
                 while True:
                     if not select.select([master], [], [], max(0, deadline - time.monotonic()))[0]:
                         os.kill(pid, signal.SIGKILL)
@@ -3050,7 +3400,14 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             self.assertEqual(os.waitstatus_to_exitcode(status), 3, output[-1500:])
             self.assertEqual(output.count(b"Type APPLY"), 1, output[-1500:])
             return output
-        return root, role, terminal
+        return terminal
+
+    def tty_review_fixture(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("tty-apply")
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes() + b"\nSynthetic extension.\n")
+        return root, role, self.tty_review(root, "--platform=claude")
 
     def test_review_tty_cancel_stale_and_unsafe(self):
         root, role, terminal = self.tty_review_fixture()
@@ -3097,6 +3454,298 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         self.assertEqual(evidence(), ("candidate", actual))
         run("symbolic-ref", "HEAD", "refs/heads/unborn")
         self.assertEqual(evidence(), ("unknown-history", None))
+
+    def test_deep_deleted_reintroduced_path_and_hidden_merge_parent(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("deep-merge")
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+        def obj(*args, data=None):
+            return subprocess.check_output([*git, *args], cwd=root, env=self.env, input=data).strip()
+        rel = ".claude/agents/reviewer.md"
+        path = root / rel
+        first = obj("rev-parse", "HEAD")
+        base = path.read_bytes()
+        path.unlink()
+        obj("commit", "-qam", "Delete role")
+        self.extend_sparse_history(root)
+        path.write_bytes(base.replace(b"model: opus\n", b"model: independent-local-choice\n"))
+        obj("add", "--", rel)
+        obj("commit", "-qm", "Reintroduce customized role")
+        main, tree = obj("rev-parse", "HEAD"), obj("rev-parse", "HEAD^{tree}")
+        self.assertGreater(int(obj("rev-list", "--count", "HEAD")), 128)
+        resolve = self.ancestor_resolver()
+        def evidence():
+            before = snapshot(root)
+            answer = resolve(root, "claude", rel, "normal")
+            self.assertEqual(before, snapshot(root))
+            return answer
+        self.assertEqual(evidence()["proposal"]["commit"], first.decode())
+
+        # Merge a second parent's history without using its tree. A default
+        # path-limited log simplifies this merge to the TREESAME first parent.
+        def side_merge(mode, oid, name=b"reviewer.md", intermediate=False):
+            entry = mode + b" blob " + oid
+            agents = obj("mktree", data=entry + b"\t" + name + b"\n")
+            claude = obj("mktree", data=(entry if intermediate else b"040000 tree " + agents) + b"\tagents\n")
+            side_tree = obj("mktree", data=b"040000 tree " + claude + b"\t.claude\n")
+            side = obj("commit-tree", side_tree, "-p", first, "-m", "Hidden side history")
+            merge = obj("commit-tree", tree, "-p", main, "-p", side, "-m", "Keep main tree")
+            obj("update-ref", "HEAD", merge)
+            self.assertNotIn(side, obj("rev-list", "HEAD", "--", rel).splitlines())
+        other = self.root("second-original")
+        old = subprocess.check_output(["git", "show", "57b7d16:domestique.sh"], cwd=SOURCE.parent, env=self.env)
+        self.run_dom(other, script=old.decode())
+        second = obj("hash-object", "-w", "--stdin", data=(other / rel).read_bytes())
+        side_merge(b"100644", second)
+        self.assertEqual(evidence()["status"], "ambiguous")
+        side_merge(b"120000", second)
+        self.assertEqual(evidence()["status"], "unsafe")
+        side_merge(b"120000", second, intermediate=True)
+        self.assertEqual(evidence()["status"], "unsafe")
+        side_merge(b"100644", second, b"other-name.md")  # No rename following.
+        self.assertEqual(evidence()["status"], "candidate")
+        side_merge(b"100644", second)
+        (root / ".git/objects" / second[:2].decode() / second[2:].decode()).unlink()
+        self.assertEqual(evidence()["status"], "unknown-history")
+
+    def test_deep_unrelated_head_change_stales_file_approval(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("deep-stale")
+        self.extend_sparse_history(root)
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes().replace(b"model: sonnet\n", b"model: local\n"))
+        token, _ = self.file_review(root, SCRIPT, "--platform=claude")
+        # Change only history. Porcelain `commit` may schedule background Git
+        # maintenance, which would race the no-write filesystem comparison.
+        git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+               "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+        tip = subprocess.check_output([*git, "commit-tree", "HEAD^{tree}", "-p", "HEAD",
+                                       "-m", "Same tree; different HEAD"], cwd=root, env=self.env).strip()
+        subprocess.run([*git, "update-ref", "HEAD", tip], cwd=root, env=self.env, check=True)
+        before = snapshot(root)
+        result = run_stdin(["bash", str(self.work / "saved-installer.sh"), "--apply-file", "sha256:" + token,
+                            "--platform=claude"], input="", cwd=root, env=self.env, text=True,
+                           capture_output=True, timeout=1200)
+        self.assertIn("stale or mismatched approval", result.stderr)
+        self.assertNotIn("Approved reconciliation published", result.stdout)
+        after = snapshot(root)
+        self.assertEqual([], sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k)))
+
+    def test_worktree_config_only_inert_physical_metadata_is_evidence(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("worktree-config")
+        resolve = self.ancestor_resolver()
+        config, override = (root / ".git" / leaf for leaf in ("config", "config.worktree"))
+        original = config.read_bytes()
+        extension = b"\n[extensions]\n\tworktreeConfig = true\n"
+        config.write_bytes(original + extension)
+        def read():
+            return resolve(root, "claude", ROLES[0], "normal")
+        first = read()
+        self.assertEqual(first["status"], "candidate")
+        self.assertIn("config.worktree", first["git_config"]["absent"])
+        self.assertEqual(first["git_config"]["config"][-1], hashlib.sha256(config.read_bytes()).hexdigest())
+        for form in ("empty", "override", "symlink", "dangling", "directory"):
+            with self.subTest(form=form):
+                if form == "directory":
+                    override.mkdir()
+                elif form in ("symlink", "dangling"):
+                    override.symlink_to(config if form == "symlink" else "missing")
+                else:
+                    override.write_bytes(b"" if form == "empty" else b"[core]\n\tfilemode = false\n")
+                with patch.object(subprocess, "Popen", side_effect=AssertionError("must refuse before Git")):
+                    self.assertEqual(read()["status"], "unknown-history")
+                if form == "directory":
+                    override.rmdir()
+                else:
+                    override.unlink()
+        for extra in (b"[extensions]\nunknown = true\n", extension, b"[include]\npath = elsewhere\n"):
+            config.write_bytes(original + extension + extra)
+            self.assertEqual(read()["status"], "unknown-history")
+        config.write_bytes(original + extension.replace(b"true", b"not-a-boolean"))
+        self.assertEqual(read()["status"], "unknown-history")
+        config.write_bytes(original + extension)
+        commondir = root / ".git/commondir"
+        commondir.write_text(".\n")
+        self.assertEqual(read()["status"], "unknown-history")
+        commondir.unlink()
+        linked = self.work / "linked-checkout"
+        subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "worktree", "add", "--quiet", "--detach",
+                        str(linked), "HEAD"], cwd=root, env=self.env, check=True)
+        self.assertTrue((linked / ".git").is_file())
+        with patch.object(subprocess, "Popen", side_effect=AssertionError("must reject Git indirection")):
+            self.assertEqual(resolve(linked, "claude", ROLES[0], "normal")["status"], "unsafe")
+
+        class Raced(subprocess.Popen):
+            def __exit__(self, *args):
+                super().__exit__(*args)
+                override.touch()
+                override.unlink()  # No override remains at recheck: invalidate the earlier observation.
+        with patch.object(subprocess, "Popen", Raced):
+            self.assertEqual(read()["status"], "unknown-history")
+
+    def test_graft_source_is_pinned_and_transient_authority_refuses(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("graft-source")
+        self.extend_sparse_history(root)
+        resolve = self.ancestor_resolver()
+        def probe():
+            return resolve(root, "claude", ROLES[0], "normal")
+        tip = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, env=self.env)
+        graft = root / ".git/info/grafts"
+        first = probe()
+        self.assertEqual(first["status"], "candidate")
+        self.assertIn("info/grafts", first["git_config"]["absent"])
+        graft.symlink_to("missing")
+        self.assertEqual(probe()["status"], "unknown-history")
+        graft.unlink()
+        observed, tc = [], self
+        expected = subprocess.check_output(["git", "rev-list", "--no-commit-header", "--format=%H %T",
+                                            tip.strip(), "--"], cwd=root, env=self.env)
+        stream, walked, real_read = None, bytearray(), os.read
+        class DuringWalk(subprocess.Popen):
+            def __init__(self, argv, **kw):
+                nonlocal stream
+                self.walk = "rev-list" in argv
+                if self.walk:
+                    tc.assertEqual(kw["env"]["GIT_GRAFT_FILE"], os.devnull)
+                    tc.assertEqual(kw["env"]["GIT_NO_REPLACE_OBJECTS"], "1")
+                    graft.write_bytes(tip)
+                super().__init__(argv, **kw)
+                if self.walk:
+                    stream = self.stdout.fileno()
+            def __exit__(self, *args):
+                nonlocal stream
+                super().__exit__(*args)
+                if self.walk:
+                    stream = None
+                    observed.append(self.returncode)
+                    graft.unlink()  # Both HEAD and the final graft pathname are unchanged.
+        def capture(fd, n):
+            chunk = real_read(fd, n)
+            if fd == stream:
+                walked.extend(chunk)
+            return chunk
+        with patch.object(subprocess, "Popen", DuringWalk), patch.object(os, "read", capture):
+            answer = probe()
+        self.assertEqual(observed, [0])
+        self.assertEqual(walked, expected)  # The live child did not use the transient graft.
+        self.assertEqual((answer["status"], answer["proposal"]), ("unknown-history", None))
+        final = probe()
+        self.assertEqual(final["proposal"], first["proposal"])
+        self.assertNotEqual(final["git_config"]["graft_parent"], first["git_config"]["graft_parent"])
+
+    def test_history_config_expanded_output_is_bounded(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("output-budget")
+        config = root / ".git/config"
+        with config.open("ab") as f:
+            f.write(b'\n[custom "' + b"x" * 256 + b'"]\n' + b"a = 1\n" * 512)
+        self.assertLess(config.stat().st_size, 65536)
+        resolve = self.ancestor_resolver()
+        children, received = [], 0
+        real_popen, real_read = subprocess.Popen, os.read
+        def spawn(*args, **kw):
+            proc = real_popen(*args, **kw)
+            children.append(proc)
+            return proc
+        def counted(fd, n):
+            nonlocal received
+            data = real_read(fd, n)
+            if children and fd == children[-1].stdout.fileno():
+                received += len(data)
+            return data
+        before = snapshot(root)
+        with patch.object(subprocess, "Popen", spawn), patch.object(os, "read", counted):
+            answer = resolve(root, "claude", ROLES[0], "normal")
+        self.assertEqual((answer["status"], answer["proposal"]), ("limit", None))
+        self.assertIn("output exceeds 65536", answer["reason"])
+        self.assertEqual(received, 65537)
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].returncode)
+        self.assertTrue(children[0].stdout.closed and children[0].stdin.closed)
+        def expired(readers, writers, errors, timeout):
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, 20)
+            return [], [], []
+        with patch.object(subprocess, "Popen", spawn), patch.object(select, "select", expired):
+            expired_answer = resolve(root, "claude", ROLES[0], "normal")
+        self.assertEqual((expired_answer["status"], expired_answer["proposal"]), ("limit", None))
+        self.assertIn("deadline", expired_answer["reason"])
+        self.assertEqual(len(children), 2)
+        self.assertIsNotNone(children[1].returncode)
+        self.assertTrue(children[1].stdout.closed and children[1].stdin.closed)
+        self.assertEqual(before, snapshot(root))
+
+    def test_history_complete_commit_inventory_boundary(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("inventory-boundary")
+        git = ["git", "-c", "core.hooksPath=/dev/null"]
+        tip = subprocess.check_output([*git, "rev-parse", "HEAD"], cwd=root, env=self.env).strip()
+        branch = b"refs/heads/commit-boundary"
+        entry = b"commit " + branch + b"\ncommitter Fixture <fixture@example.invalid> 1 +0000\ndata 0\n"
+        def extend(start, n):
+            subprocess.run([*git, "fast-import", "--quiet"], cwd=root, env=self.env, check=True,
+                           input=entry + b"from " + start + b"\n\n" + (entry + b"\n") * (n - 1) + b"done\n")
+        extend(tip, 65535)
+        subprocess.run([*git, "symbolic-ref", "HEAD", branch], cwd=root, env=self.env, check=True)
+        resolve = self.ancestor_resolver()
+        self.assertEqual(resolve(root, "claude", ROLES[0], "normal")["status"], "candidate")
+        extend(subprocess.check_output([*git, "rev-parse", "HEAD"], cwd=root, env=self.env).strip(), 1)
+        excess = resolve(root, "claude", ROLES[0], "normal")
+        self.assertEqual((excess["status"], excess["proposal"]), ("limit", None))
+        self.assertIn("65536", excess["reason"])
+
+    def test_file_approval_rechecks_main_config_and_late_override(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("late-override")
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes().replace(b"model: sonnet\n", b"model: custom\n"))
+        config = root / ".git/config"
+        with config.open("ab") as stream:
+            stream.write(b"\n[extensions]\nworktreeConfig = true\n")
+        anchor = "    # Backups first; no existing backup may be overwritten"
+        self.assertEqual(SCRIPT.count(anchor), 1)
+        script = SCRIPT.replace(anchor, '    (root / ".git/config.worktree").symlink_to("missing")\n' + anchor)
+        flags = ("--platform=claude", "--no-guest")
+        def apply(token):
+            return run_stdin(["bash", str(self.work / "saved-installer.sh"), "--apply-file", "sha256:" + token,
+                              *flags], cwd=root, env=self.env, input="", capture_output=True, text=True, timeout=1200)
+        token, _ = self.file_review(root, script, *flags)
+        with config.open("ab") as stream:
+            stream.write(b"# new configuration revision\n")
+        before = snapshot(root)
+        stale = apply(token)
+        self.assertIn("stale or mismatched approval", stale.stderr)
+        self.assertEqual(before, snapshot(root))
+        token, _ = self.file_review(root, script, *flags)
+        before = byte_snapshot(root)
+        refused = apply(token)
+        self.assertNotIn("Approved reconciliation published", refused.stdout)
+        self.assertIn("unsupported Git metadata: config.worktree", refused.stderr)
+        self.assertIn("Completed publications: []", refused.stderr)
+        after = byte_snapshot(root)
+        self.assertEqual(after.pop(".git/config.worktree")[1], "missing")
+        self.assertEqual(before, after)
+
+    def test_file_approval_rechecks_late_graft_directory_change(self):
+        self.isolate_ancestor_fixture()
+        root, _, _ = self.presnapshot_policy_fixture("late-graft")
+        role = root / ROLES[0]
+        role.write_bytes(role.read_bytes().replace(b"model: sonnet\n", b"model: local\n"))
+        anchor = "    # Backups first; no existing backup may be overwritten"
+        self.assertEqual(SCRIPT.count(anchor), 1)
+        script = SCRIPT.replace(anchor, '    graft = root / ".git/info/grafts"\n'
+                                        '    graft.touch()\n    graft.unlink()\n' + anchor)
+        flags = ("--platform=claude", "--no-guest")
+        token, _ = self.file_review(root, script, *flags)
+        before = byte_snapshot(root)
+        result = run_stdin(["bash", str(self.work / "saved-installer.sh"), "--apply-file", "sha256:" + token,
+                            *flags], cwd=root, env=self.env, input="", capture_output=True, text=True, timeout=1200)
+        self.assertIn("stale Git configuration evidence", result.stderr)
+        self.assertIn("Completed publications: []", result.stderr)
+        self.assertEqual(before, byte_snapshot(root))
 
     def test_native_ancestor_negative_evidence(self):
         self.isolate_ancestor_fixture()

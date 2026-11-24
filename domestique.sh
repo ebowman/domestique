@@ -6274,8 +6274,53 @@ model_pair_managed() {
 emit_installer_inventory_library() {
   emit_historical_identity_library
   cat <<'PY'
+class UnsupportedHistoryConfig(ValueError):
+    pass
+
+def history_config(root):
+    """Bind physical main-checkout config and absence of alternate config inputs."""
+    from types import SimpleNamespace
+    db = root / ".git"
+    directory = db.lstat()
+    need(stat.S_ISDIR(directory.st_mode), "nonlocal Git directory")
+    absent = ("commondir", "shallow", "config.worktree", "info/grafts")
+    def graft_parent():
+        try:
+            parent = (db / "info").lstat()
+        except FileNotFoundError:
+            return None
+        need(stat.S_ISDIR(parent.st_mode), "nonlocal Git info directory")
+        return [[parent.st_dev, parent.st_ino, parent.st_mode, parent.st_uid], parent.st_ctime_ns]
+    info_dir = graft_parent()
+    def require_absent():
+        for leaf in absent:
+            try:
+                (db / leaf).lstat()  # A dangling symlink is present, not absent.
+            except FileNotFoundError:
+                continue
+            raise UnsupportedHistoryConfig("unsupported Git metadata: " + leaf)
+    require_absent()
+    rel = ".git/config"
+    info = (root / rel).lstat()
+    need(info.st_size <= 65536, "Git config size limit")
+    snapshot, contents = Pair.read_snapshot(SimpleNamespace(root=root, files=[rel]))
+    require_absent()
+    last_dir, last_file = db.lstat(), (root / rel).lstat()
+    need(info_dir == graft_parent() and
+         metadata(directory) == metadata(last_dir) and directory.st_ctime_ns == last_dir.st_ctime_ns and
+         metadata(info) == snapshot["files"][rel][:-1] == metadata(last_file) and
+         info.st_ctime_ns == last_file.st_ctime_ns and len(contents[rel]) <= 65536,
+         "Git configuration changed during inspection")
+    # Directory ctime also invalidates an override created and removed between
+    # observations; config ctime catches an in-place edit restored to old bytes.
+    return dict(directory=snapshot["parents"][str(db)], directory_ctime_ns=directory.st_ctime_ns,
+                config=snapshot["files"][rel], config_ctime_ns=info.st_ctime_ns,
+                graft_parent=info_dir, absent=list(absent)), contents[rel]
+
 def native_ancestor_candidate(root, provider, rel, mode):
     """Read-only evidence, never an ownership, selection or merge decision."""
+    from contextlib import contextmanager
+    import select
     import time
     from types import SimpleNamespace
 
@@ -6300,27 +6345,120 @@ def native_ancestor_candidate(root, provider, rel, mode):
     deadline = time.monotonic() + 20
     env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
-           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
+           "GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull, "GIT_NO_LAZY_FETCH": "1",
            "GIT_ALLOW_PROTOCOL": "", "GIT_TERMINAL_PROMPT": "0"}
+    # Keep macOS toolchain dispatch inside the system launcher. Never execute
+    # a binary discovered under a possibly writable developer-tools directory.
+    executable = "/usr/bin/git" if sys.platform == "darwin" else "git"
 
-    def git(*args, config=False):
+    repo_args = [executable, "--git-dir=" + str(db), "-c", "core.hooksPath=/dev/null",
+                 "-c", "core.commitGraph=false", "-c", "core.fsmonitor=false"]
+
+    def remaining():
         budget = deadline - time.monotonic()
         if budget <= 0:
             raise TimeoutError
-        return subprocess.run(
-            ["git", *(("--git-dir=" + str(db), "-c", "core.hooksPath=/dev/null",
-                       "-c", "core.commitGraph=false") if not config else ()), *args],
-            cwd="/" if config else root, env=env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            check=True, timeout=budget).stdout
+        return budget
+
+    class HistoryLimit(ValueError):
+        pass
+
+    def git(*args, config=False, limit=65536):
+        need(history_config(root)[0] == binding, "changed history config")
+        data = memoryview(config_bytes) if config else None
+        result = bytearray()
+        remaining()
+        with subprocess.Popen([*([executable] if config else repo_args), *args],
+                              cwd="/" if config else root, env=env, bufsize=0,
+                              stdin=subprocess.PIPE if config else subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+            try:
+                if config:
+                    os.set_blocking(proc.stdin.fileno(), False)
+                while True:
+                    if config and not data and not proc.stdin.closed:
+                        proc.stdin.close()
+                    rd, wr, _ = select.select([proc.stdout], [proc.stdin] if data else [], [], remaining())
+                    if not rd and not wr:
+                        raise TimeoutError
+                    if rd:
+                        chunk = os.read(proc.stdout.fileno(), min(65536, limit + 1 - len(result)))
+                        if not chunk:
+                            break
+                        if len(result) + len(chunk) > limit:
+                            raise HistoryLimit("Git plumbing output exceeds " + str(limit) + " bytes")
+                        result.extend(chunk)
+                    if wr:
+                        data = data[os.write(proc.stdin.fileno(), data):]
+                need(not data and proc.wait(timeout=remaining()) == 0, "incomplete Git plumbing")
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
+        need(history_config(root)[0] == binding, "changed history config")
+        remaining()
+        return bytes(result)
+
+    @contextmanager
+    def objects():
+        """One raw object at a time; check size before requesting contents."""
+        need(history_config(root)[0] == binding, "changed history config")
+        with subprocess.Popen([*repo_args, "cat-file", "--batch-command"], cwd=root, env=env,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              bufsize=0) as proc:
+            total = 0
+            def chunk(n):
+                if not select.select([proc.stdout], [], [], remaining())[0]:
+                    raise TimeoutError
+                data = os.read(proc.stdout.fileno(), n)
+                need(data, "incomplete Git object stream")
+                return data
+            def request(cmd, oid):
+                remaining()
+                line = cmd + b" " + oid + b"\n"
+                need(proc.stdin.write(line) == len(line), "short batch request")
+                header = bytearray()
+                while b"\n" not in header:
+                    need(len(header) < 128, "invalid Git object header")
+                    header.extend(chunk(128 - len(header)))
+                return header.split(b"\n", 1)
+            def read(oid, kind):
+                nonlocal total
+                header, extra = request(b"info", oid)
+                match = re.fullmatch(oid + b" " + kind + rb" ([0-9]{1,20})", header)
+                need(match and not extra, "missing or wrong-type Git object")
+                size = int(match[1])
+                total += size
+                if size > LIMIT or total > 64 * LIMIT:
+                    raise HistoryLimit("historical object byte budget exceeded")
+                actual, body = request(b"contents", oid)
+                need(header == actual, "changed Git object header")
+                while len(body) < size + 1:
+                    body.extend(chunk(min(65536, size + 1 - len(body))))
+                need(len(body) == size + 1 and body.pop() == 10, "incomplete Git object")
+                raw = bytes(body)
+                need(hashlib.sha1(kind + b" " + str(size).encode() + b"\0" + raw).hexdigest().encode() == oid,
+                     "Git object identity mismatch")
+                return raw
+            try:
+                yield read
+                proc.stdin.close()
+                need(proc.wait(timeout=remaining()) == 0, "incomplete Git batch")
+                need(history_config(root)[0] == binding, "changed history config")
+                remaining()
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait()
 
     try:
         # Do not discover a parent repository, follow gitfiles/alternates, honor
         # grafts or consult external includes. Unsupported storage is not proof.
         if not stat.S_ISDIR(db.lstat().st_mode):
             return dict(answer, status="unsafe")
-        if any(os.path.lexists(db / p) for p in ("commondir", "shallow")):
-            return answer
+        if (db / "config").lstat().st_size > 65536:
+            return dict(answer, status="limit")
+        binding, config_bytes = history_config(root)
         # Plumbing can follow filesystem links even when the tree entry is safe.
         # Qualify its local metadata inputs before the first repository command.
         stack = [db / n for n in ("HEAD", "config", "objects", "refs", "info", "packed-refs")]
@@ -6334,24 +6472,32 @@ def native_ancestor_candidate(root, provider, rel, mode):
                 with os.scandir(path) as entries:
                     for entry in entries:
                         count += 1
-                        if count > 32768 or time.monotonic() >= deadline:
-                            return dict(answer, status="limit")
+                        if count > 32768:
+                            return dict(answer, status="limit", reason="Git metadata inventory exceeds 32768 entries")
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError
                         stack.append(Path(entry.path))
             elif not stat.S_ISREG(kind):
                 return dict(answer, status="unsafe")
             elif path.suffix == ".promisor":
                 return answer
-        if any(os.path.lexists(db / p) for p in ("info/grafts", "objects/info/alternates",
-                                                 "objects/info/http-alternates")):
+        if any(os.path.lexists(db / p) for p in ("objects/info/alternates", "objects/info/http-alternates")):
             return answer
-        if (db / "config").stat().st_size > 65536:
-            return dict(answer, status="limit")
-        keys = git("config", "--no-includes", "--file", str(db / "config"),
-                   "--name-only", "--null", "--list", config=True).split(b"\0")
-        if any(k.startswith((b"include.", b"includeif.", b"extensions.")) or
+        keys = git("config", "--no-includes", "--file", "-", "--name-only", "--null",
+                   "--list", config=True).split(b"\0")
+        extension = b"extensions.worktreeconfig"
+        if any(k.startswith((b"include.", b"includeif.")) or
+               (k.startswith(b"extensions.") and k != extension) or
                k in (b"core.worktree", b"core.alternaterefscommand") or k.endswith(b".promisor")
                for k in keys):
-            return answer
+            return dict(answer, reason="unsupported Git configuration or extension")
+        if extension in keys and (keys.count(extension) != 1 or
+                git("config", "--no-includes", "--file", "-", "--type=bool", "--get", extension,
+                    config=True) not in (b"true\n", b"false\n")):
+            return dict(answer, reason="unverified worktreeConfig declaration")
+        answer["git_config"] = binding
+        if git("rev-parse", "--git-path", "info/grafts") != os.fsencode(os.devnull) + b"\n":
+            return dict(answer, reason="cannot isolate the Git graft source")
         if git("rev-parse", "--show-toplevel") != os.fsencode(root) + b"\n":
             return answer
         # Exact pseudoref lookup (including detached HEAD), not revision DWIM:
@@ -6363,46 +6509,64 @@ def native_ancestor_candidate(root, provider, rel, mode):
         if git("cat-file", "-t", tip) != b"commit\n":
             return answer
         answer["head"] = tip.decode()  # Bind review evidence to the inspected ancestry.
-        commits = git("rev-list", "--max-count=129", tip, "--").splitlines()
-        if len(commits) > 128:
-            return dict(answer, status="limit")
-        if not commits or not all(re.fullmatch(b"[a-f0-9]{40}", c) for c in commits):
-            return answer
+        # No pathspec, first-parent walk or merge simplification. Equal root
+        # trees have identical answers, regardless of how many commits share them.
+        rows = git("rev-list", "--max-count=65537", "--no-commit-header",
+                   "--format=%H %T", tip, "--", limit=65537 * 82).splitlines()
+        if len(rows) > 65536:
+            raise HistoryLimit("reachable commit inventory exceeds 65536; history not complete")
+        need(rows and rows[0].startswith(tip + b" "), "incomplete HEAD ancestry")
+        nodes = {}
+        for row in rows:
+            need(re.fullmatch(rb"[0-9a-f]{40} [0-9a-f]{40}", row), "invalid commit/tree inventory")
+            nodes.setdefault(row[41:], row[:40])
 
-        seen, proposal = set(), None
-        parts = Path(rel).parts
-        for commit in commits:
-            tree = commit
-            for i, part in enumerate(parts):
-                row = git("ls-tree", "-z", tree, "--", part)
-                if not row:
-                    break  # Path absent in this commit; no rename following.
-                match = re.fullmatch(rb"([0-7]+) (tree|blob|commit) ([0-9a-f]{40})\t"
-                                     + re.escape(os.fsencode(part)) + b"\0", row)
-                if not match:
-                    return answer
-                perm, kind, tree = match.groups()
-                if i < len(parts) - 1:
-                    if (perm, kind) != (b"040000", b"tree"):
-                        return dict(answer, status="unsafe")
-                elif kind != b"blob" or perm not in (b"100644", b"100755"):
-                    return dict(answer, status="unsafe")
-                elif tree not in seen:
-                    seen.add(tree)
-                    if len(seen) > 32 or int(git("cat-file", "-s", tree)) > LIMIT:
-                        return dict(answer, status="limit")
-                    if git("cat-file", "-t", tree) != b"blob\n":
-                        return answer
-                    raw = git("cat-file", "blob", tree)  # raw object; no filters/textconv
-                    digest = sha(raw)
-                    if installer_identity(provider, rel, mode, digest):
-                        if proposal and proposal["sha256"] != digest:
-                            return dict(answer, status="ambiguous")
-                        proposal = dict(commit=commit.decode(), blob=tree.decode(),
-                                        sha256=digest, base_bytes=raw)
+        proposal = None
+        parts = os.fsencode(rel).split(b"/")
+        trees = 0
+        with objects() as read:
+            for depth, part in enumerate(parts):
+                trees += len(nodes)
+                if trees > 8192:
+                    raise HistoryLimit("exact-path component tree budget exceeds 8192")
+                children = {}
+                for tree, commit in nodes.items():
+                    raw = read(tree, b"tree")
+                    offset, found = 0, False
+                    while offset < len(raw):
+                        space = raw.find(b" ", offset, offset + 7)
+                        end = raw.find(b"\0", space + 1) if space > offset else -1
+                        need(end > space + 1 and end + 21 <= len(raw), "invalid Git tree entry")
+                        perm, name = raw[offset:space], raw[space + 1:end]
+                        need(perm in (b"40000", b"100644", b"100755", b"120000", b"160000") and
+                             b"/" not in name and name not in (b".", b".."), "invalid Git tree entry")
+                        if name == part:
+                            need(not found, "duplicate exact-path entry")
+                            found = True
+                            allowed = (b"100644", b"100755") if depth == len(parts) - 1 else (b"40000",)
+                            if perm not in allowed:
+                                return dict(answer, status="unsafe")
+                            child = raw[end + 1:end + 21].hex().encode()
+                            children.setdefault(child, commit)
+                        offset = end + 21
+                nodes = children  # An absent component contributes no blob for that tree.
+            if len(nodes) > 32:
+                raise HistoryLimit("more than 32 distinct exact-path blobs")
+            for oid, commit in nodes.items():
+                raw = read(oid, b"blob")
+                digest = sha(raw)
+                if installer_identity(provider, rel, mode, digest):
+                    if proposal and proposal["sha256"] != digest:
+                        return dict(answer, status="ambiguous")
+                    proposal = dict(commit=commit.decode(), blob=oid.decode(), sha256=digest, base_bytes=raw)
+        need(git("show-ref", "--head", "--verify", "--hash", "HEAD") == head, "changed HEAD")
         return dict(answer, status="candidate" if proposal else "no-match", proposal=proposal)
+    except HistoryLimit as error:
+        return dict(answer, status="limit", reason=str(error))
+    except UnsupportedHistoryConfig as error:
+        return dict(answer, reason=str(error))
     except (TimeoutError, subprocess.TimeoutExpired):
-        return dict(answer, status="limit")
+        return dict(answer, status="limit", reason="history probe deadline exceeded")
     except (OSError, ValueError, subprocess.CalledProcessError):
         return answer
 
@@ -6704,15 +6868,28 @@ try:
     # the format of this provider's existing files. Resolve once per provider
     # (independent of inventory iteration order). Explicit flags stay binding.
     if absent_state and gitroot == "1" and mode == "guest" and guest_flag == normal_flag == "0":
+        inconclusive = []
         for rel in native:
             raw = evidence[rel]
             if raw is None or identity(provider, rel, mode, sha(raw)):
                 continue
-            if (ancestor(rel, "guest")["status"] == "no-match" and
-                    ancestor(rel, "normal")["status"] == "candidate"):
-                mode = "normal"
-                (scratch / ("review-normal-" + provider)).touch()
-                break
+            proof = ancestor(rel, "guest")
+            if proof["status"] == "no-match":
+                proof = ancestor(rel, "normal")
+                if proof["status"] == "candidate":
+                    mode = "normal"
+                    (scratch / ("review-normal-" + provider)).touch()
+                    break
+            if proof["status"] != "candidate":
+                inconclusive.append(f"{rel}: {proof['status']}" +
+                                    (": " + proof["reason"] if "reason" in proof else ""))
+        else:
+            if inconclusive:
+                (scratch / "review-evidence").mkdir(exist_ok=True)
+                reason = ("cannot determine historical mode from bounded local history (" +
+                          "; ".join(inconclusive) + "); keep local and re-preview")
+                (scratch / ("review-invalid-mode-" + provider)).write_text(reason)
+                raise ValueError(reason)
     for rel in native:
         raw, base = evidence[rel], evidence[f"{pair.state}/base/{rel}"]
         if early and rel in inventory:
@@ -6773,7 +6950,11 @@ PY
         if [ "$UNINSTALL" -eq 0 ]; then
           # Assessment is per provider. Only after the loop do we know
           # whether *another* provider needs an ancestor review.
-          refuse_provider "$provider" "native ownership validation failed"
+          if [ -s "$TMPDIR_WORK/review-invalid-mode-$provider" ]; then
+            refuse_provider "$provider" "$(cat "$TMPDIR_WORK/review-invalid-mode-$provider")"
+          else
+            refuse_provider "$provider" "native ownership validation failed"
+          fi
         else
           shared_refuse "native ownership preflight failed for $provider"
         fi ;;
@@ -7157,7 +7338,8 @@ def prepare(provider):
                 if evidence.exists():
                     info = json.loads(evidence.read_text())
                     rec["ancestor"] = info
-                    need(info["status"] == "candidate", info["status"])
+                    need(info["status"] == "candidate", info["status"] +
+                         (": " + info["reason"] if "reason" in info else ""))
                 if role and live is not None:
                     if evidence.exists() and parse(live, role)[2] is not None:
                         raise ValueError("unowned model confirmation marker; restore trusted ownership")
@@ -9043,6 +9225,10 @@ else:
 try:
     plan["shared_snapshot"] = snapshot(paths)
     if not plan["blockers"]:
+        configs = [row["ancestor"]["git_config"] for p in providers for row in p["paths"] if "ancestor" in row]
+        if configs:
+            plan["history_config"] = lib["history_config"](root)[0]
+            lib["need"](all(c == plan["history_config"] for c in configs), "changed Git configuration")
         index = subprocess.check_output(["git", "-C", str(root), "rev-parse", "--git-path", "index"])
         if (root / os.fsdecode(index.rstrip(b"\n"))).resolve() != root / ".git/index":
             plan["blockers"]["index"] = "alternate Git index not supported for reconciliation"
@@ -9225,6 +9411,19 @@ lib = library(scratch / "native-library")
 need, sha = lib["need"], lib["sha"]
 files, parents = {}, {}
 published, made = [], []
+history_binding = plan.get("history_config")
+def check_history(*, wrote_exclude=False):
+    global history_binding
+    if history_binding is None:
+        return
+    current = lib["history_config"](root)[0]
+    if wrote_exclude:
+        # Creating the owned temp and publishing .git/info/exclude legitimately
+        # advance this directory's ctime. Never rebind its identity or graft absence.
+        old, new = history_binding["graft_parent"], current["graft_parent"]
+        need(old and new and old[0] == new[0], "changed Git info directory")
+        history_binding = dict(history_binding, graft_parent=new)
+    need(current == history_binding, "stale Git configuration evidence")
 def include(before):
     for target, section in ((files, "files"), (parents, "parents")):
         for k, value in before[section].items():
@@ -9234,6 +9433,7 @@ def check(rel=None):
     # Complete barrier before the first write and at completion. At each
     # intervening atomic write recheck its destination and pinned ancestors;
     # do not rehash every provider and the index three times per file.
+    check_history()
     scope = files if rel is None else [rel]
     current, contents = lib["Pair"].read_snapshot(SimpleNamespace(root=root, files=scope), absent=True)
     need(current["files"] == {r: files[r] for r in scope} and
@@ -9281,6 +9481,8 @@ def write(rel, data):
             temp = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=fd)
             try:
                 with os.fdopen(temp, "wb") as stream:
+                    if rel == ".git/info/exclude":
+                        check_history(wrote_exclude=True)
                     stream.write(data)
                     stream.flush()
                     if files[rel]:
@@ -9301,6 +9503,8 @@ def write(rel, data):
                 except FileNotFoundError:
                     pass
         published.append(rel)
+        if rel == ".git/info/exclude":
+            check_history(wrote_exclude=True)
     finally:
         os.close(fd)
 

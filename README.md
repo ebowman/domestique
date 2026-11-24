@@ -193,6 +193,37 @@ Stale history alone does not resurrect completely removed providers. This does
 not change the selector-less default of all three providers.
 Use scoped uninstall, not an install selector, to remove a provider.
 
+### Working candidate: reviewing historical native roles
+
+If the default `--dry-run` finds edited roles without installer snapshots, look
+for an exact-path historical ancestor, each proposed model choice, provider
+modes, and any blockers. A proposed adoption is **not approval**. If any path
+is blocked, nothing is published. Keep local state or resolve the specific
+conflict and preview again; don't use `--force` or change guest visibility just
+to pass the check.
+
+Guest neighbors do not prove that an edited manifestless role was installed
+in guest mode. If neither mode has a matching ancestor, the review reports
+**unknown** rather than recommending a conversion. If installed providers
+already mix guest and normal and a selected provider lacks state, the default
+can refuse before producing any plan.
+Conversely, if only normal Copilot state is present, the absence of Claude and
+Codex snapshots is **not** evidence that their files are absent or safe to
+replace. Inspect the proposed adoptions and creations separately.
+An ordinary main checkout can declare `extensions.worktreeConfig` without an
+override file. That declaration alone does not block historical review. The
+installer checks the exact role path across all reachable merge parents and
+reuses unchanged trees, so unrelated commits need not block adoption. An actual
+per-worktree config or an incomplete or over-budget search still prevents proof.
+Don't change repository config or history to force eligibility.
+
+With a complete plan, a foreground run can request **one `APPLY` on the
+controlling terminal**, not installer stdin. For automation use the same saved
+candidate, `--review-file` then `--apply-file sha256:TOKEN`; streamed previews
+do not issue tokens. After publication the historical role pair still needs
+`dom-models --confirm` review/Save (exit `3` is not a readiness signal).
+See [approval, recovery and history limits](docs/install-upgrade-design.md#historical-native-role-reconciliation-working-candidate).
+
 ### Defaults and preserving overrides
 
 | Harness | Implementer model / effort | Reviewer model / effort |

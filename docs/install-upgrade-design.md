@@ -551,6 +551,112 @@ with pristine emitted bases seeded for a subsequent merge; this is **not a role
 pair ownership exception**. Unknown ownership, missing policy bases,
 unsafe paths or incompatible retained policy blocks can refuse before writes.
 
+### Historical native-role reconciliation (working candidate)
+
+Without a selector, preview **all three providers together**. An edited
+manifestless role may have a provable ancestor even though its current bytes
+are not an installer identity. `--dry-run` reports the path, private inspection
+command, changed line ranges, old/proposed choices and output digest for an
+eligible proposal. Read the modes, other provider/shared effects, exclusions
+and blockers too. A candidate for one path is not authority to publish a
+partial plan. In particular, if any provider stays guest, a planned tracked
+rewrite can veto the entire plan. Do not untrack files or convert modes as a
+shortcut. A normal-mode conversion changes visibility and needs its own review.
+
+* **Preview or decline:** `bash ./domestique.sh "$TARGET" --dry-run` or the
+  equivalent `bash -s -- "$TARGET" --dry-run` stream does not change the
+  project. Preview may materialize local inputs and proposed merges in scratch
+  outside the target: use a trusted private location, not a shared log or a
+  system that forbids even temporary copies. `--keep-local` declines adoption.
+* **Approve once:** rerun without `--dry-run` in a foreground terminal. Read
+  the complete plan, then type `APPLY` on `/dev/tty` or press Return to decline.
+  Installer stdin is never the approval channel. Without a controlling terminal,
+  save and verify the installer **outside** the target and use:
+
+  ```sh
+  bash ./domestique.sh --review-file "$TARGET"
+  # Only for a complete, reviewed plan; paste the exact sha256:... printed above:
+  bash ./domestique.sh --apply-file sha256:TOKEN "$TARGET"
+  ```
+
+  These transport switches must be first. Repeat the same selection and mode
+  options. A token binds the saved bytes and target plan; ordinary streamed
+  previews cannot issue one. Changed inputs (including index state), installer
+  or proposed effects require fresh review, not reuse of an old token.
+* **Conflict or refusal:** retain live files, inventory, pristine bases, index
+  and existing backups. Inspect ancestor/local/upstream privately (generate
+  upstream in an empty disposable directory). Resolve competing edits by hand
+  and preview again, or explicitly preview `--use-upstream=PATH` for a
+  history-proven conflict: this proposes backing up local bytes and taking
+  upstream while preserving role model/effort. Repeat the option on approval.
+  Neither it nor `--force` establishes missing ownership. After an interrupted
+  publication inspect reported completed writes and backups; there is no
+  blanket rollback. After successful publication, exit `3` with **review/Save
+  required** means the adopted roles are still unconfirmed; review the pair in
+  `dom-models --confirm` and Save. Rerunning does not approve the models.
+
+History proof uses raw regular-file blobs at the exact path from the actual
+local `HEAD` ancestry, matched to a finite installer identity for that provider,
+path and mode. Renames, backups, other refs or a similar-looking policy are
+not proof. Two distinct recognized bases are ambiguous. Shallow, linked-worktree, alternate or
+promisor storage and unsafe/unsupported evidence cannot establish this proof.
+In a physical main checkout, a single valid boolean `extensions.worktreeConfig`
+declaration in `.git/config` is supported **only when `.git/config.worktree`
+is absent**. Even an empty override, dangling symlink, duplicate declaration,
+other extension or included config is not qualified. The probe parses verified
+local config bytes without includes, limiting expanded key output to 64 KiB
+before parsing. Git replacement objects are disabled and Git must report
+`/dev/null` as its graft source. An existing `.git/info/grafts` (even a dangling
+link) still refuses. The reviewed evidence binds the config digest, file and
+directory identities/change times, the graft parent and absence of both overrides;
+changes require a fresh preview. Don't edit repo config to obtain a token.
+
+The probe inventories every reachable commit and root tree, including every
+merge parent. It walks each exact path component once per distinct tree at
+that depth, so unrelated commits can share evidence. A deletion means the
+path was absent in that tree; it does not erase the earlier evidence. A
+historical symlink or other nonregular path component is not evidence for a
+regular role. The per-path limits are 65,536 commits, 8,192 component trees,
+32 distinct role blobs, 1 MiB per tree/blob, 64 MiB total tree/blob content,
+32,768 Git metadata entries and 20 seconds. The probe requires local Git
+support for `cat-file --batch-command`; missing objects, unsupported plumbing
+or an exhausted budget never certify a prefix. Keep live files and index
+intact; compare ancestor/local/upstream privately rather than rewriting history.
+If history is needed to distinguish a manifestless provider's mode from its
+neighbors' guest setting and the evidence is inconclusive, **unknown** is a
+refusal, not a guest conversion. A completed search with no matching ancestor
+in either mode is not positive evidence for guest. On macOS the history probe
+uses the system `/usr/bin/git` launcher, not a discovered toolchain executable;
+launcher time counts toward the same deadline. Keep the current files; for a time limit,
+retry the same preview when the machine is less busy. For unavailable history,
+review trusted provenance separately rather than forcing a visibility change.
+No fetching, native model execution or universal historical coverage is implied.
+
+The focused cases in `test/all-current.py` distinguish these synthetic layouts.
+All start with edited historical Claude roles and no Claude snapshot:
+
+| Existing Codex / Copilot | Claude paths in the index | Selector-less outcome |
+| --- | --- | --- |
+| No snapshot / normal | Tracked | Representative state layout. With no conflicting Codex native files in the fixture, preview creates Codex roles, retains the independent private Codex config and preserves the configured Copilot choices. |
+| No snapshot, **live Codex roles** / normal | Tracked | In the inert `worktreeConfig` fixture, both pairs require their own exact-path evidence. Proven edited Codex roles are proposed for adoption, not fresh creation; unmatched Codex roles block even if Claude has a recognized ancestor. |
+| Guest / normal | Tracked | Separate negative control: mixed persisted modes and missing Claude state. Refuses before approval without converting or untracking anything. |
+| Normal / normal | Tracked | With proven history and a complete plan, one approval can migrate the roles without changing the index. |
+| Guest / guest | Tracked | Refuses a planned tracked rewrite even when it can identify the Claude ancestor. |
+| Guest / guest | Not indexed; still in history | Eligible sibling exercises one approval while retaining guest privacy. |
+
+The representative fixture models only the reported **absence of Claude and
+Codex state directories and presence of a Copilot state directory without a
+mode marker**. Those observations do not establish what unmanaged files exist,
+their contents, the validity of Copilot ownership, or a consumer's migration
+eligibility. Its tracked roles, Git ancestry, settings and private host config
+are synthetic, not copied from a consumer.
+
+The eligible controls compare saved and piped previews, preserve both Claude
+model choices, other provider choices and unrelated staged/unstaged data, and
+rerun without another reconciliation. None establishes eligibility for a
+particular consumer checkout; do not remove files from the index to mimic a
+control.
+
 Normal mode shares configuration when committed. Modes are sticky **per
 provider**. Missing providers inherit a wholly normal or guest set; fresh
 defaults to normal. Mixed modes with a missing selected provider refuse until
