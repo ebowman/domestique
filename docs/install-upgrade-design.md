@@ -8,7 +8,9 @@ This is the **v0.6.0 release candidate guide**. Two things change:
 - **Installer upgrades:** [review the complete plan](#historical-native-role-reconciliation)
   before adopting edited legacy roles. Each role needs its own exact-path
   ancestor evidence. An unmatched role blocks adoption; its neighbors cannot
-  establish ownership. One approval publishes a complete eligible plan, not a
+  establish ownership. A normal-mode Codex pair with two completed `no-match`
+  searches can instead be backed up and **replaced by explicit choice**.
+  One approval publishes a complete eligible plan, not a
   partial migration, model confirmation or readiness certificate.
 
 See [candidate checks and limits](#v060-candidate-checks-and-limits).
@@ -643,7 +645,7 @@ All start with edited historical Claude roles and no Claude snapshot:
 | Existing Codex / Copilot | Claude paths in the index | Selector-less outcome |
 | --- | --- | --- |
 | No snapshot / normal | Tracked | Representative state layout. With no conflicting Codex native files in the fixture, preview creates Codex roles, retains the independent private Codex config and preserves the configured Copilot choices. |
-| No snapshot, **live Codex roles** / normal | Tracked | In the inert `worktreeConfig` fixture, both pairs require their own exact-path evidence. Proven edited Codex roles are proposed for adoption, not fresh creation; unmatched Codex roles block even if Claude has a recognized ancestor. |
+| No snapshot, **live Codex roles** / normal | Tracked | Proven edited Codex roles are proposed for adoption. If both exact-path searches complete with `no-match`, the installer can instead propose replacing both role bodies, backing up their complete original bytes first (0600, beside each role). No ancestor or merge is claimed. Only the displayed top-level TOML model/effort settings survive replacement. Keep these backups out of Git. |
 | Guest / normal | Tracked | Separate negative control: mixed persisted modes and missing Claude state. Refuses before approval without converting or untracking anything. |
 | Normal / normal | Tracked | With proven history and a complete plan, one approval can migrate the roles without changing the index. |
 | Guest / guest | Tracked | Refuses a planned tracked rewrite even when it can identify the Claude ancestor. |
@@ -655,7 +657,9 @@ files are absent, owned or safe to replace.
 
 The eligible controls compare saved and piped previews and exercise either a
 saved-file approval token or one `APPLY` on the controlling terminal with a
-piped installer. Both preserve role choices and unrelated staged/unstaged data
+piped installer. The unmatched-pair controls run the ordinary file and pipe
+commands on a controlling terminal, decline, then approve and inspect written
+roles and originals. Both preserve role choices and unrelated staged/unstaged data
 and rerun without another reconciliation. None establishes eligibility for a
 particular consumer checkout; do not remove files from the index to mimic a
 control.

@@ -612,9 +612,13 @@ class AllProviders(unittest.TestCase):
         root = self.root("fresh")
         before = snapshot(root)
         modes = dict.fromkeys(STATES, "normal")
-        self.assert_notice(self.run_dom(root, "--dry-run"), root, modes, dry=True)
+        preview = self.run_dom(root, "--dry-run")
+        self.assert_notice(preview, root, modes, dry=True)
+        self.assertIn("Status: PREVIEW ONLY", preview.stderr)
         self.assertEqual(before, snapshot(root))
-        self.assert_notice(self.run_dom(root), root, modes)
+        install = self.run_dom(root)
+        self.assert_notice(install, root, modes)
+        self.assertIn("Status: INSTALLED.", install.stdout)
         self.assertEqual(self.installed(root), set(STATES))
         self.assert_static_inventory(root)
         for role in ROLES:
@@ -2758,7 +2762,15 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                                         input=SCRIPT, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
                 self.assertIn("TMPDIR must be outside", result.stderr)
+                self.assertIn("Status: PREVIEW ONLY", result.stderr.splitlines()[-1])
                 self.assertEqual(before, tree())
+        for args in (["bash", "-s", "--"], ["bash", str(saved)]):
+            result = subprocess.run(args, cwd=root, env=dict(self.env, TMPDIR=str(tmp)),
+                                    input=SCRIPT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 3)
+            self.assertIn("TMPDIR must be outside", result.stderr)
+            self.assertIn("Status: NOT INSTALLED by this run", result.stderr.splitlines()[-1])
+            self.assertEqual(before, tree())
         result = subprocess.run(["bash", str(saved), "--review-file", ".", "--", "."], cwd=root,
                                 env=dict(self.env, TMPDIR="temporary"), capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
@@ -2911,7 +2923,8 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             self.assertEqual(count, 1)
             path.write_bytes(raw)
 
-    def qualify_mixed_default(self, transport, *, guest=True, missing_codex=False, live_codex=False):
+    def qualify_mixed_default(self, transport, *, guest=True, missing_codex=False, live_codex=False,
+                              unmatched=False):
         root = self.mixed_legacy_fixture("mixed-" + transport, copilot_guest=guest,
                                          codex_guest=None if missing_codex else guest)
         git = ["git", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
@@ -2947,11 +2960,19 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             for role in ("implementer", "reviewer"):
                 self.assertFalse((root / ROLES[1].replace("implementer", role)).exists())
             if live_codex:
-                self.add_codex_role_history(root)
+                self.add_codex_role_history(root, commit=not unmatched)
+                if unmatched:
+                    for role in ("implementer", "reviewer"):
+                        path = root / ROLES[1].replace("implementer", role)
+                        raw, count = re.subn(rb'(?m)^model_reasoning_effort = ".*"$',
+                                             b'model_reasoning_effort = "low"', path.read_bytes())
+                        self.assertEqual(count, 1)
+                        path.write_bytes(raw + b"\n# private unmatched customization\n")
                 run_git("config", "--local", "core.repositoryFormatVersion", "1")
                 run_git("config", "--local", "extensions.worktreeConfig", "true")
                 self.assertFalse(os.path.lexists(root / ".git/config.worktree"))
-                self.extend_sparse_history(root)
+                if not unmatched:
+                    self.extend_sparse_history(root)
             # Absence of installer state does not imply absence of user files.
             config = root / ".codex/config.toml"
             config.parent.mkdir(exist_ok=True)
@@ -3008,6 +3029,8 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         if missing_codex:
             for role in ("implementer", "reviewer"):
                 action = "proposed adoption" if live_codex else "create"
+                if unmatched:
+                    action = "back up and replace unmatched role (no ancestor)"
                 self.assertIn(ROLES[1].replace("implementer", role) + ": " + action + ";", preview.stdout)
                 if live_codex:
                     self.assertIn(f'"model": "local-{role}"', preview.stdout)
@@ -3017,7 +3040,25 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         for rel, choice in choices.items():
             self.assertIn(rel + ": proposed adoption", preview.stdout)
             self.assertIn('"model": "' + choice + '"', preview.stdout)
-        if transport == "file":
+        if unmatched:
+            originals = {p: p.read_bytes() for p in (root / ".codex/agents").glob("*.toml")}
+            terminal = self.tty_review(root, file=transport == "file")
+            declined = terminal(b"").decode()
+            self.assertIn("Status: NOT INSTALLED by this run", declined)
+            self.assertIn("REPLACE BOTH unmatched Codex roles", declined)
+            self.assertEqual(before, snapshot(root))
+            report = terminal(b"APPLY").decode()
+            self.assertIn("Status: INSTALLED — pending Save", report)
+            for p, original in originals.items():
+                backup, = p.parent.glob(p.name + ".bak.*")
+                self.assertEqual(backup.read_bytes(), original)
+                self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+                self.assertNotEqual(p.read_bytes(), original)
+                self.assertNotIn(b"private unmatched customization", p.read_bytes())
+                self.assertNotIn("private unmatched customization", report)
+                self.assertNotIn(b"# domestique-model-setup:", p.read_bytes())
+                self.assertIn(hashlib.sha256(p.read_bytes()).hexdigest(), report)
+        elif transport == "file":
             applied = run_stdin(["bash", str(self.work / "saved-installer.sh"), "--apply-file",
                                  "sha256:" + token], cwd=root, env=self.env, input="",
                                 capture_output=True, text=True, timeout=1200)
@@ -3029,7 +3070,7 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             for rel, choice in choices.items():
                 self.assertRegex(prompt, re.escape(rel) + r": proposed adoption; choices .*" + choice)
         self.assertEqual(report.count("Approved reconciliation published"), 1,
-                         applied.stderr if transport == "file" else report)
+                         report)
         for rel, choice in choices.items():
             role = (root / rel).read_bytes()
             self.assertIn(f"\nmodel: {choice}\n".encode(), role)
@@ -3050,7 +3091,7 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                 path = root / ROLES[1].replace("implementer", role)
                 fields = lib["parse"](path.read_bytes(), role)[1]
                 self.assertEqual((fields.get("model"), fields.get("model_reasoning_effort")),
-                                 (f"local-{role}" if live_codex else model, effort))
+                                 (f"local-{role}" if live_codex else model, "low" if unmatched else effort))
         for provider, role in zip(("codex", "copilot"), ROLES[1:]):
             state = STATES[provider]
             marker = root / state / "mode"
@@ -3065,6 +3106,8 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         rerun = self.run_dom(root, ok=False)
         self.assertEqual(rerun.returncode, 3)
         self.assertIn("review/Save required", rerun.stderr)
+        if unmatched:
+            self.assertIn("Status: INSTALLED — pending Save", rerun.stderr)
         self.assertNotIn("[reconciliation]", rerun.stdout)
         self.assertEqual(after, byte_snapshot(root))
 
@@ -3091,6 +3134,12 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
 
     def test_worktree_config_main_checkout_both_live_pairs_stdin(self):
         self.qualify_mixed_default("stdin", guest=False, missing_codex=True, live_codex=True)
+
+    def test_default_unmatched_codex_file(self):
+        self.qualify_mixed_default("file", guest=False, missing_codex=True, live_codex=True, unmatched=True)
+
+    def test_default_unmatched_codex_pipe(self):
+        self.qualify_mixed_default("stdin", guest=False, missing_codex=True, live_codex=True, unmatched=True)
 
     def test_tracked_default_codex_guest_copilot_normal_refuses_without_conversion(self):
         root = self.mixed_legacy_fixture("mixed-visibility", copilot_guest=False)
@@ -3152,11 +3201,24 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                        cwd=root, env=self.env, check=True)
         self.add_codex_role_history(root, commit=False)
         before = snapshot(root)
-        _, review = self.file_review(root, SCRIPT, eligible=False)
+        released = subprocess.check_output(["git", "show", "v0.6.0:domestique.sh"],
+                                           cwd=SOURCE.parent, text=True, env=self.env)
+        _, refused = self.file_review(root, released, eligible=False)
+        for role in ("implementer", "reviewer"):
+            self.assertIn(ROLES[1].replace("implementer", role) + ": blocked: no-match", refused.stdout)
+        self.assertEqual(before, snapshot(root))
+        _, review = self.file_review(root, SCRIPT)
         self.assertIn(ROLES[0] + ": proposed adoption", review.stdout)
         for role in ("implementer", "reviewer"):
-            self.assertIn(ROLES[1].replace("implementer", role) + ": blocked: no-match", review.stdout)
+            self.assertIn(ROLES[1].replace("implementer", role) + ": back up and replace unmatched role", review.stdout)
         self.assertEqual(before, snapshot(root))
+        unsafe = root / ROLES[1]
+        unsafe.chmod(0o755)
+        before = snapshot(root)
+        _, review = self.file_review(root, SCRIPT, eligible=False)
+        self.assertIn("unsafe executable replacement input", review.stdout)
+        self.assertEqual(before, snapshot(root))
+        unsafe.chmod(0o644)
         self.add_codex_role_history(root)
         self.extend_sparse_history(root)
         before = snapshot(root)
@@ -3362,13 +3424,15 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                         lib["reviewed_effects"](plan, self.work, "")
             path.unlink()
 
-    def tty_review(self, root, *flags, timeout=600):
+    def tty_review(self, root, *flags, timeout=600, file=False):
         saved = self.work / "fixture-installer.sh"
         saved.write_text(SCRIPT)
         def terminal(reply, change=None):
             pid, master = pty.fork()
             if not pid:
                 os.chdir(root)
+                if file:
+                    os.execve("/bin/bash", ["bash", str(saved), *flags], self.env)
                 # Independent script source, never the controlling terminal.
                 with saved.open("rb") as source:
                     feeder = subprocess.Popen(["/bin/cat"], stdin=source, stdout=subprocess.PIPE)
@@ -4799,6 +4863,18 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(result.stdout.endswith("UNCONSUMED:caller-owned stdin\n"))
 
+    def test_piped_install_finishes_before_failing_caller_command(self):
+        root = self.root("caller-failure")
+        run = run_stdin(["bash", "-s", "--"], cwd=root, env=self.env,
+                        input=SCRIPT + "\nprintf 'PIPE-END\\n'\n(exit 47)\n",
+                        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=notice_timeout())
+        self.assertEqual(run.returncode, 47, run.stdout)
+        self.assertEqual(run.stdout.count("Status:"), 1)
+        self.assertTrue(run.stdout.splitlines()[-2].startswith("Status: INSTALLED."))
+        self.assertEqual(run.stdout.splitlines()[-1], "PIPE-END")
+        self.assertEqual(self.installed(root), set(STATES))
+
     def test_notice_absent_on_help_errors_and_scoped_uninstall(self):
         root = self.root("non-install")
         before = snapshot(root)
@@ -5119,7 +5195,7 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
     def audit_refused_outputs(self):
         # Inspect publication records before the normal cleanup, not raw merge
         # scratch (inputs and diagnostics are expected even on a refusal).
-        cleanup = 'rm -rf "$TMPDIR_WORK"; exit "$rc"'
+        cleanup = 'rm -rf "$TMPDIR_WORK"'
         self.assertEqual(SCRIPT.count(cleanup), 1)
         return SCRIPT.replace(cleanup,
             'for name in review-plan.json review-output review-projection review-writes review-removals '

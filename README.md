@@ -222,7 +222,12 @@ already mix guest and normal and a selected provider lacks state, the default
 can refuse before producing any plan.
 Conversely, if only normal Copilot state is present, the absence of Claude and
 Codex snapshots is **not** evidence that their files are absent or safe to
-replace. Inspect the proposed adoptions and creations separately.
+replace. Inspect the proposed adoptions and creations separately. If **both**
+normal-mode Codex role searches finish with `no-match`, plain `dom` can instead
+offer to back up both originals and replace the pair. This is **not a merge**:
+only the displayed top-level `model` and `model_reasoning_effort` carry over.
+The plan identifies the owner-only `.bak.<timestamp>` files; do not stage or
+share those backups. Press Return to decline the whole plan without writes.
 An ordinary main checkout can declare `extensions.worktreeConfig` without an
 override file. That declaration alone does not block historical review. The
 installer checks the exact role path across all reachable merge parents and

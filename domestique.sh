@@ -5,6 +5,43 @@
 # so the script is still self-contained after it has been fetched.
 set -euo pipefail
 
+# Install outcomes belong to this lifecycle, not to a command following the
+# installer on Bash's input stream. Arm before the first refusal; finalize
+# explicitly on clean fall-through, with EXIT as the failure/early-exit path.
+TMPDIR_WORK=""
+MUTATION_STARTED=0
+LIFECYCLE_COMPLETED=0
+DRY_RUN=0
+UNINSTALL=0
+FILE_PREPARATION=0
+review_marker() {
+  [ -n "$TMPDIR_WORK" ] &&
+    { [ -f "$TMPDIR_WORK/$1" ] || [ -f "$TMPDIR_WORK/revalidated/$1" ]; }
+}
+finish_install() {
+  local rc=$1
+  trap - EXIT
+  if [ "$UNINSTALL" -eq 0 ]; then
+    if review_marker review-installed ||
+       { [ "$LIFECYCLE_COMPLETED" -eq 1 ] && [ "$DRY_RUN" -eq 0 ] && [ "${RECONFIRMATION_REQUIRED:-0}" -eq 1 ]; }; then
+      echo "Status: INSTALLED — pending Save. Review each unconfirmed pair with dom-models --confirm in its native client, then Save." >&2
+    elif { [ "$MUTATION_STARTED" -eq 1 ] && [ "$LIFECYCLE_COMPLETED" -eq 0 ]; } || review_marker review-publishing; then
+      echo "Status: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target and backups before retrying." >&2
+    elif [ "$DRY_RUN" -eq 1 ] && [ "$FILE_PREPARATION" -eq 0 ] && { [ "$rc" -ne 0 ] || [ "$LIFECYCLE_COMPLETED" -eq 1 ]; }; then
+      echo "Status: PREVIEW ONLY — no install performed. Resolve any blockers, then run without --dry-run to install." >&2
+    elif [ "$LIFECYCLE_COMPLETED" -eq 1 ]; then
+      echo "Status: INSTALLED. Open the selected native client to use Domestique."
+    elif [ "$rc" -ne 0 ]; then
+      echo "Status: NOT INSTALLED by this run. Keep local, or address the diagnostics and rerun at a terminal to review." >&2
+    fi
+  elif [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ] && [ "$LIFECYCLE_COMPLETED" -eq 0 ]; then
+    echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2
+  fi
+  if [ -n "$TMPDIR_WORK" ]; then rm -rf "$TMPDIR_WORK"; fi
+  return "$rc"
+}
+trap 'finish_install $?' EXIT
+
 # Scratch safety and the file-review transport both need a working interpreter
 # before the later dependency checks. Do not allocate scratch to probe it.
 if ! python3 -I -B -c 'import pathlib' >/dev/null 2>&1; then
@@ -3070,19 +3107,16 @@ print_install_notice() (
 TARGET_DIR=""
 PLATFORM_ARG=""
 PLATFORM_EXPLICIT=0
-DRY_RUN=0
 WITH_BEADS=0
 FORCE=0
 GUEST=0
 GUEST_EXPLICIT=0
 NO_GUEST=0
-UNINSTALL=0
 PURGE_BEADS=0
 MODEL_ARGS=()
 SHOW_HELP=0
 KEEP_LOCAL=0
 UPSTREAM_PATHS=""
-FILE_PREPARATION=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -3636,9 +3670,6 @@ REQUESTED_GUEST="$GUEST"
 
 TS="$(date +%Y%m%d%H%M%S)"
 TMPDIR_WORK="$(mktemp -d "$TMPDIR/domestique.XXXXXXXX")"
-MUTATION_STARTED=0
-LIFECYCLE_COMPLETED=0
-trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$MUTATION_STARTED" -eq 1 ] && [ "$LIFECYCLE_COMPLETED" -eq 0 ]; then echo "Error: lifecycle interrupted (exit $rc); partial results may remain. Inspect the target before retrying." >&2; fi; rm -rf "$TMPDIR_WORK"; exit "$rc"' EXIT
 
 # Summary accumulators.
 SUM_CREATED=()
@@ -6904,7 +6935,9 @@ try:
             # Evidence remains separate from native-adopt. Neither a commit nor
             # a preview (even --force) establishes authority to publish.
             answer = ancestor(rel, mode)
-            if answer["proposal"] is None:
+            if provider == "codex" and rel in pair.paths.values() and answer["status"] == "no-match":
+                print(f"{rel}: no-match; no merge authority. Assessing explicit pair replacement.", file=sys.stderr)
+            elif answer["proposal"] is None:
                 print(f"Native ownership refused ({provider}): {diagnostic}. No project writes.", file=sys.stderr)
             else:
                 print(diagnostic, file=sys.stderr)
@@ -7326,6 +7359,13 @@ def prepare(provider):
         from types import SimpleNamespace
         snapshot, inputs = lib["Pair"].read_snapshot(SimpleNamespace(root=root, files=paths), absent=True)
         mode = "guest" if (directory / "guest").read_text().strip() == "1" else "normal"
+        # A completed negative search is NOT an ancestor. Only offer the two
+        # fixed data files together, never a helper, executable or partial pair.
+        def unmatched(rel):
+            path = scratch / "review-evidence" / rel
+            return path.exists() and json.loads(path.read_text())["status"] == "no-match"
+        replace_pair = (provider == "codex" and mode == "normal" and provider in request["selected"]
+                        and all(unmatched(p) for p in layout.paths.values()))
         print(f"[reconciliation] {provider} ({mode})", flush=True)
         for rel in natives:
             live, base = inputs[rel], inputs[f"{state}/base/{rel}"]
@@ -7335,18 +7375,42 @@ def prepare(provider):
             rec = {"path": rel, "upstream": lib["sha"](upstream)}
             records.append(rec)
             try:
+                replacing = replace_pair and role is not None
                 if evidence.exists():
                     info = json.loads(evidence.read_text())
                     rec["ancestor"] = info
-                    need(info["status"] == "candidate", info["status"] +
+                    need(replacing or info["status"] == "candidate", info["status"] +
                          (": " + info["reason"] if "reason" in info else ""))
-                if role and live is not None:
+                if replacing:
+                    import tomllib
+                    need(info["live_sha256"] == lib["sha"](live), "changed replacement input")
+                    need(not snapshot["files"][rel][2] & 0o111, "unsafe executable replacement input")
+                    text, marker = lib["split_marker"](live, role)
+                    need(marker is None, "unowned model confirmation marker; restore trusted ownership")
+                    fields = tomllib.loads(text)
+                    selected = {}
+                    for key in ("model", "model_reasoning_effort"):
+                        try:
+                            selected[key] = lib["selection"](fields.get(key))
+                            need(key != "model" or selected[key] != "inherit", "use TOML omission for inheritance")
+                        except ValueError as exc:
+                            raise ValueError(f"unmappable {key}: {exc}; review the original and retry") from exc
+                    rec["local_choice"] = selected
+                    rec["backup"] = rel + ".bak.<timestamp>"
+                    flag = scratch / "replace-unmatched" / rel
+                    flag.parent.mkdir(parents=True, exist_ok=True)
+                    flag.touch()
+                elif role and live is not None:
                     if evidence.exists() and parse(live, role)[2] is not None:
                         raise ValueError("unowned model confirmation marker; restore trusted ownership")
                     parsed = parse(live, role)[1]
                     rec["local_choice"] = {k: parsed.get(k) for k in
                                            ("model", "model_reasoning_effort" if provider == "codex" else "effort")}
-                if evidence.exists():
+                if replacing:
+                    action = "back up and replace unmatched role (no ancestor)"
+                    print("    No matching ancestor. Back up original (0600): " + rec["backup"] +
+                          "; replace ALL content except the displayed model/effort choices.")
+                elif evidence.exists():
                     base = evidence.with_suffix(".ancestor").read_bytes()
                     need(lib["sha"](live) == info["live_sha256"] and
                          lib["sha"](base) == info["proposal"]["sha256"], "changed evidence")
@@ -7365,7 +7429,11 @@ def prepare(provider):
                     base, action = live, "exact pristine"
                 else:
                     action = "owned preserving merge" if live is not None else "create"
-                if pair_outputs and rel in pair_outputs:
+                if replacing:
+                    candidate = lib["patch"](upstream, role, {
+                        "model": selected["model"], "effort": selected["model_reasoning_effort"]})
+                    validate(role, upstream, upstream, candidate)
+                elif pair_outputs and rel in pair_outputs:
                     candidate = pair_outputs[rel]
                 elif role and provider not in request["selected"]:
                     candidate, action = live, "retain (model pair not requested)"
@@ -7668,7 +7736,7 @@ install_plain() {
     local rel="${1#"$TARGET_DIR"/}"
     local reviewed="$TMPDIR_WORK/review-output/$rel" upstream="$TMPDIR_WORK/model-input/$CURRENT_PROVIDER/$rel"
     [ -f "$reviewed" ] && [ -f "$upstream" ] || shared_refuse "incomplete native decision $rel"
-    if [ -f "$1" ] && ! cmp -s "$1" "$reviewed"; then
+    if [ -f "$1" ] && { [ -f "$TMPDIR_WORK/replace-unmatched/$rel" ] || ! cmp -s "$1" "$reviewed"; }; then
       policy_backup_preflight "$rel"
       guest_plan_write "$1.bak.$TS" "$1"
     fi
@@ -9208,7 +9276,8 @@ for name in ("claude", "codex", "copilot"):
         plan["blockers"][name] = "unresolved path"
     elif not (observed.get("pair", {}).get("configured") or
             (observed["requested"] and any(row.get("action") == "proposed adoption" or
-             row.get("action", "").startswith("explicit upstream") for row in observed["paths"]))):
+             row.get("action", "").startswith(("explicit upstream", "back up and replace unmatched role"))
+             for row in observed["paths"]))):
         plan["blockers"][refusal] = "unresolved selection or model pair"
 if rc != "0" or not (scratch / "review-writes").is_file():
     plan["blockers"]["projection"] = "preflight or write projection incomplete"
@@ -9282,6 +9351,8 @@ for provider in providers:
     for row in provider["paths"]:
         rel = row["path"]
         expected = {rel: row["output"]}
+        if "backup" in row and plan["projection"].get(row["backup"]) != files[rel][-1]:
+            plan["blockers"][rel] = "replacement requires exact original backup"
         if historical:
             expected[f"{state}/base/{rel}"] = row["upstream"]
         for path, digest in expected.items():
@@ -9389,7 +9460,8 @@ print("Use upstream: install this same installer into an empty disposable direct
       "and defaults. Preserve local bytes privately before separately choosing replacement; no --force.")
 print("Manual: save a private copy, compare the indicated ancestor, local file and disposable upstream; "
       "resolve competing edits and re-preview. Never replace an owned pristine base with local bytes.")
-print("No consent or publication.")
+if plan["reviewable"]:
+    print("Preview complete; nothing published yet. Run dom at a foreground terminal to approve or decline this plan.")
 PY
 }
 publish_reconciliation() {
@@ -9542,6 +9614,7 @@ try:
          "stale Git index")
     check()
     # Backups first; no existing backup may be overwritten, even on retry.
+    (scratch / "review-publishing").touch()
     for rel in list(effects):
         if rel.endswith(".bak." + ts):
             write(rel, effects.pop(rel))
@@ -9567,6 +9640,7 @@ except (ValueError, OSError, KeyError, KeyboardInterrupt, subprocess.SubprocessE
     print("Reconciliation stopped:", exc, "\nCompleted publications:", published, "Created directories:", made,
           "\nNo rollback; inspect any reported partial results before retrying.", file=sys.stderr)
     sys.exit(3)
+(scratch / "review-installed").touch()
 print("Approved reconciliation published. Configuration incomplete: review/Save required "
       "in dom-models --confirm. No native readiness or workflow authorization.")
 sys.exit(3)
@@ -9596,10 +9670,17 @@ def consent():
                     say("  " + row["path"] + ": " + row["action"] +
                         ("; choices " + json.dumps(row.get("local_choice")) + " -> " +
                          json.dumps(row["proposed_choice"]) if "proposed_choice" in row else ""))
+                    if "backup" in row:
+                        say("    APPLY discards all other local role content, including instructions. "
+                            "Original: " + row["backup"] + " (0600; do not stage or share).")
             for path, after in sorted(plan["projection"].items()):
                 say("  " + path + ": " + (after or "REMOVE"))
             say("Historical roles remain unconfirmed: native review/Save required. No native readiness.")
-            say("Type APPLY to publish these changes, or Return to keep local:")
+            if any("backup" in row for p in plan["providers"] for row in p["paths"]):
+                say("Type APPLY to back up and REPLACE BOTH unmatched Codex roles and publish the whole plan, "
+                    "or Return to keep everything unchanged:")
+            else:
+                say("Type APPLY to publish these changes, or Return to keep local:")
             if tty.readline(32).strip() != b"APPLY":
                 sys.exit("Declined; kept local. No project writes.")
     except OSError:
@@ -9845,4 +9926,5 @@ fi
 LIFECYCLE_COMPLETED=1
 [ "$RECONFIRMATION_REQUIRED" -eq 0 ] || exit 3
 echo "Done."
+finish_install 0
 fi
