@@ -1,12 +1,17 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.5.0 release guide**. Independent final release and root acceptance
-passed; acceptance is separate from publication.
-Named completion includes in-scope corrections, local scoped commits and task
-bookkeeping, subject to independent review, ownership, permissions and actual
-budgets. See [current evidence and limits](#v050-local-candidate-status-and-limits);
-full registered-role/Beads lifecycle and comprehensive native unattended
-execution remain **UNQUALIFIED**.
+This is the **v0.6.0 release candidate guide**. Two things change:
+
+- **Goal startup:** planning records a [workspace handoff](#workspace-handoff-from-decompose-to-goal).
+  Execution rechecks the live checkout. Preserve disjoint staged and unstaged
+  changes; ask before touching overlapping work. A handoff does not authorize a goal.
+- **Installer upgrades:** [review the complete plan](#historical-native-role-reconciliation)
+  before adopting edited legacy roles. Each role needs its own exact-path
+  ancestor evidence. An unmatched role blocks adoption; its neighbors cannot
+  establish ownership. One approval publishes a complete eligible plan, not a
+  partial migration, model confirmation or readiness certificate.
+
+See [candidate checks and limits](#v060-candidate-checks-and-limits).
 
 Retained v0.4.4 safe-upgrade behavior: finite historical ownership proof and
 pristine manifestless adoption support bounded preserving upgrades. Unknown
@@ -44,14 +49,14 @@ hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
 The [v0.4.4 evidence and limits](#v044-release-status-and-limits) remain history,
-not fresh v0.5.0 qualification.
+not fresh v0.6.0 qualification.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.5.0 is published to `main`, existing `dom` aliases that fetch
-`main/domestique.sh` receive its completion changes and retained safe-upgrade behavior on their next invocation,
+After v0.6.0 is published to `main`, existing `dom` aliases that fetch
+`main/domestique.sh` receive its workflow and installer changes on their next invocation,
 without an alias change.
 For the covered completely removed Claude/Codex case, optionally preview with
 `dom --platform copilot --dry-run`, then run `dom --platform copilot`.
@@ -83,7 +88,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.5.0's completion changes are included in remote
+A source checkout is optional; v0.6.0's changes are included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -253,9 +258,9 @@ information on failure; do not blindly roll back.
    a goal. After a configuration detour, give a fresh explicit goal naming the
    intended target; a fresh valid install alone needs no renewed authorization.
 
-   #### Candidate: workspace handoff from decompose to goal
+   #### Workspace handoff from decompose to goal
 
-   This is the working candidate contract, not a feature of published v0.5.0.
+   The handoff is new in v0.6.0.
    For example, `/dom-decompose Add a CSV header check` returns a graph and
    handoff; a separate `/dom-goal <returned-epic-id>` authorizes execution.
    Codex uses `$dom-decompose` and `$dom-goal`. If the client still says to
@@ -551,7 +556,7 @@ with pristine emitted bases seeded for a subsequent merge; this is **not a role
 pair ownership exception**. Unknown ownership, missing policy bases,
 unsafe paths or incompatible retained policy blocks can refuse before writes.
 
-### Historical native-role reconciliation (working candidate)
+### Historical native-role reconciliation
 
 Without a selector, preview **all three providers together**. An edited
 manifestless role may have a provable ancestor even though its current bytes
@@ -644,16 +649,14 @@ All start with edited historical Claude roles and no Claude snapshot:
 | Guest / guest | Tracked | Refuses a planned tracked rewrite even when it can identify the Claude ancestor. |
 | Guest / guest | Not indexed; still in history | Eligible sibling exercises one approval while retaining guest privacy. |
 
-The representative fixture models only the reported **absence of Claude and
-Codex state directories and presence of a Copilot state directory without a
-mode marker**. Those observations do not establish what unmanaged files exist,
-their contents, the validity of Copilot ownership, or a consumer's migration
-eligibility. Its tracked roles, Git ancestry, settings and private host config
-are synthetic, not copied from a consumer.
+These are disposable projects with synthetic roles, Git ancestry, settings
+and host configuration. Missing state directories do not establish that native
+files are absent, owned or safe to replace.
 
-The eligible controls compare saved and piped previews, preserve both Claude
-model choices, other provider choices and unrelated staged/unstaged data, and
-rerun without another reconciliation. None establishes eligibility for a
+The eligible controls compare saved and piped previews and exercise either a
+saved-file approval token or one `APPLY` on the controlling terminal with a
+piped installer. Both preserve role choices and unrelated staged/unstaged data
+and rerun without another reconciliation. None establishes eligibility for a
 particular consumer checkout; do not remove files from the index to mimic a
 control.
 
@@ -781,6 +784,29 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.6.0 candidate checks and limits
+
+The installer SHA-256 is
+`e1febd15f496ad25e9609cff9797a716e248842e13ff76fa407bf3e80849bd06`.
+Relative to `ed41c44`, only the emitted version and the two finite generation
+lists (current inventory and policy-only state) changed in the installer. No
+historical role or policy identity was added for the version bump.
+
+Focused offline checks on these installer bytes:
+
+| Disposable Git project | Observed result |
+| --- | --- |
+| Empty, default selection | Streamed no-write preview, all-three install and stable reruns passed. |
+| Published `v0.5.0` (`72cbd5eef6926a806a4f63ce758af3d33de3709e`), normal default selection | Preview made no changes. Apply retained role choices, host policy text, index and backups; projections and pristine bases matched a fresh v0.6.0 reference. Rerun changed no bytes or modes and added no backups. |
+| Synthetic edited Claude and Codex roles with proven ancestors, plus configured Copilot | Saved-file and piped runs showed the same planned effects. Each published once (saved token or terminal `APPLY`), preserved choices and the index, and reran without another reconciliation or byte changes. Exit `3` still required review/Save. |
+
+Dirty-start evidence comes from installed instructions and disposable Git
+fixtures, not a successful native dirty-start lifecycle. Reconciliation
+evidence covers filesystem effects, including refusals, not a full migration
+of a real project. A no-write preview cannot establish that such a migration
+was applied or that a native client loaded and confirmed the resulting roles.
+Review, publication and native qualification are separate.
 
 <a id="v050-local-candidate-status-and-limits"></a>
 

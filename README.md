@@ -7,7 +7,36 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.5.0: scoped completion
+## v0.6.0 release candidate: dirty-start goals and preserving upgrades
+
+**Starting work:** `dom-decompose` plans; it does not authorize execution.
+A later `dom-goal` rechecks the checkout before claiming work. Separable edits
+can stay in place; an overlap needs a decision about the affected paths, not
+a clean-tree ritual. Native dirty-start execution remains unqualified.
+
+**Upgrading configuration:** preview with `dom --dry-run`. Edited historical
+roles need evidence at their own paths; ownership of another role or provider
+does not count. Eligible synthetic projects exercised one approval for the
+complete plan with either a saved installer or a piped installer at a terminal.
+This is not a full migration of a real project or a native readiness check.
+See [how to review the plan](#reviewing-historical-native-roles).
+
+### From a dirty checkout to a named goal
+
+In Claude or Copilot, for example, run `/dom-decompose Add a CSV header check`.
+Read the returned epic, dependencies and workspace handoff. **Planning stops
+there.** When ready, run `/dom-goal <returned-epic-id>` (use `$dom-decompose`
+and `$dom-goal` in Codex). An unrelated staged README edit can stay staged:
+execution rechecks the target paths and preserves both index and file contents
+when starting the dedicated branch and committing reviewed work. If your edit
+overlaps the CSV code, identify which change belongs to whom or defer that
+path; don't stash everything just to start.
+
+If planning reports no handoff or execution demands a clean tree,
+[check the installed instructions and active session](docs/install-upgrade-design.md#workspace-handoff-from-decompose-to-goal)
+before changing the checkout.
+
+### Retained v0.5.0: scoped completion
 
 **Independent final release and root acceptance passed.** Authorized managed work includes
 in-scope corrections, validation, local scoped commits and task bookkeeping.
@@ -28,22 +57,6 @@ for exact provenance and final-candidate checks. Historical v0.4.4 counts below
 are not fresh v0.5.0 qualification. Final independent validation passed all
 **25 fresh tests** plus syntax/lint/diff checks (hq-6f1.4 and root hq-6f1).
 Acceptance and publication are separate.
-
-### Candidate: from a dirty checkout to a named goal
-
-In Claude or Copilot, for example, run `/dom-decompose Add a CSV header check`.
-Read the returned epic, dependencies and workspace handoff. **Planning stops
-there.** When ready, run `/dom-goal <returned-epic-id>` (use `$dom-decompose`
-and `$dom-goal` in Codex). An unrelated staged README edit can stay staged:
-execution rechecks the target paths and preserves both index and file contents
-when starting the dedicated branch and committing reviewed work. If your edit
-overlaps the CSV code, identify which change belongs to whom or defer that
-path; don't stash everything just to start.
-
-This handoff is in the working candidate, **not published v0.5.0**. If planning
-reports no handoff or execution demands a clean tree, [check the installed
-instructions and active session](docs/install-upgrade-design.md#candidate-workspace-handoff-from-decompose-to-goal)
-before changing the checkout.
 
 ### Retained v0.4.4 release history: proof-based upgrades and preserving recovery
 
@@ -133,7 +146,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-After v0.5.0 is published to `main`, the existing alias fetches it on its next
+After v0.6.0 is published to `main`, the existing alias fetches it on its next
 invocation; no alias change is needed:
 
 ```sh
@@ -169,7 +182,7 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional; v0.5.0's completion changes are included in remote
+A source checkout is optional; v0.6.0's changes are included in remote
 `dom` after publication to `main`. To inspect reviewed source locally, run from
 that checkout against a disposable Git project:
 
@@ -193,7 +206,7 @@ Stale history alone does not resurrect completely removed providers. This does
 not change the selector-less default of all three providers.
 Use scoped uninstall, not an install selector, to remove a provider.
 
-### Working candidate: reviewing historical native roles
+### Reviewing historical native roles
 
 If the default `--dry-run` finds edited roles without installer snapshots, look
 for an exact-path historical ancestor, each proposed model choice, provider
@@ -222,7 +235,7 @@ controlling terminal**, not installer stdin. For automation use the same saved
 candidate, `--review-file` then `--apply-file sha256:TOKEN`; streamed previews
 do not issue tokens. After publication the historical role pair still needs
 `dom-models --confirm` review/Save (exit `3` is not a readiness signal).
-See [approval, recovery and history limits](docs/install-upgrade-design.md#historical-native-role-reconciliation-working-candidate).
+See [approval, recovery and history limits](docs/install-upgrade-design.md#historical-native-role-reconciliation).
 
 ### Defaults and preserving overrides
 
@@ -498,7 +511,7 @@ setup and other installer calls are unchanged).
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.5.0 qualification limits](docs/install-upgrade-design.md#v050-local-candidate-status-and-limits).
+ancestry and the [v0.6.0 qualification limits](docs/install-upgrade-design.md#v060-candidate-checks-and-limits).
 
 ## License
 

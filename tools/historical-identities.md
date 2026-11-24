@@ -34,8 +34,8 @@ isolated `all` normal/guest installs using the same offline harness. The block
 between `BEGIN/END GENERATED HISTORICAL IDENTITIES` contains a shared Python
 payload: sorted `(provider, path, install-mode)` keys and exact SHA-256 sets.
 It is emitted into the installer's existing shared inventory library, and used
-directly by `policy_legacy_base`. There is no runtime repository, generator,
-JSON, external helper, or provenance-file dependency; stdin/curl installation
+directly by `policy_legacy_base`. There is no runtime dependency on the
+Domestique source checkout, generator, JSON, external helper or provenance file; stdin/curl installation
 remains self-contained.
 
 **Legacy-base authority is unchanged.**
@@ -60,7 +60,7 @@ or resurrecting that provider's native files on an unrelated explicit install.
 An explicit selection can complete it using independent native ownership proof;
 uninstall removes only the owned policy, not the untouched native files.
 
-Selected manifest-less roles/commands now require exact raw-byte identities for
+Pristine adoption of selected manifest-less roles/commands requires exact live-byte identities for
 **each** provider/path/install-mode before any writes, in Git roots, subdirectories
 and non-Git targets. The policy identity alone never proves native ownership.
 Unknown/edited files, normalized role identities, unowned helpers, unsafe objects
@@ -74,27 +74,30 @@ bases, preserves model/effort selections and outside-policy bytes, and never
 claims `.bak.*` siblings. Custom owned pairs retain their existing preserving
 merge/review-and-Save requirements.
 
-### Candidate ancestors (internal evidence only)
+### Candidate ancestors for reviewed reconciliation
 
 `native_ancestor_candidate(root, provider, rel, mode)` in the emitted installer
-inventory library is **not called by installation**. It accepts a safe existing
-native path at a physical Git root without that provider's snapshot state.
+inventory library runs during native ownership preflight when historical
+evidence is needed for a safe existing path at a physical Git root without
+that provider's snapshot state. Before publishing an approved reconciliation,
+the installer reruns the resolver for each reviewed ancestor and refuses stale
+evidence.
 `candidate` includes the live SHA-256 separately from a proposal containing the
 exact historical base bytes, their SHA-256 and one witnessing commit/blob ID.
 Only complete HEAD ancestry (all parents, exact path, no renames, other refs,
 index, backups, filters or textconv) and the existing raw identity table count.
 Two distinct recognized bases are `ambiguous`, not “pick the newest.”
-Neither a unique proposal nor a matching current file grants ownership.
+A unique ancestor is evidence for a proposal, not authority to overwrite the
+live file. An unmatched path cannot borrow another path's provenance.
 
-Limits per path: 128 commits, 32 distinct blobs, 1 MiB per blob, 20 seconds of
-Git inspection; at most 32,768 entries in the inspected Git metadata directories
-and 64 KiB of local config. Only conventional local SHA-1 repositories: no
-gitfiles/linked worktrees, shallow, grafted, alternate or promisor stores,
-symlinked metadata, local config includes or repository extensions. No fetch,
-scratch, index refresh or config writes. `no-match` means a completed search;
-unsafe, unsupported, existing-state, incomplete/unknown history or an exhausted
-limit never returns a partial proposal. This is point-in-time evidence, not
-protection against concurrent replacement or authority to apply it later.
+The resolver checks at most 65,536 reachable commits per path. `no-match`
+means a completed search; incomplete or over-budget history cannot certify a
+partial result. The only supported repository extension is a single verified
+boolean `extensions.worktreeConfig` declaration in a physical main checkout
+with no `.git/config.worktree` override. Linked worktrees are not eligible.
+See the [release guide](../docs/install-upgrade-design.md#historical-native-role-reconciliation)
+for storage restrictions, tree/blob and time budgets, preview scratch and the
+approval procedure.
 
 Focused offline reproduction: run `python3 -B test/all-current.py
 AllProviders.test_mixed_legacy_default_refusal_and_ancestor_proposals

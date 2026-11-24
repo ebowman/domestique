@@ -2814,7 +2814,7 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         self.assertNotIn(STATES["claude"] + "/mode", noop["writes"])
         self.assertNotIn("Reconciliation plan: sha256:", complete.stdout)
         # Same plan data, same functions. Only top-level installer bytes change.
-        changed = script.replace('DOMESTIQUE_VERSION="0.5.0"', ':\nDOMESTIQUE_VERSION="0.5.0"', 1)
+        changed = script.replace('\nDOMESTIQUE_VERSION=', '\n:\nDOMESTIQUE_VERSION=', 1)
         self.assertNotEqual(script, changed)
         stream = self.run_dom(root, *flags, script=changed, ok=False)
         self.assertNotIn("Reconciliation plan: sha256:", stream.stdout)
