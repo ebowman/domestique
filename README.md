@@ -7,7 +7,21 @@ The plan of record lives in [Beads](https://github.com/steveyegge/beads).
 Delegating implementation and verification keeps the orchestrator's context
 lean; “done, tests pass” is checked, not trusted.
 
-## v0.6.0 release candidate: dirty-start goals and preserving upgrades
+## v0.6.1 release candidate: replacing an unmatched Codex role pair
+
+When neither normal-mode Codex role has a matching ancestor, `dom` can
+offer a **replacement, not a merge**, after both searches finish. Review
+the two backup paths and the model/effort choices. Return keeps everything
+as-is; `APPLY` approves the **whole plan**, including backing up both
+originals before replacing their role bodies.
+
+Read the final status: `PREVIEW ONLY` and `NOT INSTALLED by this run` do not
+mean an install happened. `INSTALLED — pending Save` means configuration is
+already on disk; review each unconfirmed pair with `dom-models --confirm` in
+its native client, then Save. Re-running the installer is not a Save.
+See [patch checks and limits](docs/install-upgrade-design.md#v061-candidate-checks-and-limits).
+
+### Retained v0.6.0: dirty-start goals and preserving upgrades
 
 **Starting work:** `dom-decompose` plans; it does not authorize execution.
 A later `dom-goal` rechecks the checkout before claiming work. Separable edits
@@ -146,7 +160,7 @@ Run from the intended project root. Installation needs Bash, Git and Python
 credentials or Beads itself. Native clients and usable models are prerequisites
 for workflow execution, not configuration installation.
 
-After v0.6.0 is published to `main`, the existing alias fetches it on its next
+After v0.6.1 is published to `main`, the existing alias fetches it on its next
 invocation; no alias change is needed:
 
 ```sh
@@ -182,7 +196,7 @@ migrated project state.
 
 ### Optional source installation
 
-A source checkout is optional; v0.6.0's changes are included in remote
+A source checkout is optional; v0.6.1's changes are included in remote
 `dom` after publication to `main`. To inspect reviewed source locally, run from
 that checkout against a disposable Git project:
 
@@ -516,7 +530,7 @@ setup and other installer calls are unchanged).
 Selected shell suites also include `guest.sh`, `codex.sh` and `uninstall.sh`;
 without `--current` they run frozen historical fixtures, not current acceptance.
 These are offline checks, not native qualification. See the guide for fixture
-ancestry and the [v0.6.0 qualification limits](docs/install-upgrade-design.md#v060-candidate-checks-and-limits).
+ancestry and the [v0.6.1 qualification limits](docs/install-upgrade-design.md#v061-candidate-checks-and-limits).
 
 ## License
 

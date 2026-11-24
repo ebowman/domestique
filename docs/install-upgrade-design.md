@@ -1,6 +1,8 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.6.0 release candidate guide**. Two things change:
+This is the **v0.6.1 release candidate guide**. The patch adds an explicit
+backed-up replacement for an unmatched Codex pair and reports the outcome of
+the installer separately from native model confirmation.
 
 - **Goal startup:** planning records a [workspace handoff](#workspace-handoff-from-decompose-to-goal).
   Execution rechecks the live checkout. Preserve disjoint staged and unstaged
@@ -13,7 +15,7 @@ This is the **v0.6.0 release candidate guide**. Two things change:
   One approval publishes a complete eligible plan, not a
   partial migration, model confirmation or readiness certificate.
 
-See [candidate checks and limits](#v060-candidate-checks-and-limits).
+See [candidate checks and limits](#v061-candidate-checks-and-limits).
 
 Retained v0.4.4 safe-upgrade behavior: finite historical ownership proof and
 pristine manifestless adoption support bounded preserving upgrades. Unknown
@@ -51,13 +53,13 @@ hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
 The [v0.4.4 evidence and limits](#v044-release-status-and-limits) remain history,
-not fresh v0.6.0 qualification.
+not fresh v0.6.1 qualification.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.6.0 is published to `main`, existing `dom` aliases that fetch
+After v0.6.1 is published to `main`, existing `dom` aliases that fetch
 `main/domestique.sh` receive its workflow and installer changes on their next invocation,
 without an alias change.
 For the covered completely removed Claude/Codex case, optionally preview with
@@ -90,7 +92,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.6.0's changes are included in remote
+A source checkout is optional; v0.6.1's changes are included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -550,6 +552,16 @@ Publication is sequential across providers, not one all-provider transaction:
 after interruption a completed provider may remain configured while another
 failed. Nonzero/partial output is not overall success; retain recovery details.
 
+Read the final installer status, not just the exit code:
+
+| Status | What to do |
+| --- | --- |
+| `PREVIEW ONLY` | No install performed. Review the plan or resolve blockers. |
+| `NOT INSTALLED by this run` | The run refused or approval was declined; an earlier install may still exist. |
+| `INSTALLED` | The selected configuration was installed. This does not attest to native registration or model availability. |
+| `INSTALLED — pending Save` | Publication completed. Exit `3` means review each unconfirmed pair with `dom-models --confirm` in its native client, then Save; don't reinstall to confirm. |
+| `lifecycle interrupted` | Partial results may remain. Inspect the target and backups before retrying. |
+
 A generic plain-file conflict leaves the live file unchanged, writes
 the proposed merge to `.new`, preserves a `.bak.<timestamp>` and exits `3`.
 Inspect and resolve explicitly; do not replace the live file blindly.
@@ -788,6 +800,30 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.6.1 candidate checks and limits
+
+Installer SHA-256:
+`609d769525863c3ddb7eb63b1f5dd4d5975546b3fb4fa568986fd5dd43b6ccc4`.
+Relative to the reviewed repair (`d6bdb2d`), the only installer changes are
+the version and the two finite generation lists. The historical identity data
+is unchanged. Checks use disposable Git repositories, not consumer data,
+native clients or a model Save.
+
+| Input | Observed on the versioned installer |
+| --- | --- |
+| Tracked Claude roles with proven ancestors, unmatched Codex pair, configured normal Copilot | Saved and piped default commands showed the same proposed effects. Return wrote nothing. One terminal `APPLY` published the plan, kept the index and unrelated edits, and left each exact Codex original in a 0600 sibling backup. Exit `3` said `INSTALLED — pending Save`; reruns neither changed bytes/modes nor added backups. |
+| Same no-match history, release control | Published v0.6.0 refused both paths without writes. v0.6.1 offered replacement, but refused an executable input without issuing an approval token. |
+| Empty project / existing normal v0.6.0 install (`41c201c`) | Fresh default install and reruns passed. The upgrade preserved six configured role choices, host policy text, pristine bases, staged index and unstaged data. Preview wrote nothing; the installed rerun was byte/mode stable. |
+| Previous repair installed by `d6bdb2d` | Upgrade retained both backups, installed roles and pending-Save state. No new reconciliation or backups on apply or rerun. |
+| Outcome ordering | Unsafe scratch refused before target writes. An injected copy failure exited `17` and reported partial results. A piped clean install printed its one final status **before** a caller command that exited `47`. |
+
+Ten focused `AllProviders` tests passed, as did the finite-inventory test,
+13 published-upgrade **harness** tests, Bash syntax and warning-level
+ShellCheck. These are not a full historical matrix or native readiness
+qualification. The v0.6.0 refusal above is a negative control, not a failed
+candidate check; [historical baseline results](#offline-baseline-release-gate)
+were not rerun or reclassified for this patch.
 
 ### v0.6.0 candidate checks and limits
 

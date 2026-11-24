@@ -3141,6 +3141,74 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
     def test_default_unmatched_codex_pipe(self):
         self.qualify_mixed_default("stdin", guest=False, missing_codex=True, live_codex=True, unmatched=True)
 
+    def check_patch_upgrade(self, root, pending):
+        """This patch changes no installed role, helper, policy or pristine base."""
+        old = byte_snapshot(root)
+        before = snapshot(root)
+        preview = self.run_dom(root, "--dry-run", ok=not pending)
+        self.assertEqual(preview.returncode, 3 if pending else 0)
+        self.assertIn("Status: PREVIEW ONLY", preview.stderr)
+        self.assertEqual(snapshot(root), before)
+        for attempt in range(2):
+            run = self.run_dom(root, ok=not pending)
+            self.assertEqual(run.returncode, 3 if pending else 0)
+            self.assertIn("Status: INSTALLED — pending Save" if pending else "Status: INSTALLED.",
+                          run.stderr if pending else run.stdout)
+            self.assertNotIn("[reconciliation]", run.stdout)
+            current = byte_snapshot(root)
+            if attempt:
+                self.assertEqual(current, stable)
+                continue
+            self.assertEqual(old.keys(), current.keys())
+            for path, (mode, data) in current.items():
+                old_mode, old_data = old[path]
+                self.assertEqual(mode, old_mode, path)
+                if path.endswith("/.domestique/manifest") and data != old_data:
+                    def fields(raw):
+                        return dict(line.split(b"=", 1) for line in raw.splitlines())
+                    previous, updated = fields(old_data), fields(data)
+                    self.assertEqual(updated.pop(b"domestique_version"), VERSION.encode())
+                    previous.pop(b"domestique_version")
+                    for key in (b"installed_at", b"installed_ref", b"script_sha256"):
+                        updated.pop(key)
+                        previous.pop(key)
+                    self.assertEqual(previous, updated, path)
+                else:
+                    self.assertEqual(data, old_data, path)
+            stable = current
+
+    def test_v060_preserving_patch_upgrade(self):
+        root = self.root("published-patch-upgrade")
+        released = subprocess.check_output(["git", "show", "v0.6.0:domestique.sh"],
+                                           cwd=SOURCE.parent, text=True, env=self.env)
+        choices = [f"--model={provider}:{role}=fixture/{provider}-{role}"
+                   for provider in STATES for role in ("implementer", "reviewer")]
+        self.run_dom(root, *choices, script=released)
+        policy = root / "CLAUDE.md"
+        policy.write_bytes(b"Host policy preface.\n\n" + policy.read_bytes())
+        host = root / "host.txt"
+        host.write_bytes(b"staged\n")
+        subprocess.run(["git", "add", "host.txt"], cwd=root, env=self.env, check=True)
+        host.write_bytes(b"unstaged\n")
+        self.check_patch_upgrade(root, pending=False)
+
+    def test_preversion_repair_preserving_patch_upgrade(self):
+        root = self.mixed_legacy_fixture("previous-repair", copilot_guest=False, codex_guest=None)
+        self.add_codex_role_history(root, commit=False)
+        originals = {p: p.read_bytes() for p in (root / ".codex/agents").glob("*.toml")}
+        repair = subprocess.check_output(["git", "show", "d6bdb2dbde66ea9f8d7adb4e5eb23df2b0c79cc4:domestique.sh"],
+                                         cwd=SOURCE.parent, text=True, env=self.env)
+        token, _ = self.file_review(root, repair)
+        run = subprocess.run(["bash", str(self.work / "saved-installer.sh"), "--apply-file", "sha256:" + token],
+                             cwd=root, env=self.env, text=True, capture_output=True, timeout=1200)
+        self.assertEqual(run.returncode, 3, run.stderr)
+        self.assertIn("Status: INSTALLED — pending Save", run.stderr)
+        self.assertEqual(len(originals), 2)
+        for p, original in originals.items():
+            backup, = p.parent.glob(p.name + ".bak.*")
+            self.assertEqual((backup.read_bytes(), backup.stat().st_mode & 0o777), (original, 0o600))
+        self.check_patch_upgrade(root, pending=True)
+
     def test_tracked_default_codex_guest_copilot_normal_refuses_without_conversion(self):
         root = self.mixed_legacy_fixture("mixed-visibility", copilot_guest=False)
         self.assertFalse((root / STATES["claude"]).exists())
