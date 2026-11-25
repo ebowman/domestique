@@ -105,7 +105,7 @@ sys.exit(result.returncode)
 ' "$0" "$BASH" "$transport" "$@"
 fi
 
-DOMESTIQUE_VERSION="0.6.2"
+DOMESTIQUE_VERSION="0.6.3"
 
 MARKER_BEGIN='<!-- BEGIN domestique (managed) -->'
 MARKER_END='<!-- END domestique -->'
@@ -3068,7 +3068,11 @@ EOF
 print_install_notice() (
   local provider selected label mode separator=""
   printf 'domestique VERSION %s — install plan' "$DOMESTIQUE_VERSION"
-  [ "$DRY_RUN" -eq 0 ] || printf ' (dry-run; no target changes)'
+  if [ "$FILE_PREPARATION" -eq 1 ]; then
+    printf ' (revalidating saved-file approval)'
+  elif [ "$DRY_RUN" -eq 1 ]; then
+    printf ' (dry-run; no target changes)'
+  fi
   printf '\nTarget: %s\n' "$(cd -- "$TARGET_DIR" && pwd -P)"
   if [ "$PLATFORM_EXPLICIT" -eq 0 ]; then
     echo "No --platform: fresh installs AND reruns now select ALL Claude Code, Codex and GitHub Copilot."
@@ -6785,7 +6789,7 @@ def installer_inventories(provider, files, policies, helper):
                                 ",.agents/skills/dom-goal/agents/openai.yaml" + suffix))
             for version in ("0.1.0", "0.2.0", "0.2.1", "0.2.2"):
                 recognized.add((version, old_files + "," + helper + suffix))
-            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1", "0.6.2"):
+            for version in ("0.2.2", "0.3.0", "0.3.1", "0.4.0", "0.4.1", "0.4.2", "0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1", "0.6.2", "0.6.3"):
                 recognized.add((version, files + suffix))
     return recognized
 PY
@@ -6880,7 +6884,7 @@ try:
         sys.exit(0)
     if policy_only or early:
         if policy_only:
-            need(manifest.get("domestique_version") in ("0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1", "0.6.2") and
+            need(manifest.get("domestique_version") in ("0.4.3", "0.4.4", "0.5.0", "0.6.0", "0.6.1", "0.6.2", "0.6.3") and
                  set(manifest) == {"snapshot_format", "platform", "domestique_version",
                                    "installed_ref", "installed_at", "script_sha256", "files"},
                  "unknown policy-only manifest generation")
@@ -9213,6 +9217,7 @@ reconciliation_preview() {
   # Separate, terminal branch. No publication authority, even for non-dry
   # invocation. Run the ordinary read-only checks and write projection, not
   # a mock target in which the guest/index or snapshot checks would be false.
+  local preview_only=$DRY_RUN
   local DRY_RUN=1 review_rc provider selected
   for provider in claude codex copilot; do
     case "$provider" in
@@ -9273,7 +9278,7 @@ reconciliation_preview() {
   emit_guest_plan_validator > "$TMPDIR_WORK/guest-validator"
   python3 -I -B - "$TMPDIR_WORK" "$TARGET_DIR" "$MODEL_REQUEST" "$PLATFORM_ARG" \
     "$GUEST_EXPLICIT" "$NO_GUEST" "$FORCE" "$WITH_BEADS" "$PLATFORM_SET" "$review_rc" \
-    "$SHARED_FILES" "$DOMESTIQUE_VERSION" "$TS" "$UPSTREAM_PATHS" <<'PY'
+    "$SHARED_FILES" "$DOMESTIQUE_VERSION" "$TS" "$UPSTREAM_PATHS" "$preview_only" "$FILE_PREPARATION" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -9283,7 +9288,7 @@ import sys
 
 scratch, root = map(Path, sys.argv[1:3])
 root = root.resolve(strict=True)
-request, platform, guest, normal, force, beads, platforms, rc, shared, version, ts, dispositions = sys.argv[3:]
+request, platform, guest, normal, force, beads, platforms, rc, shared, version, ts, dispositions, preview, file_apply = sys.argv[3:]
 providers = [json.loads(p.read_bytes()) for name in ("claude", "codex", "copilot")
              if (p := scratch / ("review-" + name + ".json")).is_file()]
 plan = dict(version=2, root=str(root), installer=version,
@@ -9482,6 +9487,13 @@ if rc != "0":
                                              .replace(ts.encode(), b"<timestamp>"))
                            for p in scratch.glob("review-diagnostics*")}
 lib["finalize_review"](plan, scratch)
+data = lib["canonical"](plan)
+(scratch / "review-plan.json").write_bytes(data)
+# For an eligible live decision, expose the same detailed report on demand.
+# Blocked runs still print the diagnostic assessment.
+live = plan["reviewable"] and preview == "0"
+if live:
+    sys.stdout = (scratch / "full-review").open("w", encoding="utf-8")
 if not plan["reviewable"]:
     print("Diagnostic assessment only; no publishable outputs for this transaction.")
 for provider in providers:
@@ -9498,12 +9510,12 @@ if plan["reviewable"]:
     for rel, after in sorted(plan["projection"].items()):
         print("  " + rel + ": " + (after or "REMOVE"))
     print("Historical model pairs require native review/Save after publication; not native-ready.")
-data = lib["canonical"](plan)
-# Internal interface for a later approval layer. The digest identifies the
-# review, including unsuccessful/blocked plans; it is NOT authority. Bind a
-# disposition separately and re-run preflights, guest checks and snapshots
-# before publishing anything. Private output bytes live in scratch only.
-(scratch / "review-plan.json").write_bytes(data)
+if live:
+    sys.stdout.close()
+    sys.stdout = sys.__stdout__
+    sys.exit(0)
+if plan["reviewable"] and file_apply == "1":
+    sys.exit(0)
 if not plan["reviewable"]:
     print("Incomplete review; no plan-bound approval token. Resolve and re-preview:")
     for key, reason in plan["blockers"].items():
@@ -9712,7 +9724,8 @@ PY
 }
 review_consent() {
   python3 -I -B - "$TMPDIR_WORK/review-plan.json" <<'PY'
-import hashlib, json, os, sys
+import hashlib, json, os, sys, termios
+from collections import Counter
 from pathlib import Path
 data = Path(sys.argv[1]).read_bytes()
 plan = json.loads(data)
@@ -9721,37 +9734,69 @@ if not plan["reviewable"]:
 digest = hashlib.sha256(data).hexdigest()
 def consent():
     # stdin belongs to Bash. A background process must not stop on SIGTTIN.
+    retry = ("Kept local; no project writes. Rerun at a foreground terminal or save and verify "
+             "the installer outside the target, then use --review-file and --apply-file sha256:TOKEN "
+             "with the same install flags.")
     try:
         with open("/dev/tty", "rb+", buffering=0) as tty:
-            if os.tcgetpgrp(tty.fileno()) != os.getpgrp():
+            fd = tty.fileno()
+            if os.tcgetpgrp(fd) != os.getpgrp():
                 raise OSError("not in foreground")
+            if not termios.tcgetattr(fd)[3] & termios.ICANON:
+                sys.exit("Terminal is not in line-input mode. " + retry)
             def say(s):
                 tty.write((s + "\n").encode("ascii", "backslashreplace"))
             say("Approve complete reconciliation " + digest + " in " + ascii(plan["root"]) + "?")
             for p in plan["providers"]:
                 say(p["provider"] + " " + p["mode"] + (" selected" if p["requested"] else " retained"))
+                other = Counter()
                 for row in p["paths"]:
+                    if "proposed_choice" not in row and not row["action"].startswith(("explicit upstream", "proposed adoption")):
+                        other[row["action"]] += 1
+                        continue
                     say("  " + row["path"] + ": " + row["action"] +
                         ("; choices " + json.dumps(row.get("local_choice")) + " -> " +
                          json.dumps(row["proposed_choice"]) if "proposed_choice" in row else ""))
                     if "backup" in row:
                         say("    APPLY discards all other local role content, including instructions. "
                             "Original: " + row["backup"] + " (0600; do not stage or share).")
-            for path, after in sorted(plan["projection"].items()):
-                say("  " + path + ": " + (after or "REMOVE"))
+                if other:
+                    say("  Other paths: " + ", ".join(f"{n} {action}" for action, n in other.items()))
             say("Historical roles remain unconfirmed: native review/Save required. No native readiness.")
             replaced = [p["provider"].capitalize() for p in plan["providers"] if any("backup" in row for row in p["paths"])]
             if replaced:
-                say("Type APPLY to back up and REPLACE BOTH unmatched " + " roles and BOTH unmatched ".join(replaced) +
+                prompt = ("Type APPLY to back up and REPLACE BOTH unmatched " + " roles and BOTH unmatched ".join(replaced) +
                     " roles and publish the whole plan, "
                     "or Return to keep everything unchanged:")
             else:
-                say("Type APPLY to publish these changes, or Return to keep local:")
-            if tty.readline(32).strip() != b"APPLY":
-                sys.exit("Declined; kept local. No project writes.")
-    except OSError:
-        sys.exit("No foreground controlling terminal. Kept local; no project writes. "
-                 "Use --review-file then --apply-file sha256:TOKEN for noninteractive approval.")
+                prompt = "Type APPLY to publish these changes, or Return to keep local:"
+            say("Enter PLAN for the complete path and hash report before deciding.")
+            mistakes = 0
+            while True:
+                # Discard typeahead, including additional pasted lines on retry.
+                # One canonical read returns at most one record. Unlike readline,
+                # it cannot join an EOF-terminated fragment to a later answer.
+                termios.tcflush(fd, termios.TCIFLUSH)
+                say(prompt)
+                answer = os.read(fd, 32)
+                if answer == b"APPLY\n":
+                    return
+                if answer == b"\n":
+                    sys.exit("Declined; kept local. No project writes.")
+                if not answer:
+                    sys.exit("No terminal input (EOF). " + retry)
+                if not answer.endswith(b"\n") or len(answer) == 32:
+                    termios.tcflush(fd, termios.TCIFLUSH)
+                    sys.exit("Incomplete or oversized terminal response. " + retry)
+                if answer == b"PLAN\n":
+                    say(Path(sys.argv[1]).with_name("full-review").read_text(encoding="utf-8"))
+                    continue
+                mistakes += 1
+                if mistakes == 2:
+                    sys.exit("Invalid terminal response twice. " + retry)
+                say("Unrecognized response. Try once more: enter exactly APPLY, PLAN, or a blank line.")
+    except (OSError, termios.error):
+        sys.exit("No foreground controlling terminal available for input. " + retry)
 consent()
 print(digest)
 PY

@@ -2870,6 +2870,8 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
         applied = apply()
         self.assertEqual(applied.returncode, 3)
         self.assertIn("Approved reconciliation published", applied.stdout, applied.stderr)
+        self.assertIn("(revalidating saved-file approval)", applied.stdout)
+        self.assertNotIn("Preview complete; nothing published yet", applied.stdout)
         self.assertEqual((root / (rel + ".bak.20000101000000")).read_bytes(), b"Older fixture backup\n")
         self.assertIn(changed, [p.read_bytes() for p in root.glob(rel + ".bak.*")])
         self.assertIn(b"Claude Code only;", (root / rel).read_bytes())
@@ -3047,7 +3049,7 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             self.assertIn("Status: NOT INSTALLED by this run", declined)
             self.assertIn("REPLACE BOTH unmatched Codex roles", declined)
             self.assertEqual(before, snapshot(root))
-            report = terminal(b"APPLY").decode()
+            report = terminal([b"PLAN\n", b"APPLY\n"]).decode()
             self.assertIn("Status: INSTALLED — pending Save", report)
             for p, original in originals.items():
                 backup, = p.parent.glob(p.name + ".bak.*")
@@ -3198,9 +3200,19 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
             self.assertIn(str(path.relative_to(root)) + ": back up and replace unmatched role", prompt)
             self.assertIn(str(path.relative_to(root)) + ".bak.<timestamp>", prompt)
         self.assertIn("discards all other local role content", prompt)
+        self.assertNotIn("Complete publication (afterimage", declined)
+        self.assertNotIn("Informational preview only", declined)
+        self.assertNotIn("Run dom at a foreground terminal", declined)
         self.assertNotIn("Private fixture instructions", declined)
         self.assertEqual(before, snapshot(root))
-        report = terminal(b"APPLY").decode()
+        def fragmented(master):
+            os.write(master, b"AP")
+            time.sleep(0.25)
+            os.write(master, b"PLY\n")
+        # Neither the buffered second line nor a partial word is approval.
+        report = terminal([b"TYPO\nAPPLY\n", b"PLAN\n", fragmented]).decode()
+        self.assertIn("Unrecognized response", report)
+        self.assertEqual(report.count("Complete publication (afterimage"), 1)
         self.assertIn("Approved reconciliation published", report)
         self.assertIn("Status: INSTALLED — pending Save", report)
         self.assertEqual(self.installed(root), set(STATES))
@@ -3390,6 +3402,9 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
 
     def test_v061_preserving_patch_upgrade(self):
         self.check_published_patch_upgrade("v0.6.1")
+
+    def test_v062_preserving_patch_upgrade(self):
+        self.check_published_patch_upgrade("v0.6.2")
 
     def test_preversion_repair_preserving_patch_upgrade(self):
         root = self.mixed_legacy_fixture("previous-repair", copilot_guest=False, codex_guest=None)
@@ -3691,10 +3706,11 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                         lib["reviewed_effects"](plan, self.work, "")
             path.unlink()
 
-    def tty_review(self, root, *flags, timeout=600, file=False):
+    def tty_review(self, root, *flags, timeout=600, file=False, script=SCRIPT, preload=None):
         saved = self.work / "fixture-installer.sh"
-        saved.write_text(SCRIPT)
+        saved.write_text(script)
         def terminal(reply, change=None):
+            replies = reply if isinstance(reply, list) else [reply + b"\n"]
             pid, master = pty.fork()
             if not pid:
                 os.chdir(root)
@@ -3707,7 +3723,9 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                 os.execve("/bin/bash", ["bash", "-s", "--", *flags], self.env)
             output = bytearray()
             try:
-                answered = False
+                if preload:
+                    os.write(master, preload)
+                answered = 0
                 deadline = time.monotonic() + timeout
                 while True:
                     if not select.select([master], [], [], max(0, deadline - time.monotonic()))[0]:
@@ -3720,18 +3738,50 @@ print("TEST_RECORDS:" + (scratch / "review-projection" / "{ownership}").read_byt
                     if not chunk:
                         break
                     output.extend(chunk)
-                    if not answered and b"Type APPLY" in output:
-                        if change:
+                    if answered < len(re.findall(rb"(?m)^Type APPLY[^\n]*:\r?\n", output)):
+                        self.assertLess(answered, len(replies), output[-1500:])
+                        if not answered and change:
                             change()
-                        os.write(master, reply + b"\n")
-                        answered = True
+                        response = replies[answered]
+                        if callable(response):
+                            response(master)
+                        else:
+                            os.write(master, response)
+                        answered += 1
             finally:
                 os.close(master)
                 _, status = os.waitpid(pid, 0)
             self.assertEqual(os.waitstatus_to_exitcode(status), 3, output[-1500:])
-            self.assertEqual(output.count(b"Type APPLY"), 1, output[-1500:])
+            self.assertEqual(answered, len(replies), output[-1500:])
             return output
         return terminal
+
+    def test_tty_input_boundaries(self):
+        # Run the exact consent function in a foreground PTY without paying
+        # for repeated identical history searches. The full installer cases
+        # exercise its caller, revalidation, publication and exit status.
+        root = self.root("line-input")
+        (self.work / "review-plan.json").write_text(json.dumps(
+            dict(reviewable=True, root=str(root), providers=[])))
+        function = SCRIPT.split("\nreview_consent() {", 1)[1].split("\n}\n", 1)[0]
+        script = ("TMPDIR_WORK=" + shlex.quote(str(self.work)) + "\nreview_consent() {" +
+                  function + "\n}\nreview_consent || exit 3\nexit 0\n")
+        for file in (True, False):
+            terminal = self.tty_review(root, file=file, script=script, timeout=15, preload=b"APPLY\n")
+            def delayed_blank(master):
+                self.assertFalse(select.select([master], [], [], 0.25)[0],
+                                 "live foreground prompt did not wait for fresh input")
+                os.write(master, b"\n")
+            self.assertIn(b"Declined;", terminal([delayed_blank]))
+            for replies, reason in (([b"\x04"], b"No terminal input (EOF)"),
+                                    ([b"APPLY\x04"], b"Incomplete or oversized"),
+                                    ([b"APPLY" + b" " * 27 + b"APPLY\n"], b"Incomplete or oversized"),
+                                    ([b"APPLY \nAPPLY\n", b" apply\n"], b"Invalid terminal response twice")):
+                with self.subTest(file=file, reason=reason):
+                    out = terminal(replies)
+                    self.assertIn(reason, out)
+                    self.assertIn(b"--review-file", out)
+                    self.assertNotIn(b"Declined;", out)
 
     def tty_review_fixture(self):
         self.isolate_ancestor_fixture()

@@ -1,8 +1,8 @@
 # Standalone: install, upgrade and recovery
 
-This is the **v0.6.2 release candidate guide**. The backed-up replacement
-offered for an unmatched Codex pair is now available for a normal-mode Claude
-pair. Replacing role content does not confirm a model or authorize a workflow.
+This is the **v0.6.3 release candidate guide**. Terminal reconciliation now
+starts with the decision and offers the full report on request. Replacing
+role content does not confirm a model or authorize a workflow.
 
 - **Goal startup:** planning records a [workspace handoff](#workspace-handoff-from-decompose-to-goal).
   Execution rechecks the live checkout. Preserve disjoint staged and unstaged
@@ -15,7 +15,7 @@ pair. Replacing role content does not confirm a model or authorize a workflow.
   One approval publishes a complete eligible plan, not a
   partial migration, model confirmation or readiness certificate.
 
-See [candidate checks and limits](#v062-candidate-checks-and-limits).
+See [candidate checks and limits](#v063-candidate-checks-and-limits).
 
 Retained v0.4.4 safe-upgrade behavior: finite historical ownership proof and
 pristine manifestless adoption support bounded preserving upgrades. Unknown
@@ -53,13 +53,13 @@ hq-xc2's reviewed implementation and bounded offline checks passed, but
 [native coverage remains BLOCKED](#v040-release-status-and-limits);
 publication does not fully qualify the epic.
 The [v0.4.4 evidence and limits](#v044-release-status-and-limits) remain history,
-not fresh v0.6.2 qualification.
+not fresh v0.6.3 qualification.
 The product is one standalone `domestique.sh`; no global runtime, `dom2` or
 project enable step. See the [README](../README.md) for the workflow.
 
 ## Remote install and upgrade
 
-After v0.6.2 is published to `main`, existing `dom` aliases that fetch
+After v0.6.3 is published to `main`, existing `dom` aliases that fetch
 `main/domestique.sh` receive its workflow and installer changes on their next invocation,
 without an alias change.
 For the covered completely removed Claude/Codex case, optionally preview with
@@ -92,7 +92,7 @@ curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique
 curl -fsSL "https://raw.githubusercontent.com/ebowman/domestique/$REV/domestique.sh" | bash -s --
 ```
 
-A source checkout is optional; v0.6.2's changes are included in remote
+A source checkout is optional; v0.6.3's changes are included in remote
 `dom` after publication to `main`. To inspect source locally, use the selected checkout:
 
 ```sh
@@ -588,7 +588,11 @@ shortcut. A normal-mode conversion changes visibility and needs its own review.
   outside the target: use a trusted private location, not a shared log or a
   system that forbids even temporary copies. `--keep-local` declines adoption.
 * **Approve once:** rerun without `--dry-run` in a foreground terminal. Read
-  the complete plan, then type `APPLY` on `/dev/tty` or press Return to decline.
+  the summary; enter `PLAN` to inspect all proposed paths and hashes without
+  approving. At the prompt, type exactly `APPLY` and press Return on `/dev/tty`
+  to publish, or just press Return to decline. Do not pipe or paste a series
+  of answers: each decision needs fresh input. A typo gets one retry. EOF,
+  an incomplete or oversized response, or an unavailable terminal cannot approve.
   Installer stdin is never the approval channel. Without a controlling terminal,
   save and verify the installer **outside** the target and use:
 
@@ -801,6 +805,40 @@ cannot reverse migrated ownership/workflows. See the concise
 [historical boundary](v2-preview.md).
 
 ## Qualification and known issues
+
+### v0.6.3 candidate checks and limits
+
+Standalone installer SHA-256:
+`1d6445a2dfda59e44eb03efdd4ead9411ecf0728151b810ee00ff18f05fd2a39`.
+
+On v0.6.2 the caller displayed the full preview before asking for approval on
+`/dev/tty`, then repeated the projected paths. A real foreground terminal
+waited for input on both saved and streamed invocations. The decline message
+was not evidence of a Return keypress: EOF (saved script) and a typo (script
+piped to Bash) reproduced it in disposable foreground PTYs. The old
+`readline(32).strip()` compared a trimmed, possibly partial read instead of
+requiring one complete line. The reported transcript cannot identify which
+input was delivered.
+
+The candidate uses the same plan and pre-publication revalidation, with an
+on-demand detailed report. A normal foreground line-mode terminal waits for
+the decision, even when Bash is reading the script from a pipe. `NOT INSTALLED`
+and `INSTALLED — pending Save` can both exit `3`; the former does not publish,
+while the latter has written the configuration and still requires native Save.
+Qualification uses synthetic projects, not a consumer checkout, live network
+transport, native client or model Save.
+
+On the same synthetic Claude fixture, the v0.6.2 no-write transcripts had
+296 lines; the candidate's saved-script blank response had 33, one decision
+prompt and no hash listing. Saved and piped default installs exercised the
+on-demand report, typo retry, split `AP` + `PLY` followed by Return, 0600
+byte-exact backups, preserved index and stable pending-Save rerun. Both older
+Codex replacement cases also passed. Foreground PTY controls rejected queued
+typeahead, EOF, EOF after `APPLY`, an oversized line with an `APPLY` suffix,
+and two invalid answers. A changed role invalidated approval. A configured
+v0.6.2 project upgraded without reconciliation, preserving six choices, host
+edits, pristine bases and index; its second install was byte/mode stable.
+These focused checks are not the full historical upgrade matrix.
 
 ### v0.6.2 candidate checks and limits
 
